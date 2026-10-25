@@ -326,13 +326,13 @@ export function provAt(rb: Rulebook, path: string): Provenance | null {
 
 export type Comparison = { key: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
 
-type Field = { item: string; itemPath: string; path: string; label: string; value: unknown };
+type Field = { item: string; itemPath: string; path: string; label: string; value: unknown; name: string };
 
 /** Flatten the money terms and rules to stable keys (not array indexes), so two independent reads align. */
 function flatten(rb: Rulebook): Map<string, Field> {
   const m = new Map<string, Field>();
-  const put = (item: string, itemPath: string, field: string, path: string, label: string, value: unknown) =>
-    m.set(`${item}.${field}`, { item, itemPath, path, label, value });
+  const put = (item: string, itemPath: string, field: string, path: string, label: string, value: unknown, name = "") =>
+    m.set(`${item}.${field}`, { item, itemPath, path, label, value, name });
   const scalar = (key: string, path: string, label: string, value: unknown) => put(key, path, "v", path, label, value);
   const keyed = <T>(items: T[], keyOf: (t: T) => string) => {
     const seen = new Map<string, number>();
@@ -358,18 +358,19 @@ function flatten(rb: Rulebook): Map<string, Field> {
   for (const { t, i, k } of keyed(rb.deadlines, (d) => d.kind)) put(`deadline.${k}`, `/deadlines/${i}`, "value", `/deadlines/${i}/value`, `deadline ${k}`, t.value);
   for (const { t, i, k } of keyed(rb.invoiceables, (x) => norm(x.code ?? "") + "|" + norm(x.name))) {
     const ip = `/invoiceables/${i}`;
-    put(`inv.${k}`, ip, "amount", `${ip}/amountCents`, `invoiceable "${t.name}" amount`, t.amountCents);
-    put(`inv.${k}`, ip, "amountOH", `${ip}/amountWithOverheadCents`, `invoiceable "${t.name}" amount with overhead`, t.amountWithOverheadCents);
-    put(`inv.${k}`, ip, "cap", `${ip}/cap`, `invoiceable "${t.name}" cap`, { n: t.cap.n, ratio: t.cap.ratio });
+    put(`inv.${k}`, ip, "amount", `${ip}/amountCents`, `invoiceable "${t.name}" amount`, t.amountCents, t.name);
+    put(`inv.${k}`, ip, "amountOH", `${ip}/amountWithOverheadCents`, `invoiceable "${t.name}" amount with overhead`, t.amountWithOverheadCents, t.name);
+    put(`inv.${k}`, ip, "cap", `${ip}/cap`, `invoiceable "${t.name}" cap`, { n: t.cap.n, ratio: t.cap.ratio }, t.name);
   }
   for (const { t, i, k } of keyed(rb.siteFees, (x) => norm(x.code ?? "") + "|" + norm(x.name))) {
     const ip = `/siteFees/${i}`;
-    put(`fee.${k}`, ip, "amount", `${ip}/amountCents`, `site fee "${t.name}" amount`, t.amountCents);
+    put(`fee.${k}`, ip, "amount", `${ip}/amountCents`, `site fee "${t.name}" amount`, t.amountCents, t.name);
   }
   for (const { t: g, i: gi, k: gk } of keyed(rb.budgetGrids, (g) => norm(g.arm ?? "") || "grid")) {
     const gp = `/budgetGrids/${gi}`;
     put(`grid.${gk}`, gp, "statedOH", `${gp}/statedOverheadPct`, `${g.label} stated overhead`, g.statedOverheadPct);
-    g.perPatientTotals.forEach((t, ti) => put(`grid.${gk}`, gp, `perPatient${ti}`, `${gp}/perPatientTotals/${ti}/cents`, `${g.label} per-patient "${t.label}"`, t.cents));
+    for (const { t, i: ti, k: tk } of keyed(g.perPatientTotals, (t) => norm(t.label)))
+      put(`grid.${gk}.pp.${tk}`, `${gp}/perPatientTotals/${ti}`, "cents", `${gp}/perPatientTotals/${ti}/cents`, `${g.label} per-patient "${t.label}"`, t.cents, t.label);
     for (const { t: v, i: vi, k: vk } of keyed(g.visits, (v) => norm(v.code))) {
       const vp = `${gp}/visits/${vi}`;
       for (const f of ["totalCents", "procedureSubtotalCents", "overheadCents", "nonProcedureCents"] as const)
@@ -377,8 +378,8 @@ function flatten(rb: Rulebook): Map<string, Field> {
     }
     for (const { t: p, i: pi, k: pk } of keyed(g.procedures, (p) => norm(p.code ?? "") + "|" + norm(p.name))) {
       const pp = `${gp}/procedures/${pi}`;
-      put(`grid.${gk}.proc.${pk}`, pp, "unit", `${pp}/unitCents`, `${g.label} "${p.name}" unit price`, p.unitCents);
-      for (const [vc, cell] of Object.entries(p.cells)) put(`grid.${gk}.proc.${pk}`, pp, `cell.${norm(vc)}`, `${pp}/cells/${vc}`, `${g.label} "${p.name}" at ${vc}`, cell);
+      put(`grid.${gk}.proc.${pk}`, pp, "unit", `${pp}/unitCents`, `${g.label} "${p.name}" unit price`, p.unitCents, p.name);
+      for (const [vc, cell] of Object.entries(p.cells)) put(`grid.${gk}.proc.${pk}`, pp, `cell.${norm(vc)}`, `${pp}/cells/${vc}`, `${g.label} "${p.name}" at ${vc}`, cell, p.name);
     }
   }
   return m;
@@ -390,7 +391,7 @@ function flatten(rb: Rulebook): Map<string, Field> {
  */
 export function compareRulebooks(primary: Rulebook, cross: Rulebook): Comparison[] {
   const a = flatten(primary);
-  const b = flatten(cross);
+  const b = alignNames(a, flatten(cross));
   const itemsA = new Set([...a.values()].map((f) => f.item));
   const itemsB = new Set([...b.values()].map((f) => f.item));
   const out: Comparison[] = [];
@@ -409,6 +410,35 @@ export function compareRulebooks(primary: Rulebook, cross: Rulebook): Comparison
     reported.add(y.item);
     // Found only by the cross-read: anchor on the parent list in the primary.
     out.push({ key: y.item, path: y.itemPath.replace(/\/\d+$/, ""), label: y.label, primary: undefined, cross: "present", agree: false });
+  }
+  return out;
+}
+
+/**
+ * Re-key cross-read items whose name differs only in wording ("Administrative startup (non-refundable)"
+ * vs "Administrative startup") onto the primary item's key, so they are compared field by field
+ * instead of being reported as one missing item on each side.
+ */
+function alignNames(a: Map<string, Field>, b: Map<string, Field>): Map<string, Field> {
+  const section = (item: string) => item.replace(/\.[^.]*$/, "");
+  const names = (m: Map<string, Field>) => new Map([...m.values()].filter((f) => f.name).map((f) => [f.item, f.name]));
+  const itemsA = names(a);
+  const itemsB = names(b);
+  const rename = new Map<string, string>();
+  const taken = new Set<string>([...itemsB.keys()].filter((k) => itemsA.has(k)));
+  for (const [ib, nameB] of itemsB) {
+    if (itemsA.has(ib)) continue;
+    const match = [...itemsA].find(([ia, nameA]) => !taken.has(ia) && section(ia) === section(ib) && (sameName(nameA, nameB) || sharesWord(nameA, nameB)));
+    if (match) {
+      rename.set(ib, match[0]);
+      taken.add(match[0]);
+    }
+  }
+  if (!rename.size) return b;
+  const out = new Map<string, Field>();
+  for (const [key, f] of b) {
+    const to = rename.get(f.item);
+    out.set(to ? to + key.slice(f.item.length) : key, to ? { ...f, item: to } : f);
   }
   return out;
 }

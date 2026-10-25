@@ -200,4 +200,14 @@ describe("runContractChecks", () => {
     expect(a.map((x) => x.id)).toEqual(b.map((x) => x.id));
     expect(a[0]!.id).toBe("MISSING_REFERENCED_DOC:/referencedDocuments/0");
   });
+  it("compareRulebooks pairs items whose names differ in wording, and per-patient totals by label", () => {
+    const a = makeRulebook();
+    const b = makeRulebook();
+    a.siteFees.push({ code: null, name: "Administrative startup (non-refundable)", amountCents: 850000, trigger: "one_time", dueDays: null, prov });
+    b.siteFees.push({ code: null, name: "Administrative startup", amountCents: 850000, trigger: "one_time", dueDays: null, prov });
+    b.budgetGrids[0]!.perPatientTotals = [...b.budgetGrids[0]!.perPatientTotals].reverse();
+    expect(compareRulebooks(a, b).filter((d) => !d.agree)).toEqual([]);
+    b.siteFees.at(-1)!.amountCents = 800000;
+    expect(compareRulebooks(a, b).filter((d) => !d.agree).map((d) => d.label)).toEqual(['site fee "Administrative startup (non-refundable)" amount']);
+  });
 });
