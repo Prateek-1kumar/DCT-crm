@@ -11,3 +11,5 @@ data/
 
 # agent worktrees / local tool state
 .claude/
+test-results/
+playwright-report/

@@ -2,7 +2,7 @@
 
 import type { DocumentDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { NeedsPerson } from "@/components/AppHeader";
 import { DocList, Dropzone } from "@/components/UploadDocs";
@@ -16,11 +16,17 @@ const STEPS = ["Upload", "Confirm details", "Extract"];
 export default function NewStudyPage() {
   const [docs, setDocs] = useState<DocumentDto[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ studyId: string; jobId: string } | null>(null);
   const by = useActingAs();
+  const router = useRouter();
+  // The created study lives in the URL, so a refresh (or "Confirm details" from the study page) resumes here.
+  const sp = useSearchParams();
+  const created = sp.get("study") ? { studyId: sp.get("study")!, jobId: sp.get("job") } : null;
 
   const usable = docs.filter((d) => !d.duplicateOf);
-  const create = useMutation({ mutationFn: () => api.createStudy(usable.map((d) => d.id)), onSuccess: setCreated });
+  const create = useMutation({
+    mutationFn: () => api.createStudy(usable.map((d) => d.id), by!),
+    onSuccess: (r) => router.replace(`/studies/new?study=${encodeURIComponent(r.studyId)}&job=${encodeURIComponent(r.jobId)}`),
+  });
 
   function add(uploaded: DocumentDto[]) {
     const known = new Set(docs.map((d) => d.id));
@@ -68,16 +74,17 @@ export default function NewStudyPage() {
           studyId={created.studyId}
           jobId={created.jobId}
           // Next keeps this page mounted (Activity); start fresh next time.
-          onStarted={() => (setDocs([]), setCreated(null))}
+          onStarted={() => setDocs([])}
         />
       )}
     </div>
   );
 }
 
-function Identify({ studyId, jobId, onStarted }: { studyId: string; jobId: string; onStarted: () => void }) {
+/** `jobId` null: identification already ran (resumed from the study page), go straight to the details. */
+function Identify({ studyId, jobId, onStarted }: { studyId: string; jobId: string | null; onStarted: () => void }) {
   const job = useJob(jobId);
-  const done = job.data?.state === "succeeded";
+  const done = !jobId || job.data?.state === "succeeded";
   const qc = useQueryClient();
   useEffect(() => {
     if (done) void qc.invalidateQueries({ queryKey: keys.study(studyId) });
@@ -85,7 +92,12 @@ function Identify({ studyId, jobId, onStarted }: { studyId: string; jobId: strin
 
   if (job.error) return <ErrorNote error={job.error} />;
   if (job.data?.state === "failed")
-    return <ErrorNote>Couldn&apos;t identify the documents: {job.data.error}. You can still enter the details below.</ErrorNote>;
+    return (
+      <div className="flex flex-col gap-4">
+        <ErrorNote>Couldn&apos;t identify the documents: {job.data.error}. You can still enter the details below.</ErrorNote>
+        <Confirm studyId={studyId} onStarted={onStarted} />
+      </div>
+    );
   if (!done)
     return (
       <Card className="p-5">

@@ -77,20 +77,21 @@ export const api = {
   getDiff: (id: string, v: number, against: number) =>
     request<DiffEntry[]>("GET", `/studies/${q(id)}/versions/${v}/diff?against=${against}`),
 
-  /** Assumed extra form fields (see docs/phase-1/web.md): `by`, and `studyId` to attach files to an existing study (amendments). */
-  upload: (files: File[], by: string, studyId?: string) => {
+  /** `by` is an extra form field for the audit log. Files join a study via createStudy or extract({documentIds}). */
+  upload: (files: File[], by: string) => {
     const fd = new FormData();
-    for (const f of files) fd.append("files[]", f, f.name);
     fd.append("by", by);
-    if (studyId) fd.append("studyId", studyId);
+    for (const f of files) fd.append("files[]", f, f.name);
     return request<DocumentDto[]>("POST", "/uploads", fd);
   },
-  createStudy: (documentIds: string[]) => request<{ studyId: string; jobId: string }>("POST", "/studies", { documentIds }),
+  createStudy: (documentIds: string[], by: string) => request<{ studyId: string; jobId: string }>("POST", "/studies", { documentIds, by }),
   confirmStudy: (id: string, body: { sponsor: string; protocol: string; siteName: string; investigator: string; by: string }) =>
     request<StudyDetailDto>("PATCH", `/studies/${q(id)}`, body),
   setDocumentKind: (docId: string, kind: DocumentKind, by: string) =>
     request<DocumentDto>("PATCH", `/documents/${q(docId)}`, { kind, by }),
-  extract: (id: string, by: string) => request<{ jobId: string; version: number }>("POST", `/studies/${q(id)}/extract`, { by }),
+  /** `documentIds` adds documents to the study first (amendment journey). */
+  extract: (id: string, by: string, documentIds?: string[]) =>
+    request<{ jobId: string; version: number }>("POST", `/studies/${q(id)}/extract`, { by, ...(documentIds?.length ? { documentIds } : {}) }),
   /** Proposed route: blank draft for manual entry after a failed extraction. */
   createManualVersion: (id: string, by: string) =>
     request<{ version: number }>("POST", `/studies/${q(id)}/versions`, { manual: true, by }),

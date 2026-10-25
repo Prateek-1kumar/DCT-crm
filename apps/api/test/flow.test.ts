@@ -63,7 +63,17 @@ describe("bring a study on board", () => {
 
     const res = await patch(`/api/studies/${studyId}`, { sponsor: "Synthetic Pharma Inc", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
     expect(res.json<StudyDetailDto>().sponsor).toBe("Synthetic Pharma Inc");
-    expect(await auditActions(studyId)).toEqual(["study.created", "study.identified", "study.confirmed"]);
+    expect(await auditActions(studyId)).toEqual(["study.confirmed", "study.identified", "study.created"]);
+  });
+
+  it("a double-submitted create (same files) makes one study, not two", async () => {
+    const docs = (await upload(app, [{ name: "a.pdf", data: await makePdf("dbl-a") }, { name: "b.pdf", data: await makePdf("dbl-b") }])).json<DocumentDto[]>();
+    const ids = docs.map((d) => d.id);
+    const [r1, r2] = await Promise.all([post("/api/studies", { documentIds: ids }), post("/api/studies", { documentIds: [...ids].reverse() })]);
+    expect(r1.json()).toEqual(r2.json());
+    expect(await get<StudySummaryDto[]>("/api/studies")).toHaveLength(1);
+    // a different file set is a different study
+    expect((await post("/api/studies", { documentIds: [ids[0]] })).json().studyId).not.toBe(r1.json().studyId);
   });
 
   it("rejects unknown documents and bad bodies", async () => {
@@ -129,16 +139,30 @@ describe("review", () => {
     expect(res.statusCode).toBe(200);
     const ver = res.json<RulebookVersionDto>();
     expect(ver.rulebook!.budgetGrids[0]!.visits[1]).toMatchObject({ totalCents: 848800, prov: { method: "manual" } });
-    expect(ver.anomalies.map((a) => a.code)).not.toContain("VISIT_TOTAL_MISMATCH");
+    // the correction cleared the anomaly: it stays on record, settled as fixed with the correction's note
+    expect(ver.anomalies.find((a) => a.code === "VISIT_TOTAL_MISMATCH")?.resolution).toMatchObject({ kind: "fixed", by: "Asha", note: "printed total is a typo" });
     expect(ver.anomalies.find((a) => a.code === "MISSING_REFERENCED_DOC")?.resolution).toMatchObject({ by: "Asha", kind: "accepted_with_note" });
     expect(ver.editors).toEqual(["Asha"]);
 
     const entries = await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`);
-    expect(entries.at(-1)).toMatchObject({
+    expect(entries[0]).toMatchObject({
       by: "Asha",
       action: "value.corrected",
       detail: { version: 1, path: "/budgetGrids/0/visits/1/totalCents", before: 848900, after: 848800, note: "printed total is a typo" },
     });
+  });
+
+  it("Fix value in the UI = PATCH then resolve 'fixed': works even when the PATCH cleared the anomaly", async () => {
+    const { studyId } = await newStudy();
+    await extract(studyId);
+    const aid = "VISIT_TOTAL_MISMATCH:/budgetGrids/0/visits/1/totalCents";
+    await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800, note: "p.9 prints 8,488.00", by: "Asha" });
+    const res = await post(`/api/studies/${studyId}/versions/1/anomalies/${encodeURIComponent(aid)}/resolve`, { kind: "fixed", note: "p.9 prints 8,488.00", by: "Asha" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<RulebookVersionDto>().anomalies.find((a) => a.id === aid)?.resolution).toMatchObject({ kind: "fixed" });
+    // and a later, unrelated correction doesn't drop or re-settle it
+    const later = await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 30, note: "x", by: "Ben" });
+    expect(later.json<RulebookVersionDto>().anomalies.filter((a) => a.id === aid)).toEqual([expect.objectContaining({ resolution: expect.objectContaining({ by: "Asha" }) })]);
   });
 
   it("resolves an anomaly", async () => {
@@ -211,7 +235,7 @@ describe("sign-off", () => {
     const base = `/api/studies/${studyId}/versions/1`;
     const writes = [
       await patch(`${base}/values`, { path: "/payment/netDays/value", value: 30, note: "x", by: "Asha" }),
-      await resolve(studyId, 1, "GRID_CONFLICT:/governingGridId"),
+      await resolve(studyId, 1, "GRID_CONFLICT:/budgetGrids/0"),
       await post(`${base}/grid-choice`, { gridId: "g1", note: "x", by: "Asha" }),
       await post(`${base}/sign-off`, { by: "Ben" }),
     ];
@@ -245,7 +269,7 @@ describe("amendment", () => {
       change: "changed",
       before: 80000,
       after: 90000,
-      label: "Invoiceable 'Unscheduled visit' amountWithOverheadCents",
+      label: "Invoiceable › Unscheduled visit › Amount with overhead",
     });
     expect(diff).toContainEqual(expect.objectContaining({ path: "/appliesFrom/value", before: null, after: "2026-01-01" }));
     expect((await app.inject({ url: `/api/studies/${studyId}/versions/2/diff` })).statusCode).toBe(400);
@@ -259,6 +283,42 @@ describe("amendment", () => {
       [2, "signed"],
       [1, "superseded"],
     ]);
+  });
+});
+
+describe("manual entry", () => {
+  it("replaces a failed extraction with a blank manual draft that goes through checks and sign-off", async () => {
+    const { studyId } = await newStudy();
+    await patch(`/api/studies/${studyId}`, { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
+    fakeControls.failNext = 1;
+    await extract(studyId);
+    const url = `/api/studies/${studyId}/versions`;
+    expect((await post(url, { by: "Asha" })).statusCode).toBe(400); // manual: true is required
+
+    const res = await post(url, { manual: true, by: "Asha" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toEqual({ version: 1 }); // reuses the failed version number
+    const ver = await version(studyId, 1);
+    expect(ver.status).toBe("draft");
+    expect(ver.rulebook!.study.sponsor).toEqual({ value: "Acme", prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } });
+    expect(ver.rulebook!.budgetGrids).toEqual([]);
+    expect((await study(studyId)).status).toBe("needs_review");
+    expect(await auditActions(studyId)).toContain("version.manual_created");
+    // a second click doesn't make another draft
+    expect((await post(url, { manual: true, by: "Asha" })).statusCode).toBe(409);
+
+    expect((await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 45, note: "p.3", by: "Asha" })).statusCode).toBe(200);
+    await resolveAll(studyId, 1);
+    expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("for an amendment, seeds the draft from the live rulebook", async () => {
+    const { studyId } = await liveStudy();
+    const res = await post(`/api/studies/${studyId}/versions`, { manual: true, by: "Asha" });
+    expect(res.json()).toEqual({ version: 2 });
+    expect(await study(studyId)).toMatchObject({ status: "amendment_in_review", liveVersion: 1 });
+    const [v1, v2] = [await version(studyId, 1), await version(studyId, 2)];
+    expect(v2.rulebook!.invoiceables).toEqual(v1.rulebook!.invoiceables);
   });
 });
 

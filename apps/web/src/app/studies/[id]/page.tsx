@@ -57,6 +57,11 @@ export default function StudyPage() {
                 {s.openAnomalies ? `Review v${draft.version} · ${s.openAnomalies} open` : `Review v${draft.version}`}
               </Link>
             )}
+            {s.status === "setting_up" && (
+              <Link href={`/studies/new?study=${encodeURIComponent(s.id)}`} className={btnCls("primary")}>
+                Confirm details →
+              </Link>
+            )}
             {s.status === "live" && !draft && (
               <Link href={`/studies/${s.id}/amend`} className={btnCls()}>
                 Upload amendment
@@ -77,7 +82,8 @@ export default function StudyPage() {
             <Spinner label="Extraction is running. This page updates when it's done" />
           </p>
         )}
-        {s.status === "extraction_failed" && <FailedBox study={s} />}
+        {/* also a failed amendment extraction, which leaves the study amendment_in_review */}
+        {[...s.versions].sort((a, b) => b.version - a.version)[0]?.status === "failed" && <FailedBox study={s} />}
         <div role="tablist" aria-label="Study" className="mx-auto mt-4 flex max-w-[1600px] gap-1">
           {(
             [

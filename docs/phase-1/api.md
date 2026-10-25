@@ -55,12 +55,12 @@ Env: `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (see the guard below), `DATABASE_URL` (d
   - It uses an RFC 6901 pointer and replaces or adds the value. The parent must exist, and `__proto__` is refused.
   - The rulebook is re-validated with the shared `Rulebook` schema. An invalid result is rejected with 400.
   - `prov.method = "manual"` is set on the nearest node carrying `prov`: the target, its parent or an ancestor. For example, a grid cell marks its procedure.
-  - The editor's name is recorded, and contract checks re-run. Resolutions are kept by anomaly id.
+  - The editor's name is recorded, and contract checks re-run. Resolutions are kept by anomaly id. An anomaly the change makes disappear stays in the list, resolved with that change (`fixed` + the correction's note; `chosen` for grid choice), so the UI's follow-up resolve call doesn't 404 (integration testing, see testing.md).
 - **Grid choice** sets `governingGridId`, re-runs checks, and resolves any unresolved `GRID_CONFLICT` with kind `chosen`. It does not add an editor; only value corrections count for maker-checker.
 - **Diff:**
   - Items in rulebook arrays are matched by identity (id, then code, name, label, kind, description), not by index.
   - `prov` subtrees are ignored, and `{value, prov}` collapses to the value.
-  - Labels read like `Invoiceable 'Unscheduled visit' amountWithOverheadCents`.
+  - Labels read section first with ` › ` separators, e.g. `Invoiceable › Unscheduled visit › Amount with overhead` (the web groups by the first part).
   - `before` is the `against` version.
 - **Uploads:**
   - Only PDFs are accepted: the `%PDF-` magic must be present and pdf-lib must load the file. Otherwise the response is 415 or 400.
@@ -77,7 +77,14 @@ Env: `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (see the guard below), `DATABASE_URL` (d
   - Both lists are comma-separated env vars.
 - No CORS is set. The web app should proxy `/api` (for example with a Next rewrite to `127.0.0.1:4100`).
 
-## Stubbed / TODO at merge
+## Added at integration testing
+
+- `POST /studies/:id/versions` `{ manual: true, by }` → `{ version }`: manual entry. Blank, schema-valid draft (every value `prov.method = "manual"`, prefilled with the confirmed study details) that replaces a failed version in place; for an amendment, a copy of the live rulebook with `appliesFrom` cleared. 409 while a draft exists or an extraction runs.
+- `POST /studies` with a file set that a `setting_up` study already has returns that study (double-click safe).
+- `GET /audit` is newest first.
+- Fake mode renders real page images (`renderPage` from `@dct/extraction`); a filename containing `unreadable` makes the fake extraction fail.
+
+## Stubbed / TODO at merge (done)
 
 - `src/extraction/port.ts` `loadReal()` imports `@dct/extraction` through a variable specifier. At merge:
   1. Add `"@dct/extraction": "workspace:*"` to `apps/api/package.json`.

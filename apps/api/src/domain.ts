@@ -1,13 +1,14 @@
-import type {
-  ContractAnomaly,
-  DocumentDto,
-  DocumentKind,
+import {
+  type ContractAnomaly,
+  type DocumentDto,
+  type DocumentKind,
+  type Resolution,
   Rulebook,
-  RulebookVersionDto,
-  StudyStatus,
-  StudySummaryDto,
-  VersionStatus,
-  VersionSummaryDto,
+  type RulebookVersionDto,
+  type StudyStatus,
+  type StudySummaryDto,
+  type VersionStatus,
+  type VersionSummaryDto,
 } from "@dct/shared";
 import { and, desc, eq } from "drizzle-orm";
 import type { Tx } from "./db/index.js";
@@ -99,15 +100,69 @@ export function assertDraft(v: VersionRow): asserts v is VersionRow & { rulebook
   if (v.status !== "draft" || !v.rulebook) throw new HttpError(409, `Version ${v.version} is ${v.status}; only draft versions can be changed`);
 }
 
-/** Re-run contract checks; anomalies whose id still exists keep their resolution. */
+/**
+ * Re-run contract checks; anomalies whose id still exists keep their resolution.
+ * An anomaly the change made disappear stays in the list, settled by this change (`settledBy`),
+ * so the review keeps its record and a follow-up resolve call doesn't 404.
+ */
 export function recheck(
   port: ExtractionPort,
   rulebook: Rulebook,
   row: { crossRead: Rulebook | null; pages: CheckOptions["pages"]; notes: CheckOptions["notes"]; anomalies: ContractAnomaly[] },
+  settledBy: Omit<Resolution, "at">,
 ): ContractAnomaly[] {
   const resolved = new Map(row.anomalies.map((a) => [a.id, a.resolution]));
-  return port.runContractChecks(rulebook, { crossRead: row.crossRead, pages: row.pages, notes: row.notes }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
+  const fresh = port.runContractChecks(rulebook, { crossRead: row.crossRead, pages: row.pages, notes: row.notes }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
+  const at = new Date().toISOString();
+  const gone = row.anomalies.filter((a) => !fresh.some((f) => f.id === a.id)).map((a) => ({ ...a, resolution: a.resolution ?? { ...settledBy, at } }));
+  return [...fresh, ...gone];
 }
 
 /** Date the version's terms apply from: amendment date, else the contract's effective date. */
 export const appliesFromOf = (rb: Rulebook) => rb.appliesFrom.value ?? rb.study.effectiveDate.value;
+
+/**
+ * Starting point for manual entry. Amendment: a copy of the live rulebook (only what changes needs
+ * editing; appliesFrom is cleared so it must be entered). Otherwise a valid blank rulebook, every
+ * value tagged manual, prefilled with the confirmed study details.
+ */
+export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook | null): Rulebook {
+  const prov = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } as const;
+  const m = <T>(value: T) => ({ value, prov });
+  const documentList = docs.map((d) => ({ id: d.id, kind: d.kind as DocumentKind, title: d.filename, date: null }));
+  if (live) return Rulebook.parse({ ...structuredClone(live), documents: documentList, appliesFrom: m(null) });
+  return Rulebook.parse({
+    schemaVersion: 1,
+    study: {
+      sponsor: m(s.sponsor ?? ""),
+      payingAgent: m(null),
+      protocol: m(s.protocol ?? ""),
+      siteName: m(s.siteName ?? ""),
+      investigator: m(s.investigator ?? ""),
+      effectiveDate: m(null),
+      currency: "USD",
+    },
+    documents: documentList,
+    referencedDocuments: [],
+    overhead: { pct: m(null), appliesTo: m("unspecified") },
+    payment: {
+      visitPayment: m("unspecified"),
+      frequency: m("unspecified"),
+      netDays: m(null),
+      netDaysFrom: m(null),
+      invoiceAddress: m(null),
+      requiredReferences: m([]),
+      paymentConditions: m([]),
+    },
+    budgetGrids: [],
+    governingGridId: null,
+    invoiceables: [],
+    screenFail: null,
+    siteFees: [],
+    holdback: null,
+    deadlines: [],
+    overpayment: null,
+    rounding: m("unspecified"),
+    appliesFrom: m(null),
+  });
+}

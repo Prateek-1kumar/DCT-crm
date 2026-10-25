@@ -56,6 +56,8 @@ describe("POST /api/uploads", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toBe("image/png");
     expect(res.rawPayload.subarray(1, 4).toString()).toBe("PNG");
+    // a real render even in fake mode (200 pt page at 150 dpi), not a 1×1 placeholder
+    expect(res.rawPayload.readUInt32BE(16)).toBeGreaterThan(400);
     expect(existsSync(path.join(config.uploadDir, "pages", `${doc!.sha256}-2.png`))).toBe(true);
     const cached = await app.inject({ url: `/api/documents/${doc!.id}/pages/2.png` });
     expect(cached.rawPayload.equals(res.rawPayload)).toBe(true);
@@ -69,7 +71,7 @@ describe("POST /api/uploads", () => {
     expect(res.json()).toMatchObject({ kind: "budget" });
     expect((await app.inject({ method: "PATCH", url: `/api/documents/${doc!.id}`, payload: { kind: "nope", by: "Asha" } })).statusCode).toBe(400);
     const audit = (await app.inject({ url: "/api/audit" })).json<{ action: string; by: string }[]>();
-    expect(audit.map((a) => a.action)).toEqual(["document.uploaded", "document.kind_set"]);
-    expect(audit[1]!.by).toBe("Asha");
+    expect(audit.map((a) => a.action)).toEqual(["document.kind_set", "document.uploaded"]); // newest first
+    expect(audit[0]!.by).toBe("Asha");
   });
 });

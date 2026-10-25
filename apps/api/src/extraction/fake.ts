@@ -18,7 +18,9 @@ function fixture(docs: InputDoc[]): Rulebook {
   const prov = { source: { documentId, page: 1 }, confidence: 0.98, method: "ai", crossCheck: "agree" } as const;
   const s = <T>(value: T) => ({ value, prov });
   const amended = docs.some((d) => d.kind === "amendment" || /amend/i.test(d.filename));
-  const grid = (id: string, label: string, v2Total: number) => ({
+  // grids are on page 2, so "show in contract" visibly jumps
+  const gridProv = { ...prov, source: { documentId, page: 2 } };
+  const grid = (id: string, label: string, v2Total: number, prov = gridProv) => ({
     id,
     label,
     arm: null,
@@ -118,8 +120,9 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
   const arms = new Map<string, string[]>();
   for (const g of rb.budgetGrids) arms.set(g.arm ?? "", [...(arms.get(g.arm ?? "") ?? []), g.id]);
   for (const [arm, ids] of arms)
-    if (ids.length > 1)
-      out.push(anomaly({ code: "GRID_CONFLICT", severity: "blocker", message: `${ids.length} grids for arm "${arm || "(single)"}"`, path: "/governingGridId", detail: { gridIds: ids } }));
+    if (ids.length > 1 && rb.governingGridId === null)
+      // same path as the real check: the first conflicting grid
+      out.push(anomaly({ code: "GRID_CONFLICT", severity: "blocker", message: `${ids.length} grids for arm "${arm || "(single)"}" disagree; choose the governing grid`, path: `/budgetGrids/${rb.budgetGrids.findIndex((g) => g.id === ids[0])}`, detail: { gridIds: ids } }));
   opts?.crossRead?.invoiceables.forEach((x, i) => {
     const mine = rb.invoiceables[i];
     if (mine && mine.amountWithOverheadCents !== x.amountWithOverheadCents)
@@ -139,10 +142,8 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
 /** Test hook: make the next N extractStudy calls throw. */
 export const fakeControls = { failNext: 0 };
 
-// 1×1 grey PNG
-const PLACEHOLDER_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
-
-export const fakeExtraction: ExtractionPort = {
+// No renderPage: fake mode renders real pages (see port.ts).
+export const fakeExtraction: Omit<ExtractionPort, "renderPage"> = {
   async identifyDocuments(docs) {
     return {
       documentKinds: Object.fromEntries(docs.map((d, i) => [d.id, kindFromName(d.filename, i)])),
@@ -154,6 +155,8 @@ export const fakeExtraction: ExtractionPort = {
       fakeControls.failNext--;
       throw new Error("fake extraction failure");
     }
+    // lets a running server (e2e, manual testing) exercise the failure path: retry fails too, manual entry is the way out
+    if (documents.some((d) => /unreadable/i.test(d.filename))) throw new Error("fake extraction failure: pages could not be read");
     onProgress?.(50, "reading pages");
     const rulebook = fixture(documents);
     const crossRead = structuredClone(rulebook);
@@ -170,7 +173,4 @@ export const fakeExtraction: ExtractionPort = {
     };
   },
   runContractChecks,
-  async renderPage() {
-    return PLACEHOLDER_PNG;
-  },
 };

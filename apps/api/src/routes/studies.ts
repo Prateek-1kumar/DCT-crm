@@ -1,17 +1,16 @@
 import { ConfirmStudyBody, CreateStudyBody, ExtractBody, type JobDto, type StudyDetailDto } from "@dct/shared";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import { documents, jobs, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
-import { audit, documentDto, refreshStudyStatus, studySummaryDto, versionSummaryDto } from "../domain.js";
+import { appliesFromOf, audit, documentDto, manualRulebook, refreshStudyStatus, studySummaryDto, versionSummaryDto } from "../domain.js";
+import { getExtraction } from "../extraction/port.js";
 import { createJob, sendJob } from "../jobs.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 
-/**
- * Not in @dct/shared yet (proposed as `ExtractBody`): an amendment adds documents to an existing
- * study, and `by` names who started it. Both optional, so an empty body still works.
- */
+/** POST /studies/:id/versions: manual entry when extraction failed. Not in @dct/shared yet (proposed). */
+const CreateVersionBody = z.object({ manual: z.literal(true), by: z.string().min(1) });
 
 export const studyRoutes =
   ({ db, boss }: Ctx): FastifyPluginAsync =>
@@ -27,6 +26,22 @@ export const studyRoutes =
       const ids = [...new Set(body.documentIds)];
       await assertDocsExist(ids);
       const { studyId, jobId } = await db.transaction(async (tx) => {
+        // A double-click or a retried request must not create a second study from the same files:
+        // serialise creates for this file set, and hand back a study still being set up with exactly these files.
+        const key = [...ids].sort().join(",");
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
+        const links = await tx
+          .select({ studyId: studyDocuments.studyId, documentId: studyDocuments.documentId })
+          .from(studyDocuments)
+          .innerJoin(studies, eq(studies.id, studyDocuments.studyId))
+          .where(eq(studies.status, "setting_up"));
+        const sets = new Map<string, string[]>();
+        for (const l of links) sets.set(l.studyId, [...(sets.get(l.studyId) ?? []), l.documentId]);
+        const same = [...sets].find(([, docIds]) => docIds.sort().join(",") === key)?.[0];
+        if (same) {
+          const [job] = await tx.select().from(jobs).where(and(eq(jobs.studyId, same), eq(jobs.kind, "identify"))).orderBy(desc(jobs.createdAt)).limit(1);
+          if (job) return { studyId: same, jobId: job.id };
+        }
         const [study] = await tx.insert(studies).values({}).returning();
         await tx.insert(studyDocuments).values(ids.map((documentId) => ({ studyId: study!.id, documentId })));
         await audit(tx, body.by ?? "system", study!.id, "study.created", { documentIds: ids });
@@ -108,6 +123,47 @@ export const studyRoutes =
       });
       await sendJob(boss, "extract", { jobId: res.jobId, studyId, version: res.version });
       return reply.status(202).send({ jobId: res.jobId, version: res.version });
+    });
+
+    /**
+     * Manual entry: a draft seeded from the live rulebook (amendment) or a blank one prefilled with the
+     * confirmed study details. Values are tagged manual and go through the same checks and sign-off.
+     */
+    app.post<{ Params: { id: string } }>("/studies/:id/versions", async (req, reply) => {
+      const { by } = parse(CreateVersionBody, req.body);
+      const studyId = req.params.id;
+      const port = await getExtraction();
+      const version = await db.transaction(async (tx) => {
+        const [s] = await tx.select().from(studies).where(eq(studies.id, studyId)).for("update");
+        if (!s) throw notFound("Study");
+        const versions = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version));
+        const latest = versions[0];
+        if (latest?.status === "draft") throw new HttpError(409, `Version ${latest.version} is already a draft under review; correct its values there`);
+        if (latest?.status === "extracting") throw new HttpError(409, `Version ${latest.version} is still being extracted; wait for it to finish or fail`);
+        const docs = await tx
+          .select({ d: documents })
+          .from(studyDocuments)
+          .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
+          .where(eq(studyDocuments.studyId, studyId))
+          .orderBy(studyDocuments.addedAt, documents.filename);
+        const live = versions.find((v) => v.status === "signed")?.rulebook;
+        const rulebook = manualRulebook(s, docs.map((r) => r.d), live ?? null);
+        const anomalies = port.runContractChecks(rulebook, { crossRead: null, pages: [], notes: [] });
+        const fields = { status: "draft", rulebook, crossRead: null, anomalies, pages: [], notes: [], cost: [], costUsd: 0, inputTokens: 0, outputTokens: 0, appliesFrom: appliesFromOf(rulebook), error: null, updatedAt: new Date() };
+        let v: number;
+        if (latest?.status === "failed") {
+          // replaces the failed attempt: same version number, never a gap
+          v = latest.version;
+          await tx.update(rulebookVersions).set(fields).where(eq(rulebookVersions.id, latest.id));
+        } else {
+          v = (latest?.version ?? 0) + 1;
+          await tx.insert(rulebookVersions).values({ studyId, version: v, ...fields });
+        }
+        await refreshStudyStatus(tx, studyId);
+        await audit(tx, by, studyId, "version.manual_created", { version: v, seededFrom: live ? "live version" : "blank" });
+        return v;
+      });
+      return reply.status(201).send({ version });
     });
 
     app.get<{ Params: { id: string } }>("/jobs/:id", async (req): Promise<JobDto> => {
