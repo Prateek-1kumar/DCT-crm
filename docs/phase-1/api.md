@@ -80,6 +80,14 @@ Env: `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (see the guard below), `DATABASE_URL` (d
 ## Added at integration testing
 
 - `POST /studies/:id/versions` `{ manual: true, by }` → `{ version }`: manual entry. Blank, schema-valid draft (every value `prov.method = "manual"`, prefilled with the confirmed study details) that replaces a failed version in place; for an amendment, a copy of the live rulebook with `appliesFrom` cleared. 409 while a draft exists or an extraction runs.
+- **Amendment extraction carries the live version's corrections forward** (`runExtract`, only when a signed version exists; first extractions and manual drafts are unchanged). The amendment's values win; v1's corrections fill in where it didn't change anything:
+  - **Values: replayed from the audit log**, not stored on the version (no schema/shared change). `correctionsOf(live)` = what the live version carried at extraction (`version.corrections_carried`) + what a manual draft inherited (`version.manual_created.seededFromVersion` → recurse) + its own `value.corrected`, oldest first. So corrections carry transitively v1 → v2 → v3.
+  - Each correction applies only if the new read's value at its pointer deep-equals the correction's `before`, **and** the array items on the path have the same identity as when it was made (`value.corrected` now logs `items`, e.g. `["g1","V2"]`, from the diff's id/code/name/label matching). Applied values get `prov.method = "manual"`; carried corrections don't add editors (maker-checker counts only corrections made in this version).
+  - Skipped with a reason: `amendment_changed` (value differs), `item_moved` (index now points at another item; not re-targeted), `path_missing`, `invalid` (schema), `already_equal` (the new read already has the corrected value).
+  - **Grid:** the live governing grid is matched in the new read by `label` + `arm`; its id becomes `governingGridId`.
+  - **Resolutions:** after checks, an anomaly with the same id and deep-equal `detail` as a settled live anomaly gets that resolution (same kind/by/at) with note `Carried from vN: <note>`. New or changed anomalies stay open.
+  - One audit entry `version.corrections_carried` `{ version, from, carried[], skipped[] (with reason), grid: {from, to}, resolutions[] }`. Not on the version DTO (would need a shared field, proposed below).
+  - Carried values equal the live values, so they don't show in the diff; values the amendment changed do.
 - `POST /studies` with a file set that a `setting_up` study already has returns that study (double-click safe).
 - `GET /audit` is newest first.
 - Fake mode renders real page images (`renderPage` from `@dct/extraction`); a filename containing `unreadable` makes the fake extraction fail.
@@ -97,3 +105,4 @@ Env: `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (see the guard below), `DATABASE_URL` (d
 1. **`ExtractBody`** = `{ documentIds?: string[]; by?: string }` for `POST /studies/:id/extract`. The amendment journey needs a way to add documents to an existing study. It is implemented locally in `routes/studies.ts`.
 2. **`by`** on `CreateStudyBody` and on uploads, for audit attribution (`by` is currently accepted as a multipart field). `PATCH /settings` takes a partial `SettingsDto` plus optional `by`.
 3. Anomaly ids contain `:` and `/`, so clients must `encodeURIComponent` them in `/anomalies/:aid/resolve`.
+4. **`RulebookVersionDto.carried`** = `{ from: number; values: number; skipped: number; resolutions: number } | null`, so the review can say "12 corrections from v1 carried, 2 need a look" without reading the audit log. Today it is only in the `version.corrections_carried` audit entry.

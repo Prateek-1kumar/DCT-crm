@@ -5,7 +5,7 @@ import { PgBoss } from "pg-boss";
 import { config } from "./config.js";
 import type { Db, Tx } from "./db/index.js";
 import { documents, jobs, rulebookVersions, studies, studyDocuments } from "./db/schema.js";
-import { appliesFromOf, audit, refreshStudyStatus } from "./domain.js";
+import { appliesFromOf, audit, CARRIED, carryCorrections, carryGrid, carryResolutions, correctionsOf, refreshStudyStatus } from "./domain.js";
 import { getExtraction, type InputDoc } from "./extraction/port.js";
 
 export type IdentifyData = { jobId: string; studyId: string };
@@ -97,10 +97,24 @@ export async function runExtract(db: Db, { jobId, studyId, version }: ExtractDat
       },
     });
     await progress;
-    const rulebook = Rulebook.parse(out.rulebook);
+    let rulebook = Rulebook.parse(out.rulebook);
     const crossRead = out.crossRead ? Rulebook.parse(out.crossRead) : null;
     const notes = out.notes ?? [];
-    const anomalies = port.runContractChecks(rulebook, { crossRead, pages: out.pages, notes });
+    // amendment: the new read starts from the AI's values; carry the live version's corrections forward
+    const [live] = await db.select().from(rulebookVersions).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.status, "signed")));
+    let carriedDetail: Record<string, unknown> | null = null;
+    if (live?.rulebook) {
+      const values = carryCorrections(rulebook, await correctionsOf(db, live));
+      const gridId = carryGrid(values.rulebook, live.rulebook);
+      rulebook = gridId ? { ...values.rulebook, governingGridId: gridId } : values.rulebook;
+      carriedDetail = { version, from: live.version, carried: values.carried, skipped: values.skipped, grid: { from: live.rulebook.governingGridId, to: gridId } };
+    }
+    let anomalies = port.runContractChecks(rulebook, { crossRead, pages: out.pages, notes });
+    if (live && carriedDetail) {
+      const r = carryResolutions(anomalies, live);
+      anomalies = r.anomalies;
+      carriedDetail.resolutions = r.carried;
+    }
     const sum = (k: "usd" | "inputTokens" | "outputTokens") => out.cost.reduce((n, c) => n + c[k], 0);
     await db.transaction(async (tx) => {
       // all-or-nothing: the version is filled in one statement, only if still extracting
@@ -125,6 +139,7 @@ export async function runExtract(db: Db, { jobId, studyId, version }: ExtractDat
         .returning({ id: rulebookVersions.id });
       if (!filled.length) return;
       await refreshStudyStatus(tx, studyId);
+      if (carriedDetail) await audit(tx, "system", studyId, CARRIED, carriedDetail);
       await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, costUsd: sum("usd") });
       await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null });
     });

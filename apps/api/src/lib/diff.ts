@@ -26,6 +26,18 @@ const SECTIONS: Record<string, string> = {
 
 const pick = (x: Record<string, unknown>, keys: string[]) => keys.map((k) => x[k]).find((v) => typeof v === "string") as string | undefined;
 const idOf = (x: Record<string, unknown>) => pick(x, ["id", "code", "name", "label", "kind", "description"]) ?? "";
+/** Identity of every rulebook-array item a pointer passes through, e.g. ["g1", "36415"] for /budgetGrids/0/procedures/0/cells/V2. */
+export function itemIds(root: unknown, tokens: string[]): string[] {
+  const ids: string[] = [];
+  let node = root;
+  for (const t of tokens) {
+    if (Array.isArray(node)) {
+      node = node[Number(t)];
+      if (isObj(node)) ids.push(idOf(node));
+    } else node = isObj(node) && Object.hasOwn(node, t) ? node[t] : undefined;
+  }
+  return ids;
+}
 const nameOf = (x: Record<string, unknown>) => pick(x, ["name", "label", "title", "description", "kind", "code", "id"]) ?? "?";
 const esc = (k: string) => k.replace(/~/g, "~0").replace(/\//g, "~1");
 /** "amountWithOverheadCents" → "Amount with overhead". */

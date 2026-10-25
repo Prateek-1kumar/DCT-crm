@@ -10,11 +10,14 @@ import {
   type VersionStatus,
   type VersionSummaryDto,
 } from "@dct/shared";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
 import type { Tx } from "./db/index.js";
 import { auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
 import type { CheckOptions, ExtractionPort } from "./extraction/port.js";
+import { itemIds } from "./lib/diff.js";
 import { HttpError, notFound } from "./lib/http.js";
+import { getAt, markManual, parsePointer, setAt } from "./lib/pointer.js";
 
 type DocumentRow = typeof documents.$inferSelect;
 type VersionRow = typeof rulebookVersions.$inferSelect;
@@ -165,4 +168,94 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook 
     rounding: m("unspecified"),
     appliesFrom: m(null),
   });
+}
+
+// ---- Amendment drafts: carry the live version's corrections forward ----
+
+/** One value correction. `items`: identities of the array items its path passes through (see itemIds). */
+export type Correction = { path: string; before: unknown; after: unknown; note?: string; by?: string; items?: string[] };
+export type SkipReason = "amendment_changed" | "item_moved" | "path_missing" | "invalid" | "already_equal";
+export const CARRIED = "version.corrections_carried";
+
+/**
+ * Every correction that makes version `v`'s values differ from the AI read, oldest first, replayed
+ * from the audit log: what `v` carried at extraction (`version.corrections_carried`), what a manual
+ * draft inherited by copying its live version (`version.manual_created` → recurse), and its own
+ * `value.corrected` entries.
+ */
+export async function correctionsOf(tx: Tx, v: { studyId: string; version: number }): Promise<Correction[]> {
+  const rows = await tx
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.studyId, v.studyId),
+        inArray(auditLog.action, ["value.corrected", CARRIED, "version.manual_created"]),
+        sql`${auditLog.detail}->>'version' = ${String(v.version)}`,
+      ),
+    )
+    .orderBy(auditLog.id);
+  const out: Correction[] = [];
+  for (const { action, by, detail: d } of rows) {
+    if (action === CARRIED) out.push(...(d.carried as Correction[]));
+    else if (action === "version.manual_created") {
+      if (typeof d.seededFromVersion === "number") out.push(...(await correctionsOf(tx, { studyId: v.studyId, version: d.seededFromVersion })));
+    } else out.push({ path: d.path as string, before: d.before, after: d.after, note: d.note as string, by, items: d.items as string[] | undefined });
+  }
+  return out;
+}
+
+/**
+ * Replay corrections onto a fresh AI read. A correction applies only where the new read still has the
+ * value it corrected (`before`) on the same items; anything else is the amendment's to decide.
+ */
+export function carryCorrections(rulebook: Rulebook, corrections: Correction[]) {
+  let rb = structuredClone(rulebook);
+  const carried: Correction[] = [];
+  const skipped: (Correction & { reason: SkipReason })[] = [];
+  const skip = (c: Correction, reason: SkipReason) => skipped.push({ ...c, reason });
+  for (const c of corrections) {
+    try {
+      const tokens = parsePointer(c.path);
+      const found = getAt(rb, tokens);
+      const now = found ?? null;
+      // ponytail: entries logged before `items` existed are guarded by the value check only
+      if (c.items && !isDeepStrictEqual(itemIds(rb, tokens), c.items)) skip(c, "item_moved");
+      else if (found === undefined && c.before !== null) skip(c, "path_missing");
+      else if (isDeepStrictEqual(now, c.after)) skip(c, "already_equal");
+      else if (!isDeepStrictEqual(now, c.before)) skip(c, "amendment_changed");
+      else {
+        const next = structuredClone(rb);
+        setAt(next, tokens, structuredClone(c.after));
+        markManual(next, tokens);
+        const ok = Rulebook.safeParse(next);
+        if (!ok.success) skip(c, "invalid");
+        else {
+          rb = ok.data;
+          carried.push(c);
+        }
+      }
+    } catch {
+      skip(c, "path_missing"); // the path no longer fits the new read's shape
+    }
+  }
+  return { rulebook: rb, carried, skipped };
+}
+
+/** The live version's governing grid, found in the new read by label and arm. */
+export function carryGrid(rulebook: Rulebook, live: Rulebook): string | null {
+  const chosen = live.budgetGrids.find((g) => g.id === live.governingGridId);
+  return chosen ? (rulebook.budgetGrids.find((g) => g.label === chosen.label && g.arm === chosen.arm)?.id ?? null) : null;
+}
+
+/** Copy the resolution of every live anomaly found again unchanged (same id, deep-equal detail). */
+export function carryResolutions(anomalies: ContractAnomaly[], live: { version: number; anomalies: ContractAnomaly[] }) {
+  const carried: { anomalyId: string; code: string; kind: Resolution["kind"] }[] = [];
+  const out = anomalies.map((a) => {
+    const old = live.anomalies.find((o) => o.id === a.id && isDeepStrictEqual(o.detail, a.detail))?.resolution;
+    if (!old || a.resolution) return a;
+    carried.push({ anomalyId: a.id, code: a.code, kind: old.kind });
+    return { ...a, resolution: { ...old, note: `Carried from v${live.version}: ${old.note.replace(/^Carried from v\d+: /, "")}` } };
+  });
+  return { anomalies: out, carried };
 }
