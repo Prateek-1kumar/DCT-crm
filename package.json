@@ -3,9 +3,18 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev:web": "pnpm --filter web dev",
+    "setup": "pnpm install && apps/api/scripts/db.sh start && pnpm --filter @dct/api db:migrate",
+    "db:start": "apps/api/scripts/db.sh start",
+    "db:stop": "apps/api/scripts/db.sh stop",
+    "dev": "apps/api/scripts/db.sh start && (pnpm dev:api & pnpm dev:web; wait)",
+    "dev:fake": "apps/api/scripts/db.sh start && (EXTRACTION_FAKE=1 pnpm dev:api & pnpm dev:web; wait)",
     "dev:api": "pnpm --filter @dct/api dev",
-    "e2e": "playwright test"
+    "dev:web": "pnpm --filter web dev:api",
+    "dev:mock": "pnpm --filter web dev",
+    "test": "pnpm -r test",
+    "e2e": "playwright test",
+    "eval": "pnpm --filter @dct/extraction eval",
+    "probe": "pnpm --filter @dct/extraction probe"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1"
