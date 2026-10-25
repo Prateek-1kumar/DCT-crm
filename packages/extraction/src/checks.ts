@@ -265,7 +265,7 @@ const words = (s: string) =>
     .split(/[^a-z0-9]+/)
     .map((w) => w.replace(/s$/, ""))
     .filter((w) => w.length > 1 && !STOP.has(w));
-const sharesWord = (a: string, b: string) => {
+export const sharesWord = (a: string, b: string) => {
   const wb = new Set(words(b));
   return words(a).some((w) => w.length > 2 && wb.has(w));
 };
