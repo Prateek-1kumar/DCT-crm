@@ -3,7 +3,7 @@ import { compareRulebooks, type ExtractionNote, type PageInfo, provAt } from "./
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient } from "./llm";
 import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTerms as AiTermsSchema, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
-import { dpiToFit, pageCount, renderPng, renderTiles, type Rotation } from "./render";
+import { dpiToFit, pageCount, RENDER_LIMITS, renderPng, renderTiles, type Rotation } from "./render";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
@@ -32,7 +32,14 @@ export const CONFIG = {
   gridDpi: Number(process.env.EXTRACTION_GRID_DPI) || 400,
   tileMaxPx: 2400,
   concurrency: 3,
+  /** Cost/resource caps: exceeding one fails the extraction with a clear error instead of running up AI cost. */
+  maxPagesPerDoc: 100,
+  maxTilesPerExtraction: 60,
+  /** DPI clamp, pixel budget and tiles-per-page (shared with renderPage). */
+  render: RENDER_LIMITS,
 };
+
+export class ExtractionLimitError extends Error {}
 
 const fake = () => process.env.EXTRACTION_FAKE === "1";
 
@@ -104,6 +111,7 @@ export async function extractWith(
   const pages: ClassifiedPage[] = (
     await pool(documents, CONFIG.concurrency, async (doc) => {
       const n = await pageCount(doc.path);
+      if (n > CONFIG.maxPagesPerDoc) throw new ExtractionLimitError(`${doc.filename} has ${n} pages; the limit is ${CONFIG.maxPagesPerDoc} per document`);
       const images = [];
       for (let p = 1; p <= n; p++) images.push(await pageImage(doc, p, CONFIG.classifyMaxPx));
       const res = await clients.primary.call({ name: "classify", system: SYSTEM, prompt: classifyPrompt(doc.id, doc.filename, n), images, schema: AiPages, effort: "low" });
@@ -130,19 +138,22 @@ export async function extractWith(
     if (continues) groups.at(-1)!.push(p);
     else groups.push([p]);
   }
-  const gridImages = await Promise.all(
-    groups.map(async (g) => {
-      const imgs: Image[] = [];
-      for (const p of g) {
-        const doc = docOf.get(p.documentId)!;
-        const tiles = await renderTiles(doc.path, p.page, { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true });
-        if (tiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, p.rotation)), label: label(doc.id, p.page, "overview") });
-        for (const t of tiles)
-          imgs.push({ label: label(doc.id, p.page, tiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png });
-      }
-      return imgs;
-    }),
-  );
+  // Rendered one group at a time so the tile cap trips before memory or AI cost run away.
+  const gridImages: Image[][] = [];
+  let tileCount = 0;
+  for (const g of groups) {
+    const imgs: Image[] = [];
+    for (const p of g) {
+      const doc = docOf.get(p.documentId)!;
+      const tiles = await renderTiles(doc.path, p.page, { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true });
+      tileCount += tiles.length;
+      if (tileCount > CONFIG.maxTilesPerExtraction)
+        throw new ExtractionLimitError(`Budget grids need more than ${CONFIG.maxTilesPerExtraction} image tiles (limit per extraction); split the upload or raise CONFIG.maxTilesPerExtraction`);
+      if (tiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, p.rotation)), label: label(doc.id, p.page, "overview") });
+      for (const t of tiles) imgs.push({ label: label(doc.id, p.page, tiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png });
+    }
+    gridImages.push(imgs);
+  }
   progress(25, `Reading ${termPages.length} term pages and ${groups.length} budget grid(s)`);
 
   // 3. Independent reads.

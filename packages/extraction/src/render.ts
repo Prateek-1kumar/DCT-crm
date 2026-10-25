@@ -14,6 +14,16 @@ export type RenderOptions = {
   gray?: boolean;
 };
 
+/** Resource limits: a page number, DPI or page size from a request must never allocate unbounded memory. */
+export const RENDER_LIMITS = {
+  /** Requested DPI above this is clamped. */
+  maxDpi: 600,
+  /** Max pixels (width × height) of one rendered image; full pages are downscaled to fit, oversize tiles are rejected. */
+  maxPixels: 40_000_000,
+  /** Max tiles for one page; renderTiles lowers the DPI until the page fits. */
+  maxTilesPerPage: 12,
+};
+
 export type Tile = { png: Buffer; row: number; col: number; rows: number; cols: number; box: [number, number, number, number] };
 
 // ponytail: one open document per path, never evicted. Fine for a worker that handles a few PDFs; add an LRU if it serves many.
@@ -31,6 +41,17 @@ function openDoc(pdfPath: string): Promise<mupdf.Document> {
 
 export async function pageCount(pdfPath: string): Promise<number> {
   return (await openDoc(pdfPath)).countPages();
+}
+
+function loadPage(doc: mupdf.Document, page: number): mupdf.Page {
+  const n = doc.countPages();
+  if (!Number.isInteger(page) || page < 1 || page > n) throw new RangeError(`page ${page} out of range (1-${n})`);
+  return doc.loadPage(page - 1);
+}
+
+function safeDpi(dpi: number): number {
+  if (!Number.isFinite(dpi) || dpi <= 0) throw new RangeError(`invalid dpi ${dpi}`);
+  return Math.min(dpi, RENDER_LIMITS.maxDpi);
 }
 
 function transform(page: mupdf.Page, dpi: number, rotate: Rotation) {
@@ -52,22 +73,33 @@ function transform(page: mupdf.Page, dpi: number, rotate: Rotation) {
 
 /** Output size in pixels of a page at a DPI and rotation. */
 export async function pageSize(pdfPath: string, page: number, dpi = 150, rotate: Rotation = 0) {
-  const p = (await openDoc(pdfPath)).loadPage(page - 1);
+  const p = loadPage(await openDoc(pdfPath), page);
   try {
-    const { width, height } = transform(p, dpi, rotate);
+    const { width, height } = transform(p, safeDpi(dpi), rotate);
     return { width, height };
   } finally {
     p.destroy();
   }
 }
 
-/** Render one page (1-based) to PNG. */
+/**
+ * Render one page (1-based) to PNG. DPI is clamped to RENDER_LIMITS.maxDpi; a full page larger than
+ * RENDER_LIMITS.maxPixels is downscaled to fit; a clip larger than that is rejected.
+ */
 export async function renderPng(pdfPath: string, page: number, opts: RenderOptions = {}): Promise<Buffer> {
-  const doc = await openDoc(pdfPath);
-  if (page < 1 || page > doc.countPages()) throw new RangeError(`page ${page} out of range (1-${doc.countPages()})`);
-  const p = doc.loadPage(page - 1);
-  const { m, width, height } = transform(p, opts.dpi ?? 150, opts.rotate ?? 0);
+  const p = loadPage(await openDoc(pdfPath), page);
+  let dpi = safeDpi(opts.dpi ?? 150);
+  let t = transform(p, dpi, opts.rotate ?? 0);
+  if (!opts.clip && t.width * t.height > RENDER_LIMITS.maxPixels) {
+    dpi = Math.floor(dpi * 0.995 * Math.sqrt(RENDER_LIMITS.maxPixels / (t.width * t.height)) * 1000) / 1000; // margin for pixel rounding
+    t = transform(p, dpi, opts.rotate ?? 0);
+  }
+  const { m, width, height } = t;
   const box = opts.clip ?? [0, 0, width, height];
+  if ((box[2] - box[0]) * (box[3] - box[1]) > RENDER_LIMITS.maxPixels) {
+    p.destroy();
+    throw new RangeError(`render area ${box[2] - box[0]}x${box[3] - box[1]} exceeds ${RENDER_LIMITS.maxPixels} pixels`);
+  }
   const cs = opts.gray ? mupdf.ColorSpace.DeviceGray : mupdf.ColorSpace.DeviceRGB;
   const pix = new mupdf.Pixmap(cs, box, false);
   try {
@@ -95,19 +127,28 @@ export async function renderTiles(
   const rotate = opts.rotate ?? 0;
   const maxPx = opts.maxPx ?? 2400;
   const overlap = opts.overlap ?? 0.08;
-  const { width, height } = await pageSize(pdfPath, page, opts.dpi, rotate);
   // Fixed-size tiles (<= maxPx) stepped so neighbours overlap by at least `overlap` of a tile.
-  const tw = Math.min(width, maxPx);
-  const th = Math.min(height, maxPx);
-  const cols = width <= tw ? 1 : Math.ceil((width - tw) / (tw * (1 - overlap))) + 1;
-  const rows = height <= th ? 1 : Math.ceil((height - th) / (th * (1 - overlap))) + 1;
+  // Too many tiles (huge page or DPI) → lower the DPI until the page fits the per-page tile budget.
+  let dpi = safeDpi(opts.dpi);
+  let layout;
+  for (;;) {
+    const { width, height } = await pageSize(pdfPath, page, dpi, rotate);
+    const tw = Math.min(width, maxPx);
+    const th = Math.min(height, maxPx);
+    const cols = width <= tw ? 1 : Math.ceil((width - tw) / (tw * (1 - overlap))) + 1;
+    const rows = height <= th ? 1 : Math.ceil((height - th) / (th * (1 - overlap))) + 1;
+    layout = { width, height, tw, th, cols, rows };
+    if (rows * cols <= RENDER_LIMITS.maxTilesPerPage || dpi < 10) break;
+    dpi *= 0.85;
+  }
+  const { width, height, tw, th, cols, rows } = layout;
   const tiles: Tile[] = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x0 = cols === 1 ? 0 : Math.round(((width - tw) * c) / (cols - 1));
       const y0 = rows === 1 ? 0 : Math.round(((height - th) * r) / (rows - 1));
       const box: [number, number, number, number] = [x0, y0, x0 + tw, y0 + th];
-      const png = await renderPng(pdfPath, page, { dpi: opts.dpi, rotate, clip: box, gray: opts.gray });
+      const png = await renderPng(pdfPath, page, { dpi, rotate, clip: box, gray: opts.gray });
       tiles.push({ png, row: r, col: c, rows, cols, box });
     }
   }
