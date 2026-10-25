@@ -73,7 +73,7 @@ export const ENUM_OPTIONS: Record<string, Record<string, string>> = {
 export type ValueKind = "money" | "cell" | "int" | "number" | "text" | "date" | "list" | "bool" | "enum";
 
 /** Field name a pointer ends at; "/payment/netDays/value" → "netDays", "/deadlines/0/value" → "value". */
-function lastKey(path: string): string {
+export function fieldKey(path: string): string {
   const segs = segments(path);
   const last = segs[segs.length - 1] ?? "";
   const prev = segs[segs.length - 2];
@@ -81,12 +81,12 @@ function lastKey(path: string): string {
 }
 
 export function isMoneyPath(path: string): boolean {
-  return /cents$/i.test(lastKey(path));
+  return /cents$/i.test(fieldKey(path));
 }
 
 /** Pick an editor from the pointer and current value. */
 export function inferKind(path: string, value: unknown): ValueKind {
-  const key = lastKey(path);
+  const key = fieldKey(path);
   if (segments(path).includes("cells")) return "cell";
   if (isMoneyPath(path)) return "money";
   if (ENUM_OPTIONS[key] && (typeof value === "string" || value === null)) return "enum";
@@ -103,7 +103,7 @@ export function formatValue(path: string, value: unknown): string {
   if (value === undefined) return "—";
   if (value === null) return "Not stated";
   if (value === "invoiceable") return "Invoiceable";
-  const key = lastKey(path);
+  const key = fieldKey(path);
   if (typeof value === "number") {
     if (isMoneyPath(path) || segments(path).includes("cells")) return formatCents(value);
     if (/pct$/i.test(key)) return `${value}%`;

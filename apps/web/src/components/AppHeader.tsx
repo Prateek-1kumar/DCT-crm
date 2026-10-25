@@ -56,8 +56,8 @@ function ActingAsPicker() {
   const people = data?.people ?? [];
   // Forget a name that was removed from the people list.
   useEffect(() => {
-    if (data && me && !people.includes(me)) setActingAs(null);
-  }, [data, me, people]);
+    if (data && me && !data.people.includes(me)) setActingAs(null);
+  }, [data, me]);
   return (
     <label className="flex items-center gap-2 text-sm">
       <span className="text-muted">Acting as</span>
