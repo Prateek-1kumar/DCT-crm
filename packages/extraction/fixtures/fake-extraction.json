@@ -1,0 +1,961 @@
+{
+  "_comment": "SYNTHETIC fixture for EXTRACTION_FAKE=1. Not a real contract.",
+  "rulebook": {
+    "schemaVersion": 1,
+    "study": {
+      "sponsor": {
+        "value": "Northwind Therapeutics, Inc.",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "payingAgent": {
+        "value": "Example CRO Payments",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "protocol": {
+        "value": "NWT-204",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "siteName": {
+        "value": "Example Research Site, LLC",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "investigator": {
+        "value": "Alex Rivera, MD",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "effectiveDate": {
+        "value": "2025-03-01",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "currency": "USD"
+    },
+    "documents": [
+      {
+        "id": "doc-1",
+        "kind": "work_order",
+        "title": "Work Order No. 1 (synthetic)",
+        "date": "2025-03-01"
+      },
+      {
+        "id": "doc-2",
+        "kind": "budget",
+        "title": "Site Budget (synthetic)",
+        "date": "2025-03-01"
+      }
+    ],
+    "referencedDocuments": [
+      {
+        "description": "Master Clinical Trial Agreement",
+        "date": "2024-01-15",
+        "present": false,
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 1,
+            "quote": "under the Master Clinical Trial Agreement dated January 15, 2024"
+          },
+          "confidence": 0.93,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    ],
+    "overhead": {
+      "pct": {
+        "value": 30,
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "appliesTo": {
+        "value": "procedures_and_staff",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    },
+    "payment": {
+      "visitPayment": {
+        "value": "auto_edc",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "frequency": {
+        "value": "quarterly",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2,
+            "quote": "Payments will be made quarterly"
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "netDays": {
+        "value": 45,
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2,
+            "quote": "within forty-five (45) days of receipt of an itemized invoice"
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "netDaysFrom": {
+        "value": "receipt of itemized invoice",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "invoiceAddress": {
+        "value": "invoices@example.com",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "requiredReferences": {
+        "value": [
+          "protocol number",
+          "site number",
+          "PI name"
+        ],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      "paymentConditions": {
+        "value": [
+          "eCRFs complete",
+          "all queries resolved"
+        ],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    },
+    "budgetGrids": [
+      {
+        "id": "g1",
+        "label": "Budget Summary (synthetic)",
+        "arm": null,
+        "statedOverheadPct": 35,
+        "visits": [
+          {
+            "code": "V1",
+            "name": "Screening",
+            "order": 1,
+            "procedureSubtotalCents": 60000,
+            "overheadCents": 21000,
+            "nonProcedureCents": 10000,
+            "totalCents": 91000,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "V2",
+            "name": "Baseline",
+            "order": 2,
+            "procedureSubtotalCents": 45000,
+            "overheadCents": 16500,
+            "nonProcedureCents": 10000,
+            "totalCents": 71500,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "V3",
+            "name": "Week 4",
+            "order": 3,
+            "procedureSubtotalCents": 30000,
+            "overheadCents": 12000,
+            "nonProcedureCents": 10000,
+            "totalCents": 52000,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "V4",
+            "name": "End of Study",
+            "order": 4,
+            "procedureSubtotalCents": 40000,
+            "overheadCents": 15000,
+            "nonProcedureCents": 10000,
+            "totalCents": 65000,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          }
+        ],
+        "procedures": [],
+        "perPatientTotals": [
+          {
+            "label": "Per patient",
+            "cents": 279500,
+            "prov": {
+              "source": {
+                "documentId": "doc-2",
+                "page": 1
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          }
+        ],
+        "header": {
+          "investigator": "Alex Rivera, MD",
+          "siteName": "Example Research Site"
+        },
+        "prov": {
+          "source": {
+            "documentId": "doc-2",
+            "page": 1
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "id": "g2",
+        "label": "Detailed Budget (synthetic)",
+        "arm": null,
+        "statedOverheadPct": 35,
+        "visits": [
+          {
+            "code": "V1",
+            "name": "Screening",
+            "order": 1,
+            "procedureSubtotalCents": 60000,
+            "overheadCents": 24500,
+            "nonProcedureCents": 10000,
+            "totalCents": 94500,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "V2",
+            "name": "Baseline",
+            "order": 2,
+            "procedureSubtotalCents": 45000,
+            "overheadCents": 19250,
+            "nonProcedureCents": 10000,
+            "totalCents": 74250,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "V3",
+            "name": "Week 4",
+            "order": 3,
+            "procedureSubtotalCents": 30000,
+            "overheadCents": 14000,
+            "nonProcedureCents": 10000,
+            "totalCents": 54000,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "V4",
+            "name": "End of Study",
+            "order": 4,
+            "procedureSubtotalCents": 40000,
+            "overheadCents": 17500,
+            "nonProcedureCents": 10000,
+            "totalCents": 67500,
+            "autopay": true,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          }
+        ],
+        "procedures": [
+          {
+            "code": "99205",
+            "name": "Physical exam",
+            "unitCents": 30000,
+            "overheadApplied": true,
+            "category": "procedure",
+            "cells": {
+              "V1": 30000,
+              "V2": 30000,
+              "V4": 30000
+            },
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "36415",
+            "name": "Blood draw",
+            "unitCents": 5000,
+            "overheadApplied": true,
+            "category": "procedure",
+            "cells": {
+              "V1": 5000,
+              "V2": 5000,
+              "V3": 5000,
+              "V4": 5000
+            },
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "93000",
+            "name": "ECG",
+            "unitCents": 10000,
+            "overheadApplied": true,
+            "category": "procedure",
+            "cells": {
+              "V1": 10000,
+              "V2": 10000,
+              "V3": 10000
+            },
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "LAB01",
+            "name": "Central lab kit shipping",
+            "unitCents": 15000,
+            "overheadApplied": true,
+            "category": "procedure",
+            "cells": {
+              "V1": 15000,
+              "V3": 15000,
+              "V4": 5000
+            },
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "VA",
+            "name": "Visual acuity",
+            "unitCents": 5500,
+            "overheadApplied": true,
+            "category": "procedure",
+            "cells": {
+              "V2": "invoiceable"
+            },
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          },
+          {
+            "code": "NP008",
+            "name": "Patient stipend",
+            "unitCents": 10000,
+            "overheadApplied": true,
+            "category": "non_procedure",
+            "cells": {
+              "V1": 10000,
+              "V2": 10000,
+              "V3": 10000,
+              "V4": 10000
+            },
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          }
+        ],
+        "perPatientTotals": [
+          {
+            "label": "Per patient",
+            "cents": 290250,
+            "prov": {
+              "source": {
+                "documentId": "doc-1",
+                "page": 5
+              },
+              "confidence": 0.95,
+              "method": "ai",
+              "crossCheck": "not_checked"
+            }
+          }
+        ],
+        "header": {
+          "investigator": "Alex Rivera, MD",
+          "siteName": "Example Research Site"
+        },
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 5
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    ],
+    "governingGridId": null,
+    "invoiceables": [
+      {
+        "code": "UNS",
+        "name": "Unscheduled visit",
+        "amountCents": 40000,
+        "amountWithOverheadCents": 54000,
+        "basis": "fixed",
+        "frequency": "per occurrence",
+        "cap": {
+          "kind": "none",
+          "n": null,
+          "ratio": null
+        },
+        "requiresPreApproval": true,
+        "requiredDocs": [
+          "detailed invoice"
+        ],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 3
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": "SAE",
+        "name": "SAE report",
+        "amountCents": 25000,
+        "amountWithOverheadCents": null,
+        "basis": "fixed",
+        "frequency": "per SAE",
+        "cap": {
+          "kind": "none",
+          "n": null,
+          "ratio": null
+        },
+        "requiresPreApproval": false,
+        "requiredDocs": [],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 3
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": "LAB01",
+        "name": "Central lab kit shipping",
+        "amountCents": 15000,
+        "amountWithOverheadCents": null,
+        "basis": "fixed",
+        "frequency": "per shipment",
+        "cap": {
+          "kind": "none",
+          "n": null,
+          "ratio": null
+        },
+        "requiresPreApproval": false,
+        "requiredDocs": [
+          "courier receipt"
+        ],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 3
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": "VA",
+        "name": "Visual acuity",
+        "amountCents": 5500,
+        "amountWithOverheadCents": null,
+        "basis": "fixed",
+        "frequency": "per occurrence",
+        "cap": {
+          "kind": "none",
+          "n": null,
+          "ratio": null
+        },
+        "requiresPreApproval": false,
+        "requiredDocs": [],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 3
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": null,
+        "name": "Hotel",
+        "amountCents": null,
+        "amountWithOverheadCents": null,
+        "basis": "fixed",
+        "frequency": "per night",
+        "cap": {
+          "kind": "none",
+          "n": null,
+          "ratio": null
+        },
+        "requiresPreApproval": true,
+        "requiredDocs": [
+          "receipt"
+        ],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 3
+          },
+          "confidence": 0.7,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": null,
+        "name": "Mileage",
+        "amountCents": 60,
+        "amountWithOverheadCents": null,
+        "basis": "per_mile",
+        "frequency": "per mile",
+        "cap": {
+          "kind": "none",
+          "n": null,
+          "ratio": null
+        },
+        "requiresPreApproval": true,
+        "requiredDocs": [],
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 3
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    ],
+    "screenFail": {
+      "amountCents": 94500,
+      "basis": "fixed",
+      "cap": {
+        "kind": "ratio_to_randomized",
+        "n": 8,
+        "ratio": 1
+      },
+      "paidVia": "invoice",
+      "requiredDocs": [
+        "eCRFs",
+        "screen-fail log"
+      ],
+      "prov": {
+        "source": {
+          "documentId": "doc-1",
+          "page": 3,
+          "quote": "one (1) screen failure per one (1) randomized subject, up to eight (8)"
+        },
+        "confidence": 0.95,
+        "method": "ai",
+        "crossCheck": "not_checked"
+      }
+    },
+    "siteFees": [
+      {
+        "code": "SU1",
+        "name": "Start-up fee",
+        "amountCents": 750000,
+        "trigger": "agreement_execution",
+        "dueDays": 45,
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 4
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": "AR1",
+        "name": "Archiving",
+        "amountCents": 150000,
+        "trigger": "closeout",
+        "dueDays": null,
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 4
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "code": "IRB",
+        "name": "IRB fees",
+        "amountCents": null,
+        "trigger": "actual_cost",
+        "dueDays": null,
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 4
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    ],
+    "holdback": {
+      "pct": 5,
+      "appliesTo": "per-patient visit payments",
+      "releaseConditions": [
+        "database lock",
+        "all queries resolved"
+      ],
+      "prov": {
+        "source": {
+          "documentId": "doc-1",
+          "page": 2
+        },
+        "confidence": 0.95,
+        "method": "ai",
+        "crossCheck": "not_checked"
+      }
+    },
+    "deadlines": [
+      {
+        "kind": "invoice_days_from_expense",
+        "value": 60,
+        "consequence": "sponsor may refuse payment",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2,
+            "quote": "within sixty (60) days of the expense"
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      },
+      {
+        "kind": "dispute_days_after_final_payment",
+        "value": 30,
+        "consequence": "payments deemed final",
+        "prov": {
+          "source": {
+            "documentId": "doc-1",
+            "page": 2
+          },
+          "confidence": 0.95,
+          "method": "ai",
+          "crossCheck": "not_checked"
+        }
+      }
+    ],
+    "overpayment": {
+      "refundDays": 30,
+      "sponsorMayOffset": true,
+      "prov": {
+        "source": {
+          "documentId": "doc-1",
+          "page": 2
+        },
+        "confidence": 0.95,
+        "method": "ai",
+        "crossCheck": "not_checked"
+      }
+    },
+    "rounding": {
+      "value": "printed_amounts",
+      "prov": {
+        "source": {
+          "documentId": "doc-1",
+          "page": 5
+        },
+        "confidence": 0.95,
+        "method": "ai",
+        "crossCheck": "not_checked"
+      }
+    },
+    "appliesFrom": {
+      "value": null,
+      "prov": {
+        "source": {
+          "documentId": "doc-1",
+          "page": 1
+        },
+        "confidence": 0.95,
+        "method": "ai",
+        "crossCheck": "not_checked"
+      }
+    }
+  },
+  "pages": [
+    {
+      "documentId": "doc-1",
+      "page": 1,
+      "kind": "terms",
+      "readable": true
+    },
+    {
+      "documentId": "doc-1",
+      "page": 2,
+      "kind": "terms",
+      "readable": true
+    },
+    {
+      "documentId": "doc-1",
+      "page": 3,
+      "kind": "invoiceables",
+      "readable": true
+    },
+    {
+      "documentId": "doc-1",
+      "page": 4,
+      "kind": "invoiceables",
+      "readable": true
+    },
+    {
+      "documentId": "doc-1",
+      "page": 5,
+      "kind": "budget_grid",
+      "readable": true
+    },
+    {
+      "documentId": "doc-1",
+      "page": 6,
+      "kind": "signatures",
+      "readable": true
+    },
+    {
+      "documentId": "doc-2",
+      "page": 1,
+      "kind": "budget_grid",
+      "readable": true
+    },
+    {
+      "documentId": "doc-2",
+      "page": 2,
+      "kind": "boilerplate",
+      "readable": false
+    }
+  ],
+  "notes": [
+    {
+      "kind": "ambiguous",
+      "topic": "Unclear whether overhead applies to the patient stipend",
+      "path": "/overhead/appliesTo",
+      "source": {
+        "documentId": "doc-1",
+        "page": 2
+      }
+    }
+  ]
+}
