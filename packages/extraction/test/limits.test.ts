@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as mupdf from "mupdf";
 import { afterEach, describe, expect, it } from "vitest";
-import { CONFIG, ExtractionLimitError, extractWith } from "../src/extract";
+import { CONFIG, ExtractionLimitError, extractWith, identifyWith } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { LlmClient } from "../src/llm";
-import { RENDER_LIMITS, renderPng, renderTiles } from "../src/render";
+import { RENDER_LIMITS, renderPng, renderTiles, tileLayout } from "../src/render";
 
 function pdfWith(pages: number, size: [number, number] = [612, 792]): string {
   const doc = new mupdf.PDFDocument();
@@ -19,11 +19,13 @@ function pdfWith(pages: number, size: [number, number] = [612, 792]): string {
 /** PNG width/height from the IHDR chunk. */
 const dims = (png: Buffer) => [png.readUInt32BE(16), png.readUInt32BE(20)];
 
-const saved = { ...RENDER_LIMITS, maxPagesPerDoc: CONFIG.maxPagesPerDoc, maxTilesPerExtraction: CONFIG.maxTilesPerExtraction };
+const saved = { ...RENDER_LIMITS, maxPagesPerDoc: CONFIG.maxPagesPerDoc, maxPagesTotal: CONFIG.maxPagesTotal, maxTilesPerExtraction: CONFIG.maxTilesPerExtraction, maxImagesPerExtraction: CONFIG.maxImagesPerExtraction };
 afterEach(() => {
   Object.assign(RENDER_LIMITS, { maxDpi: saved.maxDpi, maxPixels: saved.maxPixels, maxTilesPerPage: saved.maxTilesPerPage });
   CONFIG.maxPagesPerDoc = saved.maxPagesPerDoc;
   CONFIG.maxTilesPerExtraction = saved.maxTilesPerExtraction;
+  CONFIG.maxPagesTotal = saved.maxPagesTotal;
+  CONFIG.maxImagesPerExtraction = saved.maxImagesPerExtraction;
 });
 
 describe("render limits", () => {
@@ -81,6 +83,37 @@ describe("extraction limits", () => {
 
   it("fails before any grid AI call when tiles exceed the per-extraction cap", async () => {
     CONFIG.maxTilesPerExtraction = 5;
-    await expect(extractWith({ documents: [{ id: "d", filename: "g.pdf", path: pdfWith(3), kind: null }] }, { primary: llm, cross: null })).rejects.toThrow(/more than 5 image tiles/);
+    await expect(extractWith({ documents: [{ id: "d", filename: "g.pdf", path: pdfWith(3), kind: null }] }, { primary: llm, cross: null })).rejects.toThrow(/more than 5 grid image tiles/);
+  });
+
+  it("enforces a total page cap across documents before any render or AI call", async () => {
+    CONFIG.maxPagesTotal = 4;
+    const calls: string[] = [];
+    const spy = { ...llm, call: async (r: { name: string }) => (calls.push(r.name), llm.call(r as never)) } as LlmClient;
+    const documents = [1, 2].map((i) => ({ id: `d${i}`, filename: `${i}.pdf`, path: pdfWith(3), kind: null }));
+    await expect(extractWith({ documents }, { primary: spy, cross: null })).rejects.toThrow(/6 pages in total; the limit is 4/);
+    await expect(identifyWith(documents, spy)).rejects.toThrow(ExtractionLimitError);
+    expect(calls).toEqual([]);
+  });
+
+  it("counts classification, overview and tile images toward the image cap", async () => {
+    CONFIG.maxImagesPerExtraction = 3; // 3 classify images fit; the grid images don't
+    await expect(extractWith({ documents: [{ id: "d", filename: "g.pdf", path: pdfWith(3), kind: null }] }, { primary: llm, cross: null })).rejects.toThrow(/more than 3 page images/);
+    CONFIG.maxImagesPerExtraction = 2; // classification alone is over
+    await expect(extractWith({ documents: [{ id: "d", filename: "g.pdf", path: pdfWith(3), kind: null }] }, { primary: llm, cross: null })).rejects.toThrow(/more than 2 page images/);
+  });
+});
+
+describe("tile budget", () => {
+  const pdf = pdfWith(1);
+  it("throws when a page cannot fit maxTilesPerPage at any DPI", async () => {
+    RENDER_LIMITS.maxTilesPerPage = 0;
+    await expect(tileLayout(pdf, 1, { dpi: 400, maxPx: 1000 })).rejects.toThrow(/limit is 0/);
+  });
+  it("renderTiles checks the caller's remaining budget against the layout before rendering", async () => {
+    const layout = await tileLayout(pdf, 1, { dpi: 400, maxPx: 1000 });
+    expect(layout.count).toBeGreaterThan(1);
+    await expect(renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count - 1 })).rejects.toThrow(/left in the budget/);
+    expect(await renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count })).toHaveLength(layout.count);
   });
 });

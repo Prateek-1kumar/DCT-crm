@@ -3,7 +3,7 @@ import { compareRulebooks, type ExtractionNote, type PageInfo, provAt } from "./
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient } from "./llm";
 import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTerms as AiTermsSchema, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
-import { dpiToFit, pageCount, RENDER_LIMITS, renderPng, renderTiles, type Rotation } from "./render";
+import { dpiToFit, pageCount, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
@@ -38,12 +38,38 @@ export const CONFIG = {
   concurrency: 3,
   /** Cost/resource caps: exceeding one fails the extraction with a clear error instead of running up AI cost. */
   maxPagesPerDoc: 100,
+  /** Across all documents of one study; checked before any rendering or AI call. */
+  maxPagesTotal: 200,
   maxTilesPerExtraction: 60,
+  /** Every image sent to a model in one extraction (classification + terms + grid overviews + tiles), or in one identify call. */
+  maxImagesPerExtraction: 300,
   /** DPI clamp, pixel budget and tiles-per-page (shared with renderPage). */
   render: RENDER_LIMITS,
 };
 
 export class ExtractionLimitError extends Error {}
+
+/** Counts usage against a cap and throws *before* the work that would exceed it. */
+function budget(cap: number, what: string) {
+  let used = 0;
+  return {
+    take(n: number) {
+      if (used + n > cap) throw new ExtractionLimitError(`This extraction needs more than ${cap} ${what} (limit); split the upload or raise the limit in CONFIG`);
+      used += n;
+    },
+  };
+}
+
+/** Page counts per document, enforcing the per-document and total page caps. Opens files only; renders nothing. */
+async function countPages(documents: InputDoc[]): Promise<number[]> {
+  const counts = await Promise.all(documents.map((d) => pageCount(d.path)));
+  documents.forEach((d, i) => {
+    if (counts[i]! > CONFIG.maxPagesPerDoc) throw new ExtractionLimitError(`${d.filename} has ${counts[i]} pages; the limit is ${CONFIG.maxPagesPerDoc} per document`);
+  });
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total > CONFIG.maxPagesTotal) throw new ExtractionLimitError(`The study's documents have ${total} pages in total; the limit is ${CONFIG.maxPagesTotal}`);
+  return counts;
+}
 
 const fake = () => process.env.EXTRACTION_FAKE === "1";
 
@@ -82,11 +108,10 @@ export async function identifyDocuments(docs: InputDoc[]) {
 }
 
 export async function identifyWith(docs: InputDoc[], llm: LlmClient) {
+  const counts = (await countPages(docs)).map((n) => Math.min(3, n));
+  budget(CONFIG.maxImagesPerExtraction, "page images").take(counts.reduce((a, b) => a + b, 0));
   const images: Image[] = [];
-  for (const d of docs) {
-    const n = Math.min(3, await pageCount(d.path));
-    for (let p = 1; p <= n; p++) images.push(await pageImage(d, p, CONFIG.identifyMaxPx));
-  }
+  for (const [i, d] of docs.entries()) for (let p = 1; p <= counts[i]!; p++) images.push(await pageImage(d, p, CONFIG.identifyMaxPx));
   const res = await llm.call({ name: "identify", system: SYSTEM, prompt: identifyPrompt(docs), images, schema: AiIdentify, effort: "low" });
   const documentKinds: Record<string, DocumentKind> = {};
   for (const d of docs) documentKinds[d.id] = d.kind ?? res.documents.find((x) => x.id === d.id)?.kind ?? "other";
@@ -110,12 +135,17 @@ export async function extractWith(
   const warnings: string[] = [];
   if (!documents.length) throw new Error("extractStudy: no documents");
 
+  // 0. Caps first: nothing is rendered or sent until the page counts are within limits.
+  const counts = await countPages(documents);
+  const images = budget(CONFIG.maxImagesPerExtraction, "page images");
+  const tiles = budget(CONFIG.maxTilesPerExtraction, "grid image tiles");
+  images.take(counts.reduce((a, b) => a + b, 0));
+
   // 1. Classify every page (low-res, upright or not).
   progress(2, "Rendering pages");
   const pages: ClassifiedPage[] = (
     await pool(documents, CONFIG.concurrency, async (doc) => {
-      const n = await pageCount(doc.path);
-      if (n > CONFIG.maxPagesPerDoc) throw new ExtractionLimitError(`${doc.filename} has ${n} pages; the limit is ${CONFIG.maxPagesPerDoc} per document`);
+      const n = counts[documents.indexOf(doc)]!;
       const images = [];
       for (let p = 1; p <= n; p++) images.push(await pageImage(doc, p, CONFIG.classifyMaxPx));
       const res = await clients.primary.call({ name: "classify", system: SYSTEM, prompt: classifyPrompt(doc.id, doc.filename, n), images, schema: AiPages, effort: "low" });
@@ -133,6 +163,7 @@ export async function extractWith(
   const readable = pages.filter((p) => p.readable);
   let termPages = readable.filter((p) => p.kind === "terms" || p.kind === "invoiceables");
   if (!termPages.length) termPages = readable.filter((p) => p.kind !== "budget_grid");
+  images.take(termPages.length);
   const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.pageMaxPx, p.rotation)));
 
   const groups: ClassifiedPage[][] = [];
@@ -142,19 +173,19 @@ export async function extractWith(
     if (continues) groups.at(-1)!.push(p);
     else groups.push([p]);
   }
-  // Rendered one group at a time so the tile cap trips before memory or AI cost run away.
+  // Tile layout is computed and charged to the budgets before any pixmap is allocated.
   const gridImages: Image[][] = [];
-  let tileCount = 0;
   for (const g of groups) {
     const imgs: Image[] = [];
     for (const p of g) {
       const doc = docOf.get(p.documentId)!;
-      const tiles = await renderTiles(doc.path, p.page, { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true });
-      tileCount += tiles.length;
-      if (tileCount > CONFIG.maxTilesPerExtraction)
-        throw new ExtractionLimitError(`Budget grids need more than ${CONFIG.maxTilesPerExtraction} image tiles (limit per extraction); split the upload or raise CONFIG.maxTilesPerExtraction`);
-      if (tiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, p.rotation)), label: label(doc.id, p.page, "overview") });
-      for (const t of tiles) imgs.push({ label: label(doc.id, p.page, tiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png });
+      const opts = { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true };
+      const layout = await tileLayout(doc.path, p.page, opts);
+      tiles.take(layout.count);
+      images.take(layout.count + (layout.count > 1 ? 1 : 0));
+      const pageTiles = await renderTiles(doc.path, p.page, { ...opts, maxTiles: layout.count });
+      if (pageTiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, p.rotation)), label: label(doc.id, p.page, "overview") });
+      for (const t of pageTiles) imgs.push({ label: label(doc.id, p.page, pageTiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png });
     }
     gridImages.push(imgs);
   }

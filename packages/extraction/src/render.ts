@@ -115,40 +115,48 @@ export async function renderPng(pdfPath: string, page: number, opts: RenderOptio
   }
 }
 
+export type TileOptions = { dpi: number; rotate?: Rotation; maxPx?: number; overlap?: number; gray?: boolean };
+export type TileLayout = { dpi: number; width: number; height: number; tw: number; th: number; cols: number; rows: number; count: number };
+
 /**
- * Render a page as overlapping tiles no larger than maxPx on either side, so a dense grid
- * can be read at high DPI without the model downscaling it.
+ * Tile grid for a page, without rendering anything. Fixed-size tiles (<= maxPx) step so neighbours
+ * overlap by `overlap` of a tile. Too many tiles (huge page or DPI) → DPI is lowered until the page fits
+ * RENDER_LIMITS.maxTilesPerPage; if it still can't (pathological page), RangeError.
  */
-export async function renderTiles(
-  pdfPath: string,
-  page: number,
-  opts: { dpi: number; rotate?: Rotation; maxPx?: number; overlap?: number; gray?: boolean },
-): Promise<Tile[]> {
+export async function tileLayout(pdfPath: string, page: number, opts: TileOptions): Promise<TileLayout> {
   const rotate = opts.rotate ?? 0;
   const maxPx = opts.maxPx ?? 2400;
   const overlap = opts.overlap ?? 0.08;
-  // Fixed-size tiles (<= maxPx) stepped so neighbours overlap by at least `overlap` of a tile.
-  // Too many tiles (huge page or DPI) → lower the DPI until the page fits the per-page tile budget.
   let dpi = safeDpi(opts.dpi);
-  let layout;
   for (;;) {
     const { width, height } = await pageSize(pdfPath, page, dpi, rotate);
     const tw = Math.min(width, maxPx);
     const th = Math.min(height, maxPx);
     const cols = width <= tw ? 1 : Math.ceil((width - tw) / (tw * (1 - overlap))) + 1;
     const rows = height <= th ? 1 : Math.ceil((height - th) / (th * (1 - overlap))) + 1;
-    layout = { width, height, tw, th, cols, rows };
-    if (rows * cols <= RENDER_LIMITS.maxTilesPerPage || dpi < 10) break;
+    if (rows * cols <= RENDER_LIMITS.maxTilesPerPage) return { dpi, width, height, tw, th, cols, rows, count: rows * cols };
+    if (dpi < 10) throw new RangeError(`page ${page} needs ${rows * cols} tiles even at ${dpi.toFixed(1)} DPI; limit is ${RENDER_LIMITS.maxTilesPerPage}`);
     dpi *= 0.85;
   }
-  const { width, height, tw, th, cols, rows } = layout;
+}
+
+/**
+ * Render a page as overlapping tiles no larger than maxPx on either side, so a dense grid can be read
+ * at high DPI without the model downscaling it. `maxTiles` (e.g. the caller's remaining budget) is
+ * checked against the layout before any pixmap is allocated.
+ */
+export async function renderTiles(pdfPath: string, page: number, opts: TileOptions & { maxTiles?: number }): Promise<Tile[]> {
+  const layout = await tileLayout(pdfPath, page, opts);
+  if (opts.maxTiles !== undefined && layout.count > opts.maxTiles)
+    throw new RangeError(`page ${page} needs ${layout.count} tiles; only ${opts.maxTiles} left in the budget`);
+  const { dpi, width, height, tw, th, cols, rows } = layout;
   const tiles: Tile[] = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x0 = cols === 1 ? 0 : Math.round(((width - tw) * c) / (cols - 1));
       const y0 = rows === 1 ? 0 : Math.round(((height - th) * r) / (rows - 1));
       const box: [number, number, number, number] = [x0, y0, x0 + tw, y0 + th];
-      const png = await renderPng(pdfPath, page, { dpi, rotate, clip: box, gray: opts.gray });
+      const png = await renderPng(pdfPath, page, { dpi, rotate: opts.rotate ?? 0, clip: box, gray: opts.gray });
       tiles.push({ png, row: r, col: c, rows, cols, box });
     }
   }
