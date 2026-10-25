@@ -27,6 +27,15 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
     reply.status(status).send({ statusCode: status, error: status >= 500 ? "Internal Server Error" : "Request Error", message: badInput ? "Malformed id" : err.message });
   });
 
+  // No login yet, so guard against DNS rebinding (foreign Host) and cross-site writes (foreign Origin).
+  app.addHook("onRequest", async (req, reply) => {
+    const host = req.headers.host?.toLowerCase();
+    if (!host || !config.allowedHosts.includes(host)) return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Host not allowed" });
+    const origin = req.headers.origin?.toLowerCase();
+    if (origin !== undefined && !["GET", "HEAD", "OPTIONS"].includes(req.method) && !config.allowedOrigins.includes(origin))
+      return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Origin not allowed" });
+  });
+
   await app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 50 } });
   await app.register(
     async (api) => {
