@@ -17,7 +17,7 @@ pnpm --filter @dct/api typecheck
 
 `db.sh stop` stops the container and `db.sh reset` deletes and recreates it. The script only touches `dct-postgres`.
 
-Env: `DATABASE_URL` (default `postgres://dct:dct@localhost:5434/dct_finance`), `UPLOAD_DIR` (default `<repo>/data/uploads`), `PORT` (4100), `EXTRACTION_FAKE=1`. Env vars that are already set win over `.env`.
+Env: `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (see the guard below), `DATABASE_URL` (default `postgres://dct:dct@localhost:5434/dct_finance`), `UPLOAD_DIR` (default `<repo>/data/uploads`), `PORT` (4100), `EXTRACTION_FAKE=1`. Env vars that are already set win over `.env`.
 
 ## Layout
 
@@ -70,6 +70,11 @@ Env: `DATABASE_URL` (default `postgres://dct:dct@localhost:5434/dct_finance`), `
 - **Page images** are cached at `<UPLOAD_DIR>/pages/<sha256>-<n>.png`.
 - `appliesFrom` on a version is `rulebook.appliesFrom.value`, falling back to `study.effectiveDate.value`.
 - A malformed uuid in a URL returns 400, not 500.
+- **Host/Origin guard** (no login yet). It is an `onRequest` hook in `src/app.ts`, so `fastify.inject` tests exercise it. The server still listens on 127.0.0.1.
+  - Any request whose `Host` is not in `ALLOWED_HOSTS` gets 403 (DNS rebinding). The default allows `localhost` and `127.0.0.1` on port 4100 and on port 3100, in case the Next proxy forwards the browser's Host.
+  - A POST, PATCH, PUT or DELETE whose `Origin` is present but not in `ALLOWED_ORIGINS` gets 403 (CSRF). The default allows `http://localhost:3100` and `http://127.0.0.1:3100`, and `Origin: null` is rejected.
+  - A request with no `Origin` passes (curl, server-to-server).
+  - Both lists are comma-separated env vars.
 - No CORS is set. The web app should proxy `/api` (for example with a Next rewrite to `127.0.0.1:4100`).
 
 ## Stubbed / TODO at merge
