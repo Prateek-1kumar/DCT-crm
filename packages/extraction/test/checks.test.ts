@@ -23,12 +23,39 @@ describe("runContractChecks", () => {
     expect(a[0]!.detail).toEqual({ expected: 84000, actual: 84100 });
   });
 
+  it("staff fees counted in the procedure subtotal are not a mismatch (Shah)", () => {
+    const rb = makeRulebook();
+    // contract prints 600 procedure / 0 non-procedure, but the model labels the stipend non_procedure
+    const v1 = rb.budgetGrids[0]!.visits[0]!;
+    v1.procedureSubtotalCents = 60000;
+    v1.nonProcedureCents = 0;
+    v1.overheadCents = 24000;
+    expect(codes(rb)).not.toContain("VISIT_TOTAL_MISMATCH");
+  });
+
+  it("per-patient row that totals a column (overhead, stipend…) is not a mismatch", () => {
+    const rb = makeRulebook();
+    const g = rb.budgetGrids[0]!;
+    const ohColumn = g.visits.reduce((n, v) => n + (v.overheadCents ?? 0), 0);
+    g.perPatientTotals.push({ label: "Overhead at 40%", cents: ohColumn, prov }, { label: "Patient stipend", cents: 20000, prov });
+    expect(codes(rb)).not.toContain("PER_PATIENT_TOTAL_MISMATCH");
+    g.perPatientTotals.push({ label: "Bogus", cents: 12345, prov });
+    expect(codes(rb)).toContain("PER_PATIENT_TOTAL_MISMATCH");
+  });
+
+  it("DUPLICATE_ITEM skips a procedure the grid itself marks invoiceable at some visits", () => {
+    const rb = makeRulebook();
+    rb.budgetGrids[0]!.procedures[2]!.cells.V1 = 5500; // visual acuity priced at V1, "invoiceable" at V2
+    rb.invoiceables.push({ code: "VA", name: "Visual acuity", amountCents: 5500, amountWithOverheadCents: null, basis: "fixed", frequency: "each", cap: { kind: "none", n: null, ratio: null }, requiresPreApproval: false, requiredDocs: [], prov });
+    expect(codes(rb)).not.toContain("DUPLICATE_ITEM");
+  });
+
   it("VISIT_TOTAL_MISMATCH: subtotal ≠ sum of grid cells", () => {
     const rb = makeRulebook();
     rb.budgetGrids[0]!.procedures[1]!.cells.V1 = 25000;
     const a = runContractChecks(rb).find((x) => x.code === "VISIT_TOTAL_MISMATCH")!;
     expect(a.path).toBe("/budgetGrids/0/visits/0/procedureSubtotalCents");
-    expect(a.detail).toEqual({ expected: 55000, actual: 50000 });
+    expect(a.detail).toEqual({ expected: 65000, actual: 60000 }); // procedure + non-procedure, compared as one sum
   });
 
   it("PER_PATIENT_TOTAL_MISMATCH, but allows totals that skip a block of visits", () => {

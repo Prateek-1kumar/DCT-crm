@@ -161,8 +161,10 @@ export async function extractWith(
   // 2. Render what each read needs, once, shared by both providers.
   const docOf = new Map(documents.map((d) => [d.id, d]));
   const readable = pages.filter((p) => p.readable);
-  let termPages = readable.filter((p) => p.kind === "terms" || p.kind === "invoiceables");
-  if (!termPages.length) termPages = readable.filter((p) => p.kind !== "budget_grid");
+  // Grid pages go to the terms reader too: a page often holds a budget table AND contract clauses
+  // (Shah p.3: budget summary + overhead, holdback, net-45 and overpayment clauses).
+  let termPages = readable.filter((p) => p.kind === "terms" || p.kind === "invoiceables" || p.kind === "budget_grid");
+  if (!termPages.length) termPages = readable;
   images.take(termPages.length);
   const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.pageMaxPx, p.rotation)));
 

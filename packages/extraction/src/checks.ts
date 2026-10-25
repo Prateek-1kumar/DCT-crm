@@ -76,17 +76,19 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
             actual: v.totalCents,
           });
       }
-      for (const [field, category] of [
-        ["procedureSubtotalCents", "procedure"],
-        ["nonProcedureCents", "non_procedure"],
-      ] as const) {
-        const printed = v[field];
-        const cells = g.procedures.filter((p) => p.category === category).map((p) => p.cells[v.code]).filter((c): c is number => typeof c === "number");
-        if (printed === null || cells.length === 0) continue;
-        const sum = cells.reduce((a, b) => a + b, 0);
-        if (Math.abs(sum - printed) > tol)
-          add("VISIT_TOTAL_MISMATCH", `${vp}/${field}`, `${g.label} ${v.name}: printed ${category.replace("_", "-")} subtotal ${dollars(printed)} ≠ sum of grid cells ${dollars(sum)}`, refsOf(v.prov), {
-            expected: sum,
+      // Grid cells vs printed subtotals. Compared as one sum: contracts disagree on whether staff
+      // fees count as "procedure" (Shah puts coordinator/physician fees in the procedure subtotal).
+      const cellsOf = (cat?: "procedure" | "non_procedure") =>
+        g.procedures.filter((p) => !cat || p.category === cat).map((p) => p.cells[v.code]).filter((c): c is number => typeof c === "number");
+      const hasProcedureRows = cellsOf("procedure").length > 0;
+      const [cells, printed, field] = hasProcedureRows
+        ? [cellsOf(), v.procedureSubtotalCents === null ? null : v.procedureSubtotalCents + (v.nonProcedureCents ?? 0), "procedureSubtotalCents"]
+        : [cellsOf("non_procedure"), v.nonProcedureCents, "nonProcedureCents"]; // summary grid: only stipend-type rows
+      if (printed !== null && cells.length) {
+        const cellSum = sum(cells);
+        if (Math.abs(cellSum - printed) > tol)
+          add("VISIT_TOTAL_MISMATCH", `${vp}/${field}`, `${g.label} ${v.name}: printed subtotals ${dollars(printed)} ≠ sum of grid cells ${dollars(cellSum)}`, refsOf(v.prov), {
+            expected: cellSum,
             actual: printed,
           });
       }
@@ -94,9 +96,15 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
 
     // PER_PATIENT_TOTAL_MISMATCH
     const totals = [...g.visits].sort((a, b) => a.order - b.order).map((v) => v.totalCents);
+    // A summary row may total a column (subtotal, overhead, stipend…) rather than the visit totals.
+    const columnSums = [
+      ...(["procedureSubtotalCents", "overheadCents", "nonProcedureCents"] as const).map((f) => sum(g.visits.map((v) => v[f] ?? 0))),
+      ...g.procedures.map((p) => sum(Object.values(p.cells).filter((c): c is number => typeof c === "number"))),
+    ];
     g.perPatientTotals.forEach((t, ti) => {
       const best = closestBlockExclusion(totals, t.cents);
-      if (best.diff > tol * totals.length)
+      const isColumnTotal = columnSums.some((s) => s > 0 && Math.abs(s - t.cents) <= tol * totals.length);
+      if (best.diff > tol * totals.length && !isColumnTotal)
         add("PER_PATIENT_TOTAL_MISMATCH", `${gp}/perPatientTotals/${ti}/cents`, `${g.label} "${t.label}": printed per-patient total ${dollars(t.cents)} does not match the visit totals (sum of all visits ${dollars(sum(totals))})`, refsOf(t.prov, g.prov), {
           expected: sum(totals),
           actual: t.cents,
@@ -138,7 +146,8 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
     // DUPLICATE_ITEM: priced inside a visit AND billable as an invoiceable.
     g.procedures.forEach((p, pi) => {
       const priced = Object.entries(p.cells).filter((e): e is [string, number] => typeof e[1] === "number");
-      if (!priced.length) return;
+      // Grid marks some visits "invoiceable": the split is intended (Shah visual acuity), not a duplicate.
+      if (!priced.length || Object.values(p.cells).includes("invoiceable")) return;
       rulebook.invoiceables.forEach((inv, ii) => {
         const codeMatch = !!p.code && !!inv.code && norm(p.code) === norm(inv.code);
         const nameMatch = norm(p.name) === norm(inv.name);
@@ -267,7 +276,11 @@ const words = (s: string) =>
     .filter((w) => w.length > 1 && !STOP.has(w));
 export const sharesWord = (a: string, b: string) => {
   const wb = new Set(words(b));
-  return words(a).some((w) => w.length > 2 && wb.has(w));
+  if (words(a).some((w) => w.length > 2 && wb.has(w))) return true;
+  // Compound spellings: "Start-up" ~ "Administrative startup", "Close out Fee" ~ "Close-out".
+  const joined = (x: string) => words(x.replace(/(\w)[- ](?=\w)/g, "$1"));
+  const [na, nb] = [norm(a), norm(b)];
+  return joined(a).some((w) => w.length > 3 && nb.includes(w)) || joined(b).some((w) => w.length > 3 && na.includes(w));
 };
 /** Same person/site if one's significant words are a subset of the other's ("Pankajkumar G. Shah, M.D." ~ "Pankajkumar Shah"). */
 export function sameName(a: string, b: string): boolean {
@@ -332,27 +345,26 @@ function flatten(rb: Rulebook): Map<string, Field> {
   };
 
   scalar("overhead.pct", "/overhead/pct/value", "overhead %", rb.overhead.pct.value);
-  scalar("overhead.appliesTo", "/overhead/appliesTo/value", "overhead applies to", rb.overhead.appliesTo.value);
-  for (const f of ["visitPayment", "frequency", "netDays"] as const) scalar(`payment.${f}`, `/payment/${f}/value`, `payment ${f}`, rb.payment[f].value);
-  scalar("rounding", "/rounding/value", "rounding", rb.rounding.value);
+  // Only amounts, percentages, counts, days and dates are cross-checked. Classification labels
+  // (overhead scope, payment mode, fee trigger, cap kind) differ by interpretation, not misreading,
+  // and flooded review with noise; human review covers them.
+  scalar("payment.netDays", "/payment/netDays/value", "payment net days", rb.payment.netDays.value);
   scalar("appliesFrom", "/appliesFrom/value", "applies from", rb.appliesFrom.value);
   scalar("holdback.pct", "/holdback/pct", "holdback %", rb.holdback?.pct ?? null);
   const sf = rb.screenFail;
   scalar("screenFail.amount", "/screenFail/amountCents", "screen fail amount", sf?.amountCents ?? null);
-  scalar("screenFail.cap", "/screenFail/cap", "screen fail cap", sf?.cap ?? null);
-  scalar("screenFail.basis", "/screenFail/basis", "screen fail basis", sf?.basis ?? null);
+  scalar("screenFail.cap", "/screenFail/cap", "screen fail cap", sf ? { n: sf.cap.n, ratio: sf.cap.ratio } : null);
   scalar("overpayment.refundDays", "/overpayment/refundDays", "overpayment refund days", rb.overpayment?.refundDays ?? null);
   for (const { t, i, k } of keyed(rb.deadlines, (d) => d.kind)) put(`deadline.${k}`, `/deadlines/${i}`, "value", `/deadlines/${i}/value`, `deadline ${k}`, t.value);
   for (const { t, i, k } of keyed(rb.invoiceables, (x) => norm(x.code ?? "") + "|" + norm(x.name))) {
     const ip = `/invoiceables/${i}`;
     put(`inv.${k}`, ip, "amount", `${ip}/amountCents`, `invoiceable "${t.name}" amount`, t.amountCents);
     put(`inv.${k}`, ip, "amountOH", `${ip}/amountWithOverheadCents`, `invoiceable "${t.name}" amount with overhead`, t.amountWithOverheadCents);
-    put(`inv.${k}`, ip, "cap", `${ip}/cap`, `invoiceable "${t.name}" cap`, t.cap);
+    put(`inv.${k}`, ip, "cap", `${ip}/cap`, `invoiceable "${t.name}" cap`, { n: t.cap.n, ratio: t.cap.ratio });
   }
   for (const { t, i, k } of keyed(rb.siteFees, (x) => norm(x.code ?? "") + "|" + norm(x.name))) {
     const ip = `/siteFees/${i}`;
     put(`fee.${k}`, ip, "amount", `${ip}/amountCents`, `site fee "${t.name}" amount`, t.amountCents);
-    put(`fee.${k}`, ip, "trigger", `${ip}/trigger`, `site fee "${t.name}" trigger`, t.trigger);
   }
   for (const { t: g, i: gi, k: gk } of keyed(rb.budgetGrids, (g) => norm(g.arm ?? "") || "grid")) {
     const gp = `/budgetGrids/${gi}`;

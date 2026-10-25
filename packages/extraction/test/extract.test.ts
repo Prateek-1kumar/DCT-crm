@@ -107,7 +107,7 @@ describe("extractWith (mocked AI)", () => {
     const grid = seen.find((s) => s.name === "grid")!;
     expect(grid.labels[0]).toBe("documentId d1, page 2, overview");
     expect(grid.labels.filter((l) => l.includes("tile")).length).toBeGreaterThan(1);
-    expect(seen.find((s) => s.name === "terms")!.labels).toEqual(["documentId d1, page 1"]);
+    expect(seen.find((s) => s.name === "terms")!.labels).toEqual(["documentId d1, page 1", "documentId d1, page 2"]); // grid pages carry clauses too
 
     const codes = runContractChecks(out.rulebook, { crossRead: out.crossRead, pages: out.pages, notes: out.notes }).map((a) => a.code);
     expect(codes).toEqual(expect.arrayContaining(["AI_DISAGREEMENT", "UNREADABLE_PAGE", "AMBIGUOUS_TERM"]));

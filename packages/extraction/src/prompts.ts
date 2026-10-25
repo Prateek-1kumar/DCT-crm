@@ -89,8 +89,8 @@ export const termsPrompt = (docs: { id: string; filename: string; kind: string |
 Uploaded documents for this study:
 ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"${d.kind ? ` (${d.kind})` : ""}`).join("\n")}
 
-The images are every page with contract terms, invoiceables and site costs (budget grids are read separately). Extract the study's money terms:
-- study: sponsor (the company that owns the study), payingAgent (CRO or payment agent that actually pays, e.g. PPD, IQVIA, Synteract; null if the sponsor pays directly — a CRO that only negotiated the budget is not a paying agent), protocol, siteName (the contracting site entity), investigator, effectiveDate.
+The images are every page with contract terms, invoiceables, site costs or budget tables. The per-visit budget grid itself is read separately: don't transcribe visit columns, but do read any contract clauses, fee lists or footnotes printed on the same pages. Extract the study's money terms:
+- study: sponsor (the company that owns the study), payingAgent (CRO or payment agent that actually pays, e.g. PPD, IQVIA, Synteract; null if the sponsor pays directly — a CRO that only negotiated the budget is not a paying agent), protocol, siteName (the contracting site entity), investigator, effectiveDate (of the latest uploaded document whose terms govern — for an amendment, the amendment's effective date, not the original agreement's).
 - documents: one entry per uploaded documentId above with kind, title and date.
 - referencedDocuments: every other agreement these documents rely on (master/base CTA, earlier amendments, budgets, exhibits incorporated by reference). present = true only if it is one of the uploaded documents above.
 - overhead: pct and which lines it applies to.
