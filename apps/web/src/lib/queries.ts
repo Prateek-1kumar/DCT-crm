@@ -15,17 +15,31 @@ export const keys = {
 };
 
 export const useStudies = () => useQuery({ queryKey: keys.studies, queryFn: api.listStudies });
-export const useStudy = (id: string, poll = false) =>
-  useQuery({ queryKey: keys.study(id), queryFn: () => api.getStudy(id), refetchInterval: poll ? 2500 : false });
+/** Polls while the study is extracting. */
+export const useStudy = (id: string) =>
+  useQuery({ queryKey: keys.study(id), queryFn: () => api.getStudy(id), refetchInterval: (q) => (q.state.data?.status === "extracting" ? 2500 : false) });
 export const useVersion = (id: string, v: number | null) =>
-  useQuery({ queryKey: keys.version(id, v ?? -1), queryFn: () => api.getVersion(id, v!), enabled: v !== null });
+  useQuery({
+    queryKey: keys.version(id, v ?? -1),
+    queryFn: () => api.getVersion(id, v!),
+    enabled: v !== null,
+    refetchInterval: (q) => (q.state.data?.status === "extracting" ? 2500 : false),
+  });
 export const useDiff = (id: string, v: number | null, against: number | null) =>
   useQuery({
     queryKey: keys.diff(id, v ?? -1, against ?? -1),
     queryFn: () => api.getDiff(id, v!, against!),
     enabled: v !== null && against !== null && v !== against,
   });
-export const useSettings = () => useQuery({ queryKey: keys.settings, queryFn: api.getSettings, staleTime: 60_000 });
+/** Polls until the job finishes. */
+export const useJob = (jobId: string | null) =>
+  useQuery({
+    queryKey: keys.job(jobId ?? ""),
+    queryFn: () => api.getJob(jobId!),
+    enabled: !!jobId,
+    refetchInterval: (q) => (q.state.data && (q.state.data.state === "succeeded" || q.state.data.state === "failed") ? false : 700),
+  });
+export const useSettings =() => useQuery({ queryKey: keys.settings, queryFn: api.getSettings, staleTime: 60_000 });
 
 /** After any write to a study: refresh everything that summarizes it. */
 export function useInvalidateStudy() {
