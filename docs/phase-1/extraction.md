@@ -1,5 +1,91 @@
 # Workstream B: `@dct/extraction`
 
+Scanned contract PDFs → `Rulebook` (Claude primary read + OpenAI cross-read) → deterministic contract checks → scoring against hand-checked golden files.
+
+## Status
+
+| Done | |
+|---|---|
+| PDF rendering | `mupdf` (WASM), no system binaries. Page count, render at DPI, rotation, crop, overlapping tiles. |
+| Pipeline | classify every page (kind, readable, rotation, grid group) → term pages at ≤2150 px → grid pages re-rendered at 400 DPI, upright, as ~1900 px tiles + overview → one terms call + one call per grid → `Rulebook.parse` |
+| Cross-read | OpenAI reads the same images independently into a second Rulebook; each primary `prov.crossCheck` set to agree/disagree |
+| Checks | All 13 `ContractAnomalyCode`s, pure code, unit-tested |
+| Scoring | Field-by-field vs `data/golden/*.json`; golden-vs-golden = 100% (synthetic + all 4 real goldens) |
+| Fake mode | `EXTRACTION_FAKE=1` → synthetic study (`fixtures/fake-extraction.json`, not a real contract) |
+| Live eval | **Not run: `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are empty in `.env`.** Ready to run. |
+
+## API (for Workstream A)
+
+```ts
+import { identifyDocuments, extractStudy, runContractChecks, renderPage, pageCount, ExtractionLimitError } from "@dct/extraction";
+
+const out = await extractStudy({ documents, onProgress });          // ExtractionOutput
+const anomalies = runContractChecks(out.rulebook, {
+  crossRead: out.crossRead,
+  pages: out.pages,   // enables UNREADABLE_PAGE
+  notes: out.notes,   // enables note-based AMBIGUOUS_TERM / RETROACTIVE_NO_DATE
+});
+```
+
+- `ExtractionOutput` has the PHASE-1 fields plus two extras: `notes` (things the schema has no field for yet, see below; **store them with the version** so re-running checks after a correction keeps those anomalies) and `warnings` (e.g. "cross-read skipped").
+- `runContractChecks(rulebook, { crossRead })` (exactly as in PHASE-1) still works; `pages`/`notes` are optional.
+- Also exported: `pageCount(pdfPath)` (for `DocumentDto.pageCount`), `ExtractionLimitError`, `RENDER_LIMITS`.
+- Anomaly ids are `CODE:jsonPointer` (with `#2`… on a repeat), stable across runs of the same rulebook.
+- The package loads no `.env` itself; the API process must have `ANTHROPIC_API_KEY` (and optionally `OPENAI_API_KEY`, `OPENAI_MODEL`) in its environment.
+
+## How to run
+
+```sh
+pnpm --filter @dct/extraction test         # unit tests (mocked AI, synthetic PDFs)
+pnpm --filter @dct/extraction typecheck
+pnpm --filter @dct/extraction eval         # live: 4 real contracts → data/extractions/<name>.json, then score (skips cleanly if no key)
+pnpm --filter @dct/extraction eval shah    # one contract
+pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
+```
+
+- Repo root (for `.env`, `data/`) defaults to two levels above the package; override with `DCT_ROOT=/path/to/checkout` (needed when running from a git worktree, which has no `data/`).
+- Env: `ANTHROPIC_API_KEY` (required for live), `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `OPENAI_API_KEY` + `OPENAI_MODEL` (both needed for the cross-read; no default model), `OPENAI_PRICE_PER_MTOK="in,out"` (USD per million tokens, for the OpenAI cost line; 0 if unset), `EXTRACTION_GRID_DPI` (default 400, max 600), `EXTRACTION_FAKE=1`.
+- Golden JSON: `data/golden/{copd,mcallen,hcwc,shah}.json`, converted by hand from `EXPECTED.md` (git-ignored). Gaps in EXPECTED.md, so not scored: HCWC protocol number, HCWC telephone-visit count (scored once), HCWC Arm B visit totals, McAllen procedure rows.
+- With `DCT_ROOT` set, the unit tests also check every real golden file scores 100% against itself.
+
+## Decisions
+
+- **Claude call** (`src/llm.ts`, the only place models are called): `@anthropic-ai/sdk` `beta.messages.stream(...).finalMessage()`, `thinking: {type: "adaptive"}`, `output_config: {effort, format: json_schema}`, `betas: ["server-side-fallback-2026-07-01"]` + `fallbacks: "default"`. `stop_reason: "refusal"` (after fallback) and `max_tokens` throw. The schema comes from the SDK's `betaZodOutputFormat` transform but parsing is ours (zod), so usage is counted even when a reply fails validation; one retry on a bad parse. Timeout 15 min, 3 SDK retries.
+- **OpenAI call**: official `openai` SDK, Responses API, `json_schema` with `strict: false` (the shared schemas have optional fields, which strict mode forbids), zod validates. Model only from `OPENAI_MODEL`; unset → `crossRead: null`. A failed cross-read is a warning, not a failed extraction.
+- **AI schemas reuse the shared zod schemas** (`src/prompts.ts`); only grid `cells` become a list, since structured outputs can't express records. A test checks every AI schema converts to a structured-output-compatible JSON schema.
+- **Image sizes** stay under Claude's vision limits (2576 px long edge, ~3.75 MP): bigger images get downscaled server-side, which would waste the high-DPI render. Term pages ≤ 2150 px, grid tiles 1900 px square with 8% overlap. A letter page at 400 DPI is 6 tiles; on the McAllen detailed grid a tile reads cleanly.
+- **Rotation**: detected by the classifier per page (sideways grids), applied before rendering.
+- **Multi-document studies**: all documents' term pages go into one terms call (so terms from master + work order + amendment merge in one read); every document's grids are read; `referencedDocuments[].present` is decided against the uploaded list.
+- **Security**: system prompt tells the models to ignore payee bank details; after parsing, 8–17-digit runs in any string are replaced with `[redacted]` and quotes mentioning bank/routing/account/SWIFT/IBAN are dropped. Nothing logs contract text; the eval prints amounts and field names only.
+- **Checks, notable rules**
+  - Tolerance: ±$1 when `rounding = printed_amounts`, else ±1 cent.
+  - `PER_PATIENT_TOTAL_MISMATCH` accepts a printed total equal to all visits minus one contiguous block of visits (McAllen "double-blind only" skips the open-label block; unscheduled/ET at the end), with ±$1 per visit when rounded. Heuristic: could hide a mismatch that equals some block sum.
+  - `OVERHEAD_LABEL_MISMATCH`: aggregate overhead ÷ procedure subtotal and ÷ (procedure + non-procedure) over the grid's visits; flagged if neither is within 0.5 points of the label.
+  - `DUPLICATE_ITEM`: a priced (not "invoiceable") grid cell whose row matches an invoiceable by code, exact name, or a shared word plus the same amount.
+  - `GRID_CONFLICT`: ≥2 grids with the same `arm` whose visit totals or per-patient totals differ, while `governingGridId` is null.
+  - `AI_DISAGREEMENT`: rulebooks flattened to stable keys (grid arm, visit code, item code+name, deadline kind), compared field by field; an item one read lacks entirely is one anomaly, not one per field.
+  - Severity: blocker = GRID_CONFLICT, HEADER_MISMATCH, RETROACTIVE_NO_DATE, UNREADABLE_PAGE; info = LOW_CONFIDENCE; rest warning.
+
+## Proposed shared-schema changes (not made; `packages/shared` untouched)
+
+1. `Rulebook.ambiguities: { topic, path, prov }[]`: AMBIGUOUS_TERM wording issues (HCWC overhead on stipends, Shah overhead in site costs) have no home today; carried as `ExtractionOutput.notes`.
+2. `appliesFrom.retroactive: boolean` (or a `retroactive` flag on the rulebook): Shah's "retroactive, no date". Today detected from a `notes` entry or a quote containing "retroactiv".
+3. `Rulebook.unreadablePages` or page info on the version: UNREADABLE_PAGE needs `ExtractionOutput.pages` passed in.
+4. `GridVisit.inPerPatientTotal` or `perPatientTotals[].visitCodes`: makes PER_PATIENT_TOTAL_MISMATCH exact instead of the block heuristic.
+5. `GridProcedure.cells` as an array (`{visit, value}[]`) would match what structured outputs can produce; the record form forces a conversion step.
+
+## Known accuracy
+
+No live numbers yet (no keys). Expected weak spots, in order:
+1. Grid digits in tiny sideways type (cents like 14.2666667, 356.666667 on McAllen). Mitigated by 400 DPI tiles + the cross-read; AI_DISAGREEMENT and VISIT_TOTAL_MISMATCH should surface misreads.
+2. Grids spanning pages or tiles: the model must join rows across tiles/pages; overlap areas can be double-counted.
+3. Invoiceables vs site fees filed under different headings (scoring accepts either).
+4. Visit codes differ between the two reads → spurious AI_DISAGREEMENT (keyed by visit code).
+
+## Cost per contract (estimate, not measured)
+
+Claude Opus 5.5 at $4 / $20 per MTok: ~150–250k input tokens (classification ~1.3k/page, term pages ~4.5k each, ~6 tiles × ~4.7k per grid page) and ~60–100k output tokens (adaptive thinking at `high` effort + JSON). Roughly **$2–3.50 per contract** for the primary read (Shah lowest, McAllen highest); the OpenAI cross-read adds its own model's price. The eval prints measured cost per contract.
+
 ## Resource limits
 
 All in `CONFIG` (`packages/extraction/src/extract.ts`); render limits are `RENDER_LIMITS` (`src/render.ts`, also exported and reachable as `CONFIG.render`).
