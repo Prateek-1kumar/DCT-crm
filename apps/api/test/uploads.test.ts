@@ -71,7 +71,7 @@ describe("POST /api/uploads", () => {
     expect(res.json()).toMatchObject({ kind: "budget" });
     expect((await app.inject({ method: "PATCH", url: `/api/documents/${doc!.id}`, payload: { kind: "nope", by: "Asha" } })).statusCode).toBe(400);
     const audit = (await app.inject({ url: "/api/audit" })).json<{ action: string; by: string }[]>();
-    expect(audit.map((a) => a.action)).toEqual(["document.uploaded", "document.kind_set"]);
-    expect(audit[1]!.by).toBe("Asha");
+    expect(audit.map((a) => a.action)).toEqual(["document.kind_set", "document.uploaded"]); // newest first
+    expect(audit[0]!.by).toBe("Asha");
   });
 });

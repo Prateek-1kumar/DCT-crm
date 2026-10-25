@@ -63,7 +63,7 @@ describe("bring a study on board", () => {
 
     const res = await patch(`/api/studies/${studyId}`, { sponsor: "Synthetic Pharma Inc", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
     expect(res.json<StudyDetailDto>().sponsor).toBe("Synthetic Pharma Inc");
-    expect(await auditActions(studyId)).toEqual(["study.created", "study.identified", "study.confirmed"]);
+    expect(await auditActions(studyId)).toEqual(["study.confirmed", "study.identified", "study.created"]);
   });
 
   it("rejects unknown documents and bad bodies", async () => {
@@ -134,7 +134,7 @@ describe("review", () => {
     expect(ver.editors).toEqual(["Asha"]);
 
     const entries = await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`);
-    expect(entries.at(-1)).toMatchObject({
+    expect(entries[0]).toMatchObject({
       by: "Asha",
       action: "value.corrected",
       detail: { version: 1, path: "/budgetGrids/0/visits/1/totalCents", before: 848900, after: 848800, note: "printed total is a typo" },

@@ -1,5 +1,5 @@
 import { type AuditEntryDto, PatchSettingsBody, type SettingsDto } from "@dct/shared";
-import { asc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
@@ -17,7 +17,7 @@ export const miscRoutes =
         .select()
         .from(auditLog)
         .where(req.query.studyId ? eq(auditLog.studyId, req.query.studyId) : undefined)
-        .orderBy(asc(auditLog.id));
+        .orderBy(desc(auditLog.id)); // newest first
       return rows.map((r) => ({ id: String(r.id), at: r.at.toISOString(), by: r.by, studyId: r.studyId, action: r.action, detail: r.detail }));
     });
 
