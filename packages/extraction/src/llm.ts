@@ -14,6 +14,8 @@ export type LlmRequest<T> = {
   images: Image[];
   schema: z.ZodType<T>;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** Cache the images (Anthropic prompt caching): later calls with the same system + images pay ~10% for them. */
+  cacheImages?: boolean;
 };
 
 export type CostEntry = { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number };
@@ -32,8 +34,15 @@ const MAX_RETRIES = 3;
 
 /** USD per million tokens. ponytail: fallback-model hops are priced at the primary's rate. */
 const ANTHROPIC_PRICES: Record<string, { in: number; out: number; cacheWrite: number; cacheRead: number }> = {
+  "claude-sonnet-5-5": { in: 2, out: 10, cacheWrite: 2.5, cacheRead: 0.2 },
+  // ponytail: Haiku 5.5 prompts over 100K tokens cost more; page sorting stays far below that.
+  "claude-haiku-5-5": { in: 0.1, out: 0.5, cacheWrite: 0.125, cacheRead: 0.01 },
   "claude-opus-5-5": { in: 4, out: 20, cacheWrite: 5, cacheRead: 0.2 },
 };
+
+/** Defaults (user decision 2026-10-26): no Opus. Sonnet reads, Haiku sorts pages. Override via env. */
+export const DEFAULT_MODEL = "claude-sonnet-5-5";
+export const DEFAULT_FAST_MODEL = "claude-haiku-5-5";
 
 /** Model output is JSON text; validate it, and retry once on a bad parse (usage of both attempts is counted). */
 async function withParseRetry<T>(name: string, schema: z.ZodType<T>, attempt: () => Promise<string>): Promise<T> {
@@ -52,7 +61,9 @@ async function withParseRetry<T>(name: string, schema: z.ZodType<T>, attempt: ()
 }
 
 export function anthropicClient(opts: { apiKey: string; model?: string }): LlmClient {
-  const model = opts.model ?? "claude-opus-5-5";
+  const model = opts.model ?? DEFAULT_MODEL;
+  // Haiku has no server-side refusal fallback; only send the fallback beta where it exists.
+  const fallback = model.includes("haiku") ? {} : { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const };
   const client = new Anthropic({ apiKey: opts.apiKey, timeout: TIMEOUT_MS, maxRetries: MAX_RETRIES });
   const usage = { input: 0, output: 0, usd: 0 };
   const price = ANTHROPIC_PRICES[model];
@@ -63,9 +74,13 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
     async call<T>(req: LlmRequest<T>) {
       // Plain JSON-schema format (not the auto-parsing one) so a bad parse doesn't lose the usage numbers.
       const format = { type: "json_schema" as const, schema: modelSchema(req.schema) };
-      const content: Anthropic.Beta.BetaContentBlockParam[] = req.images.flatMap((img) => [
+      const content: Anthropic.Beta.BetaContentBlockParam[] = req.images.flatMap((img, i) => [
         { type: "text" as const, text: img.label },
-        { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: img.png.toString("base64") } },
+        {
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: "image/png" as const, data: img.png.toString("base64") },
+          ...(req.cacheImages && i === req.images.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+        },
       ]);
       content.push({ type: "text", text: req.prompt });
       return withParseRetry(req.name, req.schema, async () => {
@@ -73,8 +88,7 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
           .stream({
             model,
             max_tokens: 64000,
-            betas: ["server-side-fallback-2026-07-01"],
-            fallbacks: "default",
+            ...fallback,
             thinking: { type: "adaptive" },
             output_config: { effort: req.effort ?? "high", format },
             system: req.system,
@@ -141,9 +155,10 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
 const round = (usd: number) => Math.round(usd * 10000) / 10000;
 
 /** Build clients from env. Missing key/model → null (caller decides whether that's fatal). */
-export function clientsFromEnv(env: NodeJS.ProcessEnv = process.env): { primary: LlmClient | null; cross: LlmClient | null } {
+export function clientsFromEnv(env: NodeJS.ProcessEnv = process.env): { primary: LlmClient | null; fast: LlmClient | null; cross: LlmClient | null } {
   return {
     primary: env.ANTHROPIC_API_KEY ? anthropicClient({ apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_MODEL || undefined }) : null,
+    fast: env.ANTHROPIC_API_KEY ? anthropicClient({ apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_FAST_MODEL || DEFAULT_FAST_MODEL }) : null,
     cross:
       env.OPENAI_API_KEY && env.OPENAI_MODEL
         ? openaiClient({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL, pricePerMTok: env.OPENAI_PRICE_PER_MTOK })

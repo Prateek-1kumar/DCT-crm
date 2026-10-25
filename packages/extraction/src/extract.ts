@@ -1,4 +1,5 @@
 import { type DocumentKind, Rulebook } from "@dct/shared";
+import type { ZodType } from "zod";
 import { compareRulebooks, type ExtractionNote, type PageInfo, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient } from "./llm";
@@ -20,7 +21,8 @@ export type ExtractionOutput = {
   warnings: string[];
 };
 
-export type Clients = { primary: LlmClient; cross: LlmClient | null };
+/** primary reads (Sonnet), fast sorts pages and identifies documents (Haiku; falls back to primary), cross re-reads (OpenAI). */
+export type Clients = { primary: LlmClient; cross: LlmClient | null; fast?: LlmClient | null };
 
 // Claude's vision input tops out at 2576 px long edge and ~3.75 MP; anything larger is downscaled
 // server-side, which would throw away the high-DPI render. Keep every image under both.
@@ -74,9 +76,9 @@ async function countPages(documents: InputDoc[]): Promise<number[]> {
 const fake = () => process.env.EXTRACTION_FAKE === "1";
 
 function envClients(): Clients {
-  const { primary, cross } = clientsFromEnv();
+  const { primary, fast, cross } = clientsFromEnv();
   if (!primary) throw new Error("ANTHROPIC_API_KEY is not set. Set it in .env, or set EXTRACTION_FAKE=1 to use the synthetic fixture.");
-  return { primary, cross };
+  return { primary, fast, cross };
 }
 
 const label = (documentId: string, page: number, extra = "") => `documentId ${documentId}, page ${page}${extra ? `, ${extra}` : ""}`;
@@ -104,7 +106,8 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Prom
 
 export async function identifyDocuments(docs: InputDoc[]) {
   if (fake()) return fakeIdentify(docs);
-  return identifyWith(docs, envClients().primary);
+  const c = envClients();
+  return identifyWith(docs, c.fast ?? c.primary);
 }
 
 export async function identifyWith(docs: InputDoc[], llm: LlmClient) {
@@ -148,7 +151,7 @@ export async function extractWith(
       const n = counts[documents.indexOf(doc)]!;
       const images = [];
       for (let p = 1; p <= n; p++) images.push(await pageImage(doc, p, CONFIG.classifyMaxPx));
-      const res = await clients.primary.call({ name: "classify", system: SYSTEM, prompt: classifyPrompt(doc.id, doc.filename, n), images, schema: AiPages, effort: "low" });
+      const res = await (clients.fast ?? clients.primary).call({ name: "classify", system: SYSTEM, prompt: classifyPrompt(doc.id, doc.filename, n), images, schema: AiPages, effort: "low" });
       return Array.from({ length: n }, (_, i): ClassifiedPage => {
         const r = res.pages.find((x) => x.page === i + 1);
         // A page the classifier skipped is read as terms rather than silently dropped.
@@ -199,21 +202,32 @@ export async function extractWith(
   const tick = (step: string) => progress(25 + (70 * ++done) / totalCalls, step);
   const read = async (llm: LlmClient) => {
     const who = llm.provider === "anthropic" ? "primary" : "cross-check";
-    const termsP = Promise.all([
-      llm.call({ name: "terms", system: SYSTEM, prompt: termsPrompt(documents, "study"), images: termImages, schema: AiTermsStudy, effort: "high" }),
-      llm.call({ name: "terms-payment", system: SYSTEM, prompt: termsPrompt(documents, "payment"), images: termImages, schema: AiTermsPayment, effort: "high" }),
-      llm.call({ name: "terms-items", system: SYSTEM, prompt: termsPrompt(documents, "items"), images: termImages, schema: AiTermsItems, effort: "high" }),
-    ]).then(([study, payment, items]): AiTerms => (tick(`Read contract terms (${who})`), { ...study, ...payment, ...items }));
+    // The first terms call writes the image cache; the other two then read it at ~10% of the price.
+    const termsCall = <T>(name: string, part: "study" | "payment" | "items", schema: ZodType<T>) =>
+      llm.call({ name, system: SYSTEM, prompt: termsPrompt(documents, part), images: termImages, schema, effort: "medium", cacheImages: true });
+    const termsP = termsCall("terms", "study", AiTermsStudy)
+      .then((study) => Promise.all([termsCall("terms-payment", "payment", AiTermsPayment), termsCall("terms-items", "items", AiTermsItems)]).then(([payment, items]) => ({ ...study, ...payment, ...items })))
+      .then((t): AiTerms => (tick(`Read contract terms (${who})`), t));
     const gridsP = pool(groups, CONFIG.concurrency, async (g) => {
       const i = groups.indexOf(g);
-      const res = await llm.call({
-        name: "grid",
-        system: SYSTEM,
-        prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile"))),
-        images: gridImages[i]!,
-        schema: AiGrids,
-        effort: "high",
-      });
+      const readGrid = (effort: "high" | "max") =>
+        llm.call({
+          name: effort === "max" ? "grid-reread" : "grid",
+          system: SYSTEM,
+          prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile"))),
+          images: gridImages[i]!,
+          schema: AiGrids,
+          effort,
+        });
+      let res = await readGrid("high");
+      // Numbers that don't add up are usually a misread digit: re-read that grid once at max effort
+      // (primary only) and keep whichever read adds up better. Costs extra only on those pages.
+      const bad = gridMismatches(res.grids);
+      if (bad > 0 && llm.provider === "anthropic") {
+        tick(`Re-reading budget grid ${i + 1} (${bad} total(s) didn't add up)`);
+        const again = await readGrid("max");
+        if (gridMismatches(again.grids) < bad) res = again;
+      }
       tick(`Read budget grid ${i + 1}/${groups.length} (${who})`);
       return res.grids;
     });
@@ -240,7 +254,7 @@ export async function extractWith(
     rulebook: primary.rulebook,
     crossRead: cross?.rulebook ?? null,
     pages: pages.map(({ documentId, page, kind, readable }) => ({ documentId, page, kind, readable })),
-    cost: [clients.primary.cost(), ...(clients.cross ? [clients.cross.cost()] : [])],
+    cost: [clients.primary.cost(), ...(clients.fast ? [clients.fast.cost()] : []), ...(clients.cross ? [clients.cross.cost()] : [])],
     notes: primary.notes,
     warnings,
   };
@@ -303,4 +317,23 @@ function markCrossCheck(rb: Rulebook, cross: Rulebook) {
     if (!c.agree) p.crossCheck = "disagree";
     else if (p.crossCheck !== "disagree") p.crossCheck = "agree";
   }
+}
+
+/** Visits whose printed numbers don't add up (total vs subtotals, subtotals vs grid cells), ±$1. */
+export function gridMismatches(grids: AiGrid[]): number {
+  let bad = 0;
+  for (const g of grids) {
+    for (const v of g.visits) {
+      if (v.procedureSubtotalCents !== null && v.overheadCents !== null && Math.abs(v.procedureSubtotalCents + v.overheadCents + (v.nonProcedureCents ?? 0) - v.totalCents) > 100) {
+        bad++;
+        continue;
+      }
+      const cells = g.procedures.flatMap((p) => p.cells.filter((c) => c.visit === v.code && typeof c.value === "number").map((c) => ({ cat: p.category, cents: c.value as number })));
+      const procedures = cells.filter((c) => c.cat === "procedure");
+      if (!procedures.length || v.procedureSubtotalCents === null) continue;
+      const printed = v.procedureSubtotalCents + (v.nonProcedureCents ?? 0);
+      if (Math.abs(cells.reduce((n, c) => n + c.cents, 0) - printed) > 100) bad++;
+    }
+  }
+  return bad;
 }

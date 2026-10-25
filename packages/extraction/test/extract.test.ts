@@ -5,7 +5,7 @@ import { Rulebook } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { afterEach, describe, expect, it } from "vitest";
 import { runContractChecks } from "../src/checks";
-import { type Clients, extractStudy, extractWith, identifyDocuments, identifyWith, type InputDoc } from "../src/extract";
+import { type Clients, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { CostEntry, LlmClient, LlmRequest } from "../src/llm";
 import type { AiGrid, AiTerms } from "../src/prompts";
@@ -162,5 +162,21 @@ describe("EXTRACTION_FAKE=1", () => {
     expect(JSON.stringify(out)).not.toMatch(/doc-1|doc-2/);
     const codes = new Set(runContractChecks(out.rulebook, { crossRead: out.crossRead, pages: out.pages, notes: out.notes }).map((a) => a.code));
     for (const c of ["GRID_CONFLICT", "MISSING_REFERENCED_DOC", "DUPLICATE_ITEM", "AI_DISAGREEMENT", "REQUIRED_MISSING", "UNREADABLE_PAGE", "AMBIGUOUS_TERM"]) expect(codes).toContain(c);
+  });
+});
+
+describe("gridMismatches (triggers a max-effort re-read)", () => {
+  const visit = (code: string, sub: number, oh: number, np: number, total: number) => ({ code, name: code, order: 1, procedureSubtotalCents: sub, overheadCents: oh, nonProcedureCents: np, totalCents: total, autopay: true, prov: { source: null, confidence: 1, method: "ai" as const, crossCheck: "not_checked" as const } });
+  const proc = (cat: "procedure" | "non_procedure", cells: [string, number][]) => ({ code: null, name: "x", unitCents: null, overheadApplied: true, category: cat, cells: cells.map(([visit, value]) => ({ visit, value })), prov: { source: null, confidence: 1, method: "ai" as const, crossCheck: "not_checked" as const } });
+  const grid = (visits: ReturnType<typeof visit>[], procedures: ReturnType<typeof proc>[]) =>
+    ({ label: "g", arm: null, statedOverheadPct: 40, visits, procedures, perPatientTotals: [], header: { investigator: null, siteName: null }, prov: { source: null, confidence: 1, method: "ai" as const, crossCheck: "not_checked" as const } }) as never;
+
+  it("counts visits whose totals or cells don't add up, within $1", () => {
+    const ok = grid([visit("V1", 50000, 20000, 10000, 80000)], [proc("procedure", [["V1", 50000]]), proc("non_procedure", [["V1", 10000]])]);
+    expect(gridMismatches([ok])).toBe(0);
+    const misreadTotal = grid([visit("V1", 50000, 20000, 10000, 89000)], []);
+    expect(gridMismatches([misreadTotal])).toBe(1);
+    const misreadCell = grid([visit("V1", 50000, 20000, 10000, 80000)], [proc("procedure", [["V1", 58000]]), proc("non_procedure", [["V1", 10000]])]);
+    expect(gridMismatches([misreadCell])).toBe(1);
   });
 });
