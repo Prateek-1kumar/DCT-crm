@@ -8,18 +8,45 @@ import { useActingAs } from "@/lib/acting-as";
 import { DOC_KIND_LABEL } from "@/lib/format";
 import { Badge, Button, ErrorNote, cx } from "./ui";
 
+/** Same as the API's per-file limit. */
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
 /** Drag-and-drop PDF upload. Calls onUploaded with what the API stored (incl. duplicates). */
-export function Dropzone({ onUploaded, studyId, compact }: { onUploaded: (docs: DocumentDto[]) => void; studyId?: string; compact?: boolean }) {
+export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentDto[]) => void; compact?: boolean }) {
   const [over, setOver] = useState(false);
   const [rejected, setRejected] = useState<string[]>([]);
+  const [failed, setFailed] = useState<string[]>([]);
   const by = useActingAs();
-  const upload = useMutation({ mutationFn: (files: File[]) => api.upload(files, by!, studyId), onSuccess: onUploaded });
+  // One request per file: one bad file doesn't sink the others, and each error names its file.
+  const upload = useMutation({
+    mutationFn: async (files: File[]) => {
+      const ok: DocumentDto[] = [];
+      const errors: string[] = [];
+      for (const f of files) {
+        try {
+          ok.push(...(await api.upload([f], by!)));
+        } catch (e) {
+          errors.push(e instanceof Error ? e.message : `${f.name}: upload failed`);
+        }
+      }
+      setFailed(errors);
+      return ok;
+    },
+    onSuccess: (docs) => {
+      if (docs.length) onUploaded(docs);
+    },
+  });
 
   function take(list: FileList | null) {
     const files = Array.from(list ?? []);
     const pdfs = files.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
-    setRejected(files.filter((f) => !pdfs.includes(f)).map((f) => f.name));
-    if (pdfs.length && by) upload.mutate(pdfs);
+    const small = pdfs.filter((f) => f.size <= MAX_UPLOAD_BYTES);
+    setRejected([
+      ...files.filter((f) => !pdfs.includes(f)).map((f) => `${f.name} (not a PDF)`),
+      ...pdfs.filter((f) => !small.includes(f)).map((f) => `${f.name} (over 50 MB)`),
+    ]);
+    setFailed([]);
+    if (small.length && by) upload.mutate(small);
   }
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
@@ -44,7 +71,10 @@ export function Dropzone({ onUploaded, studyId, compact }: { onUploaded: (docs: 
         <span className="font-medium">{!by ? "Choose who you are acting as (top right) to upload" : upload.isPending ? "Uploading…" : "Drop contract PDFs here, or click to choose"}</span>
         <span className="text-sm text-muted">Master agreement, work order, budget, adoption or amendment. Scans are fine.</span>
       </label>
-      {rejected.length > 0 && <ErrorNote>Only PDFs can be uploaded. Skipped: {rejected.join(", ")}</ErrorNote>}
+      {rejected.length > 0 && <ErrorNote>Only PDFs up to 50 MB can be uploaded. Skipped: {rejected.join(", ")}</ErrorNote>}
+      {failed.map((m) => (
+        <ErrorNote key={m}>{m}</ErrorNote>
+      ))}
       <ErrorNote error={upload.error} />
     </div>
   );
