@@ -57,6 +57,11 @@ export default function StudyPage() {
                 {s.openAnomalies ? `Review v${draft.version} · ${s.openAnomalies} open` : `Review v${draft.version}`}
               </Link>
             )}
+            {s.status === "setting_up" && (
+              <Link href={`/studies/new?study=${encodeURIComponent(s.id)}`} className={btnCls("primary")}>
+                Confirm details →
+              </Link>
+            )}
             {s.status === "live" && !draft && (
               <Link href={`/studies/${s.id}/amend`} className={btnCls()}>
                 Upload amendment
