@@ -1,0 +1,117 @@
+import { z } from "zod";
+import { ContractAnomaly } from "./anomaly";
+import { DocumentKind, Rulebook } from "./rulebook";
+
+/** HTTP contract between apps/api and apps/web. All routes are under /api. */
+
+export const StudyStatus = z.enum(["setting_up", "extracting", "extraction_failed", "needs_review", "live", "amendment_in_review"]);
+export type StudyStatus = z.infer<typeof StudyStatus>;
+
+export const VersionStatus = z.enum(["extracting", "draft", "signed", "superseded", "failed"]);
+export type VersionStatus = z.infer<typeof VersionStatus>;
+
+export const DocumentDto = z.object({
+  id: z.string(),
+  filename: z.string(),
+  sha256: z.string(),
+  kind: DocumentKind,
+  pageCount: z.number().int(),
+  uploadedAt: z.string(),
+  /** Set when the same file was already uploaded. */
+  duplicateOf: z.string().nullable(),
+});
+export type DocumentDto = z.infer<typeof DocumentDto>;
+
+export const StudySummaryDto = z.object({
+  id: z.string(),
+  sponsor: z.string().nullable(),
+  protocol: z.string().nullable(),
+  siteName: z.string().nullable(),
+  investigator: z.string().nullable(),
+  status: StudyStatus,
+  liveVersion: z.number().int().nullable(),
+  openAnomalies: z.number().int(),
+  updatedAt: z.string(),
+});
+export type StudySummaryDto = z.infer<typeof StudySummaryDto>;
+
+export const VersionSummaryDto = z.object({
+  version: z.number().int(),
+  status: VersionStatus,
+  createdAt: z.string(),
+  signedBy: z.string().nullable(),
+  signedAt: z.string().nullable(),
+  appliesFrom: z.string().nullable(),
+});
+export type VersionSummaryDto = z.infer<typeof VersionSummaryDto>;
+
+export const StudyDetailDto = StudySummaryDto.extend({
+  documents: z.array(DocumentDto),
+  versions: z.array(VersionSummaryDto),
+});
+export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
+
+export const RulebookVersionDto = VersionSummaryDto.extend({
+  studyId: z.string(),
+  rulebook: Rulebook.nullable(),
+  anomalies: z.array(ContractAnomaly),
+  /** Names of people who corrected values in this version (for the optional maker-checker rule). */
+  editors: z.array(z.string()),
+  cost: z.object({ usd: z.number(), inputTokens: z.number().int(), outputTokens: z.number().int() }),
+});
+export type RulebookVersionDto = z.infer<typeof RulebookVersionDto>;
+
+export const JobDto = z.object({
+  id: z.string(),
+  state: z.enum(["queued", "running", "succeeded", "failed"]),
+  /** 0–100. */
+  progress: z.number(),
+  step: z.string(),
+  error: z.string().nullable(),
+});
+export type JobDto = z.infer<typeof JobDto>;
+
+export const DiffEntry = z.object({
+  path: z.string(),
+  change: z.enum(["added", "changed", "removed"]),
+  before: z.unknown(),
+  after: z.unknown(),
+  label: z.string(),
+});
+export type DiffEntry = z.infer<typeof DiffEntry>;
+
+export const AuditEntryDto = z.object({
+  id: z.string(),
+  at: z.string(),
+  by: z.string(),
+  studyId: z.string().nullable(),
+  action: z.string(),
+  detail: z.record(z.string(), z.unknown()),
+});
+export type AuditEntryDto = z.infer<typeof AuditEntryDto>;
+
+// ---- Request bodies ----
+
+export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1) });
+export const ConfirmStudyBody = z.object({
+  sponsor: z.string(),
+  protocol: z.string(),
+  siteName: z.string(),
+  investigator: z.string(),
+  by: z.string(),
+});
+export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: z.string() });
+export const CorrectValueBody = z.object({ path: z.string(), value: z.unknown(), note: z.string().min(1), by: z.string().min(1) });
+export const ResolveAnomalyBody = z.object({
+  kind: z.enum(["fixed", "chosen", "accepted_with_note"]),
+  note: z.string().min(1),
+  by: z.string().min(1),
+});
+export const ChooseGridBody = z.object({ gridId: z.string(), note: z.string().min(1), by: z.string().min(1) });
+export const SignOffBody = z.object({ by: z.string().min(1), note: z.string().optional() });
+export const SettingsDto = z.object({
+  /** When on, a person who corrected values in a version cannot sign it off. Off by default. */
+  makerChecker: z.boolean(),
+  people: z.array(z.string()),
+});
+export type SettingsDto = z.infer<typeof SettingsDto>;
