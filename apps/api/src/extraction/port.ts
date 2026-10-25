@@ -35,8 +35,14 @@ let cached: Promise<ExtractionPort> | undefined;
 
 /** EXTRACTION_FAKE=1 → synthetic fixture; otherwise the real `@dct/extraction` package. */
 export function getExtraction(): Promise<ExtractionPort> {
-  cached ??= config.extractionFake ? import("./fake.js").then((m) => m.fakeExtraction) : loadReal();
+  cached ??= config.extractionFake ? loadFake() : loadReal();
   return cached;
+}
+
+/** Fake mode fakes only the AI: page images are rendered from the real PDF, so the viewer shows real pages. */
+async function loadFake(): Promise<ExtractionPort> {
+  const [{ fakeExtraction }, { renderPage }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
+  return { ...fakeExtraction, renderPage };
 }
 
 async function loadReal(): Promise<ExtractionPort> {

@@ -139,10 +139,8 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
 /** Test hook: make the next N extractStudy calls throw. */
 export const fakeControls = { failNext: 0 };
 
-// 1×1 grey PNG
-const PLACEHOLDER_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
-
-export const fakeExtraction: ExtractionPort = {
+// No renderPage: fake mode renders real pages (see port.ts).
+export const fakeExtraction: Omit<ExtractionPort, "renderPage"> = {
   async identifyDocuments(docs) {
     return {
       documentKinds: Object.fromEntries(docs.map((d, i) => [d.id, kindFromName(d.filename, i)])),
@@ -170,7 +168,4 @@ export const fakeExtraction: ExtractionPort = {
     };
   },
   runContractChecks,
-  async renderPage() {
-    return PLACEHOLDER_PNG;
-  },
 };
