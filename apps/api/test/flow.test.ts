@@ -276,6 +276,42 @@ describe("amendment", () => {
   });
 });
 
+describe("manual entry", () => {
+  it("replaces a failed extraction with a blank manual draft that goes through checks and sign-off", async () => {
+    const { studyId } = await newStudy();
+    await patch(`/api/studies/${studyId}`, { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
+    fakeControls.failNext = 1;
+    await extract(studyId);
+    const url = `/api/studies/${studyId}/versions`;
+    expect((await post(url, { by: "Asha" })).statusCode).toBe(400); // manual: true is required
+
+    const res = await post(url, { manual: true, by: "Asha" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toEqual({ version: 1 }); // reuses the failed version number
+    const ver = await version(studyId, 1);
+    expect(ver.status).toBe("draft");
+    expect(ver.rulebook!.study.sponsor).toEqual({ value: "Acme", prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } });
+    expect(ver.rulebook!.budgetGrids).toEqual([]);
+    expect((await study(studyId)).status).toBe("needs_review");
+    expect(await auditActions(studyId)).toContain("version.manual_created");
+    // a second click doesn't make another draft
+    expect((await post(url, { manual: true, by: "Asha" })).statusCode).toBe(409);
+
+    expect((await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 45, note: "p.3", by: "Asha" })).statusCode).toBe(200);
+    await resolveAll(studyId, 1);
+    expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("for an amendment, seeds the draft from the live rulebook", async () => {
+    const { studyId } = await liveStudy();
+    const res = await post(`/api/studies/${studyId}/versions`, { manual: true, by: "Asha" });
+    expect(res.json()).toEqual({ version: 2 });
+    expect(await study(studyId)).toMatchObject({ status: "amendment_in_review", liveVersion: 1 });
+    const [v1, v2] = [await version(studyId, 1), await version(studyId, 2)];
+    expect(v2.rulebook!.invoiceables).toEqual(v1.rulebook!.invoiceables);
+  });
+});
+
 describe("audit log", () => {
   it("is append-only", async () => {
     const { studyId } = await newStudy();

@@ -1,14 +1,14 @@
-import type {
-  ContractAnomaly,
-  DocumentDto,
-  DocumentKind,
+import {
+  type ContractAnomaly,
+  type DocumentDto,
+  type DocumentKind,
+  type Resolution,
   Rulebook,
-  Resolution,
-  RulebookVersionDto,
-  StudyStatus,
-  StudySummaryDto,
-  VersionStatus,
-  VersionSummaryDto,
+  type RulebookVersionDto,
+  type StudyStatus,
+  type StudySummaryDto,
+  type VersionStatus,
+  type VersionSummaryDto,
 } from "@dct/shared";
 import { and, desc, eq } from "drizzle-orm";
 import type { Tx } from "./db/index.js";
@@ -120,3 +120,49 @@ export function recheck(
 
 /** Date the version's terms apply from: amendment date, else the contract's effective date. */
 export const appliesFromOf = (rb: Rulebook) => rb.appliesFrom.value ?? rb.study.effectiveDate.value;
+
+/**
+ * Starting point for manual entry. Amendment: a copy of the live rulebook (only what changes needs
+ * editing; appliesFrom is cleared so it must be entered). Otherwise a valid blank rulebook, every
+ * value tagged manual, prefilled with the confirmed study details.
+ */
+export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook | null): Rulebook {
+  const prov = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } as const;
+  const m = <T>(value: T) => ({ value, prov });
+  const documentList = docs.map((d) => ({ id: d.id, kind: d.kind as DocumentKind, title: d.filename, date: null }));
+  if (live) return Rulebook.parse({ ...structuredClone(live), documents: documentList, appliesFrom: m(null) });
+  return Rulebook.parse({
+    schemaVersion: 1,
+    study: {
+      sponsor: m(s.sponsor ?? ""),
+      payingAgent: m(null),
+      protocol: m(s.protocol ?? ""),
+      siteName: m(s.siteName ?? ""),
+      investigator: m(s.investigator ?? ""),
+      effectiveDate: m(null),
+      currency: "USD",
+    },
+    documents: documentList,
+    referencedDocuments: [],
+    overhead: { pct: m(null), appliesTo: m("unspecified") },
+    payment: {
+      visitPayment: m("unspecified"),
+      frequency: m("unspecified"),
+      netDays: m(null),
+      netDaysFrom: m(null),
+      invoiceAddress: m(null),
+      requiredReferences: m([]),
+      paymentConditions: m([]),
+    },
+    budgetGrids: [],
+    governingGridId: null,
+    invoiceables: [],
+    screenFail: null,
+    siteFees: [],
+    holdback: null,
+    deadlines: [],
+    overpayment: null,
+    rounding: m("unspecified"),
+    appliesFrom: m(null),
+  });
+}

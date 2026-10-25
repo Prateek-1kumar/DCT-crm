@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { runContractChecks } from "@dct/extraction";
+import { manualRulebook } from "../src/domain.js";
 import { diffRulebooks } from "../src/lib/diff.js";
 import { getAt, markManual, parsePointer, setAt } from "../src/lib/pointer.js";
 
@@ -65,5 +67,15 @@ describe("diffRulebooks", () => {
 
   it("is empty for identical rulebooks", () => {
     expect(diffRulebooks({ a: [1, 2] }, { a: [1, 2] })).toEqual([]);
+  });
+});
+
+describe("manualRulebook", () => {
+  it("is a valid blank rulebook the real contract checks accept", () => {
+    const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: null } as Parameters<typeof manualRulebook>[0];
+    const codes = runContractChecks(manualRulebook(s, [], null)).map((a) => `${a.code}:${a.path}`);
+    expect(codes).toContain("REQUIRED_MISSING:/study/investigator/value");
+    expect(codes).toContain("REQUIRED_MISSING:/budgetGrids");
+    expect(codes.filter((c) => c.startsWith("LOW_CONFIDENCE"))).toEqual([]);
   });
 });
