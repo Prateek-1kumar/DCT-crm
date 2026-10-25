@@ -1,4 +1,4 @@
-import { type AuditEntryDto, SettingsDto } from "@dct/shared";
+import { type AuditEntryDto, PatchSettingsBody, type SettingsDto } from "@dct/shared";
 import { asc, eq } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
@@ -8,7 +8,6 @@ import { audit } from "../domain.js";
 import { parse } from "../lib/http.js";
 
 /** PATCH accepts any subset of SettingsDto, plus who changed it. */
-const PatchSettingsBody = SettingsDto.partial().extend({ by: z.string().min(1).optional() });
 
 export const miscRoutes =
   ({ db }: Ctx): FastifyPluginAsync =>

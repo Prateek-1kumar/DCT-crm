@@ -10,6 +10,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@dct/extraction':
+        specifier: workspace:*
+        version: link:../../packages/extraction
       '@dct/shared':
         specifier: workspace:*
         version: link:../../packages/shared

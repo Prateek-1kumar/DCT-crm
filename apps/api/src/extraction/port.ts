@@ -1,4 +1,4 @@
-import type { ContractAnomaly, DocumentKind, Rulebook } from "@dct/shared";
+import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
 /** Mirrors the `@dct/extraction` interface in docs/PHASE-1.md. */
@@ -11,12 +11,23 @@ export type ExtractionOutput = {
   crossRead: Rulebook | null;
   pages: { documentId: string; page: number; kind: "terms" | "budget_grid" | "invoiceables" | "signatures" | "boilerplate"; readable: boolean }[];
   cost: { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number }[];
+  /** Ambiguity / retroactive notes the rulebook schema can't hold; stored on the version and passed back to the checks. */
+  notes?: ExtractionNote[];
 };
+
+export type ExtractionNote = {
+  kind: "ambiguous" | "retroactive_no_date";
+  topic: string;
+  path: string | null;
+  source: SourceRef | null;
+};
+
+export type CheckOptions = { crossRead?: Rulebook | null; pages?: ExtractionOutput["pages"]; notes?: ExtractionNote[] };
 
 export interface ExtractionPort {
   identifyDocuments(docs: InputDoc[]): Promise<{ documentKinds: Record<string, DocumentKind>; studyGuess: StudyGuess }>;
   extractStudy(input: { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void }): Promise<ExtractionOutput>;
-  runContractChecks(rulebook: Rulebook, opts?: { crossRead?: Rulebook | null }): ContractAnomaly[];
+  runContractChecks(rulebook: Rulebook, opts?: CheckOptions): ContractAnomaly[];
   renderPage(pdfPath: string, page: number, dpi?: number): Promise<Buffer>;
 }
 
@@ -29,13 +40,6 @@ export function getExtraction(): Promise<ExtractionPort> {
 }
 
 async function loadReal(): Promise<ExtractionPort> {
-  // TODO(lead, at merge): add "@dct/extraction": "workspace:*" to apps/api/package.json and replace this
-  // with a static `import * as extraction from "@dct/extraction"`. The variable specifier keeps the api
-  // building and testing (fake mode) before Workstream B's package exists.
-  const spec = "@dct/extraction";
-  try {
-    return (await import(/* @vite-ignore */ spec)) as ExtractionPort;
-  } catch (err) {
-    throw new Error(`@dct/extraction is not available (${(err as Error).message}). Set EXTRACTION_FAKE=1 to run without it.`);
-  }
+  // Lazy so fake mode (tests) never loads mupdf or the AI SDKs.
+  return (await import("@dct/extraction")) satisfies ExtractionPort;
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "rulebook_versions" ADD COLUMN "notes" jsonb DEFAULT '[]'::jsonb NOT NULL;

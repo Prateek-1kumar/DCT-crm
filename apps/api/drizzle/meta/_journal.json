@@ -15,6 +15,13 @@
       "when": 1792946742180,
       "tag": "0001_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792947928576,
+      "tag": "0002_sturdy_alex_power",
+      "breakpoints": true
     }
   ]
 }

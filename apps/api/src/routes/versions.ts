@@ -43,7 +43,7 @@ export const versionRoutes =
         markManual(rb, tokens);
         const checked = Rulebook.safeParse(rb);
         if (!checked.success) throw new HttpError(400, `Correction makes the rulebook invalid: ${z.prettifyError(checked.error)}`);
-        const anomalies = recheck(port, checked.data, row.crossRead, row.anomalies);
+        const anomalies = recheck(port, checked.data, row);
         const editors = row.editors.includes(body.by) ? row.editors : [...row.editors, body.by];
         const [updated] = await tx
           .update(rulebookVersions)
@@ -81,7 +81,7 @@ export const versionRoutes =
         if (!row.rulebook.budgetGrids.some((g) => g.id === body.gridId)) throw new HttpError(400, `No budget grid with id "${body.gridId}"`);
         const rb = { ...structuredClone(row.rulebook), governingGridId: body.gridId };
         const at = new Date().toISOString();
-        const anomalies = recheck(port, rb, row.crossRead, row.anomalies).map((a) =>
+        const anomalies = recheck(port, rb, row).map((a) =>
           a.code === "GRID_CONFLICT" && !a.resolution ? { ...a, resolution: { kind: "chosen" as const, note: body.note, by: body.by, at } } : a,
         );
         const [updated] = await tx.update(rulebookVersions).set({ rulebook: rb, anomalies, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();

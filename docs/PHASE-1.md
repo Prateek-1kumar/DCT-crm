@@ -94,6 +94,7 @@ type ExtractionOutput = {
 ```
 
 - **Fake mode:** with `EXTRACTION_FAKE=1`, `identifyDocuments` and `extractStudy` return a synthetic fixture, so the API and UI run without AI keys.
+- **Added at integration (2026-10-25):** `ExtractionOutput.notes` (ambiguity / retroactive notes the schema can't hold yet) is stored on the version. `runContractChecks(rulebook, { crossRead, pages, notes })` gets all three on every re-check, so UNREADABLE_PAGE, AMBIGUOUS_TERM and RETROACTIVE_NO_DATE survive corrections.
 
 ### HTTP API (A produces, C consumes)
 
@@ -105,7 +106,7 @@ All routes are under `/api`. Bodies and responses are the types in `packages/sha
 | POST | `/studies` `CreateStudyBody` | Create study from documents; queue identify job → `{ studyId, jobId }` |
 | PATCH | `/studies/:id` `ConfirmStudyBody` | Confirm details |
 | PATCH | `/documents/:id` `SetDocumentKindBody` | Fix a document's kind |
-| POST | `/studies/:id/extract` | Queue extraction → `{ jobId, version }` |
+| POST | `/studies/:id/extract` `ExtractBody` | Queue extraction (optionally add amendment documents) → `{ jobId, version }` |
 | GET | `/jobs/:id` | `JobDto` (progress) |
 | GET | `/studies` | `StudySummaryDto[]` |
 | GET | `/studies/:id` | `StudyDetailDto` |
@@ -117,7 +118,7 @@ All routes are under `/api`. Bodies and responses are the types in `packages/sha
 | POST | `/studies/:id/versions/:v/sign-off` `SignOffBody` | 409 if unresolved anomalies (or maker-checker blocks) |
 | GET | `/documents/:id/pages/:n.png` | Page image for the viewer |
 | GET | `/audit?studyId=` | `AuditEntryDto[]` |
-| GET, PATCH | `/settings` | `SettingsDto` (people list, makerChecker) |
+| GET, PATCH | `/settings` `PatchSettingsBody` | `SettingsDto` (people list, makerChecker) |
 
 **Local ports:** web 3100 · api 4100 · Postgres 5434 (Apple `container`, not Docker).
 

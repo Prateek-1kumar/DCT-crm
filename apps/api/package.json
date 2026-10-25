@@ -16,6 +16,7 @@
     "db:reset": "./scripts/db.sh reset"
   },
   "dependencies": {
+    "@dct/extraction": "workspace:*",
     "@dct/shared": "workspace:*",
     "@fastify/multipart": "^10.1.6",
     "drizzle-orm": "^0.45.4",

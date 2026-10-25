@@ -92,7 +92,9 @@ export type AuditEntryDto = z.infer<typeof AuditEntryDto>;
 
 // ---- Request bodies ----
 
-export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1) });
+export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1), by: z.string().min(1).optional() });
+/** POST /studies/:id/extract — documentIds adds documents (amendment journey). */
+export const ExtractBody = z.object({ documentIds: z.array(z.string()).optional(), by: z.string().min(1).optional() });
 export const ConfirmStudyBody = z.object({
   sponsor: z.string(),
   protocol: z.string(),
@@ -115,3 +117,6 @@ export const SettingsDto = z.object({
   people: z.array(z.string()),
 });
 export type SettingsDto = z.infer<typeof SettingsDto>;
+
+/** PATCH /settings — any subset of SettingsDto. */
+export const PatchSettingsBody = SettingsDto.partial().extend({ by: z.string().min(1).optional() });

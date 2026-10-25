@@ -99,7 +99,8 @@ export async function runExtract(db: Db, { jobId, studyId, version }: ExtractDat
     await progress;
     const rulebook = Rulebook.parse(out.rulebook);
     const crossRead = out.crossRead ? Rulebook.parse(out.crossRead) : null;
-    const anomalies = port.runContractChecks(rulebook, { crossRead });
+    const notes = out.notes ?? [];
+    const anomalies = port.runContractChecks(rulebook, { crossRead, pages: out.pages, notes });
     const sum = (k: "usd" | "inputTokens" | "outputTokens") => out.cost.reduce((n, c) => n + c[k], 0);
     await db.transaction(async (tx) => {
       // all-or-nothing: the version is filled in one statement, only if still extracting
@@ -111,6 +112,7 @@ export async function runExtract(db: Db, { jobId, studyId, version }: ExtractDat
           crossRead,
           anomalies,
           pages: out.pages,
+          notes,
           cost: out.cost,
           costUsd: sum("usd"),
           inputTokens: sum("inputTokens"),

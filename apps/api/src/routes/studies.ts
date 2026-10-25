@@ -1,4 +1,4 @@
-import { ConfirmStudyBody, CreateStudyBody, type JobDto, type StudyDetailDto } from "@dct/shared";
+import { ConfirmStudyBody, CreateStudyBody, ExtractBody, type JobDto, type StudyDetailDto } from "@dct/shared";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
@@ -12,7 +12,6 @@ import { HttpError, notFound, parse } from "../lib/http.js";
  * Not in @dct/shared yet (proposed as `ExtractBody`): an amendment adds documents to an existing
  * study, and `by` names who started it. Both optional, so an empty body still works.
  */
-const ExtractBody = z.object({ documentIds: z.array(z.string()).optional(), by: z.string().min(1).optional() });
 
 export const studyRoutes =
   ({ db, boss }: Ctx): FastifyPluginAsync =>
@@ -30,7 +29,7 @@ export const studyRoutes =
       const { studyId, jobId } = await db.transaction(async (tx) => {
         const [study] = await tx.insert(studies).values({}).returning();
         await tx.insert(studyDocuments).values(ids.map((documentId) => ({ studyId: study!.id, documentId })));
-        await audit(tx, "system", study!.id, "study.created", { documentIds: ids });
+        await audit(tx, body.by ?? "system", study!.id, "study.created", { documentIds: ids });
         return { studyId: study!.id, jobId: await createJob(tx, "identify", study!.id, null) };
       });
       await sendJob(boss, "identify", { jobId, studyId });

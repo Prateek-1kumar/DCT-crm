@@ -14,7 +14,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { ExtractionOutput } from "../extraction/port.js";
+import type { ExtractionNote, ExtractionOutput } from "../extraction/port.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true }).notNull().defaultNow();
 
@@ -61,6 +61,7 @@ export const rulebookVersions = pgTable(
     crossRead: jsonb("cross_read").$type<Rulebook>(),
     anomalies: jsonb("anomalies").$type<ContractAnomaly[]>().notNull().default([]),
     pages: jsonb("pages").$type<ExtractionOutput["pages"]>().notNull().default([]),
+    notes: jsonb("notes").$type<ExtractionNote[]>().notNull().default([]),
     cost: jsonb("cost").$type<ExtractionOutput["cost"]>().notNull().default([]),
     costUsd: doublePrecision("cost_usd").notNull().default(0),
     inputTokens: integer("input_tokens").notNull().default(0),

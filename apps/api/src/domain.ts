@@ -12,7 +12,7 @@ import type {
 import { and, desc, eq } from "drizzle-orm";
 import type { Tx } from "./db/index.js";
 import { auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
-import type { ExtractionPort } from "./extraction/port.js";
+import type { CheckOptions, ExtractionPort } from "./extraction/port.js";
 import { HttpError, notFound } from "./lib/http.js";
 
 type DocumentRow = typeof documents.$inferSelect;
@@ -100,9 +100,13 @@ export function assertDraft(v: VersionRow): asserts v is VersionRow & { rulebook
 }
 
 /** Re-run contract checks; anomalies whose id still exists keep their resolution. */
-export function recheck(port: ExtractionPort, rulebook: Rulebook, crossRead: Rulebook | null, previous: ContractAnomaly[]): ContractAnomaly[] {
-  const resolved = new Map(previous.map((a) => [a.id, a.resolution]));
-  return port.runContractChecks(rulebook, { crossRead }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
+export function recheck(
+  port: ExtractionPort,
+  rulebook: Rulebook,
+  row: { crossRead: Rulebook | null; pages: CheckOptions["pages"]; notes: CheckOptions["notes"]; anomalies: ContractAnomaly[] },
+): ContractAnomaly[] {
+  const resolved = new Map(row.anomalies.map((a) => [a.id, a.resolution]));
+  return port.runContractChecks(rulebook, { crossRead: row.crossRead, pages: row.pages, notes: row.notes }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
 }
 
 /** Date the version's terms apply from: amendment date, else the contract's effective date. */
