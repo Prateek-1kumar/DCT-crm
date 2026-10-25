@@ -146,7 +146,8 @@ export const studyRoutes =
           .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
           .where(eq(studyDocuments.studyId, studyId))
           .orderBy(studyDocuments.addedAt, documents.filename);
-        const live = versions.find((v) => v.status === "signed")?.rulebook;
+        const liveRow = versions.find((v) => v.status === "signed");
+        const live = liveRow?.rulebook;
         const rulebook = manualRulebook(s, docs.map((r) => r.d), live ?? null);
         const anomalies = port.runContractChecks(rulebook, { crossRead: null, pages: [], notes: [] });
         const fields = { status: "draft", rulebook, crossRead: null, anomalies, pages: [], notes: [], cost: [], costUsd: 0, inputTokens: 0, outputTokens: 0, appliesFrom: appliesFromOf(rulebook), error: null, updatedAt: new Date() };
@@ -160,7 +161,7 @@ export const studyRoutes =
           await tx.insert(rulebookVersions).values({ studyId, version: v, ...fields });
         }
         await refreshStudyStatus(tx, studyId);
-        await audit(tx, by, studyId, "version.manual_created", { version: v, seededFrom: live ? "live version" : "blank" });
+        await audit(tx, by, studyId, "version.manual_created", { version: v, seededFrom: live ? "live version" : "blank", seededFromVersion: live ? liveRow!.version : null });
         return v;
       });
       return reply.status(201).send({ version });

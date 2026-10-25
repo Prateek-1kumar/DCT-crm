@@ -6,7 +6,7 @@ import type { Ctx } from "../app.js";
 import { rulebookVersions, settings } from "../db/schema.js";
 import { appliesFromOf, assertDraft, audit, loadVersion, recheck, refreshStudyStatus, versionDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
-import { diffRulebooks } from "../lib/diff.js";
+import { diffRulebooks, itemIds } from "../lib/diff.js";
 import { HttpError, parse } from "../lib/http.js";
 import { getAt, markManual, parsePointer, setAt } from "../lib/pointer.js";
 
@@ -51,7 +51,7 @@ export const versionRoutes =
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId);
-        await audit(tx, body.by, row.studyId, "value.corrected", { version: row.version, path: body.path, before, after: body.value, note: body.note });
+        await audit(tx, body.by, row.studyId, "value.corrected", { version: row.version, path: body.path, before, after: body.value, note: body.note, items: itemIds(row.rulebook, tokens) });
         return versionDto(updated!);
       });
     });

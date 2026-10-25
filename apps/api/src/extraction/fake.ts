@@ -78,7 +78,11 @@ function fixture(docs: InputDoc[]): Rulebook {
       },
     ],
     screenFail: { amountCents: 745500, basis: "fixed", cap: { kind: "blocks_with_reauth", n: 7, ratio: null }, paidVia: "invoice", requiredDocs: ["eCRFs", "detailed invoice"], prov },
-    siteFees: [{ code: "SC003", name: "Administrative fee", amountCents: 1200000, trigger: "study_initiation", dueDays: 45, prov }],
+    siteFees: [
+      // the amendment adds a fee in front (same amount), so index-based paths now point at a different item
+      ...(amended ? [{ code: "SC001", name: "Start-up fee", amountCents: 1200000, trigger: "one_time" as const, dueDays: 30, prov }] : []),
+      { code: "SC003", name: "Administrative fee", amountCents: 1200000, trigger: "study_initiation", dueDays: 45, prov },
+    ],
     holdback: null,
     deadlines: [{ kind: "invoice_months_after_study_close", value: 6, consequence: "may not be approved", prov }],
     overpayment: null,
