@@ -1,0 +1,10 @@
+node_modules/
+.next/
+dist/
+.env
+.env.*
+!.env.example
+# real contracts and CTMS exports — never commit
+data/
+*.log
+.DS_Store
