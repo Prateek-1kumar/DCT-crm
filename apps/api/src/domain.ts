@@ -3,6 +3,7 @@ import type {
   DocumentDto,
   DocumentKind,
   Rulebook,
+  Resolution,
   RulebookVersionDto,
   StudyStatus,
   StudySummaryDto,
@@ -99,14 +100,22 @@ export function assertDraft(v: VersionRow): asserts v is VersionRow & { rulebook
   if (v.status !== "draft" || !v.rulebook) throw new HttpError(409, `Version ${v.version} is ${v.status}; only draft versions can be changed`);
 }
 
-/** Re-run contract checks; anomalies whose id still exists keep their resolution. */
+/**
+ * Re-run contract checks; anomalies whose id still exists keep their resolution.
+ * An anomaly the change made disappear stays in the list, settled by this change (`settledBy`),
+ * so the review keeps its record and a follow-up resolve call doesn't 404.
+ */
 export function recheck(
   port: ExtractionPort,
   rulebook: Rulebook,
   row: { crossRead: Rulebook | null; pages: CheckOptions["pages"]; notes: CheckOptions["notes"]; anomalies: ContractAnomaly[] },
+  settledBy: Omit<Resolution, "at">,
 ): ContractAnomaly[] {
   const resolved = new Map(row.anomalies.map((a) => [a.id, a.resolution]));
-  return port.runContractChecks(rulebook, { crossRead: row.crossRead, pages: row.pages, notes: row.notes }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
+  const fresh = port.runContractChecks(rulebook, { crossRead: row.crossRead, pages: row.pages, notes: row.notes }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
+  const at = new Date().toISOString();
+  const gone = row.anomalies.filter((a) => !fresh.some((f) => f.id === a.id)).map((a) => ({ ...a, resolution: a.resolution ?? { ...settledBy, at } }));
+  return [...fresh, ...gone];
 }
 
 /** Date the version's terms apply from: amendment date, else the contract's effective date. */

@@ -129,7 +129,8 @@ describe("review", () => {
     expect(res.statusCode).toBe(200);
     const ver = res.json<RulebookVersionDto>();
     expect(ver.rulebook!.budgetGrids[0]!.visits[1]).toMatchObject({ totalCents: 848800, prov: { method: "manual" } });
-    expect(ver.anomalies.map((a) => a.code)).not.toContain("VISIT_TOTAL_MISMATCH");
+    // the correction cleared the anomaly: it stays on record, settled as fixed with the correction's note
+    expect(ver.anomalies.find((a) => a.code === "VISIT_TOTAL_MISMATCH")?.resolution).toMatchObject({ kind: "fixed", by: "Asha", note: "printed total is a typo" });
     expect(ver.anomalies.find((a) => a.code === "MISSING_REFERENCED_DOC")?.resolution).toMatchObject({ by: "Asha", kind: "accepted_with_note" });
     expect(ver.editors).toEqual(["Asha"]);
 
@@ -139,6 +140,19 @@ describe("review", () => {
       action: "value.corrected",
       detail: { version: 1, path: "/budgetGrids/0/visits/1/totalCents", before: 848900, after: 848800, note: "printed total is a typo" },
     });
+  });
+
+  it("Fix value in the UI = PATCH then resolve 'fixed': works even when the PATCH cleared the anomaly", async () => {
+    const { studyId } = await newStudy();
+    await extract(studyId);
+    const aid = "VISIT_TOTAL_MISMATCH:/budgetGrids/0/visits/1/totalCents";
+    await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800, note: "p.9 prints 8,488.00", by: "Asha" });
+    const res = await post(`/api/studies/${studyId}/versions/1/anomalies/${encodeURIComponent(aid)}/resolve`, { kind: "fixed", note: "p.9 prints 8,488.00", by: "Asha" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<RulebookVersionDto>().anomalies.find((a) => a.id === aid)?.resolution).toMatchObject({ kind: "fixed" });
+    // and a later, unrelated correction doesn't drop or re-settle it
+    const later = await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 30, note: "x", by: "Ben" });
+    expect(later.json<RulebookVersionDto>().anomalies.filter((a) => a.id === aid)).toEqual([expect.objectContaining({ resolution: expect.objectContaining({ by: "Asha" }) })]);
   });
 
   it("resolves an anomaly", async () => {
