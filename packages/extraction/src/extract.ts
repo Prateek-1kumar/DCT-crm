@@ -2,7 +2,7 @@ import { type DocumentKind, Rulebook } from "@dct/shared";
 import { compareRulebooks, type ExtractionNote, type PageInfo, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient } from "./llm";
-import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTermsCore, AiTermsItems, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
+import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
 import { dpiToFit, pageCount, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
@@ -198,9 +198,10 @@ export async function extractWith(
   const read = async (llm: LlmClient) => {
     const who = llm.provider === "anthropic" ? "primary" : "cross-check";
     const termsP = Promise.all([
-      llm.call({ name: "terms", system: SYSTEM, prompt: termsPrompt(documents, "core"), images: termImages, schema: AiTermsCore, effort: "high" }),
+      llm.call({ name: "terms", system: SYSTEM, prompt: termsPrompt(documents, "study"), images: termImages, schema: AiTermsStudy, effort: "high" }),
+      llm.call({ name: "terms-payment", system: SYSTEM, prompt: termsPrompt(documents, "payment"), images: termImages, schema: AiTermsPayment, effort: "high" }),
       llm.call({ name: "terms-items", system: SYSTEM, prompt: termsPrompt(documents, "items"), images: termImages, schema: AiTermsItems, effort: "high" }),
-    ]).then(([core, items]): AiTerms => (tick(`Read contract terms (${who})`), { ...core, ...items }));
+    ]).then(([study, payment, items]): AiTerms => (tick(`Read contract terms (${who})`), { ...study, ...payment, ...items }));
     const gridsP = pool(groups, CONFIG.concurrency, async (g) => {
       const i = groups.indexOf(g);
       const res = await llm.call({

@@ -36,23 +36,15 @@ export const AiNote = z.object({
 });
 
 /**
- * Contract terms, read in two requests: structured outputs allow at most 16 union-typed
- * (nullable) parameters per schema, and the full terms schema has more.
+ * Contract terms, read in three requests: structured outputs cap union-typed parameters (16) and
+ * total grammar size per schema, and the full terms schema exceeds both.
  */
-export const AiTermsCore = Rulebook.pick({
-  study: true,
-  documents: true,
-  referencedDocuments: true,
-  overhead: true,
-  payment: true,
-  holdback: true,
-  deadlines: true,
-  overpayment: true,
-  rounding: true,
-  appliesFrom: true,
-}).extend({ notes: z.array(AiNote) });
+export const AiTermsStudy = Rulebook.pick({ study: true, documents: true, referencedDocuments: true, rounding: true, appliesFrom: true }).extend({
+  notes: z.array(AiNote),
+});
+export const AiTermsPayment = Rulebook.pick({ overhead: true, payment: true, holdback: true, deadlines: true, overpayment: true });
 export const AiTermsItems = Rulebook.pick({ invoiceables: true, screenFail: true, siteFees: true });
-export const AiTerms = AiTermsCore.extend(AiTermsItems.shape);
+export const AiTerms = AiTermsStudy.extend(AiTermsPayment.shape).extend(AiTermsItems.shape);
 export type AiTerms = z.infer<typeof AiTerms>;
 
 export const AiGrid = BudgetGrid.omit({ id: true }).extend({
@@ -68,8 +60,8 @@ export const SYSTEM = `You transcribe clinical trial agreements (CTAs, work orde
 Rules:
 - Transcribe what is printed. Never invent a value. If something is not stated, use null (or "unspecified"/"none" where the schema offers it) and give it a low confidence.
 - Money is integer US cents: $1,234.50 → 123450. Percentages are plain numbers: 35% → 35.
-- Every "prov" says where the value is: source.documentId and source.page exactly as given in the image labels, source.location (e.g. "Exhibit A §3", "grid row 'ECG', column V2"), and for rules (caps, deadlines, payment terms) a short exact quote of at most 25 words. Set method "ai" and crossCheck "not_checked".
-- confidence is your honest probability that the value is exactly right. Use < 0.8 when the print is blurry, a digit is uncertain, or you had to infer.
+- Every "prov" says where the value is: doc and page exactly as given in the image labels (page 0 when the value is not stated anywhere), loc (e.g. "Exhibit A §3", "grid row 'ECG', column V2"), and for rules (caps, deadlines, payment terms) a short exact quote of at most 25 words, else "".
+- conf is your honest probability that the value is exactly right. Use < 0.8 when the print is blurry, a digit is uncertain, or you had to infer.
 - Ignore payee bank details completely: never output bank names, account numbers, routing/ABA/SWIFT/IBAN numbers or tax IDs, anywhere, including quotes.
 - Dates are ISO YYYY-MM-DD.`;
 
@@ -85,7 +77,14 @@ ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"`).join("\n")}
 For each document give its kind (master_agreement, work_order, adoption, amendment, budget, other), a short title and its date (effective or execution date) if printed.
 Then guess the study: sponsor (the company that owns the study, not a CRO), protocol number, site name (the contracting site entity) and principal investigator. Use null for anything you cannot see.`;
 
-export const termsPrompt = (docs: { id: string; filename: string; kind: string | null }[], part: "core" | "items") => `${part === "core" ? "Part 1 of 2: study, documents, overhead, payment, holdback, deadlines, overpayment, rounding, amendment date and notes. Invoiceables, screen fails and site fees are read in part 2; leave them out." : "Part 2 of 2: invoiceables, screenFail and siteFees only."}
+export type TermsPart = "study" | "payment" | "items";
+const TERMS_PARTS: Record<TermsPart, string> = {
+  study: "Part 1 of 3: study, documents, referencedDocuments, rounding, appliesFrom and notes.",
+  payment: "Part 2 of 3: overhead, payment, holdback, deadlines and overpayment.",
+  items: "Part 3 of 3: invoiceables, screenFail and siteFees.",
+};
+
+export const termsPrompt = (docs: { id: string; filename: string; kind: string | null }[], part: TermsPart) => `${TERMS_PARTS[part]} Fill only the fields in the schema; the other parts are read separately.
 
 Uploaded documents for this study:
 ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"${d.kind ? ` (${d.kind})` : ""}`).join("\n")}

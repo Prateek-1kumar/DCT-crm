@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import OpenAI from "openai";
 import { z } from "zod";
+import { expandProv, modelSchema } from "./model-schema";
 
 /** Every model call goes through here: provider + model from config, timeouts, retries, usage/cost. */
 
@@ -41,7 +41,7 @@ async function withParseRetry<T>(name: string, schema: z.ZodType<T>, attempt: ()
   for (let i = 0; i < 2; i++) {
     const text = await attempt();
     try {
-      const r = schema.safeParse(JSON.parse(text));
+      const r = schema.safeParse(expandProv(JSON.parse(text)));
       if (r.success) return r.data;
       lastErr = z.prettifyError(r.error).slice(0, 2000);
     } catch (e) {
@@ -62,7 +62,7 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
     cost: () => ({ provider: "anthropic", model, inputTokens: usage.input, outputTokens: usage.output, usd: round(usage.usd) }),
     async call<T>(req: LlmRequest<T>) {
       // Plain JSON-schema format (not the auto-parsing one) so a bad parse doesn't lose the usage numbers.
-      const format = { type: "json_schema" as const, schema: betaZodOutputFormat(req.schema).schema };
+      const format = { type: "json_schema" as const, schema: modelSchema(req.schema) };
       const content: Anthropic.Beta.BetaContentBlockParam[] = req.images.flatMap((img) => [
         { type: "text" as const, text: img.label },
         { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: img.png.toString("base64") } },
@@ -115,7 +115,7 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
       usd: pin && pout ? round((usage.input * pin + usage.output * pout) / 1e6) : 0,
     }),
     async call<T>(req: LlmRequest<T>) {
-      const schema = betaZodOutputFormat(req.schema).schema;
+      const schema = modelSchema(req.schema);
       const content: OpenAI.Responses.ResponseInputContent[] = req.images.flatMap((img) => [
         { type: "input_text" as const, text: img.label },
         { type: "input_image" as const, detail: "high" as const, image_url: `data:image/png;base64,${img.png.toString("base64")}` },
