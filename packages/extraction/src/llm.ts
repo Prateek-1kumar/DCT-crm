@@ -87,7 +87,8 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
         const msg = await client.beta.messages
           .stream({
             model,
-            max_tokens: 64000,
+            // 128K needs streaming (we stream); max-effort grid re-reads can think at length.
+            max_tokens: 128000,
             ...fallback,
             thinking: { type: "adaptive" },
             output_config: { effort: req.effort ?? "high", format },

@@ -225,8 +225,12 @@ export async function extractWith(
       const bad = gridMismatches(res.grids);
       if (bad > 0 && llm.provider === "anthropic") {
         tick(`Re-reading budget grid ${i + 1} (${bad} total(s) didn't add up)`);
-        const again = await readGrid("max");
-        if (gridMismatches(again.grids) < bad) res = again;
+        try {
+          const again = await readGrid("max");
+          if (gridMismatches(again.grids) < bad) res = again;
+        } catch (e) {
+          warnings.push(`Re-read of budget grid ${i + 1} failed, kept the first read: ${(e as Error).message}`);
+        }
       }
       tick(`Read budget grid ${i + 1}/${groups.length} (${who})`);
       return res.grids;

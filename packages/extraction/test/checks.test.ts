@@ -149,9 +149,13 @@ describe("runContractChecks", () => {
     cross.payment.netDays.value = 30;
     cross.invoiceables = [];
     const a = runContractChecks(rb, { crossRead: cross }).filter((x) => x.code === "AI_DISAGREEMENT");
-    expect(a.map((x) => x.path).sort()).toEqual(["/budgetGrids/0/visits/1/totalCents", "/invoiceables/0", "/payment/netDays/value"]);
+    // an invoiceable the cross-read merely skipped is not flagged (says nothing about a primary misread)
+    expect(a.map((x) => x.path).sort()).toEqual(["/budgetGrids/0/visits/1/totalCents", "/payment/netDays/value"]);
     expect(a.find((x) => x.path === "/payment/netDays/value")!.detail).toEqual({ claude: 45, openai: 30 });
     expect(compareRulebooks(rb, cross).filter((c) => !c.agree)).toHaveLength(3);
+    // ...but one only the cross-read found is (possible omission by the primary)
+    const only = runContractChecks({ ...rb, invoiceables: [] }, { crossRead: rb }).filter((x) => x.code === "AI_DISAGREEMENT");
+    expect(only.map((x) => x.path)).toEqual(["/invoiceables"]);
   });
 
   it("LOW_CONFIDENCE below 0.8, pointing at the value", () => {
@@ -209,5 +213,16 @@ describe("runContractChecks", () => {
     expect(compareRulebooks(a, b).filter((d) => !d.agree)).toEqual([]);
     b.siteFees.at(-1)!.amountCents = 800000;
     expect(compareRulebooks(a, b).filter((d) => !d.agree).map((d) => d.label)).toEqual(['site fee "Administrative startup (non-refundable)" amount']);
+  });
+  it("cross-read visits pair by name (numbers must agree), then by position", () => {
+    const rb = makeRulebook();
+    const cross = structuredClone(rb);
+    const [v1, v2] = cross.budgetGrids[0]!.visits;
+    // other model's codes, and columns listed in the other order
+    cross.budgetGrids[0]!.visits = [{ ...v2!, code: "Week 2", order: 1 }, { ...v1!, code: "Screening", order: 2 }];
+    for (const p of cross.budgetGrids[0]!.procedures) p.cells = Object.fromEntries(Object.entries(p.cells).map(([k, v]) => [k === "V1" ? "Screening" : "Week 2", v]));
+    rb.budgetGrids[0]!.visits[0]!.name = "Screening";
+    rb.budgetGrids[0]!.visits[1]!.name = "Week 2";
+    expect(compareRulebooks(rb, cross).filter((c) => !c.agree)).toEqual([]);
   });
 });

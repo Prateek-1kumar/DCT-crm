@@ -149,10 +149,11 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
       // Grid marks some visits "invoiceable": the split is intended (Shah visual acuity), not a duplicate.
       if (!priced.length || Object.values(p.cells).includes("invoiceable")) return;
       rulebook.invoiceables.forEach((inv, ii) => {
-        const codeMatch = !!p.code && !!inv.code && norm(p.code) === norm(inv.code);
+        // Billing codes alone are reused across different items (36415 = any blood draw, e.g. a separately
+        // billed TB draw), so the names must match: exactly, or one inside the other at the same price.
         const nameMatch = norm(p.name) === norm(inv.name);
-        const fuzzy = sharesWord(p.name, inv.name) && priced.some(([, c]) => c === inv.amountCents || c === inv.amountWithOverheadCents);
-        if (codeMatch || nameMatch || fuzzy)
+        const samePrice = priced.some(([, c]) => c === inv.amountCents || c === inv.amountWithOverheadCents);
+        if (nameMatch || (sameName(p.name, inv.name) && samePrice))
           add("DUPLICATE_ITEM", `${gp}/procedures/${pi}`, `"${p.name}" is paid inside ${g.label} visit(s) ${priced.map(([v]) => v).join(", ")} and also listed as invoiceable "${inv.name}"`, refsOf(p.prov, inv.prov), {
             invoiceablePath: `/invoiceables/${ii}`,
             visits: priced.map(([v]) => v),
@@ -226,13 +227,28 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
       add("LOW_CONFIDENCE", path, `Low extraction confidence (${prov.confidence.toFixed(2)}) at ${path}`, refsOf(prov), { confidence: prov.confidence });
   }
 
-  // AI_DISAGREEMENT
+  // AI_DISAGREEMENT — one anomaly per item (grid row, visit, invoiceable…), listing every differing value.
+  // A misread row otherwise raised one anomaly per visit column (24 for one McAllen row).
   if (opts.crossRead) {
+    const groups = new Map<string, Comparison[]>();
     for (const d of compareRulebooks(rulebook, opts.crossRead)) {
-      if (d.agree) continue;
-      add("AI_DISAGREEMENT", d.path, `Second read disagrees at ${d.label}: primary ${fmt(d.primary)}, cross-read ${fmt(d.cross)}`, refsOf(provAt(rulebook, d.path)), {
-        claude: d.primary,
-        openai: d.cross,
+      // A value the second reader merely skipped says nothing about a misread by the primary.
+      if (d.agree || d.cross === undefined) continue;
+      groups.set(d.item, [...(groups.get(d.item) ?? []), d]);
+    }
+    for (const ds of groups.values()) {
+      const [first] = ds as [Comparison, ...Comparison[]];
+      const message =
+        ds.length === 1
+          ? `Second read disagrees at ${first.label}: primary ${fmt(first.primary)}, cross-read ${fmt(first.cross)}`
+          : `Second read disagrees on ${ds.length} values${first.name ? ` of "${first.name}"` : ""}: ${ds
+              .slice(0, 4)
+              .map((d) => `${d.label.replace(/^.*" /, "")} ${fmt(d.primary)} vs ${fmt(d.cross)}`)
+              .join("; ")}${ds.length > 4 ? "; …" : ""}`;
+      add("AI_DISAGREEMENT", first.path, message, refsOf(provAt(rulebook, first.path)), {
+        claude: first.primary,
+        openai: first.cross,
+        ...(ds.length > 1 ? { fields: ds.map((d) => ({ path: d.path, label: d.label, claude: d.primary, openai: d.cross })) } : {}),
       });
     }
   }
@@ -324,7 +340,7 @@ export function provAt(rb: Rulebook, path: string): Provenance | null {
 
 // ---------- cross-read comparison ----------
 
-export type Comparison = { key: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
+export type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
 
 type Field = { item: string; itemPath: string; path: string; label: string; value: unknown; name: string };
 
@@ -371,6 +387,7 @@ function flatten(rb: Rulebook): Map<string, Field> {
     put(`grid.${gk}`, gp, "statedOH", `${gp}/statedOverheadPct`, `${g.label} stated overhead`, g.statedOverheadPct);
     for (const { t, i: ti, k: tk } of keyed(g.perPatientTotals, (t) => norm(t.label)))
       put(`grid.${gk}.pp.${tk}`, `${gp}/perPatientTotals/${ti}`, "cents", `${gp}/perPatientTotals/${ti}/cents`, `${g.label} per-patient "${t.label}"`, t.cents, t.label);
+    // Cross-read visit codes are remapped onto the primary's by matchGrids(), so codes line up here.
     for (const { t: v, i: vi, k: vk } of keyed(g.visits, (v) => norm(v.code))) {
       const vp = `${gp}/visits/${vi}`;
       for (const f of ["totalCents", "procedureSubtotalCents", "overheadCents", "nonProcedureCents"] as const)
@@ -391,25 +408,25 @@ function flatten(rb: Rulebook): Map<string, Field> {
  */
 export function compareRulebooks(primary: Rulebook, cross: Rulebook): Comparison[] {
   const a = flatten(primary);
-  const b = alignNames(a, flatten(cross));
+  const b = alignNames(a, flatten(matchGrids(primary, cross)));
   const itemsA = new Set([...a.values()].map((f) => f.item));
   const itemsB = new Set([...b.values()].map((f) => f.item));
   const out: Comparison[] = [];
   const reported = new Set<string>();
   for (const [key, x] of a) {
     if (!itemsB.has(x.item)) {
-      if (!reported.has(x.item)) out.push({ key: x.item, path: x.itemPath, label: x.label, primary: "present", cross: undefined, agree: false });
+      if (!reported.has(x.item)) out.push({ key: x.item, item: x.item, name: x.name, path: x.itemPath, label: x.label, primary: "present", cross: undefined, agree: false });
       reported.add(x.item);
       continue;
     }
     const y = b.get(key);
-    out.push({ key, path: x.path, label: x.label, primary: x.value, cross: y?.value, agree: JSON.stringify(x.value) === JSON.stringify(y?.value) });
+    out.push({ key, item: x.item, name: x.name, path: x.path, label: x.label, primary: x.value, cross: y?.value, agree: JSON.stringify(x.value) === JSON.stringify(y?.value) });
   }
   for (const y of b.values()) {
     if (itemsA.has(y.item) || reported.has(y.item)) continue;
     reported.add(y.item);
     // Found only by the cross-read: anchor on the parent list in the primary.
-    out.push({ key: y.item, path: y.itemPath.replace(/\/\d+$/, ""), label: y.label, primary: undefined, cross: "present", agree: false });
+    out.push({ key: y.item, item: y.item, name: y.name, path: y.itemPath.replace(/\/\d+$/, ""), label: y.label, primary: undefined, cross: "present", agree: false });
   }
   return out;
 }
@@ -442,3 +459,72 @@ function alignNames(a: Map<string, Field>, b: Map<string, Field>): Map<string, F
   }
   return out;
 }
+
+/**
+ * Reorder the cross-read's grids to pair with the primary's by their numbers (most shared visit
+ * totals), since the two reads may list grids in a different order or under different titles.
+ * Paired grids get the primary's arm so they share a key in flatten().
+ */
+function matchGrids(primary: Rulebook, cross: Rulebook): Rulebook {
+  const totals = (g: BudgetGrid) => g.visits.map((v) => v.totalCents);
+  const overlap = (a: number[], b: number[]) => {
+    const pool = [...b];
+    return a.filter((x) => {
+      const i = pool.indexOf(x);
+      return i >= 0 && pool.splice(i, 1).length > 0;
+    }).length;
+  };
+  const left = cross.budgetGrids.map((g, i) => ({ g, i }));
+  const paired: BudgetGrid[] = [];
+  for (const pg of primary.budgetGrids) {
+    let best = -1;
+    let bestScore = 0;
+    left.forEach(({ g }, j) => {
+      const sc = overlap(totals(pg), totals(g));
+      if (sc > bestScore) [best, bestScore] = [j, sc];
+    });
+    if (best >= 0) paired.push(recodeVisits(pg, { ...left.splice(best, 1)[0]!.g, arm: pg.arm, label: pg.label }));
+  }
+  return { ...cross, budgetGrids: [...paired, ...left.map(({ g }) => g)] };
+}
+
+const tokens = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+const numbers = (s: string) => tokens(s).filter((t) => /^\d+$/.test(t)).join(" ");
+
+/**
+ * Rename the cross grid's visit codes to the primary's ("Screening" → "SCR"): by name first
+ * (numbers must agree, so "Wk 20" never pairs with "Wk 24"), then by column position among the rest.
+ */
+function recodeVisits(primary: BudgetGrid, cross: BudgetGrid): BudgetGrid {
+  const score = (a: Visit, b: Visit) => {
+    const [na, nb] = [`${a.code} ${a.name}`, `${b.code} ${b.name}`];
+    if (numbers(na) !== numbers(nb)) return 0;
+    const tb = new Set(tokens(nb));
+    return tokens(na).filter((t) => tb.has(t)).length;
+  };
+  const map = new Map<string, string>();
+  const freeP = [...primary.visits].sort((a, b) => a.order - b.order);
+  const freeC = [...cross.visits].sort((a, b) => a.order - b.order);
+  for (const c of [...freeC]) {
+    let best: Visit | null = null;
+    let bestScore = 0;
+    for (const p of freeP) {
+      const sc = score(p, c);
+      if (sc > bestScore) [best, bestScore] = [p, sc];
+    }
+    if (best) {
+      map.set(c.code, best.code);
+      freeP.splice(freeP.indexOf(best), 1);
+      freeC.splice(freeC.indexOf(c), 1);
+    }
+  }
+  freeC.forEach((c, i) => freeP[i] && map.set(c.code, freeP[i]!.code));
+  const to = (code: string) => map.get(code) ?? code;
+  return {
+    ...cross,
+    visits: cross.visits.map((v) => ({ ...v, code: to(v.code) })),
+    procedures: cross.procedures.map((p) => ({ ...p, cells: Object.fromEntries(Object.entries(p.cells).map(([k, v]) => [to(k), v])) })),
+  };
+}
+
+type Visit = BudgetGrid["visits"][number];
