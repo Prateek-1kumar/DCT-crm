@@ -22,15 +22,19 @@ export type ExtractionOutput = {
 
 export type Clients = { primary: LlmClient; cross: LlmClient | null };
 
+// Claude's vision input tops out at 2576 px long edge and ~3.75 MP; anything larger is downscaled
+// server-side, which would throw away the high-DPI render. Keep every image under both.
 export const CONFIG = {
   classifyMaxPx: 1000,
   identifyMaxPx: 1400,
-  pageMaxPx: 2400,
+  /** Letter page at 2150 px long edge ≈ 3.6 MP. */
+  pageMaxPx: 2150,
   pageMaxDpi: 300,
   gridOverviewMaxPx: 1600,
   /** Grid pages are re-rendered at this DPI and tiled (dense, sideways tables need 400+). */
   gridDpi: Number(process.env.EXTRACTION_GRID_DPI) || 400,
-  tileMaxPx: 2400,
+  /** Square tiles: 1900² ≈ 3.6 MP. */
+  tileMaxPx: 1900,
   concurrency: 3,
   /** Cost/resource caps: exceeding one fails the extraction with a clear error instead of running up AI cost. */
   maxPagesPerDoc: 100,
