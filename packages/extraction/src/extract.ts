@@ -222,8 +222,11 @@ export async function extractWith(
       let res = await readGrid("high");
       // Numbers that don't add up are usually a misread digit: re-read that grid once at max effort
       // (primary only) and keep whichever read adds up better. Costs extra only on those pages.
+      // Only a few bad visits look like misread digits; when most visits fail it's a layout misreading
+      // that a re-read won't fix (HCWC: 44 of 44), so skip the cost and let the checks raise it for review.
       const bad = gridMismatches(res.grids);
-      if (bad > 0 && llm.provider === "anthropic") {
+      const visits = res.grids.reduce((n, g) => n + g.visits.length, 0);
+      if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && llm.provider === "anthropic") {
         tick(`Re-reading budget grid ${i + 1} (${bad} total(s) didn't add up)`);
         try {
           const again = await readGrid("max");
