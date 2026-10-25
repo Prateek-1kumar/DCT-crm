@@ -2,7 +2,7 @@ import { type DocumentKind, Rulebook } from "@dct/shared";
 import type { ZodType } from "zod";
 import { compareRulebooks, type ExtractionNote, type PageInfo, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
-import { clientsFromEnv, type CostEntry, type Image, type LlmClient } from "./llm";
+import { clientsFromEnv, type CostEntry, type Image, type LlmClient, priceOf } from "./llm";
 import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
 import { dpiToFit, pageCount, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
 
@@ -29,8 +29,14 @@ export type Clients = { primary: LlmClient; cross: LlmClient | null; fast?: LlmC
 export const CONFIG = {
   classifyMaxPx: 1000,
   identifyMaxPx: 1400,
-  /** Letter page at 2150 px long edge ≈ 3.6 MP. */
+  /** Letter page at 2150 px long edge ≈ 3.6 MP (identify/manual uses). */
   pageMaxPx: 2150,
+  /** Terms pages: Claude's recommended 1568 px long edge (~1.6K tokens/page vs ~4.8K at 2150); contract text stays legible. */
+  termsMaxPx: 1568,
+  /** Hard cost budget per extraction, all providers (user decision 2026-10-26: $1 per contract). */
+  maxUsd: Number(process.env.EXTRACTION_MAX_USD) || 1,
+  /** Send budget grids to the cross-reader too. Off: grids are verified by arithmetic, and grid cross-reads were most of the cost. */
+  crossGrids: process.env.CROSS_READ_GRIDS === "1",
   pageMaxDpi: 300,
   gridOverviewMaxPx: 1600,
   /** Grid pages are re-rendered at this DPI and tiled (dense, sideways tables need 400+). */
@@ -169,7 +175,7 @@ export async function extractWith(
   let termPages = readable.filter((p) => p.kind === "terms" || p.kind === "invoiceables" || p.kind === "budget_grid");
   if (!termPages.length) termPages = readable;
   images.take(termPages.length);
-  const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.pageMaxPx, p.rotation)));
+  const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.termsMaxPx, p.rotation)));
 
   const groups: ClassifiedPage[][] = [];
   for (const p of readable.filter((x) => x.kind === "budget_grid")) {
@@ -196,40 +202,52 @@ export async function extractWith(
   }
   progress(25, `Reading ${termPages.length} term pages and ${groups.length} budget grid(s)`);
 
+  // Budget: estimate the required reads up front and refuse rather than overspend; optional steps
+  // (grid re-reads) only run while the running total stays under the cap.
+  const spent = () => [...new Set([clients.primary, clients.fast, clients.cross])].reduce((n, c) => n + (c ? c.cost().usd : 0), 0);
+  const est = estimateUsd(clients, termImages, gridImages);
+  if (est.required > CONFIG.maxUsd)
+    throw new ExtractionLimitError(`Estimated cost $${est.required.toFixed(2)} exceeds the $${CONFIG.maxUsd.toFixed(2)} budget per extraction; split the upload or raise EXTRACTION_MAX_USD`);
+  const crossGrids = CONFIG.crossGrids;
+
   // 3. Independent reads.
-  const totalCalls = (1 + groups.length) * (clients.cross ? 2 : 1);
+  const totalCalls = 1 + groups.length + (clients.cross ? 1 + (crossGrids ? groups.length : 0) : 0);
   let done = 0;
   const tick = (step: string) => progress(25 + (70 * ++done) / totalCalls, step);
   const read = async (llm: LlmClient) => {
-    const who = llm.provider === "anthropic" ? "primary" : "cross-check";
+    const isPrimary = llm === clients.primary;
+    const who = isPrimary ? "primary" : "cross-check";
     // The first terms call writes the image cache; the other two then read it at ~10% of the price.
     const termsCall = <T>(name: string, part: "study" | "payment" | "items", schema: ZodType<T>) =>
-      llm.call({ name, system: SYSTEM, prompt: termsPrompt(documents, part), images: termImages, schema, effort: "medium", cacheImages: true });
+      llm.call({ name, system: SYSTEM, prompt: termsPrompt(documents, part), images: termImages, schema, effort: isPrimary ? "medium" : "low", cacheImages: true });
     const termsP = termsCall("terms", "study", AiTermsStudy)
       .then((study) => Promise.all([termsCall("terms-payment", "payment", AiTermsPayment), termsCall("terms-items", "items", AiTermsItems)]).then(([payment, items]) => ({ ...study, ...payment, ...items })))
       .then((t): AiTerms => (tick(`Read contract terms (${who})`), t));
-    const gridsP = pool(groups, CONFIG.concurrency, async (g) => {
+    const gridsP = pool(isPrimary || crossGrids ? groups : [], CONFIG.concurrency, async (g) => {
       const i = groups.indexOf(g);
-      const readGrid = (effort: "high" | "max") =>
+      const readGrid = (effort: "medium" | "high") =>
         llm.call({
-          name: effort === "max" ? "grid-reread" : "grid",
+          name: effort === "high" ? "grid-reread" : "grid",
           system: SYSTEM,
           prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile"))),
           images: gridImages[i]!,
           schema: AiGrids,
           effort,
         });
-      let res = await readGrid("high");
+      let res = await readGrid("medium");
       // Numbers that don't add up are usually a misread digit: re-read that grid once at max effort
       // (primary only) and keep whichever read adds up better. Costs extra only on those pages.
       // Only a few bad visits look like misread digits; when most visits fail it's a layout misreading
       // that a re-read won't fix (HCWC: 44 of 44), so skip the cost and let the checks raise it for review.
       const bad = gridMismatches(res.grids);
       const visits = res.grids.reduce((n, g) => n + g.visits.length, 0);
-      if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && llm.provider === "anthropic") {
+      const affordable = spent() + est.perGrid[i]! * 1.5 <= CONFIG.maxUsd;
+      if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && isPrimary && !affordable)
+        warnings.push(`Budget grid ${i + 1}: ${bad} total(s) don't add up; re-read skipped to stay within the $${CONFIG.maxUsd.toFixed(2)} budget`);
+      if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && isPrimary && affordable) {
         tick(`Re-reading budget grid ${i + 1} (${bad} total(s) didn't add up)`);
         try {
-          const again = await readGrid("max");
+          const again = await readGrid("high");
           if (gridMismatches(again.grids) < bad) res = again;
         } catch (e) {
           warnings.push(`Re-read of budget grid ${i + 1} failed, kept the first read: ${(e as Error).message}`);
@@ -251,7 +269,8 @@ export async function extractWith(
         })
       : Promise.resolve(null),
   ]);
-  if (!clients.cross) warnings.push("Cross-read skipped: OPENAI_API_KEY or OPENAI_MODEL not set");
+  if (!clients.cross) warnings.push("Cross-read off (CROSS_READ=off or no key)");
+  if (spent() > CONFIG.maxUsd) warnings.push(`Cost $${spent().toFixed(2)} went over the $${CONFIG.maxUsd.toFixed(2)} budget (estimate was $${est.required.toFixed(2)})`);
 
   // 4. Mark each primary value agree/disagree with the second read.
   if (cross) markCrossCheck(primary.rulebook, cross.rulebook);
@@ -343,4 +362,26 @@ export function gridMismatches(grids: AiGrid[]): number {
     }
   }
   return bad;
+}
+
+/** Claude image tokens ≈ width × height / 750 (read from the PNG header). */
+export function imageTokens(png: Buffer): number {
+  return Math.ceil((png.readUInt32BE(16) * png.readUInt32BE(20)) / 750);
+}
+
+/**
+ * Rough USD estimate of the required reads (terms + grids, primary + terms cross-read) and per grid.
+ * Output allowances are generous on purpose: the check refuses up front rather than overspend.
+ */
+export function estimateUsd(clients: Clients, termImages: Image[], gridImages: Image[][]) {
+  const price = (c: LlmClient | null | undefined) => (c && c.provider === "anthropic" ? priceOf(c.model) : null);
+  const p = price(clients.primary) ?? priceOf("claude-sonnet-5-5");
+  const termsTok = termImages.reduce((n, i) => n + imageTokens(i.png), 0) + 3000;
+  // one cache write + two cache reads, ~6K output tokens per terms call
+  const terms = (pr: { in: number; out: number; cacheWrite: number; cacheRead: number }) => (termsTok * (pr.cacheWrite + 2 * pr.cacheRead) + 3 * 6000 * pr.out) / 1e6;
+  const perGrid = gridImages.map((imgs) => ((imgs.reduce((n, i) => n + imageTokens(i.png), 0) + 2000) * p.in + 15000 * p.out) / 1e6);
+  const cp = price(clients.cross);
+  const cross = clients.cross ? (cp ? terms(cp) : terms({ in: 5, out: 30, cacheWrite: 5, cacheRead: 5 })) : 0;
+  const required = terms(p) + perGrid.reduce((a, b) => a + b, 0) + cross;
+  return { required, perGrid };
 }

@@ -100,3 +100,15 @@ All in `CONFIG` (`packages/extraction/src/extract.ts`); render limits are `RENDE
 | `maxPagesTotal` | 200 across all documents of a study | `ExtractionLimitError` before any rendering or AI call (extract and identify) |
 | `maxTilesPerExtraction` | 60 | tile layout is computed and charged first; `ExtractionLimitError` before that page's pixmaps are allocated |
 | `maxImagesPerExtraction` | 300 (classification + term pages + grid overviews + tiles; or one identify call) | `ExtractionLimitError` before the images that would exceed it are rendered |
+
+## Cost decision (2026-10-26): $1 per contract maximum
+
+- **No Opus.** Sonnet 5.5 reads terms and grids; Haiku 5.5 sorts pages and identifies documents.
+- **Cross-read:** Haiku re-reads contract terms only (`CROSS_READ=haiku`, the default). Budget grids aren't cross-read (`CROSS_READ_GRIDS=1` turns that back on); they're verified by arithmetic, and a re-read is triggered when a few totals don't add up.
+- **Why not OpenAI:** gpt-5.5 cost more than the primary read ($1–2.30 per contract), and on McAllen every disagreement checked against the golden answers was its misread.
+- **Image sizes:** terms pages at 1568 px (Claude's recommended size). Grid tiles unchanged (400 DPI).
+- **Effort:** medium on terms and grids; a re-read runs once at high effort.
+- **Guard:** `estimateUsd()` runs before any read and refuses when the required reads would exceed `EXTRACTION_MAX_USD` (default 1). The output allowances are generous on purpose. Grid re-reads run only while `spent + 1.5 × that grid's estimate` stays under the cap; otherwise they're skipped with a warning.
+- **Offline estimates** (no AI calls, page types replayed from earlier runs): Shah $0.46, COPD $0.54, McAllen $0.81, HCWC $0.81.
+- **Measured before this change** (Sonnet + gpt-5.5 cross-read of everything): $1.46, $2.16, $3.53, $3.84.
+- **Not live-tested yet** (user will run): re-measure with `pnpm eval <name>`.

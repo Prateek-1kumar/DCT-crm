@@ -42,6 +42,9 @@ const ANTHROPIC_PRICES: Record<string, { in: number; out: number; cacheWrite: nu
 
 /** Defaults (user decision 2026-10-26): no Opus. Sonnet reads, Haiku sorts pages. Override via env. */
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
+
+/** USD per million tokens for budget estimates; unknown models are priced as the default model. */
+export const priceOf = (model: string) => ANTHROPIC_PRICES[model] ?? ANTHROPIC_PRICES[DEFAULT_MODEL]!;
 export const DEFAULT_FAST_MODEL = "claude-haiku-5-5";
 
 /** Model output is JSON text; validate it, and retry once on a bad parse (usage of both attempts is counted). */
@@ -156,13 +159,23 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
 const round = (usd: number) => Math.round(usd * 10000) / 10000;
 
 /** Build clients from env. Missing key/model → null (caller decides whether that's fatal). */
+/**
+ * CROSS_READ picks the second reader: "haiku" (default; ~1–2 cents per contract), "openai"
+ * (OPENAI_MODEL; costs more than the primary read), or "off". Cost decision 2026-10-26: $1/contract max.
+ */
 export function clientsFromEnv(env: NodeJS.ProcessEnv = process.env): { primary: LlmClient | null; fast: LlmClient | null; cross: LlmClient | null } {
+  const key = env.ANTHROPIC_API_KEY;
+  const fastModel = env.ANTHROPIC_FAST_MODEL || DEFAULT_FAST_MODEL;
+  const mode = (env.CROSS_READ || "haiku").toLowerCase();
+  const cross =
+    mode === "openai" && env.OPENAI_API_KEY && env.OPENAI_MODEL
+      ? openaiClient({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL, pricePerMTok: env.OPENAI_PRICE_PER_MTOK })
+      : mode === "haiku" && key
+        ? anthropicClient({ apiKey: key, model: fastModel })
+        : null;
   return {
-    primary: env.ANTHROPIC_API_KEY ? anthropicClient({ apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_MODEL || undefined }) : null,
-    fast: env.ANTHROPIC_API_KEY ? anthropicClient({ apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_FAST_MODEL || DEFAULT_FAST_MODEL }) : null,
-    cross:
-      env.OPENAI_API_KEY && env.OPENAI_MODEL
-        ? openaiClient({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL, pricePerMTok: env.OPENAI_PRICE_PER_MTOK })
-        : null,
+    primary: key ? anthropicClient({ apiKey: key, model: env.ANTHROPIC_MODEL || undefined }) : null,
+    fast: key ? anthropicClient({ apiKey: key, model: fastModel }) : null,
+    cross,
   };
 }

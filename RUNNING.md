@@ -30,11 +30,23 @@ Open http://localhost:3100. Press Ctrl-C to stop both.
 | `pnpm eval shah` | Live extraction of one real contract from `data/contracts/`, scored against `data/golden/` (costs money) |
 | `pnpm probe` | Cheap check that every AI schema is accepted by the live APIs (a few cents) |
 
-## Models
+## Models and cost
 
-- Contracts are read by **Claude Sonnet 5.5**. Pages are sorted by **Claude Haiku 5.5**.
-- **OpenAI** (`OPENAI_MODEL`) does the independent cross-check read.
-- To change models, set `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` / `OPENAI_MODEL` in `.env`.
+**Budget: $1 per contract, maximum.** The extraction estimates its cost up front and refuses rather than overspend. Optional re-reads only run while there's budget left.
+
+| Step | Model |
+|---|---|
+| Page sorting, document identification | Claude Haiku 5.5 |
+| Contract terms (3 reads, page images cached) | Claude Sonnet 5.5, medium effort |
+| Budget tables | Claude Sonnet 5.5, medium effort; one high-effort re-read only if a few totals don't add up |
+| Cross-check of contract terms | Claude Haiku 5.5 (about 1–2 cents). Budget tables are verified by arithmetic instead. |
+
+Estimated cost on the 4 sample contracts: $0.46–0.81 each.
+
+`.env` settings:
+- `EXTRACTION_MAX_USD` changes the budget.
+- `CROSS_READ=openai|off` switches the second reader. OpenAI costs more than the main read.
+- `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` change the models.
 
 ## Data
 

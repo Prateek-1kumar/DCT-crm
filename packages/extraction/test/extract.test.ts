@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Rulebook } from "@dct/shared";
 import * as mupdf from "mupdf";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runContractChecks } from "../src/checks";
-import { type Clients, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc } from "../src/extract";
+import { type Clients, CONFIG, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { CostEntry, LlmClient, LlmRequest } from "../src/llm";
 import type { AiGrid, AiTerms } from "../src/prompts";
@@ -78,6 +78,11 @@ describe("rendering", () => {
 });
 
 describe("extractWith (mocked AI)", () => {
+  // These exercise the full cross-read (grids too) with an OpenAI-priced mock; budget and
+  // terms-only cross-reads have their own tests below.
+  const saved = { maxUsd: CONFIG.maxUsd, crossGrids: CONFIG.crossGrids };
+  beforeEach(() => Object.assign(CONFIG, { maxUsd: 100, crossGrids: true }));
+  afterEach(() => Object.assign(CONFIG, saved));
   it("classifies, reads terms + tiled grid, assembles a valid rulebook and cross-checks it", async () => {
     const rb = makeRulebook();
     const crossRb = structuredClone(rb);
@@ -162,6 +167,30 @@ describe("EXTRACTION_FAKE=1", () => {
     expect(JSON.stringify(out)).not.toMatch(/doc-1|doc-2/);
     const codes = new Set(runContractChecks(out.rulebook, { crossRead: out.crossRead, pages: out.pages, notes: out.notes }).map((a) => a.code));
     for (const c of ["GRID_CONFLICT", "MISSING_REFERENCED_DOC", "DUPLICATE_ITEM", "AI_DISAGREEMENT", "REQUIRED_MISSING", "UNREADABLE_PAGE", "AMBIGUOUS_TERM"]) expect(codes).toContain(c);
+  });
+});
+
+describe("cost budget ($1 per contract)", () => {
+  it("refuses before any terms or grid read when the estimate exceeds the budget", async () => {
+    const seen: Seen[] = [];
+    const saved = CONFIG.maxUsd;
+    CONFIG.maxUsd = 0.05;
+    try {
+      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/exceeds the \$0.05 budget/);
+    } finally {
+      CONFIG.maxUsd = saved;
+    }
+    expect(seen.map((x) => x.name)).toEqual(["classify"]);
+  });
+
+  it("by default the cross-reader reads terms only, not budget grids", async () => {
+    const seenP: Seen[] = [];
+    const seenC: Seen[] = [];
+    const rb = makeRulebook();
+    const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb, seenP), cross: mockClient("anthropic", structuredClone(rb), seenC) });
+    expect(seenP.some((x) => x.name === "grid")).toBe(true);
+    expect(seenC.map((x) => x.name).sort()).toEqual(["terms", "terms-items", "terms-payment"]);
+    expect(out.crossRead!.budgetGrids).toEqual([]);
   });
 });
 
