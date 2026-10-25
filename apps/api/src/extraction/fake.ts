@@ -17,7 +17,7 @@ function fixture(docs: InputDoc[]): Rulebook {
   const documentId = docs[0]?.id ?? "d1";
   const prov = { source: { documentId, page: 1 }, confidence: 0.98, method: "ai", crossCheck: "agree" } as const;
   const s = <T>(value: T) => ({ value, prov });
-  const amended = docs.some((d) => d.kind === "amendment");
+  const amended = docs.some((d) => d.kind === "amendment" || /amend/i.test(d.filename));
   const grid = (id: string, label: string, v2Total: number) => ({
     id,
     label,
