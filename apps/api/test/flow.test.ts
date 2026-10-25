@@ -286,6 +286,79 @@ describe("amendment", () => {
   });
 });
 
+describe("amendment carries the live version's corrections", () => {
+  const visitTotal = "/budgetGrids/0/visits/1/totalCents";
+  const unsched = "/invoiceables/0/amountWithOverheadCents";
+  const fee = "/siteFees/0/amountCents";
+
+  it("replays value corrections, the grid choice and unchanged resolutions; skips what the amendment changed or moved", async () => {
+    const { studyId } = await newStudy();
+    await extract(studyId);
+    const base = `/api/studies/${studyId}/versions/1`;
+    for (const [path, value] of [[visitTotal, 848800], [unsched, 80100], [fee, 1300000]] as const)
+      expect((await patch(`${base}/values`, { path, value, note: `fix ${path}`, by: "Asha" })).statusCode).toBe(200);
+    expect((await post(`${base}/grid-choice`, { gridId: "g2", note: "revised governs", by: "Asha" })).statusCode).toBe(200);
+    expect((await post(`${base}/anomalies/${encodeURIComponent("MISSING_REFERENCED_DOC:/referencedDocuments/0")}/resolve`, { kind: "accepted_with_note", note: "CTA on file", by: "Asha" })).statusCode).toBe(200);
+    await resolveAll(studyId, 1);
+    expect((await post(`${base}/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+
+    const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend") }])).json<DocumentDto[]>();
+    expect((await extract(studyId, { documentIds: [amend!.id], by: "Asha" })).job.state).toBe("succeeded");
+    const v2 = await version(studyId, 2);
+    const rb = v2.rulebook!;
+
+    // unchanged by the amendment → carried, marked manual
+    expect(rb.budgetGrids[0]!.visits[1]).toMatchObject({ totalCents: 848800, prov: { method: "manual" } });
+    expect(rb.governingGridId).toBe("g2");
+    // the amendment changed it → its value stands
+    expect(rb.invoiceables[0]!.amountWithOverheadCents).toBe(90000);
+    // index 0 is now a different fee (same amount): not overwritten; the original fee keeps the AI read
+    expect(rb.siteFees.map((f) => [f.code, f.amountCents])).toEqual([["SC001", 1200000], ["SC003", 1200000]]);
+
+    const missing = v2.anomalies.find((a) => a.code === "MISSING_REFERENCED_DOC")!;
+    expect(missing.resolution).toMatchObject({ kind: "accepted_with_note", note: "Carried from v1: CTA on file", by: "Asha" });
+    // same id, different detail (Claude now reads 90000) → open again
+    expect(v2.anomalies.find((a) => a.code === "AI_DISAGREEMENT")).toMatchObject({ detail: { claude: 90000, openai: 80100 }, resolution: null });
+    expect(v2.anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "MISSING_REFERENCED_DOC"]);
+    expect(v2.editors).toEqual([]);
+
+    const diff = await get<DiffEntry[]>(`/api/studies/${studyId}/versions/2/diff?against=1`);
+    expect(diff).toContainEqual(expect.objectContaining({ path: unsched, before: 80100, after: 90000 }));
+    expect(diff.map((d) => d.path)).not.toContain(visitTotal);
+    expect(diff.some((d) => d.path.startsWith("/governingGridId") || d.path.startsWith("/budgetGrids"))).toBe(false);
+
+    const entries = await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`);
+    const carried = entries.find((e) => e.action === "version.corrections_carried")!;
+    expect(carried.detail).toMatchObject({
+      version: 2,
+      from: 1,
+      carried: [expect.objectContaining({ path: visitTotal, before: 848900, after: 848800, by: "Asha", items: ["g1", "V2"] })],
+      skipped: [
+        expect.objectContaining({ path: unsched, reason: "amendment_changed" }),
+        expect.objectContaining({ path: fee, reason: "item_moved", items: ["SC003"] }),
+      ],
+      grid: { from: "g2", to: "g2" },
+      resolutions: [{ anomalyId: missing.id, code: "MISSING_REFERENCED_DOC", kind: "accepted_with_note" }],
+    });
+
+    // transitively: v3 gets v1's carried correction and v2's own
+    expect((await patch(`/api/studies/${studyId}/versions/2/values`, { path: unsched, value: 90100, note: "p.4", by: "Ben" })).statusCode).toBe(200);
+    await resolveAll(studyId, 2);
+    expect((await post(`/api/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    await extract(studyId);
+    const v3 = await version(studyId, 3);
+    expect(v3.rulebook!.budgetGrids[0]!.visits[1]!.totalCents).toBe(848800);
+    expect(v3.rulebook!.invoiceables[0]!.amountWithOverheadCents).toBe(90100);
+    expect(await get<DiffEntry[]>(`/api/studies/${studyId}/versions/3/diff?against=2`)).toEqual([]);
+  });
+
+  it("a first extraction carries nothing", async () => {
+    const { studyId } = await newStudy();
+    await extract(studyId);
+    expect(await auditActions(studyId)).not.toContain("version.corrections_carried");
+  });
+});
+
 describe("manual entry", () => {
   it("replaces a failed extraction with a blank manual draft that goes through checks and sign-off", async () => {
     const { studyId } = await newStudy();
