@@ -155,6 +155,8 @@ export const fakeExtraction: Omit<ExtractionPort, "renderPage"> = {
       fakeControls.failNext--;
       throw new Error("fake extraction failure");
     }
+    // lets a running server (e2e, manual testing) exercise the failure path: retry fails too, manual entry is the way out
+    if (documents.some((d) => /unreadable/i.test(d.filename))) throw new Error("fake extraction failure: pages could not be read");
     onProgress?.(50, "reading pages");
     const rulebook = fixture(documents);
     const crossRead = structuredClone(rulebook);
