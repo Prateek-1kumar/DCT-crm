@@ -66,6 +66,16 @@ describe("bring a study on board", () => {
     expect(await auditActions(studyId)).toEqual(["study.confirmed", "study.identified", "study.created"]);
   });
 
+  it("a double-submitted create (same files) makes one study, not two", async () => {
+    const docs = (await upload(app, [{ name: "a.pdf", data: await makePdf("dbl-a") }, { name: "b.pdf", data: await makePdf("dbl-b") }])).json<DocumentDto[]>();
+    const ids = docs.map((d) => d.id);
+    const [r1, r2] = await Promise.all([post("/api/studies", { documentIds: ids }), post("/api/studies", { documentIds: [...ids].reverse() })]);
+    expect(r1.json()).toEqual(r2.json());
+    expect(await get<StudySummaryDto[]>("/api/studies")).toHaveLength(1);
+    // a different file set is a different study
+    expect((await post("/api/studies", { documentIds: [ids[0]] })).json().studyId).not.toBe(r1.json().studyId);
+  });
+
   it("rejects unknown documents and bad bodies", async () => {
     expect((await post("/api/studies", { documentIds: [] })).statusCode).toBe(400);
     expect((await post("/api/studies", { documentIds: ["00000000-0000-0000-0000-000000000000"] })).statusCode).toBe(400);

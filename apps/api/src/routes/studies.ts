@@ -1,5 +1,5 @@
 import { ConfirmStudyBody, CreateStudyBody, ExtractBody, type JobDto, type StudyDetailDto } from "@dct/shared";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
@@ -26,6 +26,22 @@ export const studyRoutes =
       const ids = [...new Set(body.documentIds)];
       await assertDocsExist(ids);
       const { studyId, jobId } = await db.transaction(async (tx) => {
+        // A double-click or a retried request must not create a second study from the same files:
+        // serialise creates for this file set, and hand back a study still being set up with exactly these files.
+        const key = [...ids].sort().join(",");
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
+        const links = await tx
+          .select({ studyId: studyDocuments.studyId, documentId: studyDocuments.documentId })
+          .from(studyDocuments)
+          .innerJoin(studies, eq(studies.id, studyDocuments.studyId))
+          .where(eq(studies.status, "setting_up"));
+        const sets = new Map<string, string[]>();
+        for (const l of links) sets.set(l.studyId, [...(sets.get(l.studyId) ?? []), l.documentId]);
+        const same = [...sets].find(([, docIds]) => docIds.sort().join(",") === key)?.[0];
+        if (same) {
+          const [job] = await tx.select().from(jobs).where(and(eq(jobs.studyId, same), eq(jobs.kind, "identify"))).orderBy(desc(jobs.createdAt)).limit(1);
+          if (job) return { studyId: same, jobId: job.id };
+        }
         const [study] = await tx.insert(studies).values({}).returning();
         await tx.insert(studyDocuments).values(ids.map((documentId) => ({ studyId: study!.id, documentId })));
         await audit(tx, body.by ?? "system", study!.id, "study.created", { documentIds: ids });
