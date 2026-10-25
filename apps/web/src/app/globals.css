@@ -1,26 +1,108 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * Design tokens. Components use only these (bg-surface, text-muted, border-line, ...).
+ * Light values here; dark values override the same variables below.
+ */
+@theme {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: oklch(0.975 0.004 85); /* app background, warm paper */
+  --color-surface: oklch(0.995 0.002 85); /* cards, panels */
+  --color-sunken: oklch(0.955 0.005 85); /* table headers, wells */
+  --color-line: oklch(0.89 0.006 85);
+  --color-line-strong: oklch(0.78 0.008 85);
+  --color-ink: oklch(0.24 0.02 255); /* primary text */
+  --color-muted: oklch(0.48 0.015 255);
+  --color-faint: oklch(0.62 0.01 255);
+
+  --color-accent: oklch(0.46 0.085 190); /* deep teal */
+  --color-accent-hover: oklch(0.40 0.085 190);
+  --color-accent-soft: oklch(0.94 0.03 190);
+  --color-on-accent: oklch(0.99 0 0);
+
+  --color-ok: oklch(0.50 0.11 155);
+  --color-ok-soft: oklch(0.95 0.04 155);
+  --color-warn: oklch(0.52 0.12 70);
+  --color-warn-soft: oklch(0.95 0.05 85);
+  --color-danger: oklch(0.52 0.17 28);
+  --color-danger-soft: oklch(0.95 0.035 28);
+  --color-info: oklch(0.50 0.10 255);
+  --color-info-soft: oklch(0.95 0.025 255);
+  --color-highlight: oklch(0.92 0.11 95); /* "you are here" marker */
+
+  --color-focus: oklch(0.58 0.14 230);
+  --color-backdrop: oklch(0.2 0.02 255 / 0.45);
+
+  --radius-card: 0.625rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --color-canvas: oklch(0.17 0.012 255);
+    --color-surface: oklch(0.21 0.014 255);
+    --color-sunken: oklch(0.185 0.012 255);
+    --color-line: oklch(0.30 0.014 255);
+    --color-line-strong: oklch(0.40 0.016 255);
+    --color-ink: oklch(0.94 0.006 85);
+    --color-muted: oklch(0.74 0.012 255);
+    --color-faint: oklch(0.60 0.012 255);
+
+    --color-accent: oklch(0.74 0.10 190);
+    --color-accent-hover: oklch(0.80 0.10 190);
+    --color-accent-soft: oklch(0.30 0.05 190);
+    --color-on-accent: oklch(0.17 0.02 255);
+
+    --color-ok: oklch(0.76 0.13 155);
+    --color-ok-soft: oklch(0.29 0.05 155);
+    --color-warn: oklch(0.80 0.13 80);
+    --color-warn-soft: oklch(0.31 0.06 75);
+    --color-danger: oklch(0.74 0.15 28);
+    --color-danger-soft: oklch(0.31 0.07 28);
+    --color-info: oklch(0.76 0.10 255);
+    --color-info-soft: oklch(0.30 0.05 255);
+    --color-highlight: oklch(0.45 0.09 95);
+
+    --color-focus: oklch(0.72 0.13 230);
+    --color-backdrop: oklch(0.05 0.01 255 / 0.65);
   }
 }
 
+html {
+  color-scheme: light dark;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+dialog::backdrop {
+  background: var(--color-backdrop);
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 var(--color-highlight); }
+  100% { box-shadow: 0 0 0 10px transparent; }
+}
+.pulse {
+  animation: pulse-ring 0.9s ease-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
 }
