@@ -49,7 +49,7 @@ Item 1 and 9 were confirmed to fail the e2e with the fix reverted.
 
 ## Known issues / not fixed
 
-- **Amendment re-extraction drops v1's human corrections.** Extract re-reads all documents; values corrected or chosen in v1 (and the governing grid) come back as the AI read them and show up in the v2 diff as "changes" that have to be noticed and re-corrected. Visible, not silent. Needs a product decision: carry v1 corrections forward, or extract only the amendment and merge.
+- ~~**Amendment re-extraction drops v1's human corrections.**~~ Fixed: decision was to carry the live version's corrections forward and take only new values from the amendment (api.md, "Amendment extraction carries…"). Still open: a correction whose array index now points at a different item is skipped, not re-targeted to the moved item (listed as `item_moved` in the `version.corrections_carried` audit entry, and the moved item's AI value shows in the diff); the web doesn't show the carried/skipped summary yet (needs the proposed shared field).
 - Fake mode: the API fixture ignores the uploaded content and its checks are simplified; a manual blank draft gets no anomalies in fake mode (real checks would add REQUIRED_MISSING etc.). Fake anomaly messages print raw cents.
 - Manual entry can't add budget grids, list items or holdback/screen-fail/overpayment blocks in the UI (web.md open issue), so a fully manual contract can only be partly entered.
 - Other TanStack-mutation buttons can still double-send (confirm details, extract, enter manually, settings): all are idempotent or return a harmless 409 now, but the confirm PATCH can log `study.confirmed` twice.
