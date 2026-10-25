@@ -55,7 +55,7 @@ function mockClient(provider: CostEntry["provider"], rb: Rulebook, seen: Seen[] 
                 { page: 3, kind: "boilerplate", readable: false, rotation: 0, gridGroup: null },
               ],
             }
-          : req.name === "terms"
+          : req.name.startsWith("terms")
             ? aiTermsFrom(rb)
             : req.name === "grid"
               ? { grids: [aiGridFrom(rb)] }

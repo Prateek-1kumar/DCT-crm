@@ -35,21 +35,24 @@ export const AiNote = z.object({
   source: SourceRef.nullable(),
 });
 
-export const AiTerms = Rulebook.pick({
+/**
+ * Contract terms, read in two requests: structured outputs allow at most 16 union-typed
+ * (nullable) parameters per schema, and the full terms schema has more.
+ */
+export const AiTermsCore = Rulebook.pick({
   study: true,
   documents: true,
   referencedDocuments: true,
   overhead: true,
   payment: true,
-  invoiceables: true,
-  screenFail: true,
-  siteFees: true,
   holdback: true,
   deadlines: true,
   overpayment: true,
   rounding: true,
   appliesFrom: true,
 }).extend({ notes: z.array(AiNote) });
+export const AiTermsItems = Rulebook.pick({ invoiceables: true, screenFail: true, siteFees: true });
+export const AiTerms = AiTermsCore.extend(AiTermsItems.shape);
 export type AiTerms = z.infer<typeof AiTerms>;
 
 export const AiGrid = BudgetGrid.omit({ id: true }).extend({
@@ -82,7 +85,9 @@ ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"`).join("\n")}
 For each document give its kind (master_agreement, work_order, adoption, amendment, budget, other), a short title and its date (effective or execution date) if printed.
 Then guess the study: sponsor (the company that owns the study, not a CRO), protocol number, site name (the contracting site entity) and principal investigator. Use null for anything you cannot see.`;
 
-export const termsPrompt = (docs: { id: string; filename: string; kind: string | null }[]) => `Uploaded documents for this study:
+export const termsPrompt = (docs: { id: string; filename: string; kind: string | null }[], part: "core" | "items") => `${part === "core" ? "Part 1 of 2: study, documents, overhead, payment, holdback, deadlines, overpayment, rounding, amendment date and notes. Invoiceables, screen fails and site fees are read in part 2; leave them out." : "Part 2 of 2: invoiceables, screenFail and siteFees only."}
+
+Uploaded documents for this study:
 ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"${d.kind ? ` (${d.kind})` : ""}`).join("\n")}
 
 The images are every page with contract terms, invoiceables and site costs (budget grids are read separately). Extract the study's money terms:
