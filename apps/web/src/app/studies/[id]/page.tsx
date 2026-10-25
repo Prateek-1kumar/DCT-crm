@@ -77,7 +77,8 @@ export default function StudyPage() {
             <Spinner label="Extraction is running. This page updates when it's done" />
           </p>
         )}
-        {s.status === "extraction_failed" && <FailedBox study={s} />}
+        {/* also a failed amendment extraction, which leaves the study amendment_in_review */}
+        {[...s.versions].sort((a, b) => b.version - a.version)[0]?.status === "failed" && <FailedBox study={s} />}
         <div role="tablist" aria-label="Study" className="mx-auto mt-4 flex max-w-[1600px] gap-1">
           {(
             [
