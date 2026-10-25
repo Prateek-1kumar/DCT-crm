@@ -49,10 +49,17 @@ describe("diffRulebooks", () => {
       study: { sponsor: { value: "Y", prov: prov() } },
     };
     expect(diffRulebooks(before, after)).toEqual([
-      { path: "/invoiceables/0", change: "added", before: null, after: after.invoiceables[0], label: "Invoiceable 'Courier'" },
-      { path: "/invoiceables/1/amountWithOverheadCents", change: "changed", before: 80000, after: 90000, label: "Invoiceable 'Unscheduled visit' amountWithOverheadCents" },
-      { path: "/invoiceables/1", change: "removed", before: before.invoiceables[1], after: null, label: "Invoiceable 'SAE'" },
-      { path: "/study/sponsor/value", change: "changed", before: "X", after: "Y", label: "study sponsor" },
+      { path: "/invoiceables/0", change: "added", before: null, after: after.invoiceables[0], label: "Invoiceable › Courier" },
+      { path: "/invoiceables/1/amountWithOverheadCents", change: "changed", before: 80000, after: 90000, label: "Invoiceable › Unscheduled visit › Amount with overhead" },
+      { path: "/invoiceables/1", change: "removed", before: before.invoiceables[1], after: null, label: "Invoiceable › SAE" },
+      { path: "/study/sponsor/value", change: "changed", before: "X", after: "Y", label: "Study › Sponsor" },
+    ]);
+  });
+
+  it("labels nested grid cells section first, with › separators", () => {
+    const grid = (v2: number) => ({ budgetGrids: [{ id: "g1", label: "Exhibit A", procedures: [{ code: "1", name: "Spirometry", cells: { V2: v2 }, prov: prov() }] }] });
+    expect(diffRulebooks(grid(9800), grid(11200))).toEqual([
+      { path: "/budgetGrids/0/procedures/0/cells/V2", change: "changed", before: 9800, after: 11200, label: "Budget grid › Exhibit A › Procedures › Spirometry › V2" },
     ]);
   });
 

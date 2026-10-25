@@ -245,7 +245,7 @@ describe("amendment", () => {
       change: "changed",
       before: 80000,
       after: 90000,
-      label: "Invoiceable 'Unscheduled visit' amountWithOverheadCents",
+      label: "Invoiceable › Unscheduled visit › Amount with overhead",
     });
     expect(diff).toContainEqual(expect.objectContaining({ path: "/appliesFrom/value", before: null, after: "2026-01-01" }));
     expect((await app.inject({ url: `/api/studies/${studyId}/versions/2/diff` })).statusCode).toBe(400);
