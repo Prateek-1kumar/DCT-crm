@@ -430,8 +430,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   }
   if (method === "POST" && path === "/uploads") {
     const fd = body as FormData;
-    const studyId = fd.get("studyId") as string | null;
-    const uploader = (fd.get("by") as string | null) ?? "unknown";
+    const uploader = (fd.get("by") as string | null) ?? "system";
     const out: DocumentDto[] = [];
     for (const f of fd.getAll("files[]") as File[]) {
       const sha = await sha256Hex(f);
@@ -443,12 +442,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
       const doc: DocumentDto = { id: `doc-${++d.seq}`, filename: f.name, sha256: sha, kind: guessKind(f.name), pageCount: 4 + (parseInt(sha.slice(0, 2), 16) % 12), uploadedAt: now(), duplicateOf: null };
       d.documents.push(doc);
       out.push(doc);
-      if (studyId) {
-        const st = d.studies.find((s) => s.id === studyId);
-        if (!st) return err(404, "Study not found");
-        st.documentIds.push(doc.id);
-        log(d, uploader, studyId, "document.uploaded", { document: doc.filename });
-      }
+      log(d, uploader, null, "document.uploaded", { document: doc.filename });
     }
     return ok(out);
   }
@@ -491,6 +485,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (rest === "/extract" && method === "POST") {
     const vs = versionsOf(d, st.id);
     if (vs.some((v) => v.status === "extracting")) return err(409, "An extraction is already running for this study.");
+    for (const id of (b.documentIds as string[] | undefined) ?? []) if (!st.documentIds.includes(id)) st.documentIds.push(id);
     const version = (vs[vs.length - 1]?.version ?? 0) + 1;
     const attempts = d.jobs.filter((j) => j.studyId === st.id && j.kind === "extract").length;
     const docs = d.documents.filter((x) => st.documentIds.includes(x.id));

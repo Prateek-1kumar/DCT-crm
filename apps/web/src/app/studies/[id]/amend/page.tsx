@@ -22,7 +22,7 @@ export default function AmendPage() {
   const fresh = docs.filter((d) => !d.duplicateOf);
 
   const start = useMutation({
-    mutationFn: () => api.extract(id, by!),
+    mutationFn: () => api.extract(id, by!, fresh.map((d) => d.id)),
     onSuccess: async (r) => {
       await invalidate(id);
       router.push(`/studies/${id}/extracting?job=${encodeURIComponent(r.jobId)}&v=${r.version}`);
@@ -45,7 +45,7 @@ export default function AmendPage() {
         sub={`v${s.liveVersion ?? "?"} stays live until the new version is reviewed and signed. The review will show only what the amendment changes.`}
       />
       <div className="flex flex-col gap-4">
-        <Dropzone studyId={id} compact onUploaded={(u) => setDocs((cur) => [...cur, ...u.filter((d) => !cur.some((c) => c.id === d.id))])} />
+        <Dropzone compact onUploaded={(u) => setDocs((cur) => [...cur, ...u.filter((d) => !cur.some((c) => c.id === d.id))])} />
         <DocList docs={docs} onChange={(d) => setDocs((cur) => cur.map((x) => (x.id === d.id ? d : x)))} />
         {fresh.some((d) => d.kind !== "amendment") && <p className="text-sm text-warn">Check the kind: amendments should be marked “Amendment”.</p>}
         <div className="flex items-center justify-end gap-3">

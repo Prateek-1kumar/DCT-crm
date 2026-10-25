@@ -20,7 +20,7 @@ export default function NewStudyPage() {
   const by = useActingAs();
 
   const usable = docs.filter((d) => !d.duplicateOf);
-  const create = useMutation({ mutationFn: () => api.createStudy(usable.map((d) => d.id)), onSuccess: setCreated });
+  const create = useMutation({ mutationFn: () => api.createStudy(usable.map((d) => d.id), by!), onSuccess: setCreated });
 
   function add(uploaded: DocumentDto[]) {
     const known = new Set(docs.map((d) => d.id));
