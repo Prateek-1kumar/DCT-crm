@@ -225,7 +225,7 @@ describe("sign-off", () => {
     const base = `/api/studies/${studyId}/versions/1`;
     const writes = [
       await patch(`${base}/values`, { path: "/payment/netDays/value", value: 30, note: "x", by: "Asha" }),
-      await resolve(studyId, 1, "GRID_CONFLICT:/governingGridId"),
+      await resolve(studyId, 1, "GRID_CONFLICT:/budgetGrids/0"),
       await post(`${base}/grid-choice`, { gridId: "g1", note: "x", by: "Asha" }),
       await post(`${base}/sign-off`, { by: "Ben" }),
     ];
