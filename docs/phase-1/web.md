@@ -75,8 +75,9 @@ Solace (extraction failed).
 
 ## Assumptions the API (Workstream A) must match
 
-1. `POST /uploads` multipart: field `files[]`, plus **`by`** and optional **`studyId`** (attach to an existing study, used for
-   amendments). Duplicate → returns the existing document with `duplicateOf` set to its id.
+1. `POST /uploads` multipart: field `files[]`, plus **`by`**. (Integration: `studyId` was dropped; amendment files join the study via
+   `POST /studies/:id/extract { documentIds }`. Was: optional **`studyId`** (attach to an existing study, used for
+   amendments).) Duplicate → returns the existing document with `duplicateOf` set to its id.
 2. `POST /studies/:id/extract` accepts an optional JSON body `{ by }`. When the study already has a live version, the new draft
    is an amendment and the study goes `amendment_in_review` (old version stays live).
 3. After the identify job succeeds, `GET /studies/:id` returns the suggested sponsor/protocol/site/PI and detected document kinds.
