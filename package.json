@@ -4,6 +4,10 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev:web": "pnpm --filter web dev",
-    "dev:api": "pnpm --filter @dct/api dev"
+    "dev:api": "pnpm --filter @dct/api dev",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
   }
 }

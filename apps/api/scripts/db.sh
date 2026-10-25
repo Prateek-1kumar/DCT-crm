@@ -10,10 +10,12 @@ exists() { container ls -a | awk 'NR>1 {print $1}' | grep -qx "$NAME"; }
 wait_ready() {
   for _ in $(seq 1 60); do
     if container exec "$NAME" pg_isready -U dct -q 2>/dev/null; then
-      # separate database for vitest
-      container exec "$NAME" psql -U dct -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='dct_finance_test'" | grep -q 1 \
-        || container exec "$NAME" psql -U dct -d postgres -c "CREATE DATABASE dct_finance_test" >/dev/null
-      echo "postgres ready on localhost:$PORT (dct_finance, dct_finance_test)"
+      # separate databases for vitest and the Playwright e2e run
+      for db in dct_finance_test dct_finance_e2e; do
+        container exec "$NAME" psql -U dct -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" | grep -q 1 \
+          || container exec "$NAME" psql -U dct -d postgres -c "CREATE DATABASE $db" >/dev/null
+      done
+      echo "postgres ready on localhost:$PORT (dct_finance, dct_finance_test, dct_finance_e2e)"
       return 0
     fi
     sleep 1
