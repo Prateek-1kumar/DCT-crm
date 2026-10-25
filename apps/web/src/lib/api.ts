@@ -77,10 +77,11 @@ export const api = {
   getDiff: (id: string, v: number, against: number) =>
     request<DiffEntry[]>("GET", `/studies/${q(id)}/versions/${v}/diff?against=${against}`),
 
-  /** `studyId` attaches the files to an existing study (amendments). See web.md: assumed form field. */
-  upload: (files: File[], studyId?: string) => {
+  /** Assumed extra form fields (see docs/phase-1/web.md): `by`, and `studyId` to attach files to an existing study (amendments). */
+  upload: (files: File[], by: string, studyId?: string) => {
     const fd = new FormData();
     for (const f of files) fd.append("files[]", f, f.name);
+    fd.append("by", by);
     if (studyId) fd.append("studyId", studyId);
     return request<DocumentDto[]>("POST", "/uploads", fd);
   },

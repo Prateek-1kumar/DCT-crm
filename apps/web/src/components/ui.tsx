@@ -102,8 +102,9 @@ export function Card({ children, className }: { children: ReactNode; className?:
   return <section className={cx("rounded-card border border-line bg-surface", className)}>{children}</section>;
 }
 
-export const inputCls =
-  "w-full rounded-md border border-line-strong bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-faint focus:border-accent";
+/** Use inputBase when setting your own width; inputCls is full-width. */
+export const inputBase = "rounded-md border border-line-strong bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-faint focus:border-accent";
+export const inputCls = `w-full ${inputBase}`;
 
 export function Field({ label, hint, children, htmlFor }: { label: string; hint?: ReactNode; children: ReactNode; htmlFor?: string }) {
   return (

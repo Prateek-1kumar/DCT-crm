@@ -38,8 +38,8 @@ export function AnomalyPanel({ anomalies, actions }: { anomalies: ContractAnomal
         <h2 id="anom-h" className="font-semibold">
           Anomalies
         </h2>
-        <span className="num text-sm" aria-live="polite">
-          <strong>{settled}</strong> of {total} settled
+        <span className="text-sm" aria-live="polite">
+          <strong className="num">{settled}</strong> of <span className="num">{total}</span> settled
         </span>
         <div className="w-40">
           <ProgressBar value={(settled / total) * 100} label="Anomalies settled" />

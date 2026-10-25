@@ -12,13 +12,14 @@ import { Badge, Button, ErrorNote, cx } from "./ui";
 export function Dropzone({ onUploaded, studyId, compact }: { onUploaded: (docs: DocumentDto[]) => void; studyId?: string; compact?: boolean }) {
   const [over, setOver] = useState(false);
   const [rejected, setRejected] = useState<string[]>([]);
-  const upload = useMutation({ mutationFn: (files: File[]) => api.upload(files, studyId), onSuccess: onUploaded });
+  const by = useActingAs();
+  const upload = useMutation({ mutationFn: (files: File[]) => api.upload(files, by!, studyId), onSuccess: onUploaded });
 
   function take(list: FileList | null) {
     const files = Array.from(list ?? []);
     const pdfs = files.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
     setRejected(files.filter((f) => !pdfs.includes(f)).map((f) => f.name));
-    if (pdfs.length) upload.mutate(pdfs);
+    if (pdfs.length && by) upload.mutate(pdfs);
   }
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
@@ -38,9 +39,9 @@ export function Dropzone({ onUploaded, studyId, compact }: { onUploaded: (docs: 
           over ? "border-accent bg-accent-soft" : "border-line-strong bg-surface hover:border-accent",
         )}
       >
-        <input type="file" accept="application/pdf,.pdf" multiple className="sr-only" onChange={(e) => (take(e.target.files), (e.target.value = ""))} />
+        <input type="file" accept="application/pdf,.pdf" multiple disabled={!by} className="sr-only" onChange={(e) => (take(e.target.files), (e.target.value = ""))} />
         <span aria-hidden className="text-2xl text-faint">⇪</span>
-        <span className="font-medium">{upload.isPending ? "Uploading…" : "Drop contract PDFs here, or click to choose"}</span>
+        <span className="font-medium">{!by ? "Choose who you are acting as (top right) to upload" : upload.isPending ? "Uploading…" : "Drop contract PDFs here, or click to choose"}</span>
         <span className="text-sm text-muted">Master agreement, work order, budget, adoption or amendment. Scans are fine.</span>
       </label>
       {rejected.length > 0 && <ErrorNote>Only PDFs can be uploaded. Skipped: {rejected.join(", ")}</ErrorNote>}

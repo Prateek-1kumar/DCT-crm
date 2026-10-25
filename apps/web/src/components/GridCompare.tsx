@@ -47,7 +47,7 @@ function Mini({ grid, diff, other }: { grid: BudgetGrid; diff: ReturnType<typeof
         <tbody>
           {grid.procedures.map((p) => (
             <tr key={p.name}>
-              <th scope="row" className={cx("sticky left-0 border-b border-line bg-surface px-2 py-1 text-left font-normal", !otherProcs.has(p.name) && mark)}>
+              <th scope="row" className={cx("sticky left-0 border-b border-line bg-surface px-2 py-1 text-left font-normal whitespace-nowrap", !otherProcs.has(p.name) && mark)}>
                 {p.name}
               </th>
               <td className={cx("num border-b border-line px-2 py-1 text-right", diff.units.has(p.name) && mark)}>{formatCents(p.unitCents)}</td>

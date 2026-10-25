@@ -46,7 +46,10 @@ export function GridTable({ index }: { index: number }) {
         {grid.arm && <Badge>{grid.arm}</Badge>}
         {governing && <Badge tone="ok">Governing grid</Badge>}
         <span className="text-muted">
-          Stated overhead {grid.statedOverheadPct ?? "—"}% · Header: {grid.header.investigator ?? "—"}, {grid.header.siteName ?? "—"}
+          <span className={cx(isFlagged(flagged, `${base}/statedOverheadPct`) && "font-medium text-warn")}>Stated overhead {grid.statedOverheadPct ?? "—"}%</span> ·{" "}
+          <span className={cx(isFlagged(flagged, `${base}/header`) && "font-medium text-warn")}>
+            Header: {grid.header.investigator ?? "—"}, {grid.header.siteName ?? "—"}
+          </span>
         </span>
         <button type="button" className="text-accent hover:underline" onClick={() => show(base, grid.prov, grid.label)}>
           Show in contract

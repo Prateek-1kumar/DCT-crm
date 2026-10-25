@@ -84,7 +84,7 @@ export default function SettingsPage() {
               onClick={() => save.mutate({ makerChecker: !makerChecker })}
               className={cx("relative mt-1 h-6 w-11 shrink-0 rounded-full border transition-colors", makerChecker ? "border-accent bg-accent" : "border-line-strong bg-sunken")}
             >
-              <span className={cx("absolute top-0.5 size-4.5 rounded-full bg-surface shadow transition-all", makerChecker ? "left-[1.375rem]" : "left-0.5")} />
+              <span className={cx("absolute top-0.5 size-4.5 rounded-full shadow transition-all", makerChecker ? "left-[1.375rem] bg-on-accent" : "left-0.5 bg-faint")} />
             </button>
           </div>
           <p className="mt-2 text-sm font-medium">{makerChecker ? "On: corrector and signer must be different people." : "Off: anyone can sign off."}</p>

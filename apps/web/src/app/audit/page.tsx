@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import { Card, Empty, ErrorNote, PageTitle, Spinner, cx, inputCls } from "@/components/ui";
+import { Card, Empty, ErrorNote, PageTitle, Spinner, cx, inputBase, inputCls } from "@/components/ui";
 import { api } from "@/lib/api";
 import { formatDateTime, formatValue } from "@/lib/format";
 import { keys, useStudies } from "@/lib/queries";
@@ -25,7 +25,7 @@ export default function AuditPage() {
     <div className="mx-auto w-full max-w-6xl px-5 py-6">
       <PageTitle title="Audit log" sub="Every correction, choice, note and sign-off. Append-only." />
       <div className="mb-3 flex flex-wrap gap-3">
-        <select aria-label="Study" className={cx(inputCls, "w-auto")} value={studyId ?? ""} onChange={(e) => router.replace(e.target.value ? `/audit?studyId=${e.target.value}` : "/audit")}>
+        <select aria-label="Study" className={cx(inputBase, "w-auto")} value={studyId ?? ""} onChange={(e) => router.replace(e.target.value ? `/audit?studyId=${e.target.value}` : "/audit")}>
           <option value="">All studies</option>
           {studies.data?.map((s) => (
             <option key={s.id} value={s.id}>

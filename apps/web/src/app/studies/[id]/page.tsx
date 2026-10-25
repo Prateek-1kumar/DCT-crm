@@ -9,7 +9,7 @@ import { NeedsPerson } from "@/components/AppHeader";
 import { DiffView } from "@/components/DiffView";
 import { RulebookView } from "@/components/RulebookView";
 import { DocList } from "@/components/UploadDocs";
-import { Badge, Button, ErrorNote, Spinner, StatusBadge, btnCls, cx, inputCls } from "@/components/ui";
+import { Badge, Button, ErrorNote, Spinner, StatusBadge, btnCls, cx, inputBase } from "@/components/ui";
 import { Workspace } from "@/components/Workspace";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
@@ -151,7 +151,7 @@ function RulebookTab({ study }: { study: StudyDetailDto }) {
       <div className="mb-4 flex flex-wrap items-center gap-3 text-sm">
         <label className="flex items-center gap-2">
           <span className="text-muted">Version</span>
-          <select className={cx(inputCls, "w-auto")} value={v} onChange={(e) => setPicked(Number(e.target.value))}>
+          <select className={cx(inputBase, "w-auto")} value={v} onChange={(e) => setPicked(Number(e.target.value))}>
             {withBook.map((x) => (
               <option key={x.version} value={x.version}>
                 v{x.version} · {x.status}
@@ -247,7 +247,7 @@ function VersionSelect({ label, value, onChange, options }: { label: string; val
   return (
     <label className="flex items-center gap-1.5">
       <span className="text-muted">{label}</span>
-      <select className={cx(inputCls, "w-auto")} value={value ?? ""} onChange={(e) => onChange(Number(e.target.value))}>
+      <select className={cx(inputBase, "w-auto")} value={value ?? ""} onChange={(e) => onChange(Number(e.target.value))}>
         {options.map((o) => (
           <option key={o.version} value={o.version}>
             v{o.version} · {o.status}

@@ -93,8 +93,8 @@ function Review({ study, version }: { study: StudyDetailDto; version: RulebookVe
         </div>
         <div className="ml-auto flex items-center gap-3">
           {total > 0 && (
-            <span className="num text-sm whitespace-nowrap">
-              <strong className={settled === total ? "text-ok" : ""}>{settled}</strong> of {total} anomalies settled
+            <span className="text-sm whitespace-nowrap">
+              <strong className={cx("num", settled === total && "text-ok")}>{settled}</strong> of <span className="num">{total}</span> anomalies settled
             </span>
           )}
           {draft && (
@@ -137,8 +137,8 @@ function AmendmentDiff({ study, version, against }: { study: StudyDetailDto; ver
   const onShow = (e: DiffEntry) => show(e.path, findProv(rulebook, e.path), e.label);
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <h2 className="font-semibold">What this amendment changes</h2>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="font-semibold whitespace-nowrap">What this amendment changes</h2>
         <span className="text-sm text-muted">Only differences from live v{against} are shown. v{against} stays live until this is signed.</span>
         <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setFull((f) => !f)} aria-pressed={full}>
           {full ? "Show changes only" : "Show full rulebook"}

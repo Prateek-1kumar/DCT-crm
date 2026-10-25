@@ -3,7 +3,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { ENUM_OPTIONS, fieldKey, formatValue, inferKind } from "@/lib/format";
 import { centsToInput, parseDollars } from "@/lib/money";
-import { Button, ErrorNote, cx, inputCls } from "./ui";
+import { Button, ErrorNote, cx, inputBase, inputCls } from "./ui";
 
 /** Turn what was typed into the value to send, or an error message. */
 export function parseInput(kind: ReturnType<typeof inferKind>, raw: string, invoiceable = false): { value: unknown } | { error: string } {
@@ -104,7 +104,7 @@ export function ValueEditor({
         );
       case "enum":
         return (
-          <select {...common} className={cx(inputCls, "w-auto")}>
+          <select {...common} className={cx(inputBase, "w-auto")}>
             {Object.entries(ENUM_OPTIONS[fieldKey(path)] ?? {}).map(([k, l]) => (
               <option key={k} value={k}>
                 {l}
@@ -113,15 +113,15 @@ export function ValueEditor({
           </select>
         );
       case "date":
-        return <input {...common} type="date" className={cx(inputCls, "w-48")} />;
+        return <input {...common} type="date" className={cx(inputBase, "w-48")} />;
       case "int":
       case "number":
-        return <input {...common} type="number" step={kind === "int" ? 1 : "any"} className={cx(inputCls, "num w-32")} />;
+        return <input {...common} type="number" step={kind === "int" ? 1 : "any"} className={cx(inputBase, "num w-32")} />;
       case "list":
         return <textarea {...common} rows={3} placeholder="One per line" />;
       case "bool":
         return (
-          <select {...common} className={cx(inputCls, "w-auto")}>
+          <select {...common} className={cx(inputBase, "w-auto")}>
             <option value="true">Yes</option>
             <option value="false">No</option>
           </select>

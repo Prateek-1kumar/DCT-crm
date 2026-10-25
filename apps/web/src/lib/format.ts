@@ -114,7 +114,7 @@ export function formatValue(path: string, value: unknown): string {
   if (Array.isArray(value)) return value.length ? value.map((v) => formatValue("", v)).join(", ") : "None";
   if (typeof value === "object") {
     const o = value as Record<string, unknown>;
-    const name = o.name ?? o.label ?? o.description;
+    const name = o.name ?? o.label ?? o.title ?? o.description;
     const amount = (["amountCents", "amountWithOverheadCents", "totalCents", "cents"] as const).find((k) => typeof o[k] === "number");
     if (typeof name === "string") return amount ? `${name} · ${formatCents(o[amount] as number)}` : name;
     if ("value" in o) return formatValue(path, o.value);

@@ -315,7 +315,7 @@ export function labelFor(path: string, rb: unknown): string {
     if (/^\d+$/.test(seg)) {
       const o = (cur ?? {}) as Record<string, unknown>;
       const kindLabel = typeof o.kind === "string" ? ENUM_OPTIONS.kind?.[o.kind] : undefined;
-      const name = o.name ?? o.label ?? o.description ?? kindLabel ?? o.code ?? `#${Number(seg) + 1}`;
+      const name = o.name ?? o.label ?? o.title ?? o.description ?? kindLabel ?? o.code ?? `#${Number(seg) + 1}`;
       return parts.push(String(name));
     }
     parts.push(segs[i - 1] === "cells" ? seg : humanize(seg));
@@ -431,6 +431,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (method === "POST" && path === "/uploads") {
     const fd = body as FormData;
     const studyId = fd.get("studyId") as string | null;
+    const uploader = (fd.get("by") as string | null) ?? "unknown";
     const out: DocumentDto[] = [];
     for (const f of fd.getAll("files[]") as File[]) {
       const sha = await sha256Hex(f);
@@ -446,7 +447,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
         const st = d.studies.find((s) => s.id === studyId);
         if (!st) return err(404, "Study not found");
         st.documentIds.push(doc.id);
-        log(d, "unknown", studyId, "document.uploaded", { document: doc.filename });
+        log(d, uploader, studyId, "document.uploaded", { document: doc.filename });
       }
     }
     return ok(out);
@@ -458,7 +459,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     d.studies.push(st);
     const job: Job = { id: `job-${++d.seq}`, kind: "identify", studyId: st.id, version: null, startedAt: Date.now(), durationMs: 2500, fail: false, applied: false };
     d.jobs.push(job);
-    log(d, "unknown", st.id, "study.created", { documents: ids.length });
+    log(d, by, st.id, "study.created", { documents: ids.length });
     return ok({ studyId: st.id, jobId: job.id });
   }
   if ((r = m(/^\/jobs\/([^/]+)$/)) && method === "GET") {
