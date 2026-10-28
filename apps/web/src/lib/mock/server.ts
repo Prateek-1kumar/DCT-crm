@@ -646,7 +646,8 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
   if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; only a draft's answers can be sent back.`);
   const { itemIds, note, by } = parsed.data;
   const items = itemIds.map((id) => ver.review.find((i) => i.id === id));
-  if (items.some((i) => !i || i.outcome === null)) return err(400, "Only answered questions can be sent back.");
+  if (items.some((i) => !i)) return err(400, "One of those questions isn't on this version.");
+  if (items.some((i) => i!.outcome === null)) return err(409, "Only answered questions can be sent back.");
   for (const i of items as ReviewItem[]) {
     Object.assign(i, { outcome: null, answer: null, compare: null, sentBack: { by, note, at } });
     const ev = i.path ? ver.evidence.find((e) => e.path === i.path) : undefined;
@@ -831,8 +832,21 @@ const ok = (json: unknown): Res => ({ status: 200, json });
 const err = (status: number, message: string): Res => ({ status, json: { statusCode: status, error: status === 409 ? "Conflict" : "Error", message } });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function mockRequest(method: string, fullPath: string, body: unknown): Promise<Res> {
+/** Idempotency-Key → the request it came with and the response it got, as the API keeps them (in memory here). */
+const replays = new Map<string, { request: string; res: Res }>();
+
+export async function mockRequest(method: string, fullPath: string, body: unknown, key?: string): Promise<Res> {
   await sleep(120 + Math.random() * 180);
+  // the same key again: the first response, nothing applied twice; with a different request, refused (as the API does)
+  const request = `${method} ${fullPath} ${body instanceof FormData ? [...body.entries()].map(([k, v]) => `${k}=${typeof v === "string" ? v : v.name}`).join("&") : JSON.stringify(body ?? null)}`;
+  const saved = key ? replays.get(key) : undefined;
+  if (saved) return saved.request === request ? saved.res : err(422, "This Idempotency-Key was already used for a different request. Send a new key for each new action.");
+  const res = await apply(method, fullPath, body);
+  if (key && res.status < 400) replays.set(key, { request, res });
+  return res;
+}
+
+async function apply(method: string, fullPath: string, body: unknown): Promise<Res> {
   const d = load();
   const by = typeof (body as { by?: unknown } | undefined)?.by === "string" ? (body as { by: string }).by : "system";
   let before = stages(d);

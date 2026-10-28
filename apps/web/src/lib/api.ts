@@ -35,24 +35,42 @@ export class ApiError extends Error {
 
 type Body = Record<string, unknown> | FormData | undefined;
 
+/** A fresh key per write; `crypto.randomUUID` needs a secure context (localhost is one), hence the fallback. */
+const newKey = () => crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+/** Waits before each retry of a write whose answer never arrived. */
+const RETRY_MS = [500, 1500];
+
+/**
+ * Every write is one user action with one Idempotency-Key, made here once and sent again on each retry. A write whose
+ * answer was lost or that failed on the server's side (no answer: the network dropped; a 5xx: the API was restarting, or
+ * the proxy couldn't reach it) is retried with the same key: the API applies it once and hands back its first answer,
+ * and a write that failed saved nothing, so running it again is safe.
+ */
 async function request<T>(method: string, path: string, body?: Body): Promise<T> {
+  const key = method === "GET" ? undefined : newKey();
   if (MOCK) {
     const { mockRequest } = await import("./mock/server");
-    const res = await mockRequest(method, path, body);
+    const res = await mockRequest(method, path, body, key);
     if (res.status >= 400) throw new ApiError(res.status, errorMessage(res.json, res.status));
     return res.json as T;
   }
-  const init: RequestInit = { method, headers: {} };
+  const headers: Record<string, string> = key ? { "idempotency-key": `"${key}"` } : {};
+  const init: RequestInit = { method, headers };
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     init.body = JSON.stringify(body);
-    (init.headers as Record<string, string>)["content-type"] = "application/json";
+    headers["content-type"] = "application/json";
   }
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}${path}`, init);
-  } catch {
-    throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+  let res: Response | undefined;
+  for (let attempt = 0; ; attempt++) {
+    const retry = key !== undefined && attempt < RETRY_MS.length;
+    try {
+      res = await fetch(`${BASE}${path}`, init);
+      if (!retry || ![500, 502, 503, 504].includes(res.status)) break;
+    } catch {
+      if (!retry) throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+    }
+    await new Promise((r) => setTimeout(r, RETRY_MS[attempt]));
   }
   const text = await res.text();
   const json: unknown = text ? safeJson(text) : null;

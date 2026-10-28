@@ -35,6 +35,6 @@ describe("key terms", () => {
     const res = await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: answered, note: "Check the amendment page again", by: "Morgan Lee" });
     const after = RulebookVersionDto.parse(res.json);
     for (const id of answered) expect(after.review.find((i) => i.id === id)).toMatchObject({ outcome: null, answer: null, sentBack: { by: "Morgan Lee", note: "Check the amendment page again" } });
-    expect((await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: answered, note: "again", by: "Morgan Lee" })).status).toBe(400);
+    expect((await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: answered, note: "again", by: "Morgan Lee" })).status).toBe(409);
   });
 });

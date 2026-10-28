@@ -201,7 +201,7 @@ describe("mock API", () => {
     const blanked = "Page 4 prints $••• (•••), see §3";
     await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [a2.id], note, by: "Morgan Lee" });
     const refused = await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [a2.id], note, by: "Morgan Lee" }); // now unanswered
-    expect(refused.status).toBe(400);
+    expect(refused.status).toBe(409);
     // the sample server leaves masking the values themselves to the web; the notes are its to blank
     const notes = (v: RulebookVersionDto) => v.review.map((i) => [i.sentBack?.note, i.answer?.note, i.reported?.note]);
     // ids and times can hold any digits; only what people read counts
@@ -318,5 +318,20 @@ describe("mock API", () => {
     const diff = DiffEntry.array().parse(await get("/studies/st-halcyon/versions/2/diff?against=1"));
     expect(diff.find((e) => e.path === "/payment/netDays/value")).toMatchObject({ change: "changed", before: 45, after: 30, label: "Payment › Net days" });
     expect(diff.some((e) => e.change === "added" && e.label.includes("Remote monitoring visit"))).toBe(true);
+  });
+});
+
+describe("mock API idempotency keys", () => {
+  beforeEach(() => mockReset());
+
+  it("the same key again gets the first response and applies nothing twice; a different request with it is refused", async () => {
+    const logged = async () => AuditPage.parse(await get("/audit?limit=100")).items.filter((e) => e.action.startsWith("review.")).length;
+    const before = await logged();
+    const send = () => mockRequest("POST", "/studies/st-northwind/versions/1/review/q1", { value: 9800, by: "Sam Rivera" }, "k1");
+    const first = await send();
+    expect(first.status).toBe(200);
+    expect(await send()).toEqual(first);
+    expect((await logged()) - before).toBe(1);
+    expect((await mockRequest("POST", "/alerts/read", { by: "Sam Rivera" }, "k1")).status).toBe(422);
   });
 });
