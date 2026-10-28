@@ -13,6 +13,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import type { ExtractionNote, ExtractionOutput } from "../extraction/port.js";
@@ -108,23 +109,49 @@ export const rulebookVersions = pgTable(
   (t) => [unique().on(t.studyId, t.version)],
 );
 
-/** Our view of background jobs (pg-boss job id = this id), so GET /jobs/:id can report progress. */
-export const jobs = pgTable("jobs", {
-  id: uuid("id").primaryKey(),
-  kind: text("kind").notNull(),
-  studyId: uuid("study_id").references(() => studies.id),
-  version: integer("version"),
-  /** queued | running | succeeded | failed */
-  state: text("state").notNull().default("queued"),
-  progress: integer("progress").notNull().default(0),
-  step: text("step").notNull().default("queued"),
-  /** What a person reads when it failed: plain words, never SQL, values or internals (jobs.ts failure). */
-  error: text("error"),
-  /** The technical reason, for the team. */
-  errorDetail: text("error_detail"),
-  createdAt: ts("created_at"),
-  updatedAt: ts("updated_at"),
-});
+/**
+ * Our view of background jobs (pg-boss job id = this id), so GET /jobs/:id can report progress. Queued in the same
+ * transaction as its pg-boss job (jobs.ts queueJob), and finished (succeeded or failed) in the same one as its result.
+ */
+export const jobs = pgTable(
+  "jobs",
+  {
+    id: uuid("id").primaryKey(),
+    kind: text("kind").notNull(),
+    studyId: uuid("study_id").references(() => studies.id),
+    version: integer("version"),
+    /** queued | running | succeeded | failed */
+    state: text("state").notNull().default("queued"),
+    progress: integer("progress").notNull().default(0),
+    step: text("step").notNull().default("queued"),
+    /** What a person reads when it failed: plain words, never SQL, values or internals (jobs.ts failure). */
+    error: text("error"),
+    /** The technical reason, for the team. */
+    errorDetail: text("error_detail"),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  // At most one read of a version at a time: two would each pay for AI calls.
+  (t) => [uniqueIndex("jobs_one_live_read_idx").on(t.studyId, t.version).where(sql`kind = 'extract' AND state IN ('queued', 'running')`)],
+);
+
+/**
+ * A write's saved response, by its Idempotency-Key (lib/idempotency.ts): the same key again gets this response instead
+ * of a second write. Saved in the write's own transaction; deleted a day later (jobs.ts maintenance).
+ */
+export const idempotencyKeys = pgTable(
+  "idempotency_keys",
+  {
+    key: text("key").primaryKey(),
+    /** sha256 of the method, URL and body: the same key with a different request is refused. */
+    fingerprint: text("fingerprint").notNull(),
+    status: integer("status").notNull(),
+    /** The JSON body as it was sent, so a replay is the same byte for byte. */
+    response: text("response").notNull(),
+    createdAt: ts("created_at"),
+  },
+  (t) => [index("idempotency_keys_created_idx").on(t.createdAt)],
+);
 
 /** Append-only: UPDATE/DELETE are rejected by a trigger (see the custom migration). */
 export const auditLog = pgTable(

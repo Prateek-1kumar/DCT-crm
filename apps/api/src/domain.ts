@@ -122,7 +122,20 @@ export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system",
   return status;
 }
 
+/**
+ * Every write to a study takes this lock first, then its job's row, then its versions', so two writes to one study queue
+ * up instead of deadlocking (a write that locked a version and then the study, against one that locked them the other way
+ * round, used to). NO KEY UPDATE: rows that only reference the study (audit entries, alerts) can still be inserted.
+ */
+export async function lockStudy(tx: Tx, id: string): Promise<StudyRow> {
+  const [s] = await tx.select().from(studies).where(eq(studies.id, id)).for("no key update");
+  if (!s) throw notFound("Study");
+  return s;
+}
+
+/** `forUpdate` (a write): the study is locked first (lockStudy), then the version. */
 export async function loadVersion(tx: Tx, studyId: string, version: number, forUpdate = false): Promise<VersionRow> {
+  if (forUpdate) await lockStudy(tx, studyId);
   const q = tx.select().from(rulebookVersions).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.version, version)));
   const [row] = forUpdate ? await q.for("update") : await q;
   if (!row) throw notFound(`Version ${version} of study ${studyId}`);
@@ -198,8 +211,8 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[]): Rulebook {
 // ---- Amendment drafts: carry the live version's corrections forward ----
 
 /** One value correction. `items`: identities of the array items its path passes through (see itemIds). */
-export type Correction = { path: string; before: unknown; after: unknown; note?: string; by?: string; items?: string[] };
-export type SkipReason = "amendment_changed" | "item_moved" | "path_missing" | "invalid" | "already_equal";
+type Correction = { path: string; before: unknown; after: unknown; note?: string; by?: string; items?: string[] };
+type SkipReason = "amendment_changed" | "item_moved" | "path_missing" | "invalid" | "already_equal";
 export const CARRIED = "version.corrections_carried";
 /** "This looks wrong" on the live version: a draft copied from it. */
 export const CORRECTION_OPENED = "version.correction_opened";

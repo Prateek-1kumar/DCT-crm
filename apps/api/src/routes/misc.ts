@@ -1,11 +1,14 @@
 import { ACTION_LABELS, type AuditEntryDto, AuditListQuery, type AuditPage, auditMatches, blankNumbers, PatchSettingsBody, type ReviewItem, type SettingsDto } from "@dct/shared";
 import { and, desc, eq, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
+import type { Tx } from "../db/index.js";
 import { auditLog, rulebookVersions, settings, studies } from "../db/schema.js";
 import { audit } from "../domain.js";
 import { HttpError, isObj, like, parse, wordsOf } from "../lib/http.js";
+import { write } from "../lib/idempotency.js";
 import { blindItem, hiddenPaths } from "../review.js";
 
 /** Keyset cursor: the last entry's id, base64url JSON (ids only grow, so newest first is id order). */
@@ -93,23 +96,26 @@ export const miscRoutes =
       return { items: page, nextCursor: items.length > limit ? encodeCursor(Number(page.at(-1)!.id)) : null };
     });
 
-    const read = async (): Promise<SettingsDto> => {
-      const [row] = await db.select().from(settings).where(eq(settings.id, 1));
+    const read = async (tx: Tx = db): Promise<SettingsDto> => {
+      const [row] = await tx.select().from(settings).where(eq(settings.id, 1));
       return { makerChecker: row?.makerChecker ?? false, people: row?.people ?? [] };
     };
 
-    app.get("/settings", read);
+    app.get("/settings", () => read());
 
     /** PATCH accepts any subset of SettingsDto, plus who changed it. */
-    app.patch("/settings", async (req) => {
+    app.patch("/settings", async (req, reply) => {
       const { by, ...patch } = parse(PatchSettingsBody, req.body);
-      await db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         // read under the row lock: two edits at once each see the other's
-        const [row] = await tx.select().from(settings).where(eq(settings.id, 1)).for("update");
+        const [row] = await tx.select().from(settings).where(eq(settings.id, 1)).for("no key update");
         const before: SettingsDto = { makerChecker: row?.makerChecker ?? false, people: row?.people ?? [] };
-        await tx.insert(settings).values({ id: 1, ...before, ...patch }).onConflictDoUpdate({ target: settings.id, set: { ...before, ...patch } });
-        await audit(tx, by ?? "system", null, "settings.updated", { before, after: { ...before, ...patch } });
+        const after = { ...before, ...patch };
+        // the same settings again change nothing, so they log nothing
+        if (isDeepStrictEqual(before, after)) return before;
+        await tx.insert(settings).values({ id: 1, ...after }).onConflictDoUpdate({ target: settings.id, set: after });
+        await audit(tx, by ?? "system", null, "settings.updated", { before, after });
+        return read(tx);
       });
-      return read();
     });
   };

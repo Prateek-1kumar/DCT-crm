@@ -18,12 +18,13 @@ import { and, desc, eq } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { isDeepStrictEqual } from "node:util";
 import type { Ctx } from "../app.js";
-import { rulebookVersions, settings, studies } from "../db/schema.js";
+import { rulebookVersions, settings } from "../db/schema.js";
 import { appliesFromOf, assertDraft, audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, versionDto } from "../domain.js";
 import { diffRulebooks, itemIds, labelFor } from "../lib/diff.js";
-import { HttpError, notFound, parse } from "../lib/http.js";
-import { parsePointer, setAt } from "../lib/pointer.js";
 import { getExtraction } from "../extraction/port.js";
+import { HttpError, notFound, parse } from "../lib/http.js";
+import { write } from "../lib/idempotency.js";
+import { parsePointer, setAt } from "../lib/pointer.js";
 import { answer, askAbout, at, empty, hiddenPaths, leaf, mask, recheck } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
@@ -97,8 +98,8 @@ export const versionRoutes =
      * Typing a contract in by hand, one value at a time, until typing is marked done. Every typed value is attested;
      * after removing one row or visit the evidence of the ones below moves up. The result must stay a valid master.
      */
-    app.patch<P>("/studies/:id/versions/:v/values", async (req) =>
-      db.transaction(async (tx) => {
+    app.patch<P>("/studies/:id/versions/:v/values", async (req, reply) =>
+      write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Values can only be typed on a contract being typed in by hand. Use “This looks wrong” instead.");
         if (row.review.length) throw new HttpError(409, "Typing is marked done. Use “This looks wrong” to change a value.");
@@ -114,6 +115,8 @@ export const versionRoutes =
         if (!checked.success) throw new HttpError(400, "That field can't be left empty or take that value.");
         const rb = checked.data;
         const after = at(rb, path);
+        // typed again as it is, by whoever typed it: nothing changes, nothing is logged
+        if (isDeepStrictEqual(before, after) && (!leaf(after) || empty(after) || row.evidence.some((e) => e.path === path && e.note === `Typed by hand by ${by}`))) return versionDto(row);
         const removed =
           Array.isArray(before) && Array.isArray(after) && after.length === before.length - 1
             ? ((i: number) => (i === -1 ? after.length : i))(after.findIndex((x, i) => !isDeepStrictEqual(x, before[i])))
@@ -143,10 +146,10 @@ export const versionRoutes =
     );
 
     /** Typing is done: someone else re-types up to 10 randomly chosen typed values (all of them if fewer), blind. */
-    app.post<P>("/studies/:id/versions/:v/by-hand/done", async (req) => {
+    app.post<P>("/studies/:id/versions/:v/by-hand/done", async (req, reply) => {
       const body = ByHandBody.safeParse(req.body);
       if (!body.success) throw new HttpError(400, "Say who is typing.");
-      return db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Only a contract typed by hand can be marked done.");
         if (row.review.length) throw new HttpError(409, "Typing is already marked done.");
@@ -165,9 +168,9 @@ export const versionRoutes =
     });
 
     /** One answer to one question (AnswerReviewBody); answering again changes it while the version is a draft. */
-    app.post<{ Params: { id: string; v: string; itemId: string } }>("/studies/:id/versions/:v/review/:itemId", async (req) => {
+    app.post<{ Params: { id: string; v: string; itemId: string } }>("/studies/:id/versions/:v/review/:itemId", async (req, reply) => {
       const port = await getExtraction();
-      return db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.rulebook) throw new HttpError(409, `Version ${row.version} is ${row.status}; only a draft takes answers.`);
         const draft = { version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors] };
@@ -196,14 +199,13 @@ export const versionRoutes =
      * "This looks wrong". On a draft: a blocking blind question about the value. On the live version: a correction draft
      * (a copy of it plus that question); the live version stays live until the draft is approved.
      */
-    app.post<P>("/studies/:id/versions/:v/report", async (req) => {
+    app.post<P>("/studies/:id/versions/:v/report", async (req, reply) => {
       const body = ReportValueBody.safeParse(req.body);
       if (!body.success) throw new HttpError(400, "Add a short note and say who is reporting.");
       const { path, note, by } = body.data;
-      return db.transaction(async (tx) => {
-        // version, then study, as every write locks them (refreshStudyStatus); the study lock serialises version creation
+      return write(db, req, reply, async (tx) => {
+        // the study's lock (taken first, by loadVersion) also serialises version creation
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
-        await tx.select({ id: studies.id }).from(studies).where(eq(studies.id, row.studyId)).for("update");
         const value = row.rulebook ? at(row.rulebook, path) : undefined;
         if (value === undefined || !leaf(value)) throw new HttpError(400, "Pick a single value to report.");
         let draft = row;
@@ -229,15 +231,17 @@ export const versionRoutes =
     });
 
     /** Values that looked right to someone proofreading. Any version with a master, live ones too: marks never change its numbers. */
-    app.post<P>("/studies/:id/versions/:v/proofread", async (req) => {
+    app.post<P>("/studies/:id/versions/:v/proofread", async (req, reply) => {
       const body = ProofreadBody.safeParse(req.body);
       if (!body.success) throw new HttpError(400, "Say who is proofreading and which values.");
       const { paths, by } = body.data;
-      return db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (!row.rulebook || row.status === "superseded") throw new HttpError(409, `Version ${row.version} can't be proofread.`);
         const rb = row.rulebook;
         if (paths.some((p) => at(rb, p) === undefined)) throw new HttpError(400, "One of those values isn't in the invoicing master.");
+        // marked by them already: nothing changes, nothing is logged
+        if (paths.every((p) => row.proofread.some((m) => m.path === p && m.by === by))) return versionDto(row);
         const now = new Date().toISOString();
         const marks = new Map(row.proofread.map((m) => [m.path, m]));
         for (const path of paths) marks.set(path, { path, by, at: now });
@@ -248,17 +252,19 @@ export const versionRoutes =
     });
 
     /** The approver reopens answered questions with a note; they're answered again, blind, and the contract goes back to Needs you. */
-    app.post<P>("/studies/:id/versions/:v/send-back", async (req) => {
+    app.post<P>("/studies/:id/versions/:v/send-back", async (req, reply) => {
       const body = SendBackBody.safeParse(req.body);
       if (!body.success) throw new HttpError(400, "Pick the answers to send back and add a note.");
       const { note, by } = body.data;
-      return db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft") throw new HttpError(409, `Version ${row.version} is ${row.status}; only a draft's answers can be sent back.`);
         const review = structuredClone(row.review);
         const evidence = structuredClone(row.evidence);
         const items = [...new Set(body.data.itemIds)].map((id) => review.find((i) => i.id === id));
-        if (items.some((i) => !i || i.outcome === null)) throw new HttpError(400, "Only answered questions can be sent back.");
+        if (items.some((i) => !i)) throw new HttpError(400, "One of those questions isn't on this version.");
+        // an unanswered one (sent back already, or never answered): the state has moved on, as with any repeat
+        if (items.some((i) => i!.outcome === null)) throw new HttpError(409, "Only answered questions can be sent back.");
         const now = new Date().toISOString();
         for (const i of items as ReviewItem[]) {
           Object.assign(i, { outcome: null, answer: null, compare: null, sentBack: { by, note, at: now } });
@@ -279,9 +285,9 @@ export const versionRoutes =
      * Approval (ADR-001 I1–I6): every blocking question settled by a typed value or a pick, every number confirmed by
      * the PDF's text or a person, typing by hand re-typed blind, and with maker-checker on, not by anyone who answered.
      */
-    app.post<P>("/studies/:id/versions/:v/sign-off", async (req) => {
+    app.post<P>("/studies/:id/versions/:v/sign-off", async (req, reply) => {
       const body = parse(SignOffBody, req.body);
-      return db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         assertDraft(row);
         if (row.byHand && !row.review.length) throw new HttpError(409, "Typing isn't marked done yet, so nobody has re-typed the values.");

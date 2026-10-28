@@ -101,7 +101,7 @@ describe("extraction", () => {
     const { v } = await extract(app, studyId);
     const { runExtract } = await import("../src/jobs.js");
     const before = await version(studyId, v);
-    await runExtract(built.ctx.db, { jobId: "00000000-0000-0000-0000-000000000000", studyId, version: v });
+    await runExtract(built.ctx, { jobId: "00000000-0000-0000-0000-000000000000", studyId, version: v });
     expect(await version(studyId, v)).toEqual(before);
   });
 });

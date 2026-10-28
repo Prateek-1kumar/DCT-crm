@@ -5,7 +5,7 @@ import { config } from "../config.js";
 /** Mirrors the `@dct/extraction` interface in docs/PHASE-1.md. */
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
-export type StudyGuess = { sponsor: string | null; protocol: string | null; siteName: string | null; investigator: string | null };
+type StudyGuess = { sponsor: string | null; protocol: string | null; siteName: string | null; investigator: string | null };
 
 export type ExtractionOutput = {
   rulebook: Rulebook;
@@ -23,7 +23,7 @@ export type ExtractionNote = {
   source: SourceRef | null;
 };
 
-export type CheckOptions = { crossRead?: Rulebook | null; pages?: ExtractionOutput["pages"]; notes?: ExtractionNote[] };
+type CheckOptions = { crossRead?: Rulebook | null; pages?: ExtractionOutput["pages"]; notes?: ExtractionNote[] };
 
 export interface ExtractionPort {
   identifyDocuments(docs: InputDoc[]): Promise<{ documentKinds: Record<string, DocumentKind>; studyGuess: StudyGuess }>;

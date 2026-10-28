@@ -145,18 +145,25 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
   return out;
 }
 
-/** Test hook: make the next N extractStudy calls throw. */
-export const fakeControls = { failNext: 0 };
+/** Test hooks: make the next N extractStudy calls throw; count the AI calls; hold a read until a test lets it go on. */
+export const fakeControls: { failNext: number; calls: { identify: number; extract: number }; hold: Promise<void> | null } = {
+  failNext: 0,
+  calls: { identify: 0, extract: 0 },
+  hold: null,
+};
 
 // No renderPage or text layer: fake mode uses the real ones (see port.ts).
 export const fakeExtraction: Omit<ExtractionPort, NoAi> = {
   async identifyDocuments(docs) {
+    fakeControls.calls.identify++;
     return {
       documentKinds: Object.fromEntries(docs.map((d, i) => [d.id, kindFromName(d.filename, i)])),
       studyGuess: { sponsor: "Synthetic Pharma", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test" },
     };
   },
   async extractStudy({ documents, onProgress }) {
+    fakeControls.calls.extract++;
+    await fakeControls.hold;
     if (fakeControls.failNext > 0) {
       fakeControls.failNext--;
       throw new Error("fake extraction failure");

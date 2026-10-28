@@ -1,8 +1,11 @@
 import multipart from "@fastify/multipart";
-import Fastify from "fastify";
+import { sql } from "drizzle-orm";
+import Fastify, { type FastifyBaseLogger } from "fastify";
+import { randomUUID } from "node:crypto";
+import { STATUS_CODES } from "node:http";
 import type { PgBoss } from "pg-boss";
 import { config } from "./config.js";
-import { createDb, type Db } from "./db/index.js";
+import { apiPoolOptions, createDb, type Db, pendingMigrations } from "./db/index.js";
 import { startBoss } from "./jobs.js";
 import { HttpError } from "./lib/http.js";
 import { alertRoutes } from "./routes/alerts.js";
@@ -11,7 +14,7 @@ import { miscRoutes } from "./routes/misc.js";
 import { studyRoutes } from "./routes/studies.js";
 import { versionRoutes } from "./routes/versions.js";
 
-export type Ctx = { db: Db; boss: PgBoss };
+export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger };
 
 /** Postgres errors a request causes (a malformed id, a number out of range): the request's fault, so 400. */
 const BAD_INPUT: Record<string, string> = {
@@ -20,24 +23,54 @@ const BAD_INPUT: Record<string, string> = {
   "22007": "A date in the request isn't valid",
   "22008": "A date in the request is out of range",
 };
+/** Two writes to the same thing at once, one of them rolled back: nothing was saved, so trying again is safe (409). */
+const CONCURRENT: Record<string, string> = {
+  "40001": "serialization failure",
+  "40P01": "deadlock",
+  "55P03": "lock wait timed out",
+};
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** `p`, or a rejection once `ms` have passed. */
+const within = <T>(ms: number, p: Promise<T>) =>
+  Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms).unref())]);
+
 export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {}) {
-  // Request logging is the method and the route pattern only: never bodies, ids or query strings (search terms, names).
-  const logger = opts.logger ? { serializers: { req: (r: { method: string; routeOptions?: { url?: string } }) => ({ method: r.method, url: r.routeOptions?.url }) } } : false;
-  // 1 MB: no request carries a rulebook; uploads are multipart, with their own limit.
-  const app = Fastify({ logger, bodyLimit: 1024 * 1024 });
-  const { db, pool } = createDb();
-  const boss = await startBoss({ db, work: opts.workers ?? true });
-  const ctx: Ctx = { db, boss };
+  const app = Fastify({
+    // JSON lines (pino). Request logging is the method and the route pattern only: never bodies, ids or query strings
+    // (search terms, names); errors are logged by the handler below, without values.
+    logger: opts.logger ? { level: config.logLevel, serializers: { req: (r: { method: string; routeOptions?: { url?: string } }) => ({ method: r.method, url: r.routeOptions?.url }) } } : false,
+    // a UUID per request, in every log line (reqId), the x-request-id header and a 5xx message's "ref"
+    genReqId: () => randomUUID(),
+    // 1 MB: no request carries a rulebook; uploads are multipart, with their own limit.
+    bodyLimit: 1024 * 1024,
+    // A slow or stalled client can't hold a connection: the whole request (a 50 MB upload included) within this, and no
+    // socket idle longer. Idle keep-alive connections close after their own timeout.
+    requestTimeout: config.requestTimeoutMs,
+    connectionTimeout: config.requestTimeoutMs,
+    keepAliveTimeout: config.keepAliveTimeoutMs,
+  });
+  const { db, pool } = createDb(config.databaseUrl, apiPoolOptions());
+  // An idle connection the database drops (a restart, a network blip) is replaced; without a listener it would crash the process.
+  pool.on("error", (err) => app.log.error({ err: err.message }, "idle database connection failed"));
+  const behind = await pendingMigrations(db);
+  if (behind) app.log.error({ pending: behind }, "the database is behind this build: run the migrations (pnpm --filter @dct/api db:migrate), then restart");
+  const boss = await startBoss({ db, log: app.log, work: opts.workers ?? true, schemaBehind: behind > 0 });
+  const ctx: Ctx = { db, boss, log: app.log };
+  let stopped = false;
+  boss.once("stopped", () => (stopped = true));
 
   app.setErrorHandler((err: Error & { statusCode?: number; query?: string; cause?: { code?: string; message?: string } }, req, reply) => {
-    const bad = err.cause?.code ? BAD_INPUT[err.cause.code] : undefined;
-    const status = err instanceof HttpError ? err.statusCode : bad ? 400 : (err.statusCode ?? 500);
-    if (status < 500) return reply.status(status).send({ statusCode: status, error: "Request Error", message: bad ?? err.message });
+    const code = err.cause?.code;
+    const bad = code ? BAD_INPUT[code] : undefined;
+    const clash = code ? CONCURRENT[code] : undefined;
+    const status = err instanceof HttpError ? err.statusCode : bad ? 400 : clash ? 409 : (err.statusCode ?? 500);
+    if (clash) req.log.warn({ code, reason: clash }, "write rolled back by a concurrent one");
+    if (status < 500)
+      return reply.status(status).send({ statusCode: status, error: STATUS_CODES[status] ?? "Error", message: bad ?? (clash ? "Someone else was changing this at the same moment, so nothing was saved. Try again." : err.message) });
     // Never the error itself to the browser: a database error's message is the SQL and every value bound to it
     // (contract amounts, a whole rulebook). The log gets the query and the cause, not the values.
-    req.log.error(err.query !== undefined ? { code: err.cause?.code, cause: err.cause?.message, query: err.query } : { err }, "request failed");
+    req.log.error(err.query !== undefined ? { code, cause: err.cause?.message, query: err.query } : { err }, "request failed");
     reply.status(status).send({ statusCode: status, error: "Internal Server Error", message: `Something went wrong on the server. Try again; if it keeps happening, tell the team (ref ${req.id}).` });
   });
 
@@ -53,9 +86,21 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
   });
 
   // Contract data is never cached or sniffed as another type; page images set their own cache header.
-  app.addHook("onSend", async (_req, reply) => {
+  app.addHook("onSend", async (req, reply) => {
     reply.header("x-content-type-options", "nosniff");
+    reply.header("x-request-id", req.id);
     if (!reply.hasHeader("cache-control")) reply.header("cache-control", "no-store");
+  });
+
+  // Probes, outside /api/v1: they're for whatever runs the server, not part of the API's contract, so they never move
+  // with an API version. Quiet in the log (warn and up only). The host guard applies to them too.
+  app.get("/livez", { logLevel: "warn" }, async () => ({ status: "ok" }));
+  app.get("/readyz", { logLevel: "warn" }, async (_req, reply) => {
+    const check = async (fn: () => Promise<unknown>) => within(2000, fn()).then(() => "ok", () => "unavailable");
+    const [database, jobs] = await Promise.all([check(() => db.execute(sql`SELECT 1`)), check(() => boss.getDb().executeSql("SELECT 1"))]);
+    const schema = database === "ok" && (await within(2000, pendingMigrations(db)).catch(() => 1)) > 0 ? "behind" : database === "ok" ? "ok" : "unknown";
+    const ready = database === "ok" && jobs === "ok" && schema === "ok" && !stopped;
+    return reply.status(ready ? 200 : 503).send({ status: ready ? "ready" : "not ready", database, jobs: stopped ? "stopped" : jobs, schema });
   });
 
   await app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 50 } });
@@ -76,8 +121,10 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
     { prefix: "/api/v1" },
   );
 
+  // After the last in-flight request (Fastify's close waits for them): jobs get to finish, up to a limit (a read still
+  // going then is failed by pg-boss and marked so at the next start), then the pool closes.
   app.addHook("onClose", async () => {
-    await boss.stop({ graceful: true, timeout: 5000 });
+    await boss.stop({ graceful: true, timeout: Math.min(10_000, config.shutdownTimeoutMs / 2) });
     await pool.end();
   });
   // not Object.assign(app, …): a Fastify instance is thenable, so awaiting it would drop extra props from the type

@@ -8,15 +8,18 @@ import { at, empty } from "../src/review.js";
 export type Built = Awaited<ReturnType<typeof buildApp>>;
 export type App = Built["app"];
 
-export async function testApp(): Promise<Built> {
+/** `workers: false`: nothing runs the queued jobs, so a test can run (or strand) them itself. */
+export async function testApp(opts: { workers?: boolean } = {}): Promise<Built> {
   if (!process.env.DATABASE_URL?.includes("_test")) throw new Error("tests must use the _test database");
-  return buildApp();
+  return buildApp(opts);
 }
 
 export async function resetDb({ ctx }: Built) {
   // TRUNCATE bypasses the row-level append-only trigger; fine for a test database.
-  await ctx.db.execute(sql`TRUNCATE audit_log, jobs, rulebook_versions, study_documents, documents, studies RESTART IDENTITY CASCADE`);
+  await ctx.db.execute(sql`TRUNCATE audit_log, jobs, rulebook_versions, study_documents, documents, studies, idempotency_keys RESTART IDENTITY CASCADE`);
   await ctx.db.execute(sql`UPDATE settings SET people = '[]', maker_checker = false`);
+  // queued jobs of rows just deleted would run first, ahead of the next test's
+  await ctx.db.execute(sql`DELETE FROM pgboss.job WHERE name IN ('identify', 'extract', 'stranded') AND state <> 'active'`);
 }
 
 /** A real (tiny) PDF with no text layer, so it reads as a scan. `seed` makes the bytes, and so the sha256, distinct. */

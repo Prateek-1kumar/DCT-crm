@@ -161,7 +161,7 @@ describe("blind entry", () => {
     // and the errors a curious person could provoke
     expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(409);
     expect((await call("POST", `/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(409);
-    expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: ["reported:9"], note: sent, by: "Morgan" })).statusCode).toBe(400);
+    expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: ["reported:9"], note: sent, by: "Morgan" })).statusCode).toBe(409); // open again: nothing to send back
     expect((await call("POST", `/studies/${studyId}/versions/1/review/nope`, { value: 1, by: "Sam" })).statusCode).toBe(404);
 
     const reads = [

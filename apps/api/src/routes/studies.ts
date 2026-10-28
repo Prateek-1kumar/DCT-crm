@@ -19,9 +19,11 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import { documents, jobs, listKey, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
-import { appliesFromOf, audit, documentDto, manualRulebook, refreshStudyStatus, studySummaryDto, versionDto, versionSummaryDto } from "../domain.js";
-import { createJob, sendJob } from "../jobs.js";
+import type { Tx } from "../db/index.js";
+import { appliesFromOf, audit, documentDto, lockStudy, manualRulebook, refreshStudyStatus, studySummaryDto, versionDto, versionSummaryDto } from "../domain.js";
+import { queueJob } from "../jobs.js";
 import { HttpError, like, notFound, parse, wordsOf } from "../lib/http.js";
+import { write } from "../lib/idempotency.js";
 
 const SearchQuery = z.object({ q: z.string().default(""), limit: z.coerce.number().int().min(1).max(50).default(8) });
 
@@ -65,7 +67,7 @@ export const studyRoutes =
       const body = parse(CreateStudyBody, req.body);
       const ids = [...new Set(body.documentIds)];
       await assertDocsExist(ids);
-      const { studyId, jobId } = await db.transaction(async (tx) => {
+      return write(db, req, reply, async (tx) => {
         // A double-click or a retried request must not create a second study from the same files:
         // serialise creates for this file set, and hand back a study still being set up with exactly these files.
         const key = [...ids].sort().join(",");
@@ -85,10 +87,8 @@ export const studyRoutes =
         const [study] = await tx.insert(studies).values({}).returning();
         await tx.insert(studyDocuments).values(ids.map((documentId) => ({ studyId: study!.id, documentId })));
         await audit(tx, body.by ?? "system", study!.id, "study.created", { documentIds: ids });
-        return { studyId: study!.id, jobId: await createJob(tx, "identify", study!.id, null) };
-      });
-      await sendJob(boss, "identify", { jobId, studyId });
-      return reply.status(201).send({ studyId, jobId });
+        return { studyId: study!.id, jobId: await queueJob(tx, boss, "identify", study!.id, null) };
+      }, { status: 201 });
     });
 
     app.get("/studies", async (req): Promise<StudyPage> => {
@@ -158,11 +158,11 @@ export const studyRoutes =
       return { contracts: contracts.map((r) => studySummaryDto(r, r.liveVersion)), rates };
     });
 
-    async function detail(id: string): Promise<StudyDetailDto> {
-      const [s] = await db.select().from(studies).where(eq(studies.id, id));
+    async function detail(tx: Tx, id: string): Promise<StudyDetailDto> {
+      const [s] = await tx.select().from(studies).where(eq(studies.id, id));
       if (!s) throw notFound("Study");
-      const versions = await db.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, id)).orderBy(desc(rulebookVersions.version));
-      const docs = await db
+      const versions = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, id)).orderBy(desc(rulebookVersions.version));
+      const docs = await tx
         .select({ d: documents })
         .from(studyDocuments)
         .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
@@ -172,21 +172,20 @@ export const studyRoutes =
       return { ...studySummaryDto(s, live), documents: docs.map((r) => documentDto(r.d)), versions: versions.map(versionSummaryDto) };
     }
 
-    app.get<{ Params: { id: string } }>("/studies/:id", async (req) => detail(req.params.id));
+    app.get<{ Params: { id: string } }>("/studies/:id", async (req) => detail(db, req.params.id));
 
-    app.patch<{ Params: { id: string } }>("/studies/:id", async (req) => {
+    app.patch<{ Params: { id: string } }>("/studies/:id", async (req, reply) => {
       const { by, ...fields } = parse(ConfirmStudyBody, req.body);
-      await db.transaction(async (tx) => {
-        const [s] = await tx.select().from(studies).where(eq(studies.id, req.params.id)).for("update");
-        if (!s) throw notFound("Study");
+      return write(db, req, reply, async (tx) => {
+        const s = await lockStudy(tx, req.params.id);
         // Once a version is approved, these are what billing was approved under: an amendment changes them, an edit can't.
         const [live] = await tx.select({ version: rulebookVersions.version }).from(rulebookVersions).where(and(eq(rulebookVersions.studyId, s.id), inArray(rulebookVersions.status, ["signed", "superseded"]))).limit(1);
         if (live) throw new HttpError(409, "This contract has an approved version, so its sponsor, protocol, site and investigator can't be changed any more: they're part of what was approved.");
         await tx.update(studies).set({ ...fields, updatedAt: new Date() }).where(eq(studies.id, s.id));
         const before = { sponsor: s.sponsor, protocol: s.protocol, siteName: s.siteName, investigator: s.investigator };
         await audit(tx, by, s.id, "study.confirmed", { before, after: fields });
+        return detail(tx, s.id);
       });
-      return detail(req.params.id);
     });
 
     app.post<{ Params: { id: string } }>("/studies/:id/extract", async (req, reply) => {
@@ -194,9 +193,8 @@ export const studyRoutes =
       const studyId = req.params.id;
       const newDocs = [...new Set(body.documentIds ?? [])];
       if (newDocs.length) await assertDocsExist(newDocs);
-      const res = await db.transaction(async (tx) => {
-        const [s] = await tx.select().from(studies).where(eq(studies.id, studyId)).for("update"); // serialises version creation
-        if (!s) throw notFound("Study");
+      return write(db, req, reply, async (tx) => {
+        await lockStudy(tx, studyId); // serialises version creation
         if (newDocs.length) await tx.insert(studyDocuments).values(newDocs.map((documentId) => ({ studyId, documentId }))).onConflictDoNothing();
         const [latest] = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version)).limit(1);
 
@@ -222,12 +220,10 @@ export const studyRoutes =
           await tx.insert(rulebookVersions).values({ studyId, version, status: "extracting" });
         }
         await refreshStudyStatus(tx, studyId, body.by);
-        const jobId = await createJob(tx, "extract", studyId, version);
+        const jobId = await queueJob(tx, boss, "extract", studyId, version);
         await audit(tx, body.by ?? "system", studyId, "extraction.queued", { version, jobId, addedDocumentIds: newDocs });
         return { jobId, version };
-      });
-      await sendJob(boss, "extract", { jobId: res.jobId, studyId, version: res.version });
-      return reply.status(202).send({ jobId: res.jobId, version: res.version });
+      }, { status: 202 });
     });
 
     /**
@@ -239,9 +235,8 @@ export const studyRoutes =
       if (!body.success) throw new HttpError(400, "Say who is typing.");
       const { by } = body.data;
       const studyId = req.params.id;
-      const row = await db.transaction(async (tx) => {
-        const [s] = await tx.select().from(studies).where(eq(studies.id, studyId)).for("update");
-        if (!s) throw notFound("Study");
+      return write(db, req, reply, async (tx) => {
+        const s = await lockStudy(tx, studyId);
         const [latest] = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version)).limit(1);
         if (latest?.status === "draft" || latest?.status === "extracting") throw new HttpError(409, `Version ${latest.version} is already in progress.`);
         const docs = await tx
@@ -259,9 +254,8 @@ export const studyRoutes =
             : await tx.insert(rulebookVersions).values({ studyId, version: (latest?.version ?? 0) + 1, ...fields }).returning();
         await refreshStudyStatus(tx, studyId, by);
         await audit(tx, by, studyId, "version.manual_created", { version: v!.version, byHand: true });
-        return v!;
-      });
-      return reply.status(201).send(versionDto(row));
+        return versionDto(v!);
+      }, { status: 201 });
     });
 
     app.get<{ Params: { id: string } }>("/jobs/:id", async (req): Promise<JobDto> => {

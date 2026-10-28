@@ -27,8 +27,9 @@ export default defineConfig({
   use: { baseURL: `http://127.0.0.1:${WEB}`, channel: process.env.PW_CHANNEL ?? "chrome", headless: true, actionTimeout: 15_000, trace: "retain-on-failure" },
   webServer: [
     {
-      command: "pnpm --filter @dct/api exec tsx scripts/e2e-reset.ts && pnpm --filter @dct/api start",
-      url: `http://127.0.0.1:${API}/api/v1/settings`,
+      // the production build (node dist/server.js), as it ships; ready once its database and jobs are
+      command: "pnpm --filter @dct/api exec tsx scripts/e2e-reset.ts && pnpm --filter @dct/api build && pnpm --filter @dct/api start",
+      url: `http://127.0.0.1:${API}/readyz`,
       env: api,
       reuseExistingServer: false,
       timeout: 60_000,

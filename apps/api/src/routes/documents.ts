@@ -1,9 +1,9 @@
-import { SetDocumentKindBody } from "@dct/shared";
-import { eq } from "drizzle-orm";
+import { type DocumentDto, SetDocumentKindBody } from "@dct/shared";
+import { eq, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PDFDocument } from "pdf-lib";
 import type { Ctx } from "../app.js";
@@ -12,6 +12,7 @@ import { documents, studyDocuments } from "../db/schema.js";
 import { audit, documentDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
+import { fingerprintOf, write } from "../lib/idempotency.js";
 
 /** Write via temp file + rename so a crash never leaves a half-written file under its final name. */
 async function writeAtomic(file: string, data: Buffer) {
@@ -19,6 +20,27 @@ async function writeAtomic(file: string, data: Buffer) {
   const tmp = `${file}.${randomUUID()}.tmp`;
   await writeFile(tmp, data);
   await rename(tmp, file);
+}
+
+/** On disk for good before anything refers to it: written, then flushed (a power cut can't leave it empty). */
+async function writeDurable(file: string, data: Buffer) {
+  const f = await open(file, "wx");
+  try {
+    await f.writeFile(data);
+    await f.sync();
+  } finally {
+    await f.close();
+  }
+}
+
+/** Flushes a folder, so a file renamed into it stays there after a power cut. */
+async function syncDir(dir: string) {
+  const d = await open(dir, "r");
+  try {
+    await d.sync();
+  } finally {
+    await d.close();
+  }
 }
 
 async function pageCount(buf: Buffer, filename: string): Promise<number> {
@@ -40,53 +62,101 @@ async function textSource(file: string): Promise<"text" | "scan" | null> {
 }
 
 const DPI_STEPS = [72, 150, 220, 300, 400];
+/** Each upload's files, one advisory-lock key space (two-int form) per sha256. */
+const FILE_LOCKS = 7102;
+
+type Staged = { filename: string; sha256: string; pages: number; tmp: string | null; text: "text" | "scan" | null };
 
 export const documentRoutes =
   ({ db }: Ctx): FastifyPluginAsync =>
   async (app) => {
+    /**
+     * Stores each PDF as `<sha256>.pdf`, all of the request's files or none. A file is staged under a temporary name and
+     * moved into place last, inside the transaction that inserts its row (under a lock on its sha256): if anything fails
+     * before the commit, no new file is left under its final name. A crash between the move and the commit can leave one
+     * with no row; it holds exactly those bytes, so the next upload of them reuses it.
+     */
     app.post("/uploads", async (req, reply) => {
       if (!req.isMultipart()) throw new HttpError(415, "Expected multipart/form-data with files[]");
       let by = "system";
-      const out = [];
-      for await (const part of req.parts()) {
-        if (part.type === "field") {
-          if (part.fieldname === "by" && typeof part.value === "string" && part.value) by = part.value;
-          continue;
+      const files: Staged[] = [];
+      try {
+        await mkdir(config.uploadDir, { recursive: true });
+        for await (const part of req.parts()) {
+          if (part.type === "field") {
+            if (part.fieldname === "by" && typeof part.value === "string" && part.value) by = part.value;
+            continue;
+          }
+          const buf = await part.toBuffer(); // throws 413 past the 50 MB limit
+          const filename = (part.filename || "upload.pdf").slice(0, 255);
+          const pages = await pageCount(buf, filename);
+          if (pages > config.maxUploadPages) throw new HttpError(422, `${filename} has ${pages} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
+          const sha256 = createHash("sha256").update(buf).digest("hex");
+          const [known] = await db.select({ id: documents.id }).from(documents).where(eq(documents.sha256, sha256));
+          const tmp = known ? null : path.join(config.uploadDir, `${sha256}.pdf.${randomUUID()}.tmp`);
+          if (tmp) await writeDurable(tmp, buf);
+          files.push({ filename, sha256, pages, tmp, text: null });
         }
-        const buf = await part.toBuffer(); // throws 413 past the 50 MB limit
-        const filename = (part.filename || "upload.pdf").slice(0, 255);
-        const pages = await pageCount(buf, filename);
-        if (pages > config.maxUploadPages) throw new HttpError(422, `${filename} has ${pages} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
-        const sha256 = createHash("sha256").update(buf).digest("hex");
-        const storagePath = path.join(config.uploadDir, `${sha256}.pdf`);
-        const [existing] = await db.select().from(documents).where(eq(documents.sha256, sha256));
-        if (existing) {
-          out.push(documentDto(existing, existing.id));
-          continue;
-        }
-        if (!existsSync(storagePath)) await writeAtomic(storagePath, buf);
-        const text = await textSource(storagePath);
-        const row = await db.transaction(async (tx) => {
-          const [r] = await tx.insert(documents).values({ sha256, filename, pageCount: pages, storagePath, textSource: text }).onConflictDoNothing().returning();
-          if (r) await audit(tx, by, null, "document.uploaded", { documentId: r.id, filename, sha256, pageCount: pages, text: r.textSource });
-          return r;
-        });
-        if (row) out.push(documentDto(row));
-        else {
-          // lost a race with a concurrent upload of the same file
-          const [dup] = await db.select().from(documents).where(eq(documents.sha256, sha256));
-          out.push(documentDto(dup!, dup!.id));
-        }
+        if (!files.length) throw new HttpError(400, "No files in upload (field files[])");
+        for (const f of files) if (f.tmp) f.text = await textSource(f.tmp);
+
+        const placed: string[] = [];
+        const moves: { from: string; to: string }[] = [];
+        const print = fingerprintOf(req, { by, files: files.map((f) => [f.filename, f.sha256]) });
+        return await write(
+          db,
+          req,
+          reply,
+          async (tx) => {
+            const out: DocumentDto[] = [];
+            for (const f of files) {
+              await tx.execute(sql`SELECT pg_advisory_xact_lock(${FILE_LOCKS}, hashtext(${f.sha256}))`);
+              const [existing] = await tx.select().from(documents).where(eq(documents.sha256, f.sha256));
+              if (existing) {
+                out.push(documentDto(existing, existing.id));
+                continue;
+              }
+              if (!f.tmp) throw new Error("a document known when the upload was read is gone"); // rows are never deleted
+              const storagePath = path.join(config.uploadDir, `${f.sha256}.pdf`);
+              const [r] = await tx.insert(documents).values({ sha256: f.sha256, filename: f.filename, pageCount: f.pages, storagePath, textSource: f.text }).returning();
+              await audit(tx, by, null, "document.uploaded", { documentId: r!.id, filename: f.filename, sha256: f.sha256, pageCount: f.pages, text: r!.textSource });
+              out.push(documentDto(r!));
+              moves.push({ from: f.tmp, to: storagePath });
+            }
+            return out;
+          },
+          {
+            status: 201,
+            fingerprint: print,
+            // last, while this transaction still holds each file's lock: a failure here takes back what it placed
+            after: async () => {
+              try {
+                for (const m of moves) {
+                  const had = existsSync(m.to);
+                  await rename(m.from, m.to);
+                  if (!had) placed.push(m.to);
+                }
+                if (moves.length) await syncDir(config.uploadDir);
+              } catch (err) {
+                await Promise.all(placed.map((p) => rm(p, { force: true })));
+                throw err;
+              }
+            },
+          },
+        );
+      } finally {
+        // whatever wasn't moved into place
+        await Promise.all(files.flatMap((f) => (f.tmp ? [rm(f.tmp, { force: true })] : [])));
       }
-      if (!out.length) throw new HttpError(400, "No files in upload (field files[])");
-      return reply.status(201).send(out);
     });
 
-    app.patch<{ Params: { id: string } }>("/documents/:id", async (req) => {
+    app.patch<{ Params: { id: string } }>("/documents/:id", async (req, reply) => {
       const body = parse(SetDocumentKindBody, req.body);
-      return db.transaction(async (tx) => {
-        const [doc] = await tx.select().from(documents).where(eq(documents.id, req.params.id)).for("update");
+      return write(db, req, reply, async (tx) => {
+        const [doc] = await tx.select().from(documents).where(eq(documents.id, req.params.id)).for("no key update");
         if (!doc) throw notFound("Document");
+        // the same kind again changes nothing, so it logs nothing
+        if (doc.kind === body.kind) return documentDto(doc);
         const [row] = await tx.update(documents).set({ kind: body.kind }).where(eq(documents.id, doc.id)).returning();
         const [link] = await tx.select().from(studyDocuments).where(eq(studyDocuments.documentId, doc.id)).limit(1);
         await audit(tx, body.by, link?.studyId ?? null, "document.kind_set", { documentId: doc.id, from: doc.kind, to: body.kind });

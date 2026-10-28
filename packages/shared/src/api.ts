@@ -176,12 +176,6 @@ export const ConfirmStudyBody = z.object({
 });
 export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: z.string() });
 export const CorrectValueBody = z.object({ path: z.string(), value: z.unknown(), note: z.string().min(1), by: z.string().min(1) });
-export const ResolveAnomalyBody = z.object({
-  kind: z.enum(["fixed", "chosen", "accepted_with_note"]),
-  note: z.string().min(1),
-  by: z.string().min(1),
-});
-export const ChooseGridBody = z.object({ gridId: z.string(), note: z.string().min(1), by: z.string().min(1) });
 export const SignOffBody = z.object({ by: z.string().min(1), note: z.string().optional() });
 export const SettingsDto = z.object({
   /** When on, a person who corrected values in a version cannot sign it off. Off by default. */

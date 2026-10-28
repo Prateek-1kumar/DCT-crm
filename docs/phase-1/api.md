@@ -12,20 +12,35 @@ Since 2026-10-28 the API implements the review workflow of ADR-001 (`docs/phase-
 pnpm install
 apps/api/scripts/db.sh start          # Postgres 16 in Apple `container` "dct-postgres", port 5434; creates dct_finance + dct_finance_test
 pnpm --filter @dct/api db:migrate     # drizzle migrations (DATABASE_URL from repo-root .env)
-EXTRACTION_FAKE=1 pnpm dev:api        # http://127.0.0.1:4100/api/v1
+EXTRACTION_FAKE=1 pnpm dev:api        # tsx watch: http://127.0.0.1:4100/api/v1
 pnpm --filter @dct/api test           # uses dct_finance_test, temp UPLOAD_DIR, fake extraction
 pnpm --filter @dct/api typecheck
 ```
 
+Production (no tsx):
+
+```sh
+pnpm --filter @dct/api build          # tsup → apps/api/dist (server.js, db/migrate.js)
+pnpm --filter @dct/api db:migrate:dist   # node dist/db/migrate.js: a separate release step, before starting
+pnpm --filter @dct/api start          # node dist/server.js
+```
+
 `db.sh stop` stops the container and `db.sh reset` deletes and recreates it. The script only touches `dct-postgres`.
 
-Env: `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (see the guard below), `DATABASE_URL` (default `postgres://dct:dct@localhost:5434/dct_finance`), `UPLOAD_DIR` (default `<repo>/data/uploads`), `PORT` (4100), `EXTRACTION_FAKE=1`. Env vars that are already set win over `.env`.
+**Settings** are environment variables, every one listed with its default in the repo-root `.env.example`. Variables already set win over `.env`. They're checked once at startup with zod (`src/config.ts`): a bad or missing one stops the API before it listens or connects, with a list naming each bad setting and what it must be, never its value (`DATABASE_URL` and the API keys are secrets). An empty value counts as unset. The reading's own settings (`EXTRACTION_MAX_USD`, `EXTRACTION_GRID_DPI`, `CROSS_READ*`, `OPENAI_*`) are read by `@dct/extraction`, but checked here too, so a typo fails at startup instead of silently falling back to a default; `ANTHROPIC_API_KEY` is required unless `EXTRACTION_FAKE=1`.
 
 The web's Next rewrite forwards `/api/:path*` to the API unchanged, so `/api/v1/...` needs no proxy change.
 
 ## Routes
 
-All under `/api/v1`. Bodies and responses are the types in `packages/shared` (`api.ts`, `evidence.ts`, `search.ts`, `alerts.ts`). Errors are `{ statusCode, error, message }`, with a plain-English `message`.
+All under `/api/v1`. Bodies and responses are the types in `packages/shared` (`api.ts`, `evidence.ts`, `search.ts`, `alerts.ts`). Errors are `{ statusCode, error, message }`: `error` is the status's name ("Conflict"), `message` plain English. Every POST and PATCH takes an `Idempotency-Key` header (below). Every response carries `X-Request-Id`, the id in its log lines and in a 5xx message's "ref".
+
+Probes, outside `/api/v1` (for whatever runs the server, not part of the API's contract, so they never move with an API version; the host guard applies to them too, and they log only warnings):
+
+| Route | Does |
+|---|---|
+| GET `/livez` | 200 `{ status: "ok" }` while the process serves requests |
+| GET `/readyz` | 200 `{ status: "ready", database, jobs, schema }` when the database answers, pg-boss answers and isn't stopping, and the database has every migration this build ships; else 503 with the one that isn't (`unavailable`, `stopped`, `behind`). 503 too once shutdown starts |
 
 | Method | Route | Body / query | Does |
 |---|---|---|---|
@@ -64,7 +79,9 @@ Removed on 2026-10-28, because the web no longer calls them and they bypass the 
 - `src/db/schema.ts` defines the tables: studies, documents, study_documents, rulebook_versions, jobs, audit_log, alerts, alert_reads, settings.
 - `drizzle/0000_init.sql` is generated. `drizzle/0001_guards.sql` is custom: an append-only trigger on audit_log, an immutability trigger on signed versions, and the settings row seed. `drizzle/0005_talented_slyde.sql` adds the review columns and replaces the immutability trigger (below).
 - `src/extraction/port.ts` holds the `@dct/extraction` interface and adapter selection. `fake.ts` holds the synthetic rulebook and checks.
-- `src/jobs.ts` holds the pg-boss queues `identify` and `extract`, with their handlers.
+- `drizzle/0009_idempotency_and_one_live_read.sql` adds `idempotency_keys` and the one-live-read index on `jobs` (first failing an older live read of a version beside a newer one, so the index can be built).
+- `src/jobs.ts` holds the pg-boss queues `identify` and `extract` with their handlers, `stranded` (pg-boss's dead letters) and `maintenance`.
+- `src/lib/idempotency.ts` holds `write()`: one transaction per write, with its Idempotency-Key.
 - `src/review.ts` holds the review queue: the questions built after a read, how an answer is checked, and blind-entry masking.
 - `src/domain.ts` holds DTO mapping, the study-status derivation, the draft guard, and carrying corrections into amendments.
 - `src/lib/pointer.ts` handles JSON-pointer edits. `src/lib/diff.ts` builds the labelled structural diff and value labels.
@@ -121,6 +138,49 @@ The questions, in order:
 
 **`needs_you`** is computed in `refreshStudyStatus` only, as the web's `needsYou()`: questions with no outcome, `differs`, or a blocking `cant_tell`; a by-hand draft still being typed counts 1.
 
+## Writes: idempotency and atomicity
+
+**`Idempotency-Key`** (IETF `draft-ietf-httpapi-idempotency-key-header`, Stripe's design; `src/lib/idempotency.ts`). Every POST and PATCH takes the header, as a structured-field string (`"…"`, what the web sends) or a bare token, 1–255 printable characters (else 400). The web sends a fresh UUID for each user action and the same one on its retries (`apps/web/src/lib/api.ts`).
+- The write runs in one transaction, and the key, a fingerprint of the request (sha256 of method, URL and body; for an upload, its `by` and each file's name and sha256) and the response are saved **in that same transaction**: the write and its saved response commit together or not at all.
+- Same key, same request: the saved response, byte for byte, with `Idempotent-Replayed: true`; nothing is written.
+- Same key, different request: 422 "This Idempotency-Key was already used for a different request. Send a new key for each new action."
+- Same key while the first is still running (a double click): the second waits on the key's advisory lock, then gets the first one's response. 409 "This request is still being processed…" if that takes longer than `DB_LOCK_TIMEOUT_MS`.
+- A request that fails saves nothing (it changed nothing), so the same key runs it again once the problem is fixed, as Stripe's v2 does.
+- Saved responses are replayed for 24 hours, then deleted by maintenance; a key used after that runs as a new request. They're the masked responses that were sent (blind entry), kept in the same database as the versions.
+- The header is optional: without it a write is applied each time it's sent, protected only by the natural rules below.
+
+| Write | Sent twice without a key | With a key |
+|---|---|---|
+| POST `/uploads` | deduplicated by sha256 (no second row, file or log entry), but answered `duplicateOf` itself | the first answer (`duplicateOf: null`) |
+| PATCH `/documents/:id` | the same kind again is a no-op (no log entry) | replayed |
+| POST `/studies` | deduplicated by file set while the study is setting up (advisory lock); a second study once it has moved on | replayed |
+| PATCH `/studies/:id` | a second `study.confirmed` entry | replayed |
+| POST `/studies/:id/extract` | while reading, the same job; after a failed read, **a second paid read** | replayed |
+| POST `/studies/:id/versions/by-hand` | 409 "already in progress" (the first answer is lost) | replayed |
+| PATCH `…/values` | the same value by the same typist is a no-op | replayed |
+| POST `…/by-hand/done` | 409 "already marked done" | replayed |
+| POST `…/review/:itemId` | **answered again**: an answer that came back "differs", sent again, settles as chosen | replayed |
+| POST `…/report` | 409 (an open question already; on the live version, the correction draft is in progress) | replayed |
+| POST `…/proofread` | marks already there by the same person: no-op | replayed |
+| POST `…/send-back` | 409 "Only answered questions can be sent back." | replayed |
+| POST `…/sign-off` | 409 "signed and immutable" | replayed |
+| POST `/alerts/read` | no-op (`ON CONFLICT DO NOTHING`) | replayed |
+| PATCH `/settings` | the same settings again: no-op (no log entry) | replayed |
+| GET `…/export.xlsx` | each download is logged: it's an event of its own | not taken (GET) |
+| jobs `identify`, `extract` | run once (Jobs, below) | — |
+
+**Atomicity.** Everything one write changes is one transaction: the version, the study's status and needs-you count (`refreshStudyStatus`), the alert its stage change raises, its audit entries, its job and pg-boss job, and its saved response. Tests make the last insert fail (a trigger that raises) and check nothing was left: no status change without its log entry, no alert without its transition, no job row without its queued job, no file without its row (`test/atomicity.test.ts`). A job's result is one transaction too: a read whose completion fails ends `failed` with its log entry and alert, never a draft without them.
+
+**Lock order.** Every write to a study locks it first (`lockStudy`, `SELECT … FOR NO KEY UPDATE`; `loadVersion(…, true)` does it), then its job's row, then its versions. Before, version routes locked the version and then the study while `POST /extract` and typing by hand locked the study and then the version: "This looks wrong" on a failed version at the same moment as reading it again deadlocked (reproduced; now tested). `NO KEY UPDATE`, not `FOR UPDATE`, so rows that only reference the study (audit entries, alerts) never wait for it. An idempotency key's lock comes before all of these.
+
+## Running in production
+
+- **Build**: `tsup` bundles `src/server.ts` and `src/db/migrate.ts` into `apps/api/dist`, with `@dct/shared` and `@dct/extraction` (TypeScript source) inlined, and their own dependencies with them (pnpm doesn't make those resolvable from `apps/api`). A banner defines `require` for the bundled CommonJS ones: without it exceljs failed at startup ("Dynamic require of "crypto" is not supported"), so the old build never ran. The mupdf worker isn't bundled and needs no build step: `@dct/extraction` resolves `mupdf-worker.mjs` through its own package exports, and mupdf from there (checked: the built server reads text layers and renders pages). Paths (`.env`, the migrations) are found by walking up from the running file, so they're the same from `src`, `dist` and any chunk.
+- **Migrations are a separate step**, run before the new version starts (`node dist/db/migrate.js`), never on boot: on boot, every instance would race to run DDL, a slow migration would hold up readiness, a failed one would crash-loop the server, and the server would need DDL rights it otherwise doesn't. The migrator holds an advisory lock, so two runs at once apply each migration once. A server started on a database that's behind logs an error and stays not ready (`/readyz` `schema: "behind"`); it doesn't run maintenance on tables it doesn't know. pg-boss creates and upgrades its own `pgboss` schema at start, under its own lock, as it's designed to.
+- **Shutdown** on SIGTERM or SIGINT: Fastify stops taking requests (new ones and `/readyz` get 503) and waits for the ones in flight, then pg-boss stops (up to 10 s for a running job), then the pool closes. Past `SHUTDOWN_TIMEOUT_MS` (30 s), or on a second signal, it exits anyway.
+- **Logs**: JSON lines (pino) at `LOG_LEVEL`, each with its request's id (`reqId`, a UUID, also sent as `X-Request-Id`). Still the method and the route pattern only: no bodies, ids, query strings, contract text or amounts. Jobs and pg-boss log through the same logger.
+- **Limits**: `REQUEST_TIMEOUT_MS` (120 s) for a whole request and an idle socket, `KEEP_ALIVE_TIMEOUT_MS` (72 s), 1 MB JSON bodies. Database: `DB_POOL_MAX` (10) connections for the API and `JOBS_DB_POOL_MAX` (5) for pg-boss; each API connection has `statement_timeout` (`DB_STATEMENT_TIMEOUT_MS`, 30 s), `lock_timeout` (`DB_LOCK_TIMEOUT_MS`, 10 s) and a 60 s `idle_in_transaction_session_timeout`, and waiting for a free connection gives up after 10 s. An idle connection the database drops is logged and replaced (without a listener it would have crashed the process).
+
 ## Decisions
 
 - **Study status is derived from versions** (`refreshStudyStatus`) after every version change, so it can't drift:
@@ -130,19 +190,24 @@ The questions, in order:
   - latest version `signed` → `live`
 
   A failed amendment extraction therefore shows `amendment_in_review`, and its version is `failed`.
-- **Jobs:**
+- **Jobs** (`src/jobs.ts`, pg-boss queues `identify`, `extract`, `stranded`, `maintenance`):
   - Our `jobs` row id is the pg-boss job id. It holds state, progress and step for `GET /jobs/:id`.
-  - The extract handler acts only on a version still in `extracting`. It fills that version in one conditional UPDATE, so a redelivered job is a no-op.
-  - pg-boss `retryLimit: 2` covers crashes.
-  - An extraction error marks the version `failed`. It does not auto-retry, because AI calls cost money.
-  - `POST /extract` on a failed or stuck version reuses the same version number, so a retry never creates a duplicate.
-  - `POST /extract` while a version is extracting returns the same job and re-sends it, which is harmless.
-  - `POST /extract` while a draft exists returns 409.
+  - **Queued in one transaction**: the row and its pg-boss job are inserted in the request's own transaction (`queueJob`, pg-boss `send` with `fromDrizzle(tx)`), so a job row is never left "queued" with nothing to run it. Before, the job was sent after the commit, and a server stopping in between left a study setting up, or a read extracting, for ever.
+  - **Runs once**: `extract` claims its row (`queued` → `running`) in one conditional UPDATE, so a second delivery of the same job, at once or later, does nothing: one AI read paid for. `identify` may run again after a crash (it's cheap), but only one run writes: its result's transaction locks the row and goes on only while the job is still live. A read's result is written only while its job is still `running`, so a read declared dead meanwhile (below) is dropped, never written over the failure.
+  - **At most one live read per version**, by the database too: a partial unique index on `jobs (study_id, version)` for `extract` jobs `queued` or `running` (migration 0009).
+  - **Retries**: `identify` 2, 5 s apart (crashes). `extract` 0: each try pays for AI reads, so a read that failed is read again only when a person asks (`POST /extract` reuses its version). An extraction error marks the version `failed` with plain words and the technical detail.
+  - **A job whose server died is failed, never left running**: workers heartbeat every 30 s (`heartbeatSeconds: 60`); pg-boss's supervisor (every minute) fails a job that missed its heartbeats, or that ran past `expireInSeconds` (identify 15 min, extract 2 h), and copies it to the `stranded` dead-letter queue. Its worker marks our row failed (`recover`) and, for a read, the version too, with the study's status, the "couldn't read" alert and an `extraction.failed` entry, in one transaction: "The server stopped while reading this contract, so the reading didn't finish. Read it again, or type it in by hand." (or "took more than two hours"), detail `pg-boss: job heartbeat timeout`. A crash is found within a minute or two of the next start.
+  - **Maintenance** (`maintain`, at startup before any job runs, then every 10 minutes): a live row whose pg-boss job has ended or is gone is failed the same way (the backstop for a stranded job that couldn't be handled, and for jobs from before queueing was transactional), and so is a version `extracting` with no live job. It also deletes idempotency keys older than a day.
+  - On SIGTERM, pg-boss gets up to 10 s to let a running job finish; one still running is failed by pg-boss into `stranded`, so the next start marks it.
+  - A handler that throws gives pg-boss a plain error (the database error's code, never its SQL or values), since pg-boss stores it and copies it into the stranded job.
+  - NOTIFY wakes a worker as soon as a job is sent; a 1 s backstop poll keeps a backlog moving (pg-boss's 30 s default would start one job of a backlog every 30 s).
+  - Settled jobs are deleted by pg-boss after 7 days (its default); our `jobs` table is the lasting record.
+  - `POST /extract` on a failed version reuses the same version number, so a retry never creates a duplicate; while a version is extracting it returns the same job; while a draft exists, 409.
 - **Signed is immutable twice over:**
   - The API returns 409 on any write to a version that isn't a draft (proofreading aside).
   - A DB trigger refuses changes to signed/superseded rows, now including `evidence`, `review`, `pdf_check` and `by_hand`. The only changes it allows are `signed → superseded` and `proofread`.
   - The previous live version becomes superseded in the same transaction as the new sign-off.
-- **Audit log is append-only by trigger.** Every mutating route writes an entry. Uploads, study creation and job results use `by: "system"` unless a `by` is given.
+- **Audit log is append-only by trigger.** Every write that changes something writes an entry (a write that changes nothing, such as the same settings again, logs nothing), in the same transaction as the change. Uploads, study creation and job results use `by: "system"` unless a `by` is given.
 - **Upload text detection:** after the PDF is stored, its text layer is read: `text` when any page has real text, else `scan`; null when mupdf can't open it (the read then fails with the reason). Files uploaded before this stay null ("not known yet").
 - **Diff:**
   - Items in rulebook arrays are matched by identity (id, then code, name, label, kind, description), not by index.
@@ -152,12 +217,14 @@ The questions, in order:
 - **Uploads:**
   - Only PDFs are accepted: the `%PDF-` magic must be present and pdf-lib must load the file. Otherwise the response is 415 or 400.
   - The size limit is 50 MB (413 above it), and 100 pages per PDF (422 with what to do; the reading's own limit).
-  - Files are written via temp file + rename to `<UPLOAD_DIR>/<sha256>.pdf`.
+  - All of a request's files or none. Each is staged as `<UPLOAD_DIR>/<sha256>.pdf.<uuid>.tmp`, flushed to disk (fsync), and its text layer read from there. Then one transaction locks each file's sha256 (advisory lock), inserts the rows and audit entries, saves the response for its idempotency key, and, last, renames each staged file to `<sha256>.pdf` and flushes the folder. A failure before the commit removes any file it put in place, so a failed insert never leaves a file under its final name; the staged files are removed either way.
+  - A crash between the rename and the commit can leave `<sha256>.pdf` with no row. It holds exactly those bytes, so the next upload of them takes it over (tested). Nothing deletes files in the upload folder by itself (it holds the contracts).
   - A duplicate returns the existing document with `duplicateOf = existing id`. The original filename is kept.
 - **Page images** are cached at `<UPLOAD_DIR>/pages/<sha256>-<n>.png` (`@<dpi>` for the other sizes: a requested DPI is rounded up to 72, 150, 220, 300 or 400). The browser keeps one for an hour (`private, max-age=3600`). A page that takes too long to draw gets 422 and isn't tried again until a restart.
 - **mupdf runs in a worker thread** (`packages/extraction/src/mupdf-worker.mjs`): page images, page text and the text layer. A call longer than `RENDER_LIMITS.timeoutMs` (30 s) is stopped and the worker replaced, so a crafted PDF can't freeze the server. At most 8 PDFs stay open.
 - `appliesFrom` on a version is `rulebook.appliesFrom.value`, falling back to `study.effectiveDate.value`; answers and typed values keep it current.
-- A malformed uuid in a URL returns 400, not 500, and so does a version number over 9 digits (checked once, in a `preValidation` hook). Postgres errors a request causes (`22P02`, `22003`, `22007`, `22008`) are 400 too.
+- A malformed uuid in a URL returns 400, not 500, and so does a version number over 9 digits (checked once, in a `preValidation` hook). Postgres errors a request causes (`22P02`, `22003`, `22007`, `22008`) are 400 too. A write rolled back by a concurrent one (`40001`, `40P01`, or a lock wait past `DB_LOCK_TIMEOUT_MS`, `55P03`) is 409 "Someone else was changing this at the same moment, so nothing was saved. Try again."
+- **A repeat that the state has moved past is a 409**, with what to do: sign-off of a signed version, typing done twice, a second report on a value with an open question, sending back a question that isn't answered (it was 400; an unknown question id stays 400).
 - **A server error (5xx) never shows its cause**: the response says "Something went wrong on the server… (ref <request id>)". A database error's message is the SQL with every value bound to it, so the log gets the query and the cause only, never the values. Failed jobs say the same for a database error.
 - Request bodies are at most 1 MB (uploads have their own limit). Every response has `X-Content-Type-Options: nosniff`, and JSON is `Cache-Control: no-store`. The request log is the method and the route pattern: no ids, query strings or bodies.
 - **Study details lock once a version is approved**: `PATCH /studies/:id` returns 409. The export is named and headed from the approved version's own study details, never the editable study row.
@@ -170,7 +237,7 @@ The questions, in order:
 - No CORS is set. The web app proxies `/api` with a Next rewrite to the API.
 - **Migration `0007`** indexes `audit_log (study_id, id)` for one contract's log, paged newest first. `GET /audit` pages by id (keyset cursor, as `/studies` and `/alerts`); `q` is an ILIKE over the person, the action (its code or its `ACTION_LABELS` name) and every text and number in the details.
 - **Migration `0006`** locks a signed or superseded version as a whole row: only signed → superseded, `updated_at` and `proofread` may change, and it can't be deleted (0005's trigger listed columns, so `version`, `study_id`, `sign_note` and the rest could still change).
-- The `extract` queue never retries (each try pays for AI reads; a crashed read is started again from the contract page) and a read may run 2 hours. `identify` keeps 2 retries.
+- The `extract` queue never retries (each try pays for AI reads; a crashed read is failed in plain words and read again from the contract page) and a read may run 2 hours. `identify` keeps 2 retries.
 - **Migration `0005`** marks every draft that existed before it `failed` ("Read before every number was checked against the PDF. Read it again."): it has no questions, so it would have gone straight to approval unchecked. The contract page then offers "Read it again" or typing it in by hand.
 
 ## Added at integration testing
@@ -189,7 +256,7 @@ The questions, in order:
 ## Known gaps
 
 - A yes/no or fixed-list answer is compared with the value held, like a typed one (re-type, "This looks wrong"): a different pick `differs`, a second pick settles it. The sample server in `apps/web` still has them `chosen`.
-- Only these money values are in the evidence ledger, so only they are checked at approval: grid cells, unit prices, visit totals and subtotals, per-patient totals, fee, invoiceable and screen-fail amounts, overhead %, holdback %, net days and deadlines. Caps, due days, refund days, a grid's stated overhead % and the effective/applies-from dates aren't, so an AI read of those is approved unchecked (ADR-001 I1).
+- The sample server (`apps/web/src/lib/mock/server.ts`) still answers 400 to sending back a question that isn't answered (the API: 409), and keeps idempotency keys in memory only.
 - Arithmetic questions are suppressed per grid, not per visit.
 
 ## Proposed changes to `packages/shared` (not made)

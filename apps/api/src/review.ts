@@ -43,7 +43,7 @@ const box = (documentId: string, page: number): PageBox => ({ documentId, page, 
 const sentence = (s: string) => (/[.?!]$/.test(s) ? s : `${s}.`);
 
 /** Still needs a person: unanswered, answered differently, or a blocking "can't tell" (apps/web/src/lib/review.ts needsYou). */
-export const openItems = (items: ReviewItem[]) => items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));
+const openItems = (items: ReviewItem[]) => items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));
 
 /** For studies.needs_you: a by-hand draft still being typed counts as one thing to do (the typing), as in the web. */
 export const needsYouOf = (v: { status: string; byHand: boolean; review: ReviewItem[] } | undefined) =>
@@ -352,7 +352,7 @@ function optionValue(item: ReviewItem, optionId: string, current: unknown): { pa
   return { path: item.path, value: typeof current === "boolean" ? optionId === "true" : optionId };
 }
 
-export type Draft = { version: number; byHand: boolean; rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[] };
+type Draft = { version: number; byHand: boolean; rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[] };
 
 const WHY = "Add a short note saying why the PDF text is wrong here.";
 const WHERE = "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.";

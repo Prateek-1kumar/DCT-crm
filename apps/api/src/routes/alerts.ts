@@ -3,8 +3,10 @@ import { count, desc, eq, inArray, not, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
+import type { Tx } from "../db/index.js";
 import { alertReads, alerts, studies } from "../db/schema.js";
 import { HttpError, parse } from "../lib/http.js";
+import { write } from "../lib/idempotency.js";
 
 /** Read for `person`: they marked it, or they caused it. */
 const readBy = (person: string) =>
@@ -27,7 +29,7 @@ function decodeCursor(c: string) {
 export const alertRoutes =
   ({ db }: Ctx): FastifyPluginAsync =>
   async (app) => {
-    const unreadFor = async (person: string) => (await db.select({ n: count() }).from(alerts).where(not(readBy(person))))[0]!.n;
+    const unreadFor = async (person: string, tx: Tx = db) => (await tx.select({ n: count() }).from(alerts).where(not(readBy(person))))[0]!.n;
 
     app.get("/alerts", async (req): Promise<AlertPage> => {
       const q = parse(AlertListQuery, req.query);
@@ -60,13 +62,15 @@ export const alertRoutes =
       };
     });
 
-    app.post("/alerts/read", async (req) => {
+    app.post("/alerts/read", async (req, reply) => {
       const { by, ids } = parse(ReadAlertsBody, req.body);
       // Unknown ids select nothing; already read is a no-op. Not audit-logged: reading alerts changes no contract.
-      await db
-        .insert(alertReads)
-        .select(db.select({ alertId: alerts.id, person: sql<string>`${by}::text`.as("person") }).from(alerts).where(ids ? inArray(alerts.id, ids) : undefined))
-        .onConflictDoNothing();
-      return { unread: await unreadFor(by) };
+      return write(db, req, reply, async (tx) => {
+        await tx
+          .insert(alertReads)
+          .select(tx.select({ alertId: alerts.id, person: sql<string>`${by}::text`.as("person") }).from(alerts).where(ids ? inArray(alerts.id, ids) : undefined))
+          .onConflictDoNothing();
+        return { unread: await unreadFor(by, tx) };
+      });
     });
   };

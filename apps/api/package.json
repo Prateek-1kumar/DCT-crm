@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "start": "node dist/server.js",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:dist": "node dist/db/migrate.js",
     "db:start": "./scripts/db.sh start",
     "db:stop": "./scripts/db.sh stop",
     "db:reset": "./scripts/db.sh reset"
