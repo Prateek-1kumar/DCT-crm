@@ -298,7 +298,6 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
         <Badge tone={item.kind === "contract_problem" ? "danger" : item.kind === "confirm_value" ? "warn" : "accent"}>{KIND_LABEL[item.kind]}</Badge>
         {(item.reason === "spot_check" || item.reason === "SAMPLE") && <Badge tone="info">Random spot check</Badge>}
         {item.reason === "AMBIGUOUS_TERM" && <Badge tone="warn">Unclear wording</Badge>}
-        {!item.blocking && <Badge>Not needed to approve</Badge>}
         {index !== undefined && (
           <span className="num ml-auto text-small text-faint">
             {index + 1} of {total}
