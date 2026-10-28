@@ -1,4 +1,4 @@
-import { RulebookVersionDto } from "@dct/shared";
+import { RulebookVersionDto, withheldPaths } from "@dct/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockRequest, mockReset } from "./mock/server";
 import { proofUnits, reportWrong, unitStatus } from "./proofread";
@@ -15,8 +15,12 @@ describe("proofread units", () => {
     expect(order.indexOf("totals")).toBeGreaterThan(order.lastIndexOf("terms"));
     expect(order.indexOf("rows")).toBeGreaterThan(order.lastIndexOf("totals"));
 
-    // Every confirmed value with a place on a page is in exactly one unit; values with an open question are not.
-    const confirmed = v.evidence.filter((e) => e.status === "confirmed" && e.where[0]).map((e) => e.path);
+    // Every confirmed value with a place on a page is in exactly one unit; values with an open question are not, the
+    // random sample's either (confirmed, but withheld while they're re-typed blind), nor a cap's figures while its kind is
+    const open = new Set(withheldPaths(v));
+    expect(open.has("/screenFail/cap/ratio")).toBe(true);
+    expect(v.review.some((i) => i.reason === "SAMPLE" && v.evidence.some((e) => e.path === i.path && e.status === "confirmed"))).toBe(true);
+    const confirmed = v.evidence.filter((e) => e.status === "confirmed" && e.where[0] && !open.has(e.path)).map((e) => e.path);
     expect(units.flatMap((u) => u.cells.map((c) => c.path)).sort()).toEqual([...confirmed].sort());
 
     const rows = units.filter((u) => u.section === "rows");

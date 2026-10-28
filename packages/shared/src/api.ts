@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
 import { Person, ProofreadMark, ReviewItem, settled, ValueEvidence } from "./evidence";
 import { actionLabel } from "./labels";
+import { alsoWithheld } from "./questions";
 import { DocumentKind, Rulebook } from "./rulebook";
 
 /** HTTP contract between apps/api and apps/web. All routes are under /api/v1. */
@@ -59,10 +60,11 @@ export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
 
 /**
  * Blind entry: on a draft, the value at each open review question's path is withheld from every response until it is
- * answered (the API's versionDto, search, diff and audit). The web masks the same paths.
+ * answered (the API's versionDto, search, diff and audit), with the values its answer decides the meaning of
+ * (alsoWithheld). The web masks the same paths.
  */
 export const withheldPaths = (v: { status: string; review: ReviewItem[] }): string[] =>
-  v.status === "draft" ? v.review.flatMap((i) => (i.path && !settled(i) ? [i.path] : [])) : [];
+  v.status === "draft" ? [...new Set(v.review.flatMap((i) => (i.path && !settled(i) ? [i.path, ...alsoWithheld(i.path)] : [])))] : [];
 
 const pointer = (path: PropertyKey[]) => path.map((k) => `/${String(k).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
 

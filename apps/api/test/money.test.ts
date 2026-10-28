@@ -336,8 +336,10 @@ describe("9b. blind entry: a term listed to bill by hand from a withheld value's
     expect(words(JSON.stringify(log))).not.toMatch(leaks);
     for (const q of ["12,000.00", "administrative", "amendment"]) expect(JSON.stringify((await get<MasterSearch>(`/studies/${studyId}/versions/2/search?q=${encodeURIComponent(q)}`)).hits)).not.toMatch(leaks);
 
-    // the fee answered: nothing withheld, the term in full
+    // the fee answered, and its due days on the same line (the blind sample's): nothing withheld, the term in full
     await answer(studyId, `confirm:${FEE}`, { value: 1200000 }, 2);
+    expect((await version(studyId, 2)).rulebook!.unclassified[0]!.amounts).toEqual([]);
+    await answer(studyId, "sample:/siteFees/0/dueDays", { value: 45 }, 2);
     expect((await version(studyId, 2)).rulebook!.unclassified).toMatchObject([{ quote: term.term!.quote, amounts: [25000], note: "Amendment fee, next to the $12,000.00 admin fee" }]);
     expect((await auditOf(studyId)).find((e) => e.detail.version === 2 && e.detail.itemId === term.id)!.detail).toMatchObject({ question: expect.stringContaining("$12,000.00") });
   });

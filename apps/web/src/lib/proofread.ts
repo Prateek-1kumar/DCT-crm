@@ -1,4 +1,4 @@
-import { settled, type PageBox, type ProofreadMark, type RulebookVersionDto } from "@dct/shared";
+import { settled, withheldPaths, type PageBox, type ProofreadMark, type RulebookVersionDto } from "@dct/shared";
 import { api, ApiError } from "./api";
 import { isMoneyPath, labelFor } from "./format";
 import { getAt } from "./pointer";
@@ -23,15 +23,17 @@ const isMoney = (path: string) => isMoneyPath(path) || path.includes("/cells/");
 /**
  * Everything the PDF check confirmed, grouped for proofreading and ordered biggest money first: fees and terms (those
  * that aren't amounts, like holdback % or payment days, first: they apply to everything), then visit totals, then grid
- * rows by row total. A row printed across two pages is two units, one per page.
+ * rows by row total. A row printed across two pages is two units, one per page. Not a value that's withheld for a blind
+ * answer (the random sample re-types confirmed values): it has nothing to show, and it's checked there.
  */
-export function proofUnits(v: Pick<RulebookVersionDto, "rulebook" | "evidence">): ProofUnit[] {
+export function proofUnits(v: Pick<RulebookVersionDto, "rulebook" | "evidence" | "status" | "review">): ProofUnit[] {
   const rb = v.rulebook;
   if (!rb) return [];
+  const hidden = new Set(withheldPaths(v));
   const units = new Map<string, ProofUnit>();
   for (const e of v.evidence) {
     const w = e.where[0];
-    if (e.status !== "confirmed" || !w) continue;
+    if (e.status !== "confirmed" || !w || hidden.has(e.path)) continue;
     const value = getAt(rb, e.path);
     const at = `${w.documentId}:${w.page}`;
     let key: string;

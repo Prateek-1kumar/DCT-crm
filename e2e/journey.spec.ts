@@ -3,8 +3,9 @@ import { type Browser, expect, type Page, test } from "@playwright/test";
 
 /**
  * Today's journey, against the real API (EXTRACTION_FAKE=1 fakes only the AI) and a production build of the web in real
- * mode: add a contract → reading → answering (with a mismatch) → proofreading → approval → live → search and ⌘K → export →
- * amendment → "This looks wrong" → send back → alerts. The PDFs are synthetic, printed by the browser: a text PDF whose
+ * mode: add a contract → reading → answering (a mismatch, an interpretation picked blind, the random sample) →
+ * proofreading → approval → live → search and ⌘K → export → amendment → "This looks wrong" → a spot check that misses →
+ * send back → alerts. The PDFs are synthetic, printed by the browser: a text PDF whose
  * numbers match the fake reading, so most of them are confirmed against the PDF's own text, as with a DocuSign copy.
  */
 
@@ -84,16 +85,40 @@ async function watch(page: Page) {
   return problems;
 }
 
-/** The answer to each question the fake reading of WORK_ORDER asks, by its wording. */
+/** The answer to each question the fake reading of WORK_ORDER asks, by its wording (the first that matches). */
 const ANSWERS: [RegExp, { type: string } | { pick: RegExp; note?: string }][] = [
   [/effective date/, { type: "2025-08-22" }],
   [/overhead percentage/, { type: "40" }],
   [/how many days must an invoice be paid/, { type: "45" }],
   [/months after the study closes/, { type: "6" }],
   [/"Administrative fee" due/, { type: "45" }],
-  [/screen failures can be billed/, { type: "7" }],
   [/Master CTA/, { pick: /doesn't affect billing/, note: "The master agreement sets no prices for this work order." }],
   [/bill from/, { pick: /Exhibit A \(revised\)/ }],
+  // the interpretations every read asks, picked blind as the contract words them (ADR-001 §6)
+  [/Which lines does the overhead apply to/, { pick: /^All per-patient lines$/ }],
+  [/When is the site fee “Administrative fee” billed/, { pick: /^On study initiation$/ }],
+  [/How are screen failures paid for/, { pick: /^Fixed$/ }],
+  [/What limit does the contract put on paying for screen failures/, { pick: /^A number at a time, then the sponsor approves more$/ }],
+  [/Are screen failures paid automatically/, { pick: /^By invoice$/ }],
+  [/How does the contract say amounts are rounded/, { pick: /^Use printed amounts$/ }],
+  // the screen-fail cap's limit, asked once its kind is known
+  [/Screen fail › Cap › Limit/, { type: "7" }],
+  // the blind sample: whichever confirmed values it drew, typed as the page prints them
+  [/Blood draw › (?:V1|V2|Unit price)/, { type: "55.00" }],
+  [/Screening › Procedure subtotal/, { type: "3,801.00" }],
+  [/Screening › Overhead/, { type: "2,130.00" }],
+  [/Screening › Non procedure/, { type: "1,524.00" }],
+  [/Screening › Total/, { type: "7,455.00" }],
+  [/Week 0 › Procedure subtotal/, { type: "4,047.00" }],
+  [/Week 0 › Overhead/, { type: "2,425.00" }],
+  [/Week 0 › Non procedure/, { type: "2,016.00" }],
+  [/Week 0 › Total/, { type: "8,488.00" }],
+  [/Per patient totals/, { type: "15,943.00" }],
+  [/Stated overhead pct/, { type: "40" }],
+  [/Unscheduled visit › Amount with overhead/, { type: "800.00" }],
+  [/Unscheduled visit › Amount/, { type: "572.00" }],
+  [/Administrative fee › Amount/, { type: "12,000.00" }],
+  [/Screen fail › Amount/, { type: "7,455.00" }],
 ];
 
 /** Clicks a button that sends an answer, and waits until the API has taken it. */
@@ -122,7 +147,7 @@ const questionHeading = (page: Page) => page.getByRole("region", { name: "Questi
 async function answerAll(page: Page, reply: (question: string) => Promise<void>) {
   const finished = page.getByRole("heading", { name: /Every question has an answer|Almost done/ });
   const region = page.getByRole("region", { name: "Question" });
-  for (let n = 0; n < 30 && !(await finished.isVisible()); n++) {
+  for (let n = 0; n < 60 && !(await finished.isVisible()); n++) {
     // Two questions can read the same (one per grid), so "moved on" is judged by the whole panel, its "n of m" included.
     const before = await region.textContent();
     await reply((await questionHeading(page).textContent())!);
@@ -215,7 +240,19 @@ test("add a contract → answer → proofread → approve → live → search �
     // The page shows the spot, never our reading.
     await expect(page.getByRole("region", { name: "The spot in the contract" }).getByRole("img").first()).toBeVisible();
     let mismatch = false;
+    let picked = false;
     await answerAll(page, async (q) => {
+      if (/How are visits paid/.test(q)) {
+        // An interpretation picked blind: a pick other than our reading shows both, and asks where the page says so.
+        await page.getByRole("radio", { name: /^By invoice$/ }).check();
+        await send(page, "Save and next");
+        await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
+        await page.getByRole("radio", { name: /We read.*Automatic \(from EDC\)/ }).click();
+        await page.getByLabel("Where on the page is it printed?").fill("Exhibit A, first paragraph: paid automatically from the EDC system");
+        await send(page, "Save and next");
+        picked = true;
+        return;
+      }
       if (!/Week 0 total/.test(q)) return answer(page, q);
       // Type the AI's figure; the PDF's own text says otherwise, so the page asks which one it shows.
       await page.getByLabel("What the contract says").fill("8,489.00");
@@ -225,7 +262,7 @@ test("add a contract → answer → proofread → approve → live → search �
       await send(page, "Save and next");
       mismatch = true;
     });
-    expect(mismatch).toBe(true);
+    expect([mismatch, picked]).toEqual([true, true]);
     await expect(page.getByRole("heading", { name: "Every question has an answer" })).toBeVisible();
   });
 
@@ -234,7 +271,7 @@ test("add a contract → answer → proofread → approve → live → search �
     const done = page.getByRole("heading", { name: "Everything is proofread" });
     const tally = page.getByText(/ numbers proofread$/);
     await expect(tally).toHaveText(/^0 of \d+ numbers proofread$/);
-    for (let n = 0; n < 30 && !(await done.isVisible()); n++) {
+    for (let n = 0; n < 60 && !(await done.isVisible()); n++) {
       const before = await tally.textContent();
       await page.getByRole("button", { name: "Looks right" }).click();
       await expect.poll(async () => (await done.isVisible()) || (await tally.textContent()) !== before).toBe(true);
@@ -268,13 +305,17 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.keyboard.press("ArrowRight");
     await expect(tabs.getByRole("tab", { name: "Budget grid" })).toHaveAttribute("aria-selected", "true");
     await expect(tabs.getByRole("tab", { name: "Budget grid" })).toBeFocused();
-    // The tab opens on the grid billing uses, the revised Exhibit A picked when answering.
-    const cell = page.locator('[data-path="/budgetGrids/1/procedures/0/cells/V1"]');
+    // The tab opens on the grid billing uses, the revised Exhibit A picked when answering. The blind sample is random, so
+    // the cell's evidence is whatever it is now: matched to the PDF, or typed by a person if the sample drew it.
+    const v1: { evidence: { path: string; status: string }[] } = await (await request.get(`/api/v1${studyUrl}/versions/1`)).json();
+    const path = "/budgetGrids/1/procedures/0/cells/V1";
+    const evidence = v1.evidence.find((e) => e.path === path)!.status === "confirmed" ? "Matches the PDF." : "Confirmed by a person.";
+    const cell = page.locator(`[data-path="${path}"]`);
     await cell.focus();
     await page.keyboard.press("Enter");
     const drawer = page.getByRole("complementary", { name: /In the contract/ });
     await expect(drawer).toBeFocused();
-    await expect(drawer.getByText("Matches the PDF.")).toBeVisible();
+    await expect(drawer.getByText(evidence)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(drawer).toBeHidden();
     await expect(cell).toBeFocused();
@@ -359,10 +400,22 @@ test("add a contract → answer → proofread → approve → live → search �
   });
 
   let sentBack = "";
-  await test.step("answer version 2, then the approver sends one answer back", async () => {
+  await test.step("answer version 2 (a random spot check misses), then the approver sends one answer back", async () => {
     await page.goto(`${studyUrl}/review`);
+    let missed = false;
     await answerAll(page, async (q) => {
       if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
+      if (!missed && (await page.getByRole("region", { name: "Question" }).getByText("Random spot check", { exact: true }).isVisible())) {
+        // The sample misses: a value the PDF check confirmed, typed otherwise, and kept after looking again.
+        await page.getByLabel("What the contract says").fill("1");
+        await send(page, "Save and next");
+        await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
+        await page.getByRole("radio", { name: /You typed/ }).click();
+        await page.getByLabel("Why is the PDF text wrong here?").fill("The page clearly prints a different figure here.");
+        await send(page, "Save and next");
+        missed = true;
+        return;
+      }
       if (/printed for "Total"/.test(q)) {
         // The value reported above, typed blind.
         await page.getByLabel("What the contract says").fill("15,943.00");
@@ -372,7 +425,11 @@ test("add a contract → answer → proofread → approve → live → search �
       await page.getByRole("button", { name: "Can't tell" }).click();
       await send(page, "Leave it for the approver");
     });
+    expect(missed).toBe(true);
     await page.goto(`${studyUrl}/approve`);
+    // approval says plainly what the miss leaves to check
+    await expect(page.getByRole("alert").filter({ hasText: "A random spot check found a wrong number" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Proofread them" })).toBeVisible();
     const answered = page.getByRole("checkbox", { name: /Send back: Within how many days must an invoice be paid/ });
     sentBack = (await answered.getAttribute("aria-label"))!.replace(/^Send back: /, "");
     await answered.check();
@@ -410,7 +467,8 @@ test("add a contract → answer → proofread → approve → live → search �
     const { items } = await (await request.get(`/api/v1/audit?studyId=${id}&limit=100`)).json();
     const actions: string[] = items.map((e: { action: string }) => e.action);
     expect(actions[0]).toBe("review.sent_back");
-    for (const a of ["study.created", "study.confirmed", "extraction.completed", "review.answered", "values.proofread", "version.signed", "version.exported", "number.reported"]) expect(actions).toContain(a);
+    for (const a of ["study.created", "study.confirmed", "extraction.completed", "review.answered", "values.proofread", "version.signed", "version.exported", "number.reported", "sample.missed"]) expect(actions).toContain(a);
+    expect(actions.filter((a) => a === "sample.missed")).toHaveLength(1); // the incident, once
     expect(actions.filter((a) => a === "version.signed")).toHaveLength(1);
     await page.goto(`/audit?studyId=${id}`);
     await expect(page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();

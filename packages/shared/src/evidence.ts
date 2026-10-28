@@ -90,6 +90,12 @@ export const ReviewItem = z.object({
   sentBack: z.object({ by: z.string(), note: z.string(), at: z.string() }).nullable(),
   /** "This looks wrong": who reported the value and why; kept once it's answered, as the record of why it was asked. */
   reported: z.object({ by: z.string(), note: z.string(), at: z.string() }).nullable().optional(),
+  /**
+   * A random spot check of the read (reason SAMPLE) that a person settled with a value other than the one the PDF check
+   * had confirmed, even after looking again: the sample missed (ADR-001 §6). Kept once set, whatever the answer becomes:
+   * every value of its family is then checked before approval (sampleMisses).
+   */
+  missed: z.boolean().optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

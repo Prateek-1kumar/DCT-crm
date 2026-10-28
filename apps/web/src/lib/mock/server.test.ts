@@ -1,22 +1,33 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { AlertPage, AuditPage, DiffEntry, MasterSearch, RulebookVersionDto, SearchResults, StudyCounts, StudyDetailDto, StudyPage } from "@dct/shared";
+import { AlertPage, AuditPage, DiffEntry, MasterSearch, type ReviewItem, RulebookVersionDto, SAMPLE, SearchResults, StudyCounts, StudyDetailDto, StudyPage } from "@dct/shared";
 import { blankInvoiceable } from "../byhand";
-import { askAbout, makeRulebook, SEEDS } from "./fixtures";
+import { getAt } from "../pointer";
+import { askAbout, makeRulebook, mockSampling, SEEDS } from "./fixtures";
 import { mockRequest, mockReset } from "./server";
+
+// The blind sample without shuffling, as the API tests pin it: in evidence order, a family at a time.
+mockSampling.random = () => 1 - 2 ** -32;
+/** What Northwind's master holds (the sample server reads it right, except where a question says otherwise). */
+const NW = makeRulebook(SEEDS.northwind.cfg!);
+const sampleOf = (v: RulebookVersionDto, test: (path: string) => boolean) => v.review.find((i) => i.reason === SAMPLE && test(i.path!))!;
 
 const get = async (path: string) => (await mockRequest("GET", path, undefined)).json;
 const list = async (q = "") => StudyPage.parse(await get(`/studies?limit=100${q}`)).items;
 const post = (path: string, body: unknown) => mockRequest("POST", path, body);
 const answer = async (study: string, item: string, body: Record<string, unknown>, v = 1) =>
-  RulebookVersionDto.parse((await post(`/studies/${study}/versions/${v}/review/${item}`, { by: "Sam Rivera", ...body })).json);
+  RulebookVersionDto.parse((await post(`/studies/${study}/versions/${v}/review/${encodeURIComponent(item)}`, { by: "Sam Rivera", ...body })).json);
 /** Approval as the approve page sends it: with the version as `by` last saw it. */
 const signOff = async (study: string, v: number, by: string) =>
   post(`/studies/${study}/versions/${v}/sign-off`, { by, asOf: RulebookVersionDto.parse(await get(`/studies/${study}/versions/${v}`)).updatedAt });
-/** Settles a question as the API tests' settleAll does: the first option (with a note), or the value again with a note. */
-const settle = async (study: string, i: { id: string; options: { id: string }[] }, v = 1) =>
-  answer(study, i.id, i.options.length ? { optionId: i.options[0]!.id, note: "checked" } : { value: 1, note: "checked" }, v).then(async (r) => {
-    if (r.review.find((x) => x.id === i.id)!.outcome === "differs") await answer(study, i.id, { value: 1, note: "checked" }, v);
-  });
+/**
+ * Settles a question: the first option (with a note), or a value; on a differs, what was read (shown now), with a note,
+ * so nothing is written and no spot check misses.
+ */
+const settle = async (study: string, i: Pick<ReviewItem, "id" | "options" | "input">, v = 1) => {
+  const r = await answer(study, i.id, i.options.length && !i.input ? { optionId: i.options[0]!.id, note: "checked" } : { value: i.input === "date" ? "2026-01-01" : i.input === "text" ? "x" : 1, note: "checked" }, v);
+  const it = r.review.find((x) => x.id === i.id)!;
+  if (it.outcome === "differs") await answer(study, i.id, i.input ? { value: it.compare!.read, note: "checked" } : { optionId: String(it.compare!.read), note: "checked" }, v);
+};
 
 describe("mock API", () => {
   beforeEach(() => mockReset());
@@ -57,7 +68,8 @@ describe("mock API", () => {
     const alerts = async (who: string) => AlertPage.parse(await get(`/alerts?for=${encodeURIComponent(who)}&limit=50`));
     const seeded = await alerts("Taylor Brooks");
     expect(new Set(seeded.items.map((a) => a.kind))).toEqual(new Set(["questions_ready", "ready_for_approval", "couldnt_read"]));
-    expect(seeded.items.find((a) => a.studyId === "st-northwind")).toMatchObject({ kind: "questions_ready", count: 7, protocol: "NWP-418-02", read: false });
+    // 4 found by the read, 11 interpretations, 10 values re-typed blind (as the real API asks after a read)
+    expect(seeded.items.find((a) => a.studyId === "st-northwind")).toMatchObject({ kind: "questions_ready", count: 25, protocol: "NWP-418-02", read: false });
 
     // One answer that leaves questions open changes nothing; the last one makes it ready for approval.
     await answer("st-northwind", "q1", { value: 9800 });
@@ -89,17 +101,18 @@ describe("mock API", () => {
 
   it("searching a draft never finds a value that's hidden for blind typing", async () => {
     const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
-    const hidden = nw.review.find((i) => i.path === "/screenFail/amountCents")!;
-    expect(hidden.outcome).toBeNull();
-    const cents = (nw.rulebook!.screenFail!.amountCents! / 100).toFixed(2);
+    const hidden = nw.review.find((i) => i.path === "/invoiceables/0/amountCents")!; // in the blind sample
+    expect(hidden).toMatchObject({ reason: SAMPLE, outcome: null });
+    const cents = (NW.invoiceables[0]!.amountCents! / 100).toFixed(2);
     const hits = MasterSearch.parse(await get(`/studies/st-northwind/versions/1/search?q=${cents}`)).hits;
-    expect(hits.map((h) => h.path)).not.toContain("/screenFail");
+    expect(hits.map((h) => h.path)).not.toContain("/invoiceables/0");
   });
 
   it("seeds a text PDF in Needs you, a scan, a live study and one waiting for approval", async () => {
     const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
-    expect(nw.review).toHaveLength(7);
-    expect(nw.review.filter((i) => i.reason === "spot_check")).toHaveLength(2);
+    expect(nw.review).toHaveLength(25);
+    expect(nw.review.filter((i) => i.reason === SAMPLE)).toHaveLength(10);
+    expect(nw.review.filter((i) => i.kind === "interpretation").map((i) => i.reason)).toEqual(["AMBIGUOUS_TERM", ...Array(10).fill("INTERPRETATION")]);
     expect(nw.pdfCheck!.matched).toBe(nw.pdfCheck!.values - 1);
     expect(RulebookVersionDto.parse(await get("/studies/st-cobalt/versions/1")).pdfCheck).toBeNull();
     const ha = RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"));
@@ -111,7 +124,7 @@ describe("mock API", () => {
     const raw = JSON.stringify(await get("/studies/st-northwind/versions/1"));
     const nw = RulebookVersionDto.parse(JSON.parse(raw));
     expect(nw.review.every((i) => i.compare === null && i.answer === null)).toBe(true);
-    expect(raw).not.toMatch(/truth|secret|apply/);
+    expect(raw).not.toMatch(/"truth"|"secret"|"apply"/);
   });
 
   it("matches, differs, then settles (a note only to keep your own value over the PDF text); answers can change; options are chosen", async () => {
@@ -121,11 +134,14 @@ describe("mock API", () => {
     expect(v.rulebook!.budgetGrids[0]!.procedures[3]!.cells.V2).toBe(9800);
     expect(v.evidence.find((e) => e.path === "/budgetGrids/0/procedures/3/cells/V2")!.status).toBe("attested");
 
-    v = await answer("st-northwind", "q5", { value: 2600 });
-    expect(v.review.find((i) => i.id === "q5")).toMatchObject({ outcome: "differs", compare: { typed: 2600, read: 2500, printed: "$25.00" } });
-    expect((await post("/studies/st-northwind/versions/1/review/q5", { value: 2600, by: "Sam Rivera" })).status).toBe(400);
-    v = await answer("st-northwind", "q5", { value: 2500 });
-    expect(v.review.find((i) => i.id === "q5")).toMatchObject({ outcome: "chosen", compare: null });
+    // a value of the blind sample: the PDF's text decides it
+    const unit = sampleOf(v, (p) => p.endsWith("/unitCents"));
+    const price = getAt(NW, unit.path!) as number;
+    v = await answer("st-northwind", unit.id, { value: price + 100 });
+    expect(v.review.find((i) => i.id === unit.id)).toMatchObject({ outcome: "differs", compare: { typed: price + 100, read: price, printed: `$${(price / 100).toFixed(2)}` } });
+    expect((await post(`/studies/st-northwind/versions/1/review/${encodeURIComponent(unit.id)}`, { value: price + 100, by: "Sam Rivera" })).status).toBe(400);
+    v = await answer("st-northwind", unit.id, { value: price });
+    expect(v.review.find((i) => i.id === unit.id)).toMatchObject({ outcome: "chosen", compare: null });
 
     // Changing an earlier answer while the version is a draft: it is checked again.
     v = await answer("st-northwind", "q1", { value: 9900 });
@@ -205,8 +221,10 @@ describe("mock API", () => {
     v = RulebookVersionDto.parse((await post(url, { value: 45, note: "§4.2 on page 4, first line", by: "Sam Rivera" })).json);
     expect(v.review.find((i) => i.id === "c2")).toMatchObject({ outcome: "chosen", answer: { value: 45, note: "§4.2 on page 4, first line", noPdfText: true } });
     // where the PDF's text decides it, today's rule: only keeping your own value over it needs a note, and nothing is marked
-    await answer("st-northwind", "q5", { value: 2600 });
-    expect((await answer("st-northwind", "q5", { value: 2500 })).review.find((i) => i.id === "q5")!.answer).not.toHaveProperty("noPdfText");
+    const unit = sampleOf(RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1")), (p) => p.endsWith("/unitCents"));
+    const price = getAt(NW, unit.path!) as number;
+    await answer("st-northwind", unit.id, { value: price + 100 });
+    expect((await answer("st-northwind", unit.id, { value: price })).review.find((i) => i.id === unit.id)!.answer).not.toHaveProperty("noPdfText");
   }, 30_000);
 
   it("a note never gives a value away while its question is open: the version, the log, its search and the alert", async () => {
@@ -346,13 +364,15 @@ describe("mock API: in step with the real API's rules", () => {
 
   it("withholds a value with an open question: the value, its printed text, its quote and the words that restate it", async () => {
     const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
-    // q6: the screen-fail amount, asked blind; the fixture's evidence prints the right answer
-    expect(nw.rulebook!.screenFail!.amountCents).toBeNull();
-    expect(nw.evidence.find((e) => e.path === "/screenFail/amountCents")!.printed).toBeNull();
-    expect(nw.rulebook!.screenFail!.prov.source).not.toHaveProperty("quote");
+    // net days, in the blind sample: a confirmed value, withheld while it's re-typed; the fixture's evidence prints it
+    expect(nw.review.find((i) => i.path === "/payment/netDays/value")).toMatchObject({ reason: SAMPLE });
+    expect(nw.rulebook!.payment.netDays.value).toBeNull();
+    expect(nw.evidence.find((e) => e.path === "/payment/netDays/value")).toMatchObject({ status: "confirmed", printed: null });
+    expect(nw.rulebook!.payment.netDays.prov.source).not.toHaveProperty("quote");
     expect(nw.rulebook!.budgetGrids[0]!.procedures[3]!.cells.V2).toBeNull(); // q1
-    await answer("st-northwind", "q6", { value: 61000 });
-    expect(RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1")).rulebook!.screenFail!.prov.source).toHaveProperty("quote");
+    expect(nw.rulebook!.payment.visitPayment.value).toBeNull(); // an interpretation, picked blind
+    await answer("st-northwind", "sample:/payment/netDays/value", { value: 45 });
+    expect(RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1")).rulebook!.payment.netDays.prov.source).toHaveProperty("quote");
   });
 
   it("bill by hand lists the term on the master; another answer takes it off; send back too", async () => {
@@ -368,13 +388,64 @@ describe("mock API: in step with the real API's rules", () => {
   });
 
   it("the same settling answer again changes nothing; picking one arm's grid keeps the others'", async () => {
-    await answer("st-northwind", "q5", { value: 2600 }); // differs from the PDF's $25.00
-    const kept = await answer("st-northwind", "q5", { value: 2600, note: "Ink correction on the page" });
-    expect(kept.review.find((i) => i.id === "q5")!.outcome).toBe("chosen");
+    const id = "interpret:/rounding/value";
+    await answer("st-northwind", id, { optionId: "cents" }); // differs from the read's "printed amounts"
+    const kept = await answer("st-northwind", id, { optionId: "cents", note: "Exhibit A §1: exact cents" });
+    expect(kept.review.find((i) => i.id === id)!.outcome).toBe("chosen");
     const logged = AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items.length;
-    expect((await answer("st-northwind", "q5", { value: 2600, note: "Ink correction on the page" })).review.find((i) => i.id === "q5")!.outcome).toBe("chosen");
+    expect((await answer("st-northwind", id, { optionId: "cents", note: "Exhibit A §1: exact cents" })).review.find((i) => i.id === id)!.outcome).toBe("chosen");
     expect(AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items).toHaveLength(logged);
   });
+
+  it("asks the interpretations blind, as the real API: a pick that differs is shown with the read and confirmed", async () => {
+    const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    expect(nw.review.filter((i) => i.kind === "interpretation").map((i) => i.path)).toEqual([
+      "/overhead/appliesTo/value", "/payment/visitPayment/value", ...NW.siteFees.map((_, i) => `/siteFees/${i}/trigger`),
+      "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/holdback/appliesTo", "/rounding/value",
+    ]);
+    expect(nw.review.find((i) => i.path === "/overhead/appliesTo/value")).toMatchObject({ reason: "AMBIGUOUS_TERM", question: expect.stringMatching(/^The budget says overhead is “applied to the costs above”\. Which lines/) });
+    // withheld, with the cap's ratio its kind gives meaning to
+    expect([nw.rulebook!.payment.visitPayment.value, nw.rulebook!.screenFail!.cap.kind, nw.rulebook!.screenFail!.cap.ratio]).toEqual([null, null, null]);
+    const id = "interpret:/payment/visitPayment/value";
+    expect((await answer("st-northwind", id, { optionId: "invoice" })).review.find((i) => i.id === id)).toMatchObject({ outcome: "differs", compare: { typed: "invoice", read: "auto_edc" } });
+    expect((await post(`/studies/st-northwind/versions/1/review/${encodeURIComponent(id)}`, { optionId: "invoice", by: "Sam Rivera" })).status).toBe(400);
+    const v = await answer("st-northwind", id, { optionId: "invoice", note: "§4.1: visits are invoiced" });
+    expect(v.review.find((i) => i.id === id)).toMatchObject({ outcome: "chosen", answer: { noPdfText: true } });
+    expect(v.rulebook!.payment.visitPayment.value).toBe("invoice");
+    // a cap kind other than the read's asks its figures again (here, a ratio cap's ratio)
+    const cap = "interpret:/screenFail/cap/kind";
+    await answer("st-northwind", cap, { optionId: "count" });
+    const after = await answer("st-northwind", cap, { optionId: "count", note: "§5: at most 3" });
+    expect(after.review.find((i) => i.path === "/screenFail/cap/n")).toMatchObject({ id: "cap:/screenFail/cap/n", reason: "CAP_KIND_CHANGED", input: "number", outcome: null });
+  });
+
+  it("an amendment's start date: typed, or prospective only (the amendment's own date, shown)", async () => {
+    await post("/studies/st-halcyon/versions/2/send-back", { itemIds: ["interpret:/appliesFrom/value"], note: "Check §1", by: "Morgan Lee" });
+    const q = RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).review.find((i) => i.path === "/appliesFrom/value")!;
+    expect(q).toMatchObject({ kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", input: "date", options: [{ id: "prospective", label: "Prospective only: from the amendment's own date, September 30, 2026" }] });
+    const v = await answer("st-halcyon", q.id, { optionId: "prospective", by: "Taylor Brooks" }, 2);
+    expect([v.review.find((i) => i.id === q.id)!.outcome, v.rulebook!.appliesFrom.value]).toEqual(["chosen", "2026-09-30"]);
+  });
+
+  it("a random spot check that misses: logged and alerted, and approval waits until its kind of value is proofread", async () => {
+    let nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    expect(nw.review.filter((i) => i.reason === SAMPLE)).toHaveLength(10);
+    const unit = sampleOf(nw, (p) => p.endsWith("/unitCents"));
+    const price = getAt(NW, unit.path!) as number;
+    await answer("st-northwind", unit.id, { value: price + 100 });
+    await answer("st-northwind", unit.id, { value: price + 100, note: "The page prints a dollar more" });
+    const log = AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items;
+    expect(log[0]).toMatchObject({ action: "sample.missed", by: "Sam Rivera", detail: { itemId: unit.id, values: "budget grid prices" } });
+    expect(AlertPage.parse(await get("/alerts?for=Morgan%20Lee&limit=50")).items[0]).toMatchObject({ kind: "sample_missed", studyId: "st-northwind" });
+    nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    for (const i of nw.review.filter((x) => x.outcome === null || x.outcome === "differs")) await settle("st-northwind", i);
+    const refused = await signOff("st-northwind", 1, "Morgan Lee");
+    expect([refused.status, (refused.json as { message: string }).message]).toEqual([409, expect.stringMatching(/^A random spot check found a wrong number among the budget grid prices/)]);
+    nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    const left = nw.evidence.filter((e) => e.status === "confirmed" && /\/procedures\/\d+\/(cells|unitCents)/.test(e.path)).map((e) => e.path);
+    await post("/studies/st-northwind/versions/1/proofread", { paths: left, by: "Avery Chen" });
+    expect((await signOff("st-northwind", 1, "Morgan Lee")).status).toBe(200);
+  }, 60_000); // many requests, each with the sample server's network delay
 
   it("refuses what the API refuses: reading again over a draft, editing approved details, a file that isn't a PDF, bad settings", async () => {
     expect((await post("/studies/st-northwind/extract", { by: "Sam Rivera" })).json).toMatchObject({ statusCode: 409, message: "Version 1 is a draft under review; sign it off before extracting again" });

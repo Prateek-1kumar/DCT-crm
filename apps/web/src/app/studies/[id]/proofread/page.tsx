@@ -1,8 +1,8 @@
 "use client";
 
-import type { RulebookVersionDto, StudyDetailDto } from "@dct/shared";
+import { sampleMisses, sampleMissWords, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation } from "@tanstack/react-query";
-import { ArrowRight, Check, CheckCircle2, CornerDownLeft, Flag, Info, ListChecks, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, CheckCircle2, CornerDownLeft, Flag, Info, ListChecks, ShieldCheck, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
@@ -87,6 +87,10 @@ function Proof({ study, version }: { study: StudyDetailDto; version: RulebookVer
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const status = (u: ProofUnit) => unitStatus(u, marks, reported);
+  // A random spot check missed: approval waits until every value of its kind is proofread (ADR-001 §6).
+  const misses = useMemo(() => (version.status === "draft" ? sampleMisses(version).filter((m) => m.left.length) : []), [version]);
+  const toCheck = new Set(misses.flatMap((m) => m.left));
+  const nextToCheck = units.find((u) => status(u) === "todo" && u.cells.some((c) => toCheck.has(c.path)));
   const current = pick === "__done" ? null : ((pick ? units.find((u) => u.id === pick) : undefined) ?? units.find((u) => status(u) === "todo") ?? null);
   const totalValues = units.reduce((n, u) => n + u.cells.length, 0);
   const proofed = units.reduce((n, u) => n + u.cells.filter((c) => marks.has(c.path)).length, 0);
@@ -243,6 +247,21 @@ function Proof({ study, version }: { study: StudyDetailDto; version: RulebookVer
             </section>
 
             <section aria-label="Proofread" className="min-h-0 overflow-y-auto border-t border-line px-6 py-6 lg:border-t-0 lg:border-l">
+              {misses.length > 0 && (
+                <div role="alert" className="mb-6 flex flex-col gap-3 rounded-tile bg-danger-soft/60 p-4 text-small text-ink-2 ring-1 ring-danger/20">
+                  {misses.map((m) => (
+                    <p key={m.family} className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" strokeWidth={2} />
+                      {sampleMissWords(m)}
+                    </p>
+                  ))}
+                  {nextToCheck && nextToCheck.id !== current.id && (
+                    <Button size="sm" className="self-start" onClick={() => go(nextToCheck.id)}>
+                      Go to the next one to check
+                    </Button>
+                  )}
+                </div>
+              )}
               <Panel
                 key={current.id}
                 unit={current}

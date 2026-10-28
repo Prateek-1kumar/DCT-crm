@@ -8,8 +8,9 @@ import { Person } from "./evidence";
  */
 
 /** Raised when a contract moves into a step. questions_ready: into Needs you (reading finished, or a question sent it back
- * from approval) · ready_for_approval: nothing left to answer · sent_back: an approver reopened answers · couldnt_read: reading failed. */
-export const AlertKind = z.enum(["questions_ready", "ready_for_approval", "sent_back", "couldnt_read"]);
+ * from approval) · ready_for_approval: nothing left to answer · sent_back: an approver reopened answers · couldnt_read: reading failed ·
+ * sample_missed: a random spot check found a number the PDF check had confirmed wrong (an incident, ADR-001 §6). */
+export const AlertKind = z.enum(["questions_ready", "ready_for_approval", "sent_back", "couldnt_read", "sample_missed"]);
 export type AlertKind = z.infer<typeof AlertKind>;
 
 export const AlertDto = z.object({
@@ -22,7 +23,7 @@ export const AlertDto = z.object({
   at: z.string(),
   /** Who caused it; "system" for the result of reading. */
   by: z.string(),
-  /** questions_ready: open questions · sent_back: answers reopened. */
+  /** questions_ready: open questions · sent_back: answers reopened · sample_missed: values of its kind still to check. */
   count: z.number().int().nullable(),
   /** sent_back: the approver's note. */
   note: z.string().nullable(),

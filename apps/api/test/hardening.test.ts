@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, testApp, upload } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 // Regression tests for the security review (backend-audit.md): one block per finding.
 
@@ -77,6 +77,9 @@ describe("H7: blind entry has no side doors", () => {
     await answer(studyId, problem.id, { optionId: "printed", note: "Query the total" });
     // the typed total doesn't add up in its own grid either: asked on the typed numbers (recheck), and settled
     await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
+    // the blind sample's values in its grid, re-typed
+    const stored = await storedVersion(built, studyId, 1);
+    for (const i of stored.review.filter((x) => x.reason === "SAMPLE" && x.path!.startsWith("/budgetGrids/0/"))) await answer(studyId, i.id, { value: at(stored.rulebook, i.path!) });
     expect((await version(studyId)).review.find((i) => i.id === problem.id)!.question).toMatch(/848900/); // nothing in its grid withheld now
 
     // "This looks wrong" on two values: one the earlier answer holds, one in the problem's grid.

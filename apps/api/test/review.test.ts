@@ -1,4 +1,4 @@
-import type { AlertPage, AuditPage, DiffEntry, MasterSearch, RulebookVersionDto, StudyDetailDto, StudyPage } from "@dct/shared";
+import { type AlertPage, type AuditPage, type DiffEntry, type MasterSearch, type RulebookVersionDto, SAMPLE, type StudyDetailDto, type StudyPage } from "@dct/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
@@ -32,6 +32,21 @@ const answer = async (id: string, item: string, body: object, v = 1) => {
 const G2_TOTAL = "/budgetGrids/1/visits/1/totalCents"; // read 8,488.00, printed 8,489.00
 const NET_DAYS = "/payment/netDays/value"; // read 45, no quote
 const UNGROUNDED = ["/overhead/pct/value", NET_DAYS, "/deadlines/0/value"];
+/** What every read of the fake work order asks a person to pick blind (ADR-001 §6), in the order it asks. */
+const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value", "/siteFees/0/trigger", "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/rounding/value"];
+/** The blind sample of confirmed values with the draw pinned (helpers NO_SHUFFLE): a family at a time, in evidence order. */
+const SAMPLED = [
+  "/budgetGrids/0/procedures/0/cells/V1",
+  "/budgetGrids/0/visits/0/totalCents",
+  "/invoiceables/0/amountCents",
+  "/study/effectiveDate/value",
+  "/budgetGrids/0/procedures/0/cells/V2",
+  "/budgetGrids/0/visits/0/procedureSubtotalCents",
+  "/invoiceables/0/amountWithOverheadCents",
+  "/siteFees/0/dueDays",
+  "/budgetGrids/0/procedures/0/unitCents",
+  "/budgetGrids/0/visits/0/nonProcedureCents",
+];
 
 async function draft(seed = "s") {
   const { studyId, doc } = await newStudy(app, seed);
@@ -55,14 +70,18 @@ describe("reading checks every number against the PDF's own text", () => {
       ["VISIT_TOTAL_MISMATCH", "contract_problem", false], // the printed totals don't add up: the contract itself is off (a Review question)
       ["MISSING_REFERENCED_DOC", "contract_problem", false],
       ["GRID_CONFLICT", "contract_problem", true],
+      ...INTERPRETED.map(() => ["INTERPRETATION", "interpretation", true]),
+      ...SAMPLED.map(() => [SAMPLE, "confirm_value", true]),
     ]); // the second read's disagreement is not evidence, so it asks nothing
+    expect(v.review.filter((i) => i.kind === "interpretation").map((i) => i.path)).toEqual(INTERPRETED);
+    expect(v.review.filter((i) => i.reason === SAMPLE).map((i) => i.path)).toEqual(SAMPLED);
     expect(v.review.find((i) => i.reason === "GRID_CONFLICT")).toMatchObject({ path: null, options: [{ id: "g1", label: "Exhibit A" }, { id: "g2", label: "Exhibit A (revised)" }] });
     // which number governs, and a note for the sponsor query (ADR-001 §6)
     expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")!.options).toEqual([
       { id: "printed", label: "The visit total as printed", note: "What should we ask the sponsor?" },
       { id: "sum", label: "Its subtotal, overhead and non-procedure amounts added up", note: "What should we ask the sponsor?" },
     ]);
-    expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 });
+    expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 + INTERPRETED.length + SAMPLED.length });
     expect((await get<StudyDetailDto>(`/studies/${studyId}`)).documents[0]!.text).toBe("text");
   });
 
@@ -74,7 +93,9 @@ describe("reading checks every number against the PDF's own text", () => {
     expect(v.pdfCheck).toBeNull();
     expect(v.evidence.every((e) => e.status === "ungrounded")).toBe(true); // this grid's totals don't add up to the cent
     const reasons = v.review.map((i) => i.reason);
-    expect(reasons.filter((r) => r === "SCAN_VALUE")).toHaveLength(v.evidence.length);
+    // every number but the screen-fail cap's limit, which waits for its kind to be picked (its question would name it)
+    expect(v.review.filter((i) => i.reason === "SCAN_VALUE").map((i) => i.path)).toEqual(v.evidence.map((e) => e.path).filter((p) => p !== "/screenFail/cap/n"));
+    expect(reasons).not.toContain(SAMPLE); // nothing was confirmed, so there's nothing to sample
     expect(v.review.filter((i) => i.reason === "SCAN_PAGE").map((i) => [i.kind, i.blocking, i.where[0]!.page, i.options.map((o) => o.id)])).toEqual([
       ["unaccounted", true, 1, ["none", "bill_by_hand"]],
       ["unaccounted", true, 2, ["none", "bill_by_hand"]],
@@ -91,7 +112,10 @@ describe("blind entry", () => {
     const raw = (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).body;
     const v = JSON.parse(raw) as RulebookVersionDto;
     for (const p of [G2_TOTAL, ...UNGROUNDED]) expect(at(v.rulebook, p), p).toBeNull();
-    expect(at(v.rulebook, "/budgetGrids/0/visits/0/totalCents")).toBe(745500); // no open question: sent as is
+    expect(at(v.rulebook, "/budgetGrids/0/visits/0/overheadCents")).toBe(213000); // no open question: sent as is
+    // a sampled value the PDF confirmed is withheld while it's typed blind, its printed text too
+    expect(at(v.rulebook, SAMPLED[1]!)).toBeNull();
+    expect(v.evidence.find((e) => e.path === SAMPLED[1])).toMatchObject({ status: "confirmed", printed: null });
     expect(v.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "conflict", printed: null });
     expect(v.anomalies).toEqual([]);
     expect(v.review.every((i) => i.compare === null && i.answer === null)).toBe(true);
@@ -162,11 +186,13 @@ describe("blind entry", () => {
     const back = await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: [item], note: sent, by: "Morgan" });
     expect(back.json<RulebookVersionDto>().review.find((i) => i.id === item)!.sentBack).toMatchObject({ by: "Morgan", note: "Page 2 prints $••• here, not what was typed (•••); see §4.2" });
     expect((await call("POST", `/studies/${studyId}/versions/1/review/${encodeURIComponent(item)}`, { cantTell: true, note: unsure, by: "Sam" })).statusCode).toBe(200);
-    expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(200);
+    const report = await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" });
+    expect(report.statusCode).toBe(200);
     // and the errors a curious person could provoke
     expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(409);
     expect((await call("POST", `/studies/${studyId}/versions/1/sign-off`, { by: "Ben", asOf: (await version(studyId)).updatedAt })).statusCode).toBe(409);
-    expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: ["reported:9"], note: sent, by: "Morgan" })).statusCode).toBe(409); // open again: nothing to send back
+    const reportedId = report.json<RulebookVersionDto>().review.at(-1)!.id;
+    expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: [reportedId], note: sent, by: "Morgan" })).statusCode).toBe(409); // open again: nothing to send back
     expect((await call("POST", `/studies/${studyId}/versions/1/review/nope`, { value: 1, by: "Sam" })).statusCode).toBe(404);
 
     const reads = [
@@ -286,10 +312,11 @@ describe("answering", () => {
   it("a typed date is checked against the date the PDF prints, however it's written", async () => {
     const { studyId } = await draft();
     const path = "/study/effectiveDate/value";
-    expect((await version(studyId)).evidence.find((e) => e.path === path)).toMatchObject({ status: "confirmed", printed: "August 22, 2025" });
-    const v = (await post(`/studies/${studyId}/versions/1/report`, { path, note: "check the date", by: "Ben" })).json<RulebookVersionDto>();
-    const id = v.review.at(-1)!.id;
-    expect(v.review.at(-1)!.input).toBe("date");
+    expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === path)).toMatchObject({ status: "confirmed", printed: "August 22, 2025" });
+    // the read's blind sample re-types it (the draw pinned); "This looks wrong" on it asks nothing more
+    expect((await post(`/studies/${studyId}/versions/1/report`, { path, note: "check the date", by: "Ben" })).statusCode).toBe(409);
+    const id = `sample:${path}`;
+    expect((await version(studyId)).review.find((i) => i.id === id)!.input).toBe("date");
     // a day off: the PDF's text says otherwise, so keeping it needs a reason, and it isn't marked as missing from the text
     expect(await answer(studyId, id, { value: "2025-08-23" })).toMatchObject({ outcome: "differs", compare: { typed: "2025-08-23", read: "2025-08-22", printed: "August 22, 2025" } });
     expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(id)}`, { value: "2025-08-23", by: "Sam" })).json().message).toBe("Add a short note saying why the PDF text is wrong here.");
@@ -317,7 +344,7 @@ describe("answering", () => {
     const approve = (by: string) => signOff(app, studyId, 1, { by });
     const blocked = await approve("Morgan");
     expect(blocked.statusCode).toBe(409);
-    expect(blocked.json().message).toBe("8 questions still need an answer before this can be approved.");
+    expect(blocked.json().message).toBe(`${8 + INTERPRETED.length + SAMPLED.length} questions still need an answer before this can be approved.`);
     // A "can't tell" holds approval up, a blocking one and one that's not needed to approve alike; the second waits for
     // the approver (it doesn't count as needing you).
     await settleAll(built, studyId, 1, "Sam");

@@ -266,18 +266,27 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
     const notes = out.notes ?? [];
     // amendment: the new read starts from the AI's values; carry the live version's corrections forward
     const [live] = await db.select().from(rulebookVersions).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.status, "signed")));
-    let carriedDetail: Record<string, unknown> | null = null;
+    let carried: (ReturnType<typeof carryCorrections> & { liveRb: Rulebook; grids: string[] }) | null = null;
     if (live?.rulebook) {
       const liveRb = upgradeRulebook(live.rulebook);
       const values = carryCorrections(rulebook, await correctionsOf(db, live));
       const grids = carryGrid(values.rulebook, liveRb);
       rulebook = { ...values.rulebook, governingGridIds: grids };
-      carriedDetail = { version, from: live.version, carried: values.carried, skipped: values.skipped, grid: { from: liveRb.governingGridIds.length ? liveRb.governingGridIds : [liveRb.governingGridId].filter(Boolean), to: grids } };
+      carried = { ...values, liveRb, grids };
     }
     const anomalies = port.runContractChecks(rulebook, { crossRead, pages: out.pages, notes });
     // Every value checked against the PDF's own text, and what's left for a person (ADR-001). No AI.
     const textByDoc = await Promise.all(docs.map((d) => port.readTextLayer(d.path, d.id)));
-    const { evidence, review, pdfCheck } = reviewDraft(port, rulebook, anomalies, textByDoc.flat(), docs);
+    const checked = reviewDraft(port, rulebook, anomalies, textByDoc.flat(), docs, {
+      amendment: !!live || docs.some((d) => d.kind === "amendment"),
+      carried: carried && live ? { from: live.version, live: carried.liveRb, skipped: carried.skipped } : null,
+    });
+    const { evidence, review, pdfCheck } = checked;
+    // each skipped correction with where it's asked again, so the log withholds it while that question is open
+    const carriedDetail =
+      carried && live
+        ? { version, from: live.version, carried: carried.carried, skipped: checked.skipped, grid: { from: carried.liveRb.governingGridIds.length ? carried.liveRb.governingGridIds : [carried.liveRb.governingGridId].filter(Boolean), to: carried.grids } }
+        : null;
     const sum = (k: "usd" | "inputTokens" | "outputTokens") => out.cost.reduce((n, c) => n + c[k], 0);
     // All or nothing: the version, the study's status and needs-you count, its alert, the audit entries and the job.
     await db.transaction(async (tx) => {
@@ -295,7 +304,8 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
           pdfCheck,
           pages: out.pages,
           notes,
-          warnings: plainWarnings(out.warnings),
+          // what made the reading weaker, and corrections from the live version it couldn't carry over
+          warnings: [...plainWarnings(out.warnings), ...checked.warnings],
           cost: out.cost,
           costUsd: sum("usd"),
           inputTokens: sum("inputTokens"),

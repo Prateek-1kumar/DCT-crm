@@ -11,7 +11,7 @@ import { NeedsPerson } from "@/components/Sidebar";
 import { DEFAULT_ZOOM, SpotView, spotQuery } from "@/components/SpotView";
 import { Badge, Button, btnCls, cx, ErrorNote, fieldCls, inputBase, inputCls, LoadError, ProgressBar, Sheet, Spinner } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
-import { relativeTime } from "@/lib/format";
+import { ENUM_OPTIONS, fieldKey, relativeTime } from "@/lib/format";
 import { useAnswerReview, useStudy, useVersion } from "@/lib/queries";
 import { formatAnswer, itemStatus, KIND_LABEL, minutesFor, needsYou, parseAnswer, queueOrder, whyLine } from "@/lib/review";
 
@@ -296,7 +296,8 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={item.kind === "contract_problem" ? "danger" : item.kind === "confirm_value" ? "warn" : "accent"}>{KIND_LABEL[item.kind]}</Badge>
-        {item.reason === "spot_check" && <Badge tone="info">Random spot check</Badge>}
+        {(item.reason === "spot_check" || item.reason === "SAMPLE") && <Badge tone="info">Random spot check</Badge>}
+        {item.reason === "AMBIGUOUS_TERM" && <Badge tone="warn">Unclear wording</Badge>}
         {!item.blocking && <Badge>Not needed to approve</Badge>}
         {index !== undefined && (
           <span className="num ml-auto text-small text-faint">
@@ -332,6 +333,8 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
 }
 
 const CANT_REASONS = ["The print is too faint", "It's not on this page", "I'm not sure what's meant"];
+/** The radio that answers a question with options by typing instead (the start date: a date, or "prospective only"). */
+const TYPED = "__typed";
 
 function Question(props: { item: ReviewItem; index: number; total: number; onAnswer: (b: Body) => void; onCancel?: () => void; busy: boolean; canAnswer: boolean; error: unknown }) {
   const { item, onAnswer, busy, canAnswer, error, onCancel } = props;
@@ -344,11 +347,13 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   // a reason, or a choice that needs saying why (what to ask the sponsor, what's on a page billed by hand)
   const [optNote, setOptNote] = useState("");
   const asks = item.options.find((o) => o.id === choice)?.note;
+  // options and an input: pick one, or type the value
+  const both = item.options.length > 0 && !!item.input;
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (item.options.length) {
-      if (!choice) return setMsg("Pick one of the answers, or choose “Can't tell”.");
+    if (item.options.length && choice !== TYPED) {
+      if (!choice) return setMsg(both ? "Pick one of the answers, or type what the contract says." : "Pick one of the answers, or choose “Can't tell”.");
       if (asks && !optNote.trim()) return setMsg(`Add a short note: ${asks.replace(/^./, (c) => c.toLowerCase())}`);
       return onAnswer({ optionId: choice, ...(asks && optNote.trim() ? { note: optNote.trim() } : {}) });
     }
@@ -407,6 +412,20 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
               {o.label}
             </label>
           ))}
+          {both && (
+            <label className="flex cursor-pointer items-start gap-3 rounded-tile px-4 py-3.5 text-body ring-1 ring-line-strong transition-colors hover:bg-sunken has-checked:bg-brand-soft has-checked:ring-2 has-checked:ring-brand">
+              <input type="radio" name={`opt-${item.id}`} value={TYPED} checked={choice === TYPED} onChange={() => (setChoice(TYPED), setMsg(null))} className="mt-1 accent-[var(--color-primary)]" />
+              {item.input === "date" ? "From a date the contract gives" : "Something else the contract says"}
+            </label>
+          )}
+          {both && choice === TYPED && (
+            <div className="mt-1 flex flex-col gap-2">
+              <label htmlFor={`a-${item.id}`} className="text-small font-medium text-ink-2">
+                What the contract says
+              </label>
+              <AnswerInput id={`a-${item.id}`} input={item.input!} value={raw} onChange={(v) => (setRaw(v), setMsg(null))} />
+            </div>
+          )}
           {asks && (
             <div className="mt-1 flex flex-col gap-2">
               <label htmlFor={`on-${item.id}`} className="text-small font-medium text-ink-2">
@@ -458,8 +477,10 @@ function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body
   const { item, byHand, onAnswer, busy, canAnswer, error } = props;
   const c = item.compare!;
   const input = item.input ?? "text";
-  const pick = item.options.length > 0;
-  const shown = (v: unknown) => (pick ? (item.options.find((o) => o.id === String(v))?.label ?? formatAnswer(null, v)) : formatAnswer(input, v));
+  // what was given was a pick (a question with options and an input takes a typed value too)
+  const pick = item.answer?.optionId !== undefined;
+  const shown = (v: unknown) =>
+    item.options.find((o) => o.id === String(v))?.label ?? (item.path && typeof v === "string" ? ENUM_OPTIONS[fieldKey(item.path)]?.[v] : undefined) ?? formatAnswer(item.input, v);
   // read as the server reads it: a full stop or comma after the number isn't part of it
   const text = !pick && c.printed !== null ? parseAnswer(input, c.printed.trim().replace(/[.,;:]+$/, "")) : null;
   const pdf = text && "value" in text ? text : null;
@@ -475,15 +496,16 @@ function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body
   const why = pdf ? "Add a short note saying why the PDF text is wrong here." : "Add a short note saying where the page prints this value.";
 
   const options = [
-    { own: true, label: pick ? "You picked" : "You typed", hint: "What you just entered from the close-up", shown: shown(c.typed) },
+    { own: true, label: pick ? "You picked" : "You typed", hint: "What you just entered from the close-up", shown: pick ? (item.options.find((o) => o.id === item.answer!.optionId)?.label ?? shown(c.typed)) : shown(c.typed) },
     { own: false, ...other },
   ];
 
   function save() {
     if (pickedOwn === null) return setMsg("Pick the value the page shows.");
     if (needsNote && !note.trim()) return setMsg(why);
-    const value = pickedOwn ? c.typed : other.value;
-    onAnswer({ ...(pick ? { optionId: String(value) } : { value }), ...(note.trim() ? { note: note.trim() } : {}) });
+    // your pick again, or the reading: picked where the question only takes picks, typed where it takes a value
+    const answer = pickedOwn ? (pick ? { optionId: item.answer!.optionId! } : { value: c.typed }) : item.input ? { value: other.value } : { optionId: String(other.value) };
+    onAnswer({ ...answer, ...(note.trim() ? { note: note.trim() } : {}) });
   }
 
   return (

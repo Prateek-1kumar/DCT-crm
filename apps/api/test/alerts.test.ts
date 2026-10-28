@@ -36,7 +36,7 @@ describe("raised by the workflow", () => {
     const id = await newStudy("flow");
     await extract(id);
     expect((await alertsFor("Asha")).items).toEqual([
-      { id: expect.any(String), kind: "questions_ready", studyId: id, protocol: "SYN-001", sponsor: "Synthetic Pharma", version: 1, at: expect.any(String), by: "system", count: 8, note: null, read: false },
+      { id: expect.any(String), kind: "questions_ready", studyId: id, protocol: "SYN-001", sponsor: "Synthetic Pharma", version: 1, at: expect.any(String), by: "system", count: 25, note: null, read: false },
     ]);
     await settleAll(built, id, 1, "Asha", 3); // still needs you
     expect((await alertsFor("Ben")).items).toHaveLength(1);
@@ -44,7 +44,7 @@ describe("raised by the workflow", () => {
     const page = await alertsFor("Ben");
     expect(page.items.map((a) => [a.kind, a.by, a.count])).toEqual([
       ["ready_for_approval", "Asha", null],
-      ["questions_ready", "system", 8],
+      ["questions_ready", "system", 25],
     ]);
     expect(await signOff(app, id, 1, { by: "Ben" })).toMatchObject({ statusCode: 200 });
     expect((await alertsFor("Ben")).items).toHaveLength(2); // live raises nothing

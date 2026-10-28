@@ -1,7 +1,11 @@
 import { RulebookVersionDto } from "@dct/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { keyTerms } from "./approve";
+import { mockSampling } from "./mock/fixtures";
 import { mockRequest, mockReset } from "./mock/server";
+
+// the blind sample pinned, as in server.test.ts: which values it withholds is the same every run
+mockSampling.random = () => 1 - 2 ** -32;
 
 const version = async (study: string, v = 1) => RulebookVersionDto.parse((await mockRequest("GET", `/studies/${study}/versions/${v}`, undefined)).json);
 
@@ -32,6 +36,24 @@ describe("key terms", () => {
     // no printed total and a visit withheld: hidden too
     const noTotal = { ...rb, budgetGrids: [{ ...rb.budgetGrids[0]!, perPatientTotals: [] }] };
     expect(keyTerms(noTotal, nw.evidence, new Set(["/budgetGrids/0/visits/2/totalCents"])).find((t) => t.id === "patient-0")!.value).toBe("Hidden until answered");
+  });
+
+  it("an amendment's start date: hidden while it's asked, then the answer; prospective only says so", async () => {
+    const ha = await version("st-halcyon", 2);
+    const at = (rb: typeof ha.rulebook, hidden: string[] = []) => keyTerms(rb!, ha.evidence, new Set(hidden)).find((t) => t.id === "applies-from");
+    expect(at({ ...ha.rulebook!, appliesFrom: { ...ha.rulebook!.appliesFrom, value: null } }, ["/appliesFrom/value"])).toMatchObject({ value: "Hidden until answered" });
+    expect(at(ha.rulebook)).toMatchObject({ value: "Sep 1, 2026", detail: "The date this version's prices start" }); // typed when seeded
+    expect(at({ ...ha.rulebook!, appliesFrom: { ...ha.rulebook!.appliesFrom, value: "2026-09-30" } })).toMatchObject({ value: "Sep 30, 2026", detail: "Prospective only: from the amendment's own date" });
+    // an amendment never left without one
+    expect(at({ ...ha.rulebook!, appliesFrom: { ...ha.rulebook!.appliesFrom, value: null } })).toMatchObject({ value: "Not stated", detail: expect.stringMatching(/effective date/) });
+    // a fee's trigger and a cap's kind are part of their terms: hidden while asked; a fee whose amount is withheld (in
+    // the blind sample, say) is still listed, hidden
+    const nw = await version("st-northwind");
+    const withheld = { ...nw.rulebook!, siteFees: nw.rulebook!.siteFees.map((f, i) => (i === 0 ? { ...f, amountCents: null } : f)) }; // as the version masks it
+    expect(keyTerms(withheld, nw.evidence, new Set(["/siteFees/0/amountCents"])).find((t) => t.id === "fee-0")).toMatchObject({ value: "Hidden until answered" });
+    const terms = keyTerms(nw.rulebook!, nw.evidence, new Set(["/siteFees/0/trigger", "/screenFail/cap/kind"]));
+    expect(terms.find((t) => t.id === "fee-0")!.value).toBe("Hidden until answered");
+    expect(terms.find((t) => t.id === "screen-fail")!.value).toBe("Hidden until answered");
   });
 
   it("each arm's chosen grid is billed: one per-patient total per arm", async () => {

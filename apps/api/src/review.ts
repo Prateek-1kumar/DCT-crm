@@ -1,25 +1,34 @@
 import type { Span, TextPage } from "@dct/extraction";
 import {
+  alsoWithheld,
+  amendmentDate,
   AnswerReviewBody,
   armKey,
+  askedAsInterpretation,
   type ContractAnomaly,
+  cryptoRandom,
   ENUM_LABELS,
   governingGrids,
+  interpretations,
   leaf,
   type PageBox,
+  pickSample,
+  PROSPECTIVE,
   type Provenance,
   type ReviewItem,
   Rulebook,
   type RulebookVersionDto,
+  SAMPLE,
   samePerson,
   settled,
   type Unclassified,
   type ValueEvidence,
   withheldPaths,
 } from "@dct/shared";
+import { isDeepStrictEqual } from "node:util";
 import type { z } from "zod";
 import type { ExtractionPort } from "./extraction/port.js";
-import { labelFor } from "./lib/diff.js";
+import { itemIds, labelFor } from "./lib/diff.js";
 import { HttpError, isObj } from "./lib/http.js";
 import { getAt, parsePointer, setAt } from "./lib/pointer.js";
 
@@ -84,14 +93,17 @@ const inputFor = (rb: Rulebook, path: string, value: unknown): NonNullable<Revie
   return "text";
 };
 
+/** A value's label with any amount or % in its names blanked: they would give the answer away (as the binder's questions do). */
+const blindLabel = (rb: unknown, path: string) => labelFor(rb, path).replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…");
+
 /**
  * A blind question about one value: "This looks wrong" (reason "reported"), the re-type sample of hand-typed values
- * ("spot_check"), a required value the read didn't find. Yes/no and fixed-list values are picked; the rest typed.
+ * ("spot_check") and of a read's confirmed values (SAMPLE), a required value the read didn't find. Yes/no and fixed-list
+ * values are picked; the rest typed.
  */
 export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): ReviewItem {
   const value = at(rb, path);
-  // An amount or % in a name would give the answer away (as the binder's questions do).
-  const label = labelFor(rb, path).replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…");
+  const label = blindLabel(rb, path);
   const list = typeof value === "string" ? ENUM_LABELS[fieldKey(path)] : undefined;
   const options =
     typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }]
@@ -274,7 +286,7 @@ export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: Pick<Dra
 }
 
 /** Answers that list a page or a sentence to bill by hand (ADR-001 §7): the term goes on the master's unclassified list. */
-const BILL_BY_HAND = new Set(["UNACCOUNTED_TERM", "SCAN_PAGE", "PICTURE_PAGE"]);
+const BILL_BY_HAND = new Set(["UNACCOUNTED_TERM", "SCAN_PAGE", "PICTURE_PAGE", "CORRECTION_LOST"]);
 /** A page nothing can search (a scan, a picture) has no words to list, so the person says what's on it. */
 const PAGE_OPTIONS = [
   { id: "none", label: "No, nothing the invoicing master doesn't hold" },
@@ -332,12 +344,36 @@ function termOf(spans: Span[]): NonNullable<ReviewItem["term"]> | undefined {
   };
 }
 
+/** A correction the amendment's read couldn't carry over (domain.ts carryCorrections' `skipped`). */
+export type Skipped = { path: string; before: unknown; after: unknown; by?: string; items?: string[]; reason: string };
+/** An amendment's read: the live version it follows, and what of its corrections didn't carry. */
+export type Carried = { from: number; live: Rulebook; skipped: Skipped[] };
+
+/**
+ * Test seam: the randomness the blind sample is drawn with. Cryptographic, so nobody can foresee which values are
+ * re-typed; tests pin it to see which ones are.
+ */
+export const sampling: { random: () => number } = { random: cryptoRandom };
+
+/** A cap's limit or ratio while its kind is asked: its question would name the kind, so it waits for that answer (followUps). */
+const capWaits = (path: string, asking: ReadonlySet<string>) => /\/cap\/(?:n|ratio)$/.test(path) && asking.has(path.replace(/(?:n|ratio)$/, "kind"));
+
 /**
  * After a read: every money value bound to the PDF's own text (or, on scan pages, to the contract's totals), and the
  * questions for a person: values not confirmed, money terms the master doesn't hold (with their words, to list them to
- * bill by hand), contract problems, and pages nothing can search.
+ * bill by hand), contract problems, the interpretations picked blind, pages nothing can search, corrections an
+ * amendment's read couldn't carry over, and the blind re-type of up to 10 confirmed values (ADR-001 §6). `amendment`:
+ * the read includes an amendment. Returns what to say on the draft (`warnings`) and the skipped corrections with where
+ * each is asked now (`skipped`, for the log).
  */
-export function reviewDraft(port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence">, rb: Rulebook, anomalies: ContractAnomaly[], pages: TextPage[], docs: { id: string; filename: string }[]): Checked {
+export function reviewDraft(
+  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence">,
+  rb: Rulebook,
+  anomalies: ContractAnomaly[],
+  pages: TextPage[],
+  docs: { id: string; filename: string }[],
+  opts: { amendment?: boolean; carried?: Carried | null } = {},
+): Checked & { warnings: string[]; skipped: (Skipped & { askedAt?: string })[] } {
   const key = (w: { documentId: string; page: number } | undefined) => (w ? `${w.documentId}#${w.page}` : "");
   const textPages = new Set(pages.filter((p) => p.source === "text").map(key));
   const scanPages = new Set(pages.filter((p) => p.source !== "text").map(key));
@@ -357,11 +393,117 @@ export function reviewDraft(port: Pick<ExtractionPort, "bindEvidence" | "reviewF
   });
   const asked = new Set(values.flatMap((i) => (i.path ? [i.path] : [])));
   const checked = evidence.filter((e) => textPages.has(key(e.where[0])));
+  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies });
+  const asking = new Set(interp.map((i) => i.path!));
+  const review = [
+    // a value asked as an interpretation is asked once, there (the start date: typed, or "prospective only")
+    ...values.filter((i) => !(i.path && (asking.has(i.path) || capWaits(i.path, asking)))),
+    ...fromAnomalies(anomalies.filter((a) => !askedAsInterpretation(a, asking)), rb, asked),
+    ...interp,
+    ...pageItems(pages, docs),
+  ];
+  const lost = opts.carried ? uncarried(rb, evidence, opts.carried, new Set(review.flatMap((i) => (i.path ? [i.path] : []))), asking) : { items: [], warnings: [], skipped: [] };
+  review.push(...lost.items);
+  // Drawn once, here, and kept as questions: a reload or a repeat never draws again. Never a value with a question (nor
+  // one held back with it): it's typed blind already.
+  const taken = new Set(review.flatMap((i) => (i.path ? [i.path, ...alsoWithheld(i.path)] : [])));
+  review.push(...pickSample(evidence, taken, sampling.random).map((p) => askAbout(rb, evidence, p, `sample:${p}`, SAMPLE)));
   return {
     evidence,
-    review: [...values, ...fromAnomalies(anomalies, rb, asked), ...pageItems(pages, docs)],
+    review,
     pdfCheck: checked.length ? { values: checked.length, matched: checked.filter((e) => e.status === "confirmed").length } : null,
+    warnings: lost.warnings,
+    skipped: lost.skipped,
   };
+}
+
+/** A value billing reads: a number, yes/no, a fixed-list value, a date or a cell, or what the holdback is taken from. */
+function billing(path: string, values: unknown[]) {
+  const key = fieldKey(path);
+  if (/^\/study\/(?!effectiveDate)|^\/(?:documents|referencedDocuments)\//.test(path)) return false;
+  return path === "/holdback/appliesTo" || path.includes("/cells/") || !!ENUM_LABELS[key] || /date|appliesFrom|kind$/i.test(key) || values.some((v) => typeof v === "number" || typeof v === "boolean");
+}
+
+/**
+ * Where an item a correction was about is in the new read, when it moved (the amendment added a fee in front, say): the
+ * one place whose items have the same identities (itemIds). undefined when there's none, or more than one.
+ */
+function movedTo(rb: Rulebook, path: string, items: string[] | undefined): string | undefined {
+  if (!items) return undefined;
+  try {
+    let found: string[][] = [[]];
+    for (const t of parsePointer(path))
+      found = found.flatMap((p) => {
+        const node = getAt(rb, p);
+        if (!Array.isArray(node)) return [[...p, t]];
+        return node.map((_, i) => [...p, String(i)]).filter((q) => isDeepStrictEqual(itemIds(rb, q), items.slice(0, itemIds(rb, q).length)));
+      });
+    const hits = found.filter((p) => getAt(rb, p) !== undefined && isDeepStrictEqual(itemIds(rb, p), items));
+    return hits.length === 1 ? `/${hits[0]!.map((t) => t.replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}` : undefined;
+  } catch {
+    return undefined; // the path no longer fits the new read's shape
+  }
+}
+
+/**
+ * Corrections made on the live version that an amendment's read couldn't carry over (anything but "already equal"): each
+ * is said on the draft in plain words, so nobody takes it as carried. One about a value billing reads is asked: blind,
+ * where the new read has that value (a moved item found by its identity), unless it's asked already (a cap's limit once
+ * its kind is: its evidence stops counting as confirmed); or, where the new read doesn't have it at all, whether it's
+ * still in the contract (bill it by hand if so). No value is put in words.
+ */
+function uncarried(rb: Rulebook, evidence: ValueEvidence[], c: Carried, asked: Set<string>, asking: ReadonlySet<string>) {
+  const items: ReviewItem[] = [];
+  const warnings: string[] = [];
+  const skipped: (Skipped & { askedAt?: string })[] = [];
+  for (const k of c.skipped) {
+    if (k.reason === "already_equal") {
+      skipped.push(k);
+      continue;
+    }
+    const who = k.by ?? "Someone";
+    const label = blindLabel(c.live, k.path);
+    const said = `A correction from version ${c.from} wasn't carried over: ${label}, corrected by ${who}.`;
+    const now = k.reason === "item_moved" ? movedTo(rb, k.path, k.items) : k.reason === "path_missing" ? undefined : k.path;
+    const value = now === undefined ? undefined : at(rb, now);
+    if (!billing(k.path, [k.before, k.after])) {
+      warnings.push(`${said} Check it in the invoicing master.`);
+      skipped.push(k);
+    } else if (now !== undefined && value !== undefined && leaf(value)) {
+      // a cap's limit waits for its kind (capWaits): not confirmed any more, it's asked once the kind is answered
+      if (capWaits(now, asking)) {
+        const e = evidence.find((x) => x.path === now);
+        const note = `A correction from version ${c.from} wasn't carried over`;
+        if (!e) evidence.push({ path: now, status: "ungrounded", where: [], printed: null, note });
+        else if (e.status === "confirmed") Object.assign(e, { status: "ungrounded", note });
+      } else if (!asked.has(now))
+        items.push({
+          ...askAbout(rb, evidence, now, `carried:${now}`, "CORRECTION_NOT_CARRIED"),
+          question: `${who} corrected ${label} on version ${c.from}, but the amendment's reading has a different value there, so the correction wasn't carried over. What does the contract print for it now?`,
+        });
+      asked.add(now);
+      warnings.push(`${said} The amendment's reading has a different value there, so it's asked again in Needs you.`);
+      skipped.push({ ...k, askedAt: now });
+    } else {
+      const src = provOf(c.live, k.path)?.source;
+      items.push({
+        ...BLANK,
+        id: `lost:${k.path}`,
+        kind: "unaccounted",
+        reason: "CORRECTION_LOST",
+        path: null,
+        question: `${who} corrected ${label} on version ${c.from}, but the amendment's reading doesn't have it any more. Is it still in the contract?`,
+        input: null,
+        // listing it needs a page to point at
+        options: [{ id: "removed", label: "No, the amendment removed it" }, ...(src ? [{ id: "bill_by_hand", label: "Yes: list it to bill by hand", note: "What is billed by hand? Name the term and its amount." }] : [])],
+        where: src ? [box(src.documentId, src.page)] : [],
+        blocking: true,
+      });
+      warnings.push(`${said} The amendment's reading doesn't have it any more, so Needs you asks whether it's still in the contract.`);
+      skipped.push(k);
+    }
+  }
+  return { items, warnings, skipped };
 }
 
 /**
@@ -436,6 +578,11 @@ function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: 
     const value = optionId === "sum" && item.path ? sumAt(rb, item.path) : undefined;
     return value === undefined ? undefined : { path: item.path!, value };
   }
+  // "prospective only": the amendment's own date, as its label shows it
+  if (optionId === PROSPECTIVE && item.path === "/appliesFrom/value") {
+    const d = amendmentDate(rb);
+    return d ? { path: item.path, value: d } : undefined;
+  }
   if (!item.path || (item.kind !== "confirm_value" && item.kind !== "interpretation") || current === undefined || !leaf(current)) return undefined;
   return { path: item.path, value: typeof current === "boolean" ? optionId === "true" : optionId };
 }
@@ -475,8 +622,12 @@ const WHERE = "Add a short note saying where the page prints this value. The PDF
  * Settling a differs needs a note: keeping your own value over the PDF text says why the text is wrong; where the PDF's
  * text prints nothing (a scan, a value the check didn't find, a pick), either value says where the page prints it, and the
  * answer is marked `noPdfText` for the approver. Options are chosen; an option with a `note` needs one (a reason, ADR-001
- * §6). Can't tell is left for the approver, and doesn't clear anything. "Bill by hand" lists the term on the master;
- * answering it any other way takes it off again. Returns what was written to the master, for the audit log.
+ * §6). An interpretation's pick is checked against the read's value like a typed one: one that differs is shown with it,
+ * and the second pick settles it. A question with options and an input (the start date: typed, or "prospective only")
+ * takes either. Can't tell is left for the approver, and doesn't clear anything. "Bill by hand" lists the term on the
+ * master; answering it any other way takes it off again. A random spot check (SAMPLE) settled with a value other than the
+ * one the PDF check confirmed has missed (`missed`, ADR-001 §6). Returns what was written to the master, for the audit
+ * log, and whether the sample has just missed.
  */
 export function answer(v: Draft, itemId: string, raw: unknown, isoDate: (text: string) => string | null, now = new Date().toISOString()) {
   const item = v.review.find((i) => i.id === itemId);
@@ -498,20 +649,23 @@ export function answer(v: Draft, itemId: string, raw: unknown, isoDate: (text: s
   // The same answer again, from the same person, to a question it settled (a retry, another tab) changes nothing. Checked
   // again, a value kept over the PDF's text would read as differing from it once more, and reopen the question.
   const a = item.answer;
-  if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (item.options.length ? true : same(a.value, value)))
-    return { item, outcome: item.outcome!, changed: false, set: undefined, listed: undefined, unchanged: true as const };
+  if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (b.optionId !== undefined || same(a.value, value)))
+    return { item, outcome: item.outcome!, changed: false, set: undefined, listed: undefined, missed: false, unchanged: true as const };
+  // a pick, unless the question also takes a typed value and none was picked
+  const pick = item.options.length > 0 && (b.optionId !== undefined || !item.input);
   let outcome: NonNullable<ReviewItem["outcome"]>;
   let set: { path: string; value: unknown } | undefined;
   let noPdfText = false;
   if (b.cantTell) outcome = "cant_tell";
-  else if (item.options.length) {
+  else if (pick) {
     const option = item.options.find((o) => o.id === b.optionId);
     if (!option) throw new HttpError(400, "Pick one of the options.");
     if (option.note && !note) throw new HttpError(400, `Add a short note for this answer: ${option.note.replace(/^./, (c) => c.toLowerCase())}`);
     set = optionValue(v.rulebook, item, option.id, current);
     // A yes/no or fixed-list value is checked like a typed one: against the value we hold (a re-type of a hand-typed
-    // value, "This looks wrong"). A missing one has nothing to check against; a second pick after "differs" settles it.
-    const checkable = set && item.kind === "confirm_value" && item.reason !== "REQUIRED_MISSING" && !empty(current) && item.outcome !== "differs";
+    // value, "This looks wrong", an interpretation). A missing one has nothing to check against, nor does a read that
+    // says the contract doesn't state it; a second pick after "differs" settles it.
+    const checkable = set && (item.kind === "confirm_value" || item.kind === "interpretation") && item.reason !== "REQUIRED_MISSING" && !empty(current) && current !== "unspecified" && item.outcome !== "differs";
     // a pick is never in the PDF's text
     if (item.outcome === "differs" && !note) throw new HttpError(400, WHERE);
     noPdfText = item.outcome === "differs";
@@ -533,16 +687,22 @@ export function answer(v: Draft, itemId: string, raw: unknown, isoDate: (text: s
     if (outcome !== "differs" && item.path) set = { path: item.path, value };
   }
   const changed = settled(item);
-  const picked = item.options.length && !b.cantTell ? optionValue(v.rulebook, item, b.optionId!, current)?.value : undefined;
+  const picked = pick && !b.cantTell ? optionValue(v.rulebook, item, b.optionId!, current)?.value : undefined;
   item.compare = outcome === "differs" ? { typed: picked ?? value, read: current ?? null, printed: ev?.printed ?? null } : null;
   // Only what was answered is kept: a value sent along with a pick or "can't tell" isn't stored.
-  const typed = !b.cantTell && !item.options.length;
+  const typed = !b.cantTell && !pick;
   item.answer = { value: typed ? value : undefined, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at: now };
   item.sentBack = null;
   item.outcome = outcome;
   const before = set ? at(v.rulebook, set.path) : undefined;
   const rb = structuredClone(v.rulebook);
   if (set) setAt(rb, parsePointer(set.path), set.value);
+  // No limit: a cap's figures go with its kind. Nothing is billed by them, so nothing is left to confirm or to ask.
+  if (set && /\/cap\/kind$/.test(set.path) && set.value === "none")
+    for (const p of alsoWithheld(set.path)) {
+      setAt(rb, parsePointer(p), null);
+      v.evidence = v.evidence.filter((e) => e.path !== p);
+    }
   // the arm's choice replaces a version's single pick from before per-arm choices, if that was one of this arm's grids
   if (item.reason === "GRID_CONFLICT" && set && item.options.some((o) => o.id === rb.governingGridId)) rb.governingGridId = null;
   // the bill-by-hand list follows the answer: on for "bill by hand", off for anything else
@@ -561,11 +721,14 @@ export function answer(v: Draft, itemId: string, raw: unknown, isoDate: (text: s
     if (ev) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
     else if (set?.path === item.path) v.evidence.push({ path: item.path, status: "attested", where: item.where, printed: null, note: `Typed by ${b.by}` });
   }
-  // Maker-checker: everyone who decides something is an editor. The re-typer of hand-typed values isn't, unless their
-  // answer changes a value: then they corrected it.
+  // Maker-checker: everyone who decides something is an editor. A re-typer (of hand-typed values, or of the read's random
+  // sample) isn't, unless their answer changes a value: then they corrected it.
   const wrote = !!set && !same(before ?? null, set.value);
-  if (outcome !== "cant_tell" && (!retype || wrote) && !v.editors.some((e) => samePerson(e, b.by))) v.editors.push(b.by);
-  return { item, outcome, changed, set: set && { path: set.path, before: before ?? null, after: set.value }, listed, unchanged: false as const };
+  if (outcome !== "cant_tell" && (!(retype || item.reason === SAMPLE) || wrote) && !v.editors.some((e) => samePerson(e, b.by))) v.editors.push(b.by);
+  // The sample missed: a value the PDF check confirmed, kept different after looking again. Once missed, it stays missed.
+  const missed = item.reason === SAMPLE && !item.missed && outcome === "chosen" && wrote;
+  if (missed) item.missed = true;
+  return { item, outcome, changed, set: set && { path: set.path, before: before ?? null, after: set.value }, listed, missed, unchanged: false as const };
 }
 
 /** Whether `value` can stand at `path` in a valid invoicing master. */

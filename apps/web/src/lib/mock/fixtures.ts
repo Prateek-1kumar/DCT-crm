@@ -1,4 +1,4 @@
-import type { BudgetGrid, DocumentKind, PageBox, Provenance, ReviewItem, Rulebook, RulebookVersionDto, ValueEvidence } from "@dct/shared";
+import { alsoWithheld, type BudgetGrid, cryptoRandom, type DocumentKind, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
 import { ENUM_OPTIONS, fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { findProv, getAt, segments, setAt } from "../pointer";
 import { boxOn, layoutPage, numberPaths, type Span } from "./layout";
@@ -392,11 +392,41 @@ function scanSpecs(rb: Rulebook, have: Spec[]): Spec[] {
     });
 }
 
-/** Questions, evidence ledger and PDF check for a draft. Values outside the questions match the PDF (or, on a scan, the grid totals). */
-export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean } = {}): Draft {
+/** A question the real API builds (an interpretation), as a spec: the page prints its clause, with the master's value. */
+const asPrinted = (rb: Rulebook, i: ReviewItem): Spec => {
+  const quote = findProv(rb, i.path!)?.source?.quote;
+  return { ...i, input: i.input, options: i.options, lines: i.where.map(() => `${labelFor(i.path!, rb)}: ${quote ?? formatValue(i.path!, getAt(rb, i.path!))}`) };
+};
+/** Test seam, as the real API's `sampling`: the randomness the blind sample is drawn with. */
+export const mockSampling: { random: () => number } = { random: cryptoRandom };
+
+/** As the real API: a cap's limit and ratio wait for its kind's answer (their questions would name the kind). */
+const capWaits = (path: string | null, asking: Set<string>) => !!path && /\/cap\/(?:n|ratio)$/.test(path) && asking.has(path.replace(/(?:n|ratio)$/, "kind"));
+
+/**
+ * Questions, evidence ledger and PDF check for a draft, as the real API asks them after a read: the specs, every value
+ * nothing confirms on a scan, the interpretations picked blind (`unclear`: the ones the contract words ambiguously;
+ * `amendment`, `retroactive`: the start-date question), and the blind re-type of up to 10 confirmed values. Values
+ * outside the questions match the PDF (or, on a scan, the grid totals).
+ */
+export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean; amendment?: boolean; retroactive?: boolean; unclear?: { path: string; message: string }[] } = {}): Draft {
   let rb = structuredClone(base);
   for (const x of specs) if (x.path && x.read !== undefined) rb = setAt(rb, x.path, x.read);
-  const all = opts.scan ? [...specs, ...scanSpecs(rb, specs)] : specs;
+  const given = opts.scan ? [...specs, ...scanSpecs(rb, specs)] : specs;
+  const anomalies = [
+    ...(opts.unclear ?? []).map((u) => ({ code: "AMBIGUOUS_TERM" as const, path: u.path, message: u.message, refs: [] })),
+    ...(opts.retroactive ? [{ code: "RETROACTIVE_NO_DATE" as const, path: "/appliesFrom/value", message: "Amendment says it is retroactive but gives no start date", refs: [] }] : []),
+  ];
+  const have = new Set(given.flatMap((x) => (x.path ? [x.path] : [])));
+  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies }).filter((i) => !have.has(i.path!));
+  const asking = new Set(interp.map((i) => i.path!));
+  const asked = [...given.filter((x) => !capWaits(x.path, asking)), ...interp.map((i) => asPrinted(rb, i))];
+  const status = (path: string): ValueEvidence["status"] =>
+    asked.find((x) => x.path === path)?.reason === "VALUE_CONFLICT" ? "conflict" : opts.scan && !path.startsWith("/budgetGrids/") ? "ungrounded" : "confirmed";
+  // drawn once, kept with the draft's questions; never a value with a question (nor one held back with it)
+  const taken = new Set(asked.flatMap((x) => (x.path ? [x.path, ...alsoWithheld(x.path)] : [])));
+  const sample = pickSample(numberPaths(rb).map((path) => ({ path, status: status(path), where: [], printed: null, note: null })), taken, mockSampling.random).map((p) => askAbout(rb, [], p, `sample:${p}`, SAMPLE));
+  const all = [...asked, ...sample];
   const byPath = new Map(all.flatMap((x) => (x.path ? [[x.path, x] as const] : [])));
   // What each page prints, and where: the page shows the right answer where the reading got it wrong.
   const truthOf = (p: string) => (byPath.get(p)?.truth !== undefined ? byPath.get(p)!.truth : getAt(rb, p));
@@ -409,11 +439,9 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   // Questions point at the exact spot their number, or their own line, is printed.
   const placed = all.map((x) => ({ ...x, where: x.where.map((w) => pb(w.documentId, w.page, boxOn(spansOf(w.documentId, w.page), { path: x.path, item: x.id }) ?? w.box)) }));
   const evidence = numberPaths(rb).map((path): ValueEvidence => {
-    const x = byPath.get(path);
     const src = findProv(rb, path)?.source;
-    const status = x?.reason === "VALUE_CONFLICT" ? "conflict" : opts.scan && !path.startsWith("/budgetGrids/") ? "ungrounded" : "confirmed";
     return {
-      path, status, note: null,
+      path, status: status(path), note: null,
       where: src ? [pb(src.documentId, src.page, boxOn(spansOf(src.documentId, src.page), { path }))] : [],
       printed: opts.scan ? null : formatValue(path, truthOf(path)),
     };
@@ -427,18 +455,8 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   };
 }
 
-const OVERHEAD_OPTIONS = [
-  { id: "procedures_only", label: "Procedures only" },
-  { id: "procedures_and_staff", label: "Procedures and staff time" },
-  { id: "all_per_patient_lines", label: "Every per-patient line, stipends too" },
-];
-const overheadScope = (id: string, doc: string, page: number, n: number): Spec => ({
-  id, kind: "interpretation", reason: "OVERHEAD_SCOPE", path: "/overhead/appliesTo/value", blocking: true,
-  question: "The budget says overhead is “applied to the costs above”. Which lines get overhead?",
-  options: OVERHEAD_OPTIONS, where: [pb(doc, page, box(n))],
-  lines: ["§2 Overhead. Institution overhead shall be applied to the costs above."],
-  apply: Object.fromEntries(OVERHEAD_OPTIONS.map((o) => [o.id, { path: "/overhead/appliesTo/value", value: o.id }])),
-});
+/** The overhead clause the sample contracts word ambiguously: its interpretation is marked so (buildDraft `unclear`). */
+export const UNCLEAR_OVERHEAD = [{ path: "/overhead/appliesTo/value", message: "The budget says overhead is “applied to the costs above”" }];
 /** As the real API's money-term questions (UNACCOUNTED_TERM): "bill by hand" lists the term on the master (ADR-001 §7). */
 const UNACCOUNTED_OPTIONS = [
   { id: "bill_by_hand", label: "A payment term: list it to bill by hand" },
@@ -463,7 +481,7 @@ const cell = (id: string, reason: string, gi: number, pi: number, visit: string,
   };
 };
 
-/** Northwind: a text PDF in "Needs you", 7 questions. */
+/** Northwind: a text PDF in "Needs you": these, its interpretations and the blind sample (buildDraft). */
 export function northwindSpecs(): Spec[] {
   const wo = "doc-nw-wo";
   return [
@@ -479,14 +497,7 @@ export function northwindSpecs(): Spec[] {
       where: [pb(wo, 9, box(1)), pb("doc-nw-bud", 2, box(1))],
       lines: ["EXHIBIT A – BUDGET  ·  Spirometry $98.00  ·  ECG $76.00  ·  Physical exam $142.00", "ATTACHMENT 2 – PAYMENT SCHEDULE  ·  Spirometry $104.00  ·  ECG $81.00  ·  Physical exam $138.00"],
     },
-    overheadScope("q3", wo, 5, 2),
     pharmacyFee("q4", wo, 7, 3),
-    cell("q5", "spot_check", 0, 5, "SCR", "Exhibit A", 2500, pb(wo, 9, box(4))),
-    {
-      id: "q6", kind: "confirm_value", reason: "spot_check", path: "/screenFail/amountCents", blocking: true, input: "money",
-      question: "How much does Exhibit A §5 pay for each screen failure?", where: [pb(wo, 6, box(5))], truth: 61000,
-      lines: ["§5 Screen failures. Sponsor will pay $610.00 for each screen failure, up to one (1) per randomized subject."],
-    },
     parking("q7", wo, 8, 6),
   ];
 }
@@ -512,19 +523,12 @@ export function cobaltSpecs(): Spec[] {
   ];
 }
 
-/** A new contract read in the demo: 6 questions, 7 when the master agreement is missing. */
+/** A new contract read in the demo: these, one more when the master agreement is missing, its interpretations and the sample. */
 export function newContractSpecs(t: { doc: string; pages: number; gridPage: number; hasMaster: boolean }): Spec[] {
   const p = (n: number) => Math.min(n, t.pages);
   const out: Spec[] = [
     cell("n1", "VALUE_CONFLICT", 0, 3, "V3", "Exhibit A", 9800, pb(t.doc, t.gridPage, box(0)), 9300),
-    overheadScope("n2", t.doc, p(5), 1),
     pharmacyFee("n3", t.doc, p(7), 2),
-    cell("n4", "spot_check", 0, 5, "SCR", "Exhibit A", 2500, pb(t.doc, t.gridPage, box(3))),
-    {
-      id: "n5", kind: "confirm_value", reason: "spot_check", path: "/payment/netDays/value", blocking: true, input: "number",
-      question: "How many days does the sponsor have to pay an invoice (§4.2)?", where: [pb(t.doc, p(4), box(4))], truth: 45,
-      lines: ["§4.2 Invoices. Sponsor shall pay each undisputed invoice within 45 days of receipt."],
-    },
   ];
   if (!t.hasMaster)
     out.push({
@@ -541,22 +545,17 @@ export function newContractSpecs(t: { doc: string; pages: number; gridPage: numb
 }
 
 /**
- * An amendment: retroactive with no date, a misread new fee, a spot check, a hand-billed term, a total that doesn't add up
- * (`week52`: the Week 52 visit's total its lines add up to; the amendment prints it $5.00 lower).
+ * An amendment: a misread new fee, a hand-billed term, a total that doesn't add up (`week52`: the Week 52 visit's total its
+ * lines add up to; the amendment prints it $5.00 lower). Retroactive with no date: buildDraft asks the start date
+ * (`retroactive`), with the interpretations and the sample.
  */
 export function amendmentSpecs(doc: string, rmvIndex: number, week52: number): Spec[] {
   return [
-    {
-      id: "a1", kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", path: "/appliesFrom/value", blocking: true, input: "date",
-      question: "The amendment says its new prices apply retroactively, but gives no start date. From what date do they apply?",
-      where: [pb(doc, 1, box(0))], lines: ["§1 The changes in this Amendment shall apply retroactively."],
-    },
     {
       id: "a2", kind: "confirm_value", reason: "VALUE_CONFLICT", path: `/invoiceables/${rmvIndex}/amountCents`, blocking: true, input: "money",
       question: "What amount does the amendment print for a Remote monitoring visit?", where: [pb(doc, 4, box(1))], read: 48000, truth: 42000,
       lines: ["Remote monitoring visit (RMV)  ·  per visit  ·  $420.00"],
     },
-    cell("a3", "spot_check", 0, 3, "V2", "the amended budget", 11200, pb(doc, 3, box(2))),
     moneyTerm("a4", doc, 5, 3, "§3.4 Courier. Sponsor will pay $95.00 for each courier pickup of stored samples.", [9500]),
     {
       // a Review question (ADR-001 §6): which number governs, with a note for the sponsor query; "sum" writes the sum
@@ -571,9 +570,8 @@ export function amendmentSpecs(doc: string, rmvIndex: number, week52: number): S
   ];
 }
 
-/** Questions answered before these versions were approved. */
+/** Questions answered before these versions were approved (with their interpretations and samples). */
 export const halcyonV1Specs = (): Spec[] => [
-  cell("h1", "spot_check", 0, 1, "SCR", "Exhibit A", 14200, pb("doc-hal-cta", 9, box(0))),
   {
     id: "h2", kind: "interpretation", reason: "AMBIGUOUS_TERM", path: null, blocking: true,
     question: "Early termination procedures are marked “as performed”. How do we bill them?",
@@ -584,12 +582,4 @@ export const halcyonV1Specs = (): Spec[] => [
     where: [pb("doc-hal-cta", 10, box(1))], lines: ["Early termination: procedures will be paid as performed."],
   },
 ];
-export const meridianSpecs = (): Spec[] => [
-  cell("m1", "spot_check", 0, 5, "SCR", "Exhibit A", 2500, pb("doc-mx-wo", 8, box(0))),
-  {
-    id: "m2", kind: "confirm_value", reason: "spot_check", path: "/payment/netDays/value", blocking: true, input: "number",
-    question: "How many days does the sponsor have to pay an invoice (§4.2)?", where: [pb("doc-mx-wo", 4, box(1))], truth: 60,
-    lines: ["§4.2 Invoices. Sponsor shall pay each undisputed invoice within 60 days of receipt."],
-  },
-  overheadScope("m3", "doc-mx-wo", 5, 2),
-];
+export const meridianSpecs = (): Spec[] => [];

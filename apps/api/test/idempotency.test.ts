@@ -105,6 +105,23 @@ describe("every write, sent twice with one key, writes once", () => {
     await twice({ method: "PATCH", url: "/settings", payload: { people: ["Asha", "Ben"], by: "Asha" } });
   });
 
+  it("a pick that differs from the read and a random spot check that misses: each once, with one incident and one alert", async () => {
+    const [doc] = (await send(await uploadReq("miss"))).json<DocumentDto[]>();
+    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
+    await waitJob(app, jobId);
+    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
+    const v = `/studies/${studyId}/versions/1`;
+    const pay = `${v}/review/${encodeURIComponent("interpret:/payment/visitPayment/value")}`;
+    await twice({ method: "POST", url: pay, payload: { optionId: "invoice", by: "Sam" } });
+    await twice({ method: "POST", url: pay, payload: { optionId: "invoice", note: "§4.1 says invoiced", by: "Sam" } });
+    const cell = `${v}/review/${encodeURIComponent("sample:/budgetGrids/0/procedures/0/cells/V1")}`;
+    await send({ method: "POST", url: cell, payload: { value: 5600, by: "Sam" } });
+    await twice({ method: "POST", url: cell, payload: { value: 5600, note: "the page prints $56.00", by: "Sam" } });
+    const n = async (q: ReturnType<typeof sql>) => (await built.ctx.db.execute<{ n: number }>(q)).rows[0]!.n;
+    expect(await n(sql`SELECT count(*)::int AS n FROM audit_log WHERE action = 'sample.missed'`)).toBe(1);
+    expect(await n(sql`SELECT count(*)::int AS n FROM alerts WHERE kind = 'sample_missed'`)).toBe(1);
+  });
+
   it("typing in by hand: start, type a value, done", async () => {
     const [doc] = (await send(await uploadReq("hand", true))).json<DocumentDto[]>();
     const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();

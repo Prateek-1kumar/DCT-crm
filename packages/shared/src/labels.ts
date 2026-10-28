@@ -22,6 +22,14 @@ export const ENUM_LABELS: Record<string, Record<string, string>> = {
     one_time: "One time",
     actual_cost: "At actual cost",
   },
+  /** A cap's kind (`cap.kind`): its field name is `kind` like a deadline's, so it has its own key. */
+  capKind: {
+    none: "No limit",
+    count: "A number of times at most",
+    amount: "A total amount at most",
+    ratio_to_randomized: "A number for each randomized subject",
+    blocks_with_reauth: "A number at a time, then the sponsor approves more",
+  },
   kind: {
     invoice_days_from_expense: "Invoice within N days of expense",
     invoice_months_after_study_close: "Invoice within N months of study close",
@@ -48,6 +56,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "review.answered": "Question answered",
   "review.changed": "Answer changed",
   "review.sent_back": "Answers sent back",
+  "sample.missed": "Spot check found a wrong number",
   "value.corrected": "Value corrected",
   "anomaly.resolved": "Problem settled",
   "grid.chosen": "Budget grid chosen",

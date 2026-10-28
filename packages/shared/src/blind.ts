@@ -150,7 +150,8 @@ export function blindReview(review: ReviewItem[], hidden: string[], evidence: Va
 export function blindDetail(action: string, d: Record<string, unknown>, open: (Withheld & { hidden: Set<string> }) | undefined): Record<string, unknown> {
   if (!open?.hidden.size) return d;
   const h = open.hidden;
-  const about = (x: Record<string, unknown>) => typeof x.path === "string" && h.has(x.path);
+  // a correction that wasn't carried is asked again where its item is now (`askedAt`)
+  const about = (x: Record<string, unknown>) => [x.path, x.askedAt].some((p) => typeof p === "string" && h.has(p));
   const strip = ({ before: _b, after: _a, ...x }: Record<string, unknown>) => (typeof x.note === "string" ? { ...x, note: blankNumbers(x.note) } : x);
   const ids = [d.itemId, ...(Array.isArray(d.itemIds) ? d.itemIds : [])];
   const blind = about(d) || open.review.some((i) => ids.includes(i.id) && blindItem(i, h)) || (action === "review.sent_back" && !Array.isArray(d.itemIds));

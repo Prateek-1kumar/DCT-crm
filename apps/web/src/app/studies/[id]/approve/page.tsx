@@ -1,6 +1,6 @@
 "use client";
 
-import { settled, withheldPaths, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { sampleMisses, sampleMissWords, settled, withheldPaths, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
 import Link from "next/link";
@@ -136,6 +136,7 @@ function Approve({ study, version, onApproved }: { study: StudyDetailDto; versio
         </aside>
 
         <section className="min-w-0 rounded-card bg-surface p-7 shadow-card ring-1 ring-ink/[0.05]">
+          <SampleMissed study={study} version={version} />
           {step === 1 && <Answers study={study} version={version} order={order} open={open} onNext={() => setStep(2)} />}
           {step === 2 && (
             <Terms
@@ -163,6 +164,32 @@ function Approve({ study, version, onApproved }: { study: StudyDetailDto; versio
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A random spot check found a number the PDF check had confirmed wrong (ADR-001 §6): approval waits until every value of
+ * that kind is proofread, so this says plainly what's left, on every step.
+ */
+function SampleMissed({ study, version }: { study: StudyDetailDto; version: RulebookVersionDto }) {
+  const misses = sampleMisses(version).filter((m) => m.left.length);
+  if (!misses.length) return null;
+  return (
+    <div role="alert" className="mb-6 flex flex-col gap-3 rounded-tile bg-danger-soft/60 p-5 ring-1 ring-danger/20">
+      {misses.map((m) => (
+        <div key={m.family} className="flex flex-wrap items-start justify-between gap-3">
+          <p className="flex max-w-[66ch] items-start gap-2.5 text-body text-ink-2">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" strokeWidth={2} />
+            <span>
+              <span className="font-medium text-ink">Proofread the {m.label} first.</span> {sampleMissWords(m)}
+            </span>
+          </p>
+          <Link href={`/studies/${study.id}/proofread`} className={btnCls("primary", "sm")}>
+            Proofread them
+          </Link>
+        </div>
+      ))}
     </div>
   );
 }

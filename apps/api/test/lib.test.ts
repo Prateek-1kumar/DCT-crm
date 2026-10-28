@@ -132,13 +132,16 @@ describe("scan pages", () => {
       ...["totalCents", "procedureSubtotalCents", "nonProcedureCents", "overheadCents"].map((f) => `/budgetGrids/0/visits/0/${f}`),
     ]);
     expect(pdfCheck).toBeNull();
-    expect(review.map((i) => `${i.reason} ${i.path ?? i.where[0]!.page}`)).toEqual([
+    expect(review.filter((i) => i.reason !== "SAMPLE").map((i) => `${i.reason} ${i.path ?? i.where[0]!.page}`)).toEqual([
       "SCAN_VALUE /budgetGrids/0/procedures/0/cells/V2",
       ...["totalCents", "procedureSubtotalCents", "overheadCents"].map((f) => `SCAN_VALUE /budgetGrids/0/visits/1/${f}`),
       "SCAN_VALUE /budgetGrids/0/perPatientTotals/0/cents",
       "SCAN_VALUE /siteFees/0/amountCents",
+      ...["/overhead/appliesTo/value", "/payment/visitPayment/value", "/siteFees/0/trigger", "/rounding/value"].map((p) => `INTERPRETATION ${p}`),
       "SCAN_PAGE 1",
     ]);
+    // fewer than 10 values confirmed (here by the totals): every one of them re-typed blind
+    expect(review.filter((i) => i.reason === "SAMPLE").map((i) => i.path).sort()).toEqual(evidence.filter((e) => e.status === "confirmed").map((e) => e.path).sort());
   });
 });
 
@@ -148,8 +151,10 @@ describe("picked answers", () => {
     const rb = manualRulebook(s, []);
     rb.invoiceables = [{ code: null, name: "Courier", amountCents: 5000, amountWithOverheadCents: null, basis: "fixed", frequency: "per shipment", cap: { kind: "none", n: null, ratio: null }, requiresPreApproval: true, requiredDocs: [], prov: rb.study.sponsor.prov }];
     const { review } = reviewDraft({ bindEvidence, reviewFromEvidence }, rb, runContractChecks(rb), [], []);
-    const scope = review.find((i) => i.id === "anomaly:AMBIGUOUS_TERM:/overhead/appliesTo/value")!;
-    expect(scope).toMatchObject({ kind: "interpretation", blocking: true, input: null, path: "/overhead/appliesTo/value" });
+    // the read says the contract doesn't state it: asked once, as the interpretation, marked unclear
+    const scope = review.find((i) => i.path === "/overhead/appliesTo/value")!;
+    expect(review.filter((i) => i.path === "/overhead/appliesTo/value")).toHaveLength(1);
+    expect(scope).toMatchObject({ id: "interpret:/overhead/appliesTo/value", kind: "interpretation", reason: "AMBIGUOUS_TERM", blocking: true, input: null });
     expect(scope.options.map((o) => o.id)).toEqual(["procedures_only", "procedures_and_staff", "all_per_patient_lines", "none"]);
     const draft = { version: 1, byHand: false, rulebook: rb, review: [...review, askAbout(rb, [], "/invoiceables/0/requiresPreApproval", "r1", "reported")], evidence: [], editors: [] };
     expect(answer(draft, scope.id, { optionId: "procedures_only", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen", set: { path: "/overhead/appliesTo/value", before: "unspecified", after: "procedures_only" } });

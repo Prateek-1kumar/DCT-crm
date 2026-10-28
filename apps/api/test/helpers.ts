@@ -3,14 +3,18 @@ import { and, eq, sql } from "drizzle-orm";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { buildApp } from "../src/app.js";
 import { rulebookVersions } from "../src/db/schema.js";
-import { at, empty } from "../src/review.js";
+import { at, empty, sampling } from "../src/review.js";
 
 export type Built = Awaited<ReturnType<typeof buildApp>>;
+/** A "random" draw that never moves anything (Fisher–Yates swaps each item with itself). */
+export const NO_SHUFFLE = () => 1 - 2 ** -32;
 export type App = Built["app"];
 
 /** `workers: false`: nothing runs the queued jobs, so a test can run (or strand) them itself. */
 export async function testApp(opts: { workers?: boolean } = {}): Promise<Built> {
   if (!process.env.DATABASE_URL?.includes("_test")) throw new Error("tests must use the _test database");
+  // The blind sample without shuffling: in evidence order, a family at a time, so a test knows which values it holds.
+  sampling.random = NO_SHUFFLE;
   return buildApp(opts);
 }
 
@@ -138,8 +142,9 @@ export async function storedVersion({ ctx }: Built, studyId: string, version: nu
 }
 
 /**
- * Answers every question not settled yet: the first option, or the value the master holds (on a differs, the same value
- * again with a note), and then any an answer raised (a grid's totals checked again). `n` stops after that many.
+ * Answers every question not settled yet: the option the master holds, else the first option, or the value the master
+ * holds (on a differs, the same value again with a note), and then any an answer raised (a grid's totals checked again).
+ * `n` stops after that many.
  */
 export async function settleAll(built: Built, studyId: string, version: number, by = "Asha", n = Infinity): Promise<void> {
   const row = await storedVersion(built, studyId, version);
@@ -147,7 +152,9 @@ export async function settleAll(built: Built, studyId: string, version: number, 
   if (!open.length || n <= 0) return;
   for (const i of open.slice(0, n)) {
     const current = i.path ? at(row.rulebook, i.path) : undefined;
-    const body = i.options.length ? { optionId: i.options[0]!.id, note: "checked" } : { value: empty(current) ? (i.input === "date" ? "2026-01-01" : i.input === "text" ? "x" : 1) : current, note: "checked" };
+    // the option the master holds (an interpretation as read), else the first; a typed value where there's no option to pick
+    const option = i.options.find((o) => o.id === String(current)) ?? (i.input ? undefined : i.options[0]);
+    const body = option ? { optionId: option.id, note: "checked" } : { value: empty(current) ? (i.input === "date" ? "2026-01-01" : i.input === "text" ? "x" : 1) : current, note: "checked" };
     for (let tries = 0; tries < 2; tries++) {
       const res = await built.app.inject({ method: "POST", url: `/api/v1/studies/${studyId}/versions/${version}/review/${encodeURIComponent(i.id)}`, payload: { ...body, by } });
       if (res.statusCode !== 200) throw new Error(`${i.id}: ${res.body}`);

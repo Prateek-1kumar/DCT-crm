@@ -1,4 +1,4 @@
-import { samePerson, settled, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
+import { sampleMisses, sampleMissWords, samePerson, settled, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
 import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
@@ -21,6 +21,20 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
   switch (i.reason) {
     case "spot_check":
       return "A random spot check. We pick a few numbers at random and ask a person to type them; it proves the checks are working.";
+    case "SAMPLE":
+      return "A random spot check. This number already matched the PDF, but we pick a few at random for a person to type: it's how we prove the checks miss nothing.";
+    case "INTERPRETATION":
+      return "How the contract words this decides how it's billed. Read the spot and pick what it means; we don't show our reading, so it can't steer you.";
+    case "AMBIGUOUS_TERM":
+      return "The wording can be read more than one way. Read the spot and pick what the contract means; we don't show our reading.";
+    case "RETROACTIVE_NO_DATE":
+      return "Without a start date, the new prices would be billed from the original contract's date. Type the date they apply from, or pick prospective only.";
+    case "CORRECTION_NOT_CARRIED":
+      return "Someone corrected this on the version in use, but the amendment's reading has a different value here, so the correction wasn't copied over.";
+    case "CORRECTION_LOST":
+      return "Someone corrected this on the version in use, but the amendment's reading doesn't have it. If it's still in the contract, it has to be billed by hand.";
+    case "CAP_KIND_CHANGED":
+      return "The kind of limit was changed, so this figure may mean something else now (an amount instead of a count, say). Type what the contract prints.";
     case "reported":
       return "Someone reported this as looking wrong.";
     case "VALUE_CONFLICT":
@@ -144,11 +158,12 @@ export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
 
 /**
  * Mirrors the API's approval rules so the button can explain itself before the 409: every question settled (one not
- * needed to approve too), typing by hand marked done, every number backed by the PDF or a person, and maker-checker
- * (names compared as the API compares them). The API stays the source of truth.
+ * needed to approve too), typing by hand marked done, every number backed by the PDF or a person, after a random spot
+ * check missed every value of its kind proofread, and maker-checker (names compared as the API compares them). The API
+ * stays the source of truth.
  */
 export function approveState(
-  version: Pick<RulebookVersionDto, "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence">,
+  version: Pick<RulebookVersionDto, "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence" | "proofread">,
   settings: Pick<SettingsDto, "makerChecker"> | undefined,
   by: string | null,
 ): { allowed: boolean; reasons: string[] } {
@@ -161,6 +176,7 @@ export function approveState(
   const unconfirmed = version.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
   // a number that's unconfirmed because its question is open is counted once, as that question
   if (unconfirmed && !open) reasons.push(`${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
+  for (const m of sampleMisses(version)) if (m.left.length) reasons.push(sampleMissWords(m));
   if (!by) reasons.push("Choose your name first (bottom of the sidebar).");
   else if ((settings?.makerChecker ?? true) && version.editors.some((e) => samePerson(e, by)))
     reasons.push(`Maker-checker is on, and ${by} answered questions on this contract, so someone else has to approve it.`);

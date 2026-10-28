@@ -34,10 +34,16 @@ function alertText(a: AlertDto): { title: string; sub: string; href: string } {
       };
     case "couldnt_read":
       return { title: `${name} couldn't be read`, sub: "Read it again, or type it in by hand", href: `/studies/${a.studyId}` };
+    case "sample_missed":
+      return {
+        title: `${name}: a random spot check found a wrong number`,
+        sub: `${who ? `Found by ${who}. ` : ""}${a.count ?? "Some"} ${a.count === 1 ? "value" : "values"} of that kind to proofread before approval`,
+        href: `/studies/${a.studyId}/proofread`,
+      };
   }
 }
 
-const DOT: Record<AlertDto["kind"], string> = { questions_ready: "bg-warn", ready_for_approval: "bg-brand", sent_back: "bg-warn", couldnt_read: "bg-danger" };
+const DOT: Record<AlertDto["kind"], string> = { questions_ready: "bg-warn", ready_for_approval: "bg-brand", sent_back: "bg-warn", couldnt_read: "bg-danger", sample_missed: "bg-danger" };
 
 function useMarkRead() {
   const by = useActingAs();

@@ -104,6 +104,20 @@ describe("a write that fails at its last insert leaves nothing half-saved", () =
     expect((await storedVersion(built, studyId, 1)).rulebook!.unclassified).toHaveLength(1);
   });
 
+  it("a random spot check that misses: not settled, not missed, without its incident or its alert", async () => {
+    for (const [seed, fail] of [
+      ["miss", () => failInsert("audit_log", "action", "sample.missed")],
+      ["miss-alert", () => failInsert("alerts", "kind", "sample_missed")],
+    ] as const) {
+      const { studyId } = await newStudy(app, seed);
+      await extract(app, studyId);
+      const url = `/studies/${studyId}/versions/1/review/${encodeURIComponent("sample:/budgetGrids/0/procedures/0/cells/V1")}`;
+      expect((await post(url, { value: 5600, by: "Sam" })).statusCode).toBe(200);
+      await noTrace(fail, url, { value: 5600, note: "the page prints $56.00", by: "Sam" });
+      expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === "sample:/budgetGrids/0/procedures/0/cells/V1")!.missed).toBe(true);
+    }
+  });
+
   it("'This looks wrong' on the live version: no correction draft, the study still live", async () => {
     const { studyId } = await liveStudy(built, "report");
     await noTrace(() => failInsert("audit_log", "action", "number.reported"), `/studies/${studyId}/versions/1/report`, { path: "/siteFees/0/amountCents", note: "check", by: "Sam" });

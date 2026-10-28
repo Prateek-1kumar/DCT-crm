@@ -1,12 +1,16 @@
 import {
   amountOf,
   ByHandBody,
+  capFollowUps,
   CorrectValueBody,
+  familyOf,
   type MasterSearch,
   ProofreadBody,
   ReportValueBody,
   type ReviewItem,
   Rulebook,
+  sampleMisses,
+  sampleMissWords,
   samePerson,
   SendBackBody,
   SignOffBody,
@@ -52,9 +56,11 @@ export const versionRoutes =
       const q = text(req.query.q);
       // On a draft, a value still hidden for someone to type blind must not be findable: amounts match values, and a
       // term's words include its values. Names and codes of grid rows and fees don't, so those still match.
+      // A row's fixed-list words (a fee's trigger) can be withheld too, so the search reads the master as it's shown.
       const hidden = hiddenPaths(row);
       const byValue = (h: MasterSearch["hits"][number]) => amountOf(q) !== null || h.section === "terms";
-      return { q, hits: searchMaster(row.rulebook, q).filter((h) => !(byValue(h) && hidden.some((p) => p === h.path || p.startsWith(`${h.path}/`)))) };
+      const shown = hidden.length ? mask(row.rulebook, hidden, row) : row.rulebook;
+      return { q, hits: searchMaster(shown, q).filter((h) => !(byValue(h) && hidden.some((p) => p === h.path || p.startsWith(`${h.path}/`)))) };
     });
 
     app.get<P & { Querystring: { by?: string } }>("/studies/:id/versions/:v/export.xlsx", async (req, reply) => {
@@ -184,12 +190,14 @@ export const versionRoutes =
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.rulebook) throw new HttpError(409, `Version ${row.version} is ${row.status}; only a draft takes answers.`);
         const draft = { version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors] };
-        const { item, outcome, changed, set, listed, unchanged } = answer(draft, req.params.itemId, req.body, port.isoDate);
+        const { item, outcome, changed, set, listed, missed, unchanged } = answer(draft, req.params.itemId, req.body, port.isoDate);
         // a repeat that changes nothing writes nothing and logs nothing
         if (unchanged) return versionDto(row);
         const { by, note } = item.answer!;
         // the grid's held-back totals, checked on the typed numbers once its last one is answered
         if (set) draft.review.push(...recheck((rb) => port.runContractChecks(rb), { ...draft, anomalies: row.anomalies }, set.path));
+        // a cap's limit, once its kind is known
+        draft.review.push(...capFollowUps(draft, item, !!set && !isDeepStrictEqual(set.before, set.after), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason)));
         const [updated] = await tx
           .update(rulebookVersions)
           .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: new Date() })
@@ -205,6 +213,13 @@ export const versionRoutes =
           : { path: set.path, before: set.before, after: set.after, items: itemIds(row.rulebook, parsePointer(set.path)) };
         const billByHand = listed?.added ? { billByHand: listed.added } : listed?.removed ? { offBillByHand: listed.removed } : {};
         await audit(tx, by, row.studyId, changed ? "review.changed" : "review.answered", { version: row.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote, ...billByHand });
+        if (missed) {
+          // An incident (ADR-001 §6): a value the PDF check confirmed is wrong by a person's blind reading. How silent
+          // errors are measured, so it's in the log and told to everyone; approval waits for its kind of value to be checked.
+          const miss = sampleMisses({ ...draft, proofread: row.proofread }).find((m) => m.family === familyOf(item.path!))!;
+          await audit(tx, by, row.studyId, "sample.missed", { version: row.version, itemId: item.id, path: item.path, question: item.question, values: miss.label, "to check": miss.left.length });
+          await raiseAlert(tx, { kind: "sample_missed", studyId: row.studyId, version: row.version, by, count: miss.left.length });
+        }
         return versionDto(updated!);
       });
     });
@@ -239,7 +254,8 @@ export const versionRoutes =
           )[0]!;
           await audit(tx, by, row.studyId, CORRECTION_OPENED, { version: draft.version, seededFromVersion: row.version });
         } else if (row.status !== "draft" || row.byHand) throw new HttpError(409, `Version ${row.version} is ${row.status}; report a value on the live version or a draft.`);
-        if (draft.review.some((i) => i.path === path && !settled(i))) throw new HttpError(409, "There's already an open question about this value.");
+        // asked already, or withheld with a question (a cap's limit while its kind is asked: its question would name the kind)
+        if (hiddenPaths(draft).includes(path)) throw new HttpError(409, "There's already an open question about this value.");
         // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
         const item = { ...askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported"), reported: { by, note, at: new Date().toISOString() } };
         const [updated] = await tx.update(rulebookVersions).set({ review: [...draft.review, item], updatedAt: new Date() }).where(eq(rulebookVersions.id, draft.id)).returning();
@@ -306,8 +322,9 @@ export const versionRoutes =
     /**
      * Approval (ADR-001 I1–I6): the version as the approver saw it (`asOf`), every question settled by a typed value, a
      * pick or a reason (a blocker by a value or a pick only: answer() enforces how each clears, ADR-001 §6), so nothing is
-     * withheld any more; every number confirmed by the PDF's text or a person; typing by hand re-typed blind; and with
-     * maker-checker on, not by anyone who answered (names compared as people type them, ignoring case and edge spaces).
+     * withheld any more; every number confirmed by the PDF's text or a person; typing by hand re-typed blind; after a
+     * random spot check missed, every value of its kind proofread or typed; and with maker-checker on, not by anyone who
+     * answered (names compared as people type them, ignoring case and edge spaces).
      */
     app.post<P>("/studies/:id/versions/:v/sign-off", async (req, reply) => {
       const body = parse(SignOffBody, req.body);
@@ -320,6 +337,9 @@ export const versionRoutes =
         if (open) throw new HttpError(409, `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`);
         const unconfirmed = row.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
         if (unconfirmed) throw new HttpError(409, `${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
+        // a random spot check that missed: every value of its kind proofread or typed by a person first (ADR-001 §6)
+        const miss = sampleMisses(row).find((m) => m.left.length);
+        if (miss) throw new HttpError(409, sampleMissWords(miss));
         const [cfg] = await tx.select().from(settings).where(eq(settings.id, 1));
         if ((cfg?.makerChecker ?? true) && row.editors.some((e) => samePerson(e, body.by)))
           throw new HttpError(409, `Maker-checker is on: ${body.by} answered questions on this contract, so someone else has to approve it.`);

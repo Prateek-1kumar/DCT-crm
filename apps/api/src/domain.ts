@@ -40,13 +40,14 @@ export const documentDto = (d: DocumentRow, duplicateOf: string | null = null): 
   duplicateOf,
 });
 
+/** `appliesFrom` is the start date, or the effective date it falls back to: withheld while either is asked blind. */
 export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
   version: v.version,
   status: v.status as VersionStatus,
   createdAt: v.createdAt.toISOString(),
   signedBy: v.signedBy,
   signedAt: v.signedAt?.toISOString() ?? null,
-  appliesFrom: v.appliesFrom,
+  appliesFrom: hiddenPaths(v).some((p) => p === "/appliesFrom/value" || p === "/study/effectiveDate/value") ? null : v.appliesFrom,
 });
 
 /**

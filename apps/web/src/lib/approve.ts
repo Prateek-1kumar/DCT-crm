@@ -1,5 +1,5 @@
-import { billedGrids, type PageBox, type Rulebook, type ValueEvidence } from "@dct/shared";
-import { ENUM_OPTIONS, formatValue } from "./format";
+import { amendmentDate, billedGrids, type PageBox, type Rulebook, type ValueEvidence } from "@dct/shared";
+import { ENUM_OPTIONS, formatDate, formatValue } from "./format";
 import { findProv } from "./pointer";
 
 /**
@@ -83,7 +83,7 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
   const sf = rb.screenFail;
   out.push(
     sf
-      ? term("screen-fail", "Screen failures", sf.basis === "per_procedure" ? "Per procedure" : `${money(sf.amountCents)} each`, `${capText(sf.cap)} · ${words("paidVia", sf.paidVia).toLowerCase()}`, "/screenFail/amountCents", ["/screenFail/cap/n", "/screenFail/cap/ratio", "/screenFail/basis", "/screenFail/paidVia"])
+      ? term("screen-fail", "Screen failures", sf.basis === "per_procedure" ? "Per procedure" : `${money(sf.amountCents)} each`, `${capText(sf.cap)} · ${words("paidVia", sf.paidVia).toLowerCase()}`, "/screenFail/amountCents", ["/screenFail/cap/kind", "/screenFail/cap/n", "/screenFail/cap/ratio", "/screenFail/basis", "/screenFail/paidVia"])
       : term("screen-fail", "Screen failures", "Not paid", "The contract doesn't pay for screen failures", null),
   );
 
@@ -97,20 +97,33 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
     else out.push(term(`patient-${gi}`, "Per patient", money(g.visits.reduce((n, v) => n + v.totalCents, 0)), `All visits added up · ${g.label}`, null, g.visits.map((_, vi) => `/budgetGrids/${gi}/visits/${vi}/totalCents`)));
   });
 
+  // a fee whose amount is withheld for a blind answer may be the biggest: it's listed first, hidden, never left out
+  const size = (f: Rulebook["siteFees"][number]) => f.amountCents ?? Number.MAX_SAFE_INTEGER;
   rb.siteFees
     .map((f, i) => ({ f, i }))
-    .filter(({ f }) => f.amountCents !== null)
-    .sort((a, b) => b.f.amountCents! - a.f.amountCents!)
+    .filter(({ f, i }) => f.amountCents !== null || hidden.has(`/siteFees/${i}/amountCents`))
+    .sort((a, b) => size(b.f) - size(a.f))
     .slice(0, 3)
     .forEach(({ f, i }) =>
       out.push(
-        term(`fee-${i}`, "Site fee", `${f.name}, ${money(f.amountCents)}`, [ENUM_OPTIONS.trigger![f.trigger]?.toLowerCase(), f.dueDays !== null && `due ${f.dueDays} days after`].filter(Boolean).join(" · "), `/siteFees/${i}/amountCents`),
+        term(`fee-${i}`, "Site fee", `${f.name}, ${money(f.amountCents)}`, [ENUM_OPTIONS.trigger![f.trigger]?.toLowerCase(), f.dueDays !== null && `due ${f.dueDays} days after`].filter(Boolean).join(" · "), `/siteFees/${i}/amountCents`, [`/siteFees/${i}/trigger`, `/siteFees/${i}/dueDays`]),
       ),
     );
 
   const di = rb.deadlines.findIndex((d) => d.kind === "invoice_days_from_expense");
   if (di >= 0) out.push(term("deadline", "Invoice deadline", `${rb.deadlines[di]!.value} days`, `after the expense, or it's ${rb.deadlines[di]!.consequence}`, `/deadlines/${di}/value`));
 
-  if (rb.appliesFrom.value) out.push(term("applies-from", "New terms apply from", rb.appliesFrom.value, "The date this version's prices start", "/appliesFrom/value"));
+  // An amendment's start date is always a key term: with none, billing would start from the contract's effective date.
+  const af = rb.appliesFrom.value;
+  if (af || hidden.has("/appliesFrom/value") || rb.documents.some((d) => d.kind === "amendment"))
+    out.push(
+      term(
+        "applies-from",
+        "New terms apply from",
+        af ? formatDate(af) : "Not stated",
+        !af ? "The amendment gives no start date, so billing would start from the contract's effective date" : af === amendmentDate(rb) ? "Prospective only: from the amendment's own date" : "The date this version's prices start",
+        "/appliesFrom/value",
+      ),
+    );
   return out;
 }

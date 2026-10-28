@@ -1,0 +1,217 @@
+import type { ContractAnomaly } from "./anomaly";
+import { blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type ValueEvidence } from "./evidence";
+import { ENUM_LABELS } from "./labels";
+import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
+
+/**
+ * The review lists that aren't flags (ADR-001 §6): the interpretations a person picks blind after every read, and the
+ * random blind re-type of values the PDF check confirmed, with what a miss holds back. Pure, so the API and the
+ * in-browser sample server ask, withhold and refuse exactly the same.
+ */
+
+export const INTERPRETATION = "INTERPRETATION";
+/** A value of the read picked at random to be typed blind (ADR-001 §6 "Sample re-key"). */
+export const SAMPLE = "SAMPLE";
+export const SAMPLE_SIZE = 10;
+/** The option of the start-date question that means "from the amendment's own date". */
+export const PROSPECTIVE = "prospective";
+
+const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as const;
+const sentence = (s: string) => (/[.?!]$/.test(s) ? s : `${s}.`);
+// An amount or % in a name would give a value away, as the value questions blank them.
+const named = (name: string) => `“${name.replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…").trim()}”`;
+const listOf = (values: readonly string[], labels: Record<string, string> | undefined) => values.map((id) => ({ id, label: labels?.[id] ?? id }));
+
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+/** The newest amendment's own date, as the read gives it (ISO only): what "prospective only" writes. */
+export const amendmentDate = (rb: Pick<Rulebook, "documents">): string | null =>
+  rb.documents.flatMap((d) => (d.kind === "amendment" && d.date && ISO.test(d.date) ? [d.date] : [])).sort().at(-1) ?? null;
+const longDate = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "long", day: "numeric" });
+
+type Field = { path: string; question: string; prov: Provenance | null | undefined; options?: { id: string; label: string }[]; input?: "text" | "date"; kind?: ReviewItem["kind"]; reason?: string };
+
+/**
+ * The fields whose wording decides how a term is billed (ADR-001 §6): overhead scope, how visits are paid, each fee's
+ * trigger, each cap's kind where there's a cap, the screen-fail basis and whether screen failures are invoiced, what the
+ * holdback is taken from, rounding, and from when an amendment's terms apply. An empty cap or holdback is the absence
+ * sweep's to question (I4), not this list's.
+ */
+function fields(rb: Rulebook, amendment: boolean, retroactive: boolean): Field[] {
+  const L = ENUM_LABELS;
+  const out: Field[] = [
+    { path: "/overhead/appliesTo/value", question: "Which lines does the overhead apply to?", options: listOf(OverheadAppliesTo.options, L.appliesTo), prov: rb.overhead.appliesTo.prov },
+    { path: "/payment/visitPayment/value", question: "How are visits paid?", options: listOf(Payment.shape.visitPayment.shape.value.options, L.visitPayment), prov: rb.payment.visitPayment.prov },
+  ];
+  rb.siteFees.forEach((f, i) => out.push({ path: `/siteFees/${i}/trigger`, question: `When is the site fee ${named(f.name)} billed?`, options: listOf(SiteFee.shape.trigger.options, L.trigger), prov: f.prov }));
+  rb.invoiceables.forEach((x, i) => {
+    if (x.cap.kind !== "none") out.push({ path: `/invoiceables/${i}/cap/kind`, question: `What limit does the contract put on billing ${named(x.name)}?`, options: listOf(Cap.shape.kind.options, L.capKind), prov: x.prov });
+  });
+  const sf = rb.screenFail;
+  if (sf) {
+    out.push({ path: "/screenFail/basis", question: "How are screen failures paid for?", options: listOf(ScreenFail.shape.basis.options, L.basis), prov: sf.prov });
+    if (sf.cap.kind !== "none") out.push({ path: "/screenFail/cap/kind", question: "What limit does the contract put on paying for screen failures?", options: listOf(Cap.shape.kind.options, L.capKind), prov: sf.prov });
+    // paid automatically when it should be invoiced means screen failures are never billed at all
+    out.push({ path: "/screenFail/paidVia", question: "Are screen failures paid automatically, or do we invoice them?", options: listOf(ScreenFail.shape.paidVia.options, L.paidVia), prov: sf.prov });
+  }
+  // free text in the master, so it's typed; a differing answer is confirmed against the reading like any typed value
+  if (rb.holdback) out.push({ path: "/holdback/appliesTo", question: "Which payments is the holdback taken from? Type it as the contract words it.", input: "text", prov: rb.holdback.prov });
+  out.push({ path: "/rounding/value", question: "How does the contract say amounts are rounded?", options: listOf(Rulebook.shape.rounding.shape.value.options, L.rounding), prov: rb.rounding.prov });
+
+  // From when the terms apply. With no date on an amendment, billing would fall back to the contract's effective date,
+  // which can be the base contract's: retroactive to the start. That's a blocker (RETROACTIVE_NO_DATE): typed, or
+  // "prospective only", which writes the amendment's own date, shown so the person checks it.
+  const af = rb.appliesFrom.value;
+  if (amendment || retroactive || af !== null) {
+    const d = amendmentDate(rb);
+    const options = d ? [{ id: PROSPECTIVE, label: `Prospective only: from the amendment's own date, ${longDate(d)}` }] : [];
+    const base = { path: "/appliesFrom/value", input: "date" as const, options, prov: rb.appliesFrom.prov };
+    out.push(
+      af === null
+        ? {
+            ...base,
+            kind: "contract_problem",
+            reason: "RETROACTIVE_NO_DATE",
+            question: retroactive
+              ? "The amendment says its new prices apply retroactively, but gives no start date. From what date do they apply?"
+              : "The amendment doesn't say from what date its new terms apply. From what date do they apply?",
+          }
+        : { ...base, question: amendment ? "From what date do the amendment's new terms apply?" : "From what date do this contract's terms apply?" },
+    );
+  }
+  return out;
+}
+
+const pageOf = (r: { documentId: string; page: number }): PageBox => ({ documentId: r.documentId, page: r.page, box: null });
+/** Whether an anomaly (or a note's path, "/overhead/appliesTo") is about the value at `path`. */
+const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a.path === path || `${a.path}/value` === path);
+
+/**
+ * One blind pick per interpretation field, next to its quote (numbers blanked, so it can't hand over another value),
+ * nothing preselected; the read's value is withheld until it's answered (its path is the question's). An AMBIGUOUS_TERM
+ * about the same value is this question, marked ambiguous (reason AMBIGUOUS_TERM, its message first, and no "not
+ * stated"); a RETROACTIVE_NO_DATE is the start-date question. `amendment`: the read includes an amendment.
+ */
+export function interpretations(rb: Rulebook, opts: { amendment: boolean; anomalies?: Pick<ContractAnomaly, "code" | "path" | "message" | "refs">[] }): ReviewItem[] {
+  const anomalies = opts.anomalies ?? [];
+  const retroactive = anomalies.some((a) => a.code === "RETROACTIVE_NO_DATE");
+  return fields(rb, opts.amendment || rb.documents.some((d) => d.kind === "amendment"), retroactive).map((f): ReviewItem => {
+    const unclear = anomalies.find((a) => a.code === "AMBIGUOUS_TERM" && about(a, f.path));
+    const refs = anomalies.filter((a) => a === unclear || (f.reason === "RETROACTIVE_NO_DATE" && a.code === "RETROACTIVE_NO_DATE")).flatMap((a) => a.refs);
+    const spots = [...(f.prov?.source ? [f.prov.source] : []), ...refs];
+    const quote = f.prov?.source?.quote?.trim();
+    return {
+      ...BLANK,
+      id: `interpret:${f.path}`,
+      kind: f.kind ?? "interpretation",
+      reason: unclear ? "AMBIGUOUS_TERM" : (f.reason ?? INTERPRETATION),
+      path: f.path,
+      question: [unclear && blankNumbers(sentence(unclear.message)), f.question, quote && `The contract says: “${blankNumbers(quote)}”`].filter(Boolean).join(" "),
+      input: f.input ?? null,
+      options: (f.options ?? []).filter((o) => !unclear || o.id !== "unspecified"),
+      where: [...new Map(spots.map((r) => [`${r.documentId}#${r.page}`, pageOf(r)])).values()],
+      blocking: true,
+    };
+  });
+}
+
+/** Whether a contract check is the interpretation question asked at `paths` (so it isn't asked twice). */
+export const askedAsInterpretation = (a: Pick<ContractAnomaly, "code" | "path">, paths: ReadonlySet<string>) =>
+  (a.code === "AMBIGUOUS_TERM" || a.code === "RETROACTIVE_NO_DATE") && [...paths].some((p) => about(a, p));
+
+/**
+ * Values whose meaning an open question decides, withheld with it: a cap's limit and ratio while its kind is asked (the
+ * limit is cents for an amount cap, a count otherwise, so a figure or its question would give the kind away).
+ */
+export const alsoWithheld = (path: string): string[] => (/\/cap\/kind$/.test(path) ? [path.replace(/kind$/, "n"), path.replace(/kind$/, "ratio")] : []);
+
+const valueAt = (root: unknown, path: string) =>
+  path.slice(1).split("/").map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~")).reduce<unknown>((n, t) => (n !== null && typeof n === "object" ? (n as Record<string, unknown>)[t] : undefined), root);
+
+/**
+ * A cap's limit and ratio once its kind is answered (`ask` words the question): asked if the read's figure isn't
+ * confirmed (its question waited for the kind, as its wording names the kind), or if the person's kind isn't the read's
+ * (`kindChanged`): the limit is cents for an amount cap and a count otherwise, so the read's figure means something else
+ * now, and a ratio cap needs its ratio. Not while one is open already; asked anew if an earlier one was settled.
+ */
+export function capFollowUps(
+  v: { rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[] },
+  item: ReviewItem,
+  kindChanged: boolean,
+  ask: (path: string, id: string, reason: string) => ReviewItem,
+): ReviewItem[] {
+  if (!item.path || !/\/cap\/kind$/.test(item.path) || !settled(item)) return [];
+  const kind = valueAt(v.rulebook, item.path);
+  if (kind === "none") return [];
+  return (["n", "ratio"] as const).flatMap((f) => {
+    const path = item.path!.replace(/kind$/, f);
+    const ev = v.evidence.find((e) => e.path === path);
+    const waited = !!ev && ev.status !== "confirmed" && ev.status !== "attested";
+    const needed = kindChanged && (f === "n" ? kind !== "ratio_to_randomized" || valueAt(v.rulebook, path) !== null : kind === "ratio_to_randomized");
+    if (!(waited || needed) || v.review.some((i) => i.path === path && !settled(i))) return [];
+    const earlier = v.review.filter((i) => i.id.startsWith(`cap:${path}`)).length;
+    return [ask(path, `cap:${path}${earlier ? `:${earlier + 1}` : ""}`, waited ? (ev.status === "conflict" ? "VALUE_CONFLICT" : "UNGROUNDED_VALUE") : "CAP_KIND_CHANGED")];
+  });
+}
+
+// ---------- the blind sample ----------
+
+/** Kinds of value, as ADR-001 §10 measures accuracy: a miss in one has all of that kind checked. */
+export type Family = "cells" | "totals" | "fees" | "rules";
+export const FAMILY_LABEL: Record<Family, string> = {
+  cells: "budget grid prices",
+  totals: "visit and per-patient totals",
+  fees: "fee and invoiceable amounts",
+  rules: "percentages, days, limits and dates",
+};
+
+export function familyOf(path: string): Family {
+  if (/^\/budgetGrids\/\d+\/procedures\/\d+\/(?:cells\/|unitCents$)/.test(path)) return "cells";
+  if (path.startsWith("/budgetGrids/")) return "totals";
+  if (/^\/(?:siteFees|invoiceables)\/\d+\/amount(?:WithOverhead)?Cents$|^\/screenFail\/amountCents$/.test(path)) return "fees";
+  return "rules";
+}
+
+/** Uniform in [0, 1), from the platform's cryptographic generator (Node and browsers alike). */
+export const cryptoRandom = () => globalThis.crypto.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
+
+const shuffle = <T>(xs: T[], random: () => number) => {
+  const a = [...xs];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [a[i], a[j]] = [a[j]!, a[i]!];
+  }
+  return a;
+};
+
+/**
+ * The blind sample of a read: `n` values the PDF check confirmed (all of them if fewer), taken in turn from each family
+ * in a random order and at random within it, so a contract's hundreds of grid cells don't fill it. `skip`: values that
+ * already have a question. Drawn once, when the read completes, and stored as its questions: never drawn again.
+ */
+export function pickSample(evidence: ValueEvidence[], skip: ReadonlySet<string>, random: () => number = cryptoRandom, n = SAMPLE_SIZE): string[] {
+  const pools = new Map<Family, string[]>();
+  for (const e of evidence) if (e.status === "confirmed" && !skip.has(e.path)) pools.set(familyOf(e.path), [...(pools.get(familyOf(e.path)) ?? []), e.path]);
+  const queues = shuffle([...pools.values()], random).map((p) => shuffle(p, random));
+  const out: string[] = [];
+  while (out.length < n && queues.some((q) => q.length)) for (const q of queues) if (q.length && out.length < n) out.push(q.shift()!);
+  return out;
+}
+
+export type SampleMiss = { family: Family; label: string; total: number; left: string[] };
+
+/**
+ * A miss (ADR-001 §6): sign-off waits until every value of the missed sample's family is proofread ("Looks right") or was
+ * typed by a person (attested). `left`: the family's values still only confirmed by the PDF check.
+ */
+export function sampleMisses(v: { review: ReviewItem[]; evidence: ValueEvidence[]; proofread?: ProofreadMark[] }): SampleMiss[] {
+  const families = [...new Set(v.review.flatMap((i) => (i.missed && i.path ? [familyOf(i.path)] : [])))];
+  const marked = new Set((v.proofread ?? []).map((m) => m.path));
+  return families.map((family) => {
+    const all = v.evidence.filter((e) => familyOf(e.path) === family);
+    return { family, label: FAMILY_LABEL[family], total: all.length, left: all.filter((e) => e.status === "confirmed" && !marked.has(e.path)).map((e) => e.path) };
+  });
+}
+
+/** What a miss still holds back, in plain words: the approval's refusal and the approve page say the same. */
+export const sampleMissWords = (m: SampleMiss) =>
+  `A random spot check found a wrong number among the ${m.label}, so each of them has to be proofread before approval: ${m.left.length} of ${m.total} still to check.`;

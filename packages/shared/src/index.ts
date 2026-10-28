@@ -3,6 +3,7 @@ export * from "./anomaly";
 export * from "./api";
 export * from "./evidence";
 export * from "./blind";
+export * from "./questions";
 export * from "./labels";
 export * from "./search";
 export * from "./alerts";
