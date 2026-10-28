@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { getAt } from "@/lib/pointer";
 import { keys, useInvalidateStudy } from "@/lib/queries";
-import { NeedsPerson } from "./AppHeader";
+import { NeedsPerson } from "./Sidebar";
 import { PageViewer, type ViewerTarget } from "./PageViewer";
 import { RulebookContext, type RulebookCtx } from "./review-context";
 import { Button, Dialog, ErrorNote, Field, inputCls } from "./ui";

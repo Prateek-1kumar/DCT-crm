@@ -4,7 +4,7 @@ import { settled, type ReviewItem, type RulebookVersionDto, type StudyDetailDto 
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
-import { NeedsPerson } from "@/components/AppHeader";
+import { NeedsPerson } from "@/components/Sidebar";
 import { PageViewer, type ViewerTarget } from "@/components/PageViewer";
 import { Badge, Button, Card, ErrorNote, ProgressBar, Spinner, Stepper, btnCls, cx, inputBase, inputCls } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";

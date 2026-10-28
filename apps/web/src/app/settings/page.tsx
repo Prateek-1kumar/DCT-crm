@@ -3,7 +3,7 @@
 import type { SettingsDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { NeedsPerson } from "@/components/AppHeader";
+import { NeedsPerson } from "@/components/Sidebar";
 import { Button, Card, ErrorNote, PageTitle, pageCls, Spinner, cx, inputCls } from "@/components/ui";
 import { MOCK, api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";

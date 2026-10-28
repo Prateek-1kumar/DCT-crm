@@ -4,7 +4,7 @@ import type { DocumentDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { NeedsPerson } from "@/components/AppHeader";
+import { NeedsPerson } from "@/components/Sidebar";
 import { DocList, Dropzone } from "@/components/UploadDocs";
 import { Button, Card, ErrorNote, Field, PageTitle, pageCls, ProgressBar, Stepper, inputCls } from "@/components/ui";
 import { api } from "@/lib/api";

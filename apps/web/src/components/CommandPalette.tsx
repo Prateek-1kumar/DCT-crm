@@ -2,7 +2,7 @@
 
 import { BookOpen, CornerDownLeft, FileText, History, ListFilter, Plus, Search, Settings, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useStudies } from "@/lib/queries";
 import { summaryStage, VIEWS } from "@/lib/review";
 import { cx, StagePill } from "./ui";
@@ -34,8 +34,11 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
       onClose();
       router.push(href);
     };
+    // Waiting on someone is listed first when nothing is typed.
+    const waiting = new Set<string>();
     const contracts: Entry[] = (data ?? []).map((s) => {
       const st = summaryStage(s);
+      if (st.stage === "Needs you" || st.stage === "Approve" || st.failed) waiting.add(`c-${s.id}`);
       return {
         id: `c-${s.id}`,
         group: "Contracts",
@@ -45,8 +48,6 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
         right: <StagePill state={st} />,
         words: [s.protocol, s.sponsor, s.siteName, s.investigator].join(" "),
         run: go(`/studies/${s.id}`),
-        // Waiting on someone sorts first when nothing is typed.
-        ...{ waiting: st.stage === "Needs you" || st.stage === "Approve" || !!st.failed },
       };
     });
     const pages: Entry[] = [
@@ -71,8 +72,8 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
 
     const t = q.trim().toLowerCase();
     if (!t) {
-      const waiting = contracts.filter((c) => (c as Entry & { waiting: boolean }).waiting).slice(0, 5).map((c) => ({ ...c, group: "Waiting on someone" }));
-      return [...waiting, ...pages, ...actions];
+      const first = contracts.filter((c) => waiting.has(c.id)).slice(0, 5).map((c) => ({ ...c, group: "Waiting on someone" }));
+      return [...first, ...pages, ...actions];
     }
     const hit = (e: Entry) => t.split(/\s+/).every((w) => `${e.label} ${e.sub ?? ""} ${e.words}`.toLowerCase().includes(w));
     return [...contracts, ...pages, ...actions].filter(hit);
@@ -82,7 +83,7 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
     list.current?.querySelector<HTMLElement>(`[data-i="${at}"]`)?.scrollIntoView({ block: "nearest" });
   }, [at]);
 
-  const onKey = (e: React.KeyboardEvent) => {
+  const onKey = (e: KeyboardEvent) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const n = entries.length;

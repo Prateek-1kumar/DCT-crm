@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { NeedsPerson } from "@/components/AppHeader";
+import { NeedsPerson } from "@/components/Sidebar";
 import { ByHandForm } from "@/components/ByHandForm";
 import { DiffView } from "@/components/DiffView";
 import { RulebookView } from "@/components/RulebookView";

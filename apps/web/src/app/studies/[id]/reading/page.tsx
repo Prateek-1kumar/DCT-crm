@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
-import { NeedsPerson } from "@/components/AppHeader";
+import { NeedsPerson } from "@/components/Sidebar";
 import { Button, Card, ErrorNote, PageTitle, pageCls, Stepper, btnCls, cx } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";

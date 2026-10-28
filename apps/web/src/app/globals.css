@@ -74,6 +74,10 @@
   --text-figure--line-height: 44px;
 }
 
+/*
+ * Element defaults. @tailwindcss/turbopack emits these unlayered (a @layer base wrapper is dropped), so they would beat
+ * utility classes: keep them to properties no component sets, and leave headings to classes (see PageTitle).
+ */
 html {
   color-scheme: light;
 }
@@ -87,18 +91,12 @@ body {
   letter-spacing: -0.006em;
 }
 
-h1 {
-  font-size: var(--text-display);
-  line-height: var(--text-display--line-height);
-  font-weight: 600;
-  letter-spacing: -0.025em;
-}
-
 ::selection {
   background: var(--color-brand-soft);
 }
 
-:focus-visible {
+/* Form fields draw their own focus ring (inputBase). */
+:focus-visible:not(input, textarea, select) {
   outline: 3px solid color-mix(in srgb, var(--color-focus) 45%, transparent);
   outline-offset: 2px;
 }

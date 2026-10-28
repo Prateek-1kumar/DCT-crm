@@ -13,14 +13,24 @@ const VARIANT: Record<Variant, string> = {
   danger: "bg-danger text-on-primary border-danger shadow-button hover:opacity-90",
 };
 
-export const btnCls = (variant: Variant = "secondary", size: "sm" | "md" | "lg" = "md") =>
+/** "icon" / "icon-sm": square, for a lone icon (pass aria-label). Sizes are set here, not by overriding classes, which Tailwind can't order. */
+type Size = "sm" | "md" | "lg" | "icon" | "icon-sm";
+const SIZE: Record<Size, string> = {
+  sm: "h-8 px-3.5 text-small",
+  md: "h-10 px-5 text-body",
+  lg: "h-12 px-6 text-body",
+  icon: "size-10",
+  "icon-sm": "size-8",
+};
+
+export const btnCls = (variant: Variant = "secondary", size: Size = "md") =>
   cx(
-    "inline-flex items-center justify-center gap-2 rounded-full border font-medium whitespace-nowrap transition-colors duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none",
-    size === "sm" ? "h-8 px-3.5 text-small" : size === "lg" ? "h-12 px-6 text-body" : "h-10 px-5 text-body",
+    "inline-flex shrink-0 items-center justify-center gap-2 rounded-full border font-medium whitespace-nowrap transition-colors duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none [&_svg]:shrink-0",
+    SIZE[size],
     VARIANT[variant],
   );
 
-export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: "sm" | "md" | "lg" }>(
+export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }>(
   function Button({ variant = "secondary", size = "md", className, type = "button", ...props }, ref) {
     return <button ref={ref} type={type} className={cx(btnCls(variant, size), className)} {...props} />;
   },
@@ -174,7 +184,7 @@ export function Dialog({ open, onClose, title, children, wide, width }: { open: 
             <h2 id={titleId} className="text-title font-semibold tracking-tight">
               {title}
             </h2>
-            <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close" className="size-8 px-0">
+            <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">
               ✕
             </Button>
           </header>
@@ -198,7 +208,7 @@ export function PageTitle({ eyebrow, title, sub, actions }: { eyebrow?: string; 
     <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
       <div>
         {eyebrow && <p className="eyebrow mb-2">{eyebrow}</p>}
-        <h1>{title}</h1>
+        <h1 className="text-display font-semibold tracking-[-0.025em]">{title}</h1>
         {sub && <div className="mt-2 max-w-[68ch] text-lead text-muted">{sub}</div>}
       </div>
       {actions && <div className="flex gap-2.5">{actions}</div>}

@@ -2,10 +2,11 @@
 
 import type { StudySummaryDto } from "@dct/shared";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { btnCls, Empty, ErrorNote, PageTitle, pageCls, Spinner, StagePill } from "@/components/ui";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useStudies } from "@/lib/queries";
-import { minutesFor, summaryStage } from "@/lib/review";
+import { minutesFor, summaryStage, VIEWS } from "@/lib/review";
 
 const UploadIcon = () => (
   <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="size-[15px]">
@@ -22,10 +23,20 @@ function NeedsSomeone({ s }: { s: StudySummaryDto }) {
   return <span className="text-faint">—</span>;
 }
 
+const VIEW_SUB: Record<(typeof VIEWS)[number]["id"], string> = {
+  "needs-you": "Contracts with questions only a person can answer. Start with the oldest.",
+  approval: "Every question is answered. Someone needs to check the summary and approve.",
+  live: "Approved invoicing masters that billing uses now.",
+  failed: "These couldn't be read. Read them again, or type them in by hand.",
+};
+
 export default function ContractsPage() {
   const { data, error, isPending } = useStudies();
+  const params = useSearchParams();
+  const view = VIEWS.find((v) => v.id === params.get("view"));
+  const shown = (data ?? []).filter((s) => !view || view.test(summaryStage(s)));
   const sites = new Map<string, StudySummaryDto[]>();
-  for (const s of [...(data ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+  for (const s of [...shown].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
     const k = s.siteName ?? "No site yet";
     sites.set(k, [...(sites.get(k) ?? []), s]);
   }
@@ -33,9 +44,9 @@ export default function ContractsPage() {
   return (
     <div className={pageCls}>
       <PageTitle
-        eyebrow="Contract setup"
-        title="Contracts"
-        sub="Each signed sponsor contract becomes an invoicing master. Nothing is billed from it until someone approves it."
+        eyebrow={view ? "Contracts" : "Contract setup"}
+        title={view ? view.label : "Contracts"}
+        sub={view ? VIEW_SUB[view.id] : "Each signed sponsor contract becomes an invoicing master. Nothing is billed from it until someone approves it."}
         actions={
           <Link href="/studies/new" className={btnCls("primary")}>
             <UploadIcon /> Add contract
@@ -44,6 +55,11 @@ export default function ContractsPage() {
       />
       {isPending && <Spinner />}
       <ErrorNote error={error} />
+      {view && data && shown.length === 0 && (
+        <Empty title={`Nothing in “${view.label}”`} action={<Link href="/" className={btnCls()}>See all contracts</Link>}>
+          No contract is here right now.
+        </Empty>
+      )}
       {data?.length === 0 && (
         <Empty title="No contracts yet" action={<Link href="/studies/new" className={btnCls("primary")}>Add contract</Link>}>
           Upload a signed sponsor contract. It&apos;s read and checked against the PDF, and you answer only what needs a person.

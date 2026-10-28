@@ -74,14 +74,19 @@ function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex flex-col">
-      <div className="relative">
-        <NavLink href="/" label="Contracts" icon={FileText} active={onContracts && !view} onNavigate={onNavigate} badge={<span className="mr-7"><Count n={waiting} cls="bg-ink text-surface" /></span>} />
+      <div className={cx(itemCls(onContracts && !view), "pr-1.5")}>
+        <Link href="/" aria-current={onContracts && !view ? "page" : undefined} onClick={onNavigate} className="flex min-w-0 flex-1 items-center gap-3 self-stretch">
+          <FileText className={iconCls(onContracts && !view)} strokeWidth={1.75} />
+          <span className="truncate">Contracts</span>
+        </Link>
+        {/* The total only while the shortcuts (which carry their own counts) are folded. */}
+        {!open && <Count n={waiting} cls="bg-warn-soft text-warn" />}
         <button
           type="button"
           aria-expanded={open}
           aria-label={open ? "Hide contract shortcuts" : "Show contract shortcuts"}
           onClick={() => setOpen(!open)}
-          className="absolute top-1/2 right-1.5 grid size-7 -translate-y-1/2 place-items-center rounded-lg text-faint hover:bg-ink/[0.06] hover:text-ink"
+          className="grid size-7 shrink-0 place-items-center rounded-lg text-faint hover:bg-ink/[0.06] hover:text-ink"
         >
           <ChevronRight className={cx("size-4 transition-transform duration-200", open && "rotate-90")} strokeWidth={2} />
         </button>
@@ -156,7 +161,7 @@ function PersonPicker() {
   }, [data, me]);
   return (
     <Dialog open={open} onClose={() => askForPerson(false)} title="Who's working today?">
-      <p className="text-body text-muted">There's no login yet, so pick your name. Every answer, correction and approval is signed with it.</p>
+      <p className="text-body text-muted">There&apos;s no login yet, so pick your name. Every answer, correction and approval is signed with it.</p>
       <ul className="mt-5 grid gap-2">
         {people.map((p) => (
           <li key={p}>
@@ -204,14 +209,21 @@ export function NeedsPerson() {
   );
 }
 
-function SidebarBody({ onSearch, onGuide, onNavigate }: { onSearch: () => void; onGuide: () => void; onNavigate?: () => void }) {
+function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () => void; onGuide: () => void; onNavigate?: () => void; onClose?: () => void }) {
   const path = usePathname();
   return (
     <div className="flex h-full flex-col gap-6 p-4">
-      <Link href="/" onClick={onNavigate} className="flex flex-col gap-1.5 px-2 pt-2">
-        <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} priority />
-        <span className="pl-0.5 text-caption font-semibold tracking-[0.22em] text-accent uppercase">Finance</span>
-      </Link>
+      <div className="flex items-start justify-between gap-2">
+        <Link href="/" onClick={onNavigate} className="flex flex-col gap-1.5 px-2 pt-2">
+          <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} priority />
+          <span className="pl-0.5 text-caption font-semibold tracking-[0.22em] text-accent uppercase">Finance</span>
+        </Link>
+        {onClose && (
+          <Button variant="ghost" size="icon" aria-label="Close menu" onClick={onClose}>
+            <X className="size-5" strokeWidth={1.75} />
+          </Button>
+        )}
+      </div>
 
       <button
         type="button"
@@ -252,7 +264,6 @@ export function Sidebar() {
   const [search, setSearch] = useState(false);
   const [guide, setGuide] = useState(false);
   const [menu, setMenu] = useState(false);
-  const path = usePathname();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -264,9 +275,8 @@ export function Sidebar() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  useEffect(() => setMenu(false), [path]);
 
-  const body = (onNavigate?: () => void) => <SidebarBody onSearch={() => setSearch(true)} onGuide={() => setGuide(true)} onNavigate={onNavigate} />;
+  const body = (drawer?: () => void) => <SidebarBody onSearch={() => setSearch(true)} onGuide={() => setGuide(true)} onNavigate={drawer} onClose={drawer} />;
 
   return (
     <>
@@ -276,20 +286,17 @@ export function Sidebar() {
         <Link href="/" className="mr-auto">
           <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={132} height={25} />
         </Link>
-        <Button variant="ghost" className="size-10 px-0" aria-label="Search" onClick={() => setSearch(true)}>
+        <Button variant="ghost" size="icon" aria-label="Search" onClick={() => setSearch(true)}>
           <Search className="size-5" strokeWidth={1.75} />
         </Button>
-        <Button variant="ghost" className="size-10 px-0" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(true)}>
+        <Button variant="ghost" size="icon" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(true)}>
           <Menu className="size-5" strokeWidth={1.75} />
         </Button>
       </header>
       {menu && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <button type="button" aria-label="Close menu" className="absolute inset-0 bg-backdrop" onClick={() => setMenu(false)} />
-          <div className="absolute inset-y-0 left-0 w-[288px] max-w-[85vw] bg-canvas shadow-raised">
-            <Button variant="ghost" className="absolute top-4 right-3 size-9 px-0" aria-label="Close menu" onClick={() => setMenu(false)}>
-              <X className="size-5" strokeWidth={1.75} />
-            </Button>
+          <div className="absolute inset-y-0 left-0 w-[288px] max-w-[85vw] overflow-y-auto bg-canvas shadow-raised">
             {body(() => setMenu(false))}
           </div>
         </div>

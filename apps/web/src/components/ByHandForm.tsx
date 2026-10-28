@@ -10,7 +10,7 @@ import { ENUM_OPTIONS, fieldKey, inferKind } from "@/lib/format";
 import { centsToInput, parseDollars } from "@/lib/money";
 import { getAt } from "@/lib/pointer";
 import { keys } from "@/lib/queries";
-import { NeedsPerson } from "./AppHeader";
+import { NeedsPerson } from "./Sidebar";
 import { PageViewer } from "./PageViewer";
 import { Button, ErrorNote, cx, inputBase } from "./ui";
 
