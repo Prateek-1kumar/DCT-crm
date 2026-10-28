@@ -2,14 +2,14 @@
 
 import { type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Info, ListChecks, PartyPopper, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Flag, Info, ListChecks, PartyPopper, Undo2, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useRef, useState, type FormEvent } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { DEFAULT_ZOOM, SpotView, spotQuery } from "@/components/SpotView";
-import { Badge, Button, btnCls, cx, ErrorNote, fieldCls, inputBase, inputCls, ProgressBar, Spinner } from "@/components/ui";
+import { Badge, Button, btnCls, cx, ErrorNote, fieldCls, inputBase, inputCls, LoadError, ProgressBar, Sheet, Spinner } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { relativeTime } from "@/lib/format";
 import { useAnswerReview, useStudy, useVersion } from "@/lib/queries";
@@ -28,11 +28,15 @@ export default function ReviewPage() {
   // Opened from the approval page: leaving goes back there.
   const back = sp.get("return") === "approve" ? `/studies/${id}/approve` : `/studies/${id}`;
 
-  if (study.error || version.error)
+  const failed = (!study.data && study.error) || (!version.data && version.error);
+  if (failed)
     return (
-      <div className="p-8">
-        <ErrorNote error={study.error ?? version.error} />
-      </div>
+      <LoadError
+        error={failed}
+        what={study.data ? "the questions" : "this contract"}
+        retry={() => void (study.error ? study.refetch() : version.refetch())}
+        back={study.data ? { href: `/studies/${id}`, label: "Back to the contract" } : undefined}
+      />
     );
   if (!study.data || (vnum !== null && !version.data))
     return (
@@ -228,7 +232,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
 
             <section aria-label="Question" className="min-h-0 overflow-y-auto border-t border-line px-6 py-6 lg:border-t-0 lg:border-l">
               {itemStatus(current) === "differs" ? (
-                <Mismatch key={current.id} item={current} busy={answer.isPending} canAnswer={!!by} error={answer.error} onAnswer={(b) => send(current, b)} />
+                <Mismatch key={current.id} item={current} byHand={version.byHand} busy={answer.isPending} canAnswer={!!by} error={answer.error} onAnswer={(b) => send(current, b)} />
               ) : (itemStatus(current) === "done" || itemStatus(current) === "cant_tell") && changing !== current.id ? (
                 <Answered item={current} onChange={() => setChanging(current.id)} onNext={() => go(order.find(open)?.id ?? "__done")} />
               ) : (
@@ -257,19 +261,14 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
         )}
       </div>
 
-      {listOpen && (
-        <div className="fixed inset-0 z-40 xl:hidden">
-          <button type="button" aria-label="Close the list" className="absolute inset-0 bg-backdrop" onClick={() => setListOpen(false)} />
-          <div className="absolute inset-y-0 left-0 w-[320px] max-w-[88vw] overflow-y-auto bg-canvas shadow-raised">
-            <div className="flex justify-end p-2">
-              <Button size="icon" variant="ghost" aria-label="Close the list" onClick={() => setListOpen(false)}>
-                <X className="size-5" strokeWidth={1.75} />
-              </Button>
-            </div>
-            {list}
-          </div>
+      <Sheet open={listOpen} onClose={() => setListOpen(false)} label="Questions">
+        <div className="flex justify-end p-2">
+          <Button size="icon" variant="ghost" aria-label="Close the list" onClick={() => setListOpen(false)}>
+            <X className="size-5" strokeWidth={1.75} />
+          </Button>
         </div>
-      )}
+        {list}
+      </Sheet>
 
       {toast && (
         <p role="status" className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-ink px-4 py-2.5 text-small font-medium text-surface shadow-raised">
@@ -280,6 +279,9 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
     </div>
   );
 }
+
+/** The server blanks figures in a note while its value is being typed blind; say so, so "•••" isn't a mystery. */
+const hidden = (note: string) => note.includes("•••") && <span className="block text-faint">Figures are hidden until it&apos;s answered, so they can&apos;t steer you.</span>;
 
 function Heading({ item, index, total }: { item: ReviewItem; index?: number; total?: number }) {
   return (
@@ -301,11 +303,19 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
         <Info className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
         {whyLine(item)}
       </p>
+      {item.reported && (
+        <p className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-small text-ink-2">
+          <Flag className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
+          <span>
+            <span className="font-medium text-ink">Reported by {item.reported.by}:</span> “{item.reported.note}”{hidden(item.reported.note)}
+          </span>
+        </p>
+      )}
       {item.sentBack && (
         <p className="flex items-start gap-2.5 rounded-tile bg-brand-soft px-4 py-3 text-small text-ink-2">
           <Undo2 className="mt-0.5 size-4 shrink-0 text-accent" strokeWidth={2} />
           <span>
-            <span className="font-medium text-ink">Sent back by {item.sentBack.by}:</span> “{item.sentBack.note}”
+            <span className="font-medium text-ink">Sent back by {item.sentBack.by}:</span> “{item.sentBack.note}”{hidden(item.sentBack.note)}
           </span>
         </p>
       )}
@@ -418,37 +428,66 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   );
 }
 
-/** After a typed value differs from the PDF's text: pick the right one. Keeping your own over the PDF text needs a note. */
-function Mismatch({ item, onAnswer, busy, canAnswer, error }: { item: ReviewItem; onAnswer: (b: Body) => void; busy: boolean; canAnswer: boolean; error: unknown }) {
+/**
+ * After a typed value (or a pick) differs: pick the one the page shows. Where the PDF's text has the value, keeping your
+ * own over it needs a note saying why. Where it doesn't (a scan, a number the check couldn't find, a pick), either one
+ * needs a note saying where the page prints it: nothing else backs the answer, so the approver checks it against that.
+ */
+function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body) => void; busy: boolean; canAnswer: boolean; error: unknown }) {
+  const { item, byHand, onAnswer, busy, canAnswer, error } = props;
   const c = item.compare!;
   const input = item.input ?? "text";
-  const pdf = c.printed !== null ? parseAnswer(input, c.printed) : null;
-  const other = pdf && "value" in pdf ? { label: "The PDF text says", value: pdf.value, shown: c.printed! } : { label: "We read", value: c.read, shown: formatAnswer(input, c.read) };
+  const pick = item.options.length > 0;
+  const shown = (v: unknown) => (pick ? (item.options.find((o) => o.id === String(v))?.label ?? formatAnswer(null, v)) : formatAnswer(input, v));
+  // read as the server reads it: a full stop or comma after the number isn't part of it
+  const text = !pick && c.printed !== null ? parseAnswer(input, c.printed.trim().replace(/[.,;:]+$/, "")) : null;
+  const pdf = text && "value" in text ? text : null;
+  const other = pdf
+    ? { label: "The PDF text says", hint: "The text stored inside the PDF file at this spot", value: pdf.value, shown: c.printed!.trim() }
+    : byHand
+      ? { label: "Typed in by hand", hint: "What was typed in when this contract was entered by hand", value: c.read, shown: shown(c.read) }
+      : { label: "We read", hint: "What our reading of the page picked up", value: c.read, shown: shown(c.read) };
   const [pickedOwn, setPickedOwn] = useState<boolean | null>(null);
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
-  const needsNote = pickedOwn && pdf !== null;
+  const needsNote = pickedOwn !== null && (!pdf || pickedOwn);
+  const why = pdf ? "Add a short note saying why the PDF text is wrong here." : "Add a short note saying where the page prints this value.";
 
   const options = [
-    { own: true, label: "You typed", shown: formatAnswer(input, c.typed) },
-    { own: false, label: other.label, shown: other.shown },
+    { own: true, label: pick ? "You picked" : "You typed", hint: "What you just entered from the close-up", shown: shown(c.typed) },
+    { own: false, ...other },
   ];
 
   function save() {
     if (pickedOwn === null) return setMsg("Pick the value the page shows.");
-    if (needsNote && !note.trim()) return setMsg("Add a short note saying why the PDF text is wrong here.");
-    onAnswer({ value: pickedOwn ? c.typed : other.value, ...(note.trim() ? { note: note.trim() } : {}) });
+    if (needsNote && !note.trim()) return setMsg(why);
+    const value = pickedOwn ? c.typed : other.value;
+    onAnswer({ ...(pick ? { optionId: String(value) } : { value }), ...(note.trim() ? { note: note.trim() } : {}) });
   }
 
   return (
     <div className="flex flex-col gap-6">
       <Heading item={item} />
-      <p className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-body text-ink-2">
+      <div className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-body text-ink-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
-        <span>
-          <span className="font-medium">Look at the close-up again.</span> What you typed is different from {pdf ? "the PDF's own text" : "our reading"}. Which one does the page show?
-        </span>
-      </p>
+        {pdf ? (
+          <p>
+            <span className="font-medium">Look at the close-up again.</span> What you typed is different from the PDF&apos;s own text. Which one does the page show?
+          </p>
+        ) : (
+          <p>
+            <span className="font-medium">Look at the close-up again.</span> What you {pick ? "picked" : "typed"} is different from {byHand ? "what was typed in by hand" : "what we read"}.{" "}
+            {item.reason === "SCAN_VALUE"
+              ? "This contract is a scan, so"
+              : byHand
+                ? "This contract was typed in by hand, so"
+                : pick
+                  ? "A choice like this isn't in the PDF's text, so"
+                  : "This number isn't in the PDF's text, so"}{" "}
+            only the page itself can say which is right. Pick the one it shows, and say where it&apos;s printed.
+          </p>
+        )}
+      </div>
       <div role="radiogroup" aria-label="Which value is right" className="flex flex-col gap-2.5">
         {options.map((o) => (
           <button
@@ -462,7 +501,10 @@ function Mismatch({ item, onAnswer, busy, canAnswer, error }: { item: ReviewItem
               pickedOwn === o.own ? "bg-brand-soft ring-2 ring-brand" : "ring-line-strong hover:bg-sunken",
             )}
           >
-            <span className="text-body text-muted">{o.label}</span>
+            <span>
+              <span className="block text-body text-ink-2">{o.label}</span>
+              <span className="block text-small text-faint">{o.hint}</span>
+            </span>
             <span className="num text-title font-semibold tracking-tight">{o.shown}</span>
           </button>
         ))}
@@ -470,9 +512,20 @@ function Mismatch({ item, onAnswer, busy, canAnswer, error }: { item: ReviewItem
       {needsNote && (
         <div className="flex flex-col gap-2">
           <label htmlFor={`n-${item.id}`} className="text-small font-medium text-ink-2">
-            Why is the PDF text wrong here?
+            {pdf ? "Why is the PDF text wrong here?" : "Where on the page is it printed?"}
           </label>
-          <textarea id={`n-${item.id}`} rows={2} className={cx("w-full py-2.5 text-body", fieldCls)} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The page clearly prints $98.00" />
+          <textarea
+            id={`n-${item.id}`}
+            rows={2}
+            className={cx("w-full py-2.5 text-body", fieldCls)}
+            value={note}
+            onChange={(e) => (setNote(e.target.value), setMsg(null))}
+            placeholder={pdf ? "e.g. The page clearly prints $98.00" : "e.g. Page 9, Week 4 column, Spirometry row"}
+            aria-describedby={`nh-${item.id}`}
+          />
+          <p id={`nh-${item.id}`} className="text-small text-faint">
+            {pdf ? "The approver reads your note before approving." : "Nothing in the PDF's text can confirm either value, so the approver checks your answer against this note. Name the page and where on it."}
+          </p>
         </div>
       )}
       {msg && <ErrorNote>{msg}</ErrorNote>}
@@ -501,6 +554,7 @@ function Answered({ item, onChange, onNext }: { item: ReviewItem; onChange: () =
         </p>
         {shown && <p className="num text-heading font-semibold tracking-tight">{shown}</p>}
         {a?.note && <p className="text-small text-ink-2">“{a.note}”</p>}
+        {a?.noPdfText && <p className="text-small text-muted">Not in the PDF text, so the approver checks this one against your note.</p>}
         {a && (
           <p className="text-small text-muted">
             {a.by} · {relativeTime(a.at)}

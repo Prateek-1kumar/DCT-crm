@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import type { TextPage } from "./textlayer";
 
@@ -40,6 +41,13 @@ export class RenderTimeoutError extends Error {
 
 // ---------- the mupdf worker ----------
 
+/**
+ * The worker script, found through this package's own exports rather than next to this file: a bundle that inlines this
+ * module (the API's tsup build) has no mupdf-worker.mjs beside it, and mupdf only resolves from inside this package.
+ * Works from source (tsx, vitest) and from any build that installs @dct/extraction, whatever the working directory.
+ */
+export const WORKER_FILE = createRequire(import.meta.url).resolve("@dct/extraction/mupdf-worker");
+
 type Job = { op: string; args: unknown[]; key: string; resolve: (v: unknown) => void; reject: (e: Error) => void };
 // ponytail: one worker, calls in order: mupdf is single-threaded anyway. A pool if renders queue behind long extractions.
 let worker: Worker | null = null;
@@ -59,7 +67,7 @@ function settle(fn: (j: Job) => void) {
 }
 
 function spawn(): Worker {
-  const w = new Worker(new URL("./mupdf-worker.mjs", import.meta.url));
+  const w = new Worker(WORKER_FILE);
   w.on("message", (m: { result?: unknown; error?: { name: string; message: string } }) => {
     if (worker === w && busy) settle((j) => (m.error ? j.reject(revive(m.error)) : j.resolve(m.result)));
   });
@@ -71,7 +79,7 @@ function spawn(): Worker {
   w.on("exit", () => {
     if (worker !== w) return;
     worker = null;
-    if (busy) settle((j) => j.reject(new Error("The PDF reader stopped unexpectedly")));
+    if (busy) settle((j) => j.reject(new Error("The PDF reader stopped unexpectedly.")));
   });
   w.unref(); // after the listeners (adding one refs it again): an idle worker never keeps a process alive; a job in flight does (its timer)
   return w;
@@ -129,7 +137,7 @@ const concat = ([a, b, c, d, e, f]: Matrix, [A, B, C, D, E, F]: Matrix): Matrix 
 const ROTATE: Record<Rotation, Matrix> = { 0: [1, 0, 0, 1, 0, 0], 90: [0, 1, -1, 0, 0, 0], 180: [-1, 0, 0, -1, 0, 0], 270: [0, -1, 1, 0, 0, 0] };
 
 function safeDpi(dpi: number): number {
-  if (!Number.isFinite(dpi) || dpi <= 0) throw new RangeError(`invalid dpi ${dpi}`);
+  if (!Number.isFinite(dpi) || dpi <= 0) throw new RangeError(`${dpi} is not a valid DPI.`);
   return Math.min(dpi, RENDER_LIMITS.maxDpi);
 }
 
@@ -150,7 +158,7 @@ function transform([x0, y0, x1, y1]: [number, number, number, number], dpi: numb
 }
 
 /** Output size in pixels of a page at a DPI and rotation. */
-export async function pageSize(pdfPath: string, page: number, dpi = 150, rotate: Rotation = 0) {
+async function pageSize(pdfPath: string, page: number, dpi = 150, rotate: Rotation = 0) {
   const { width, height } = transform(await bounds(pdfPath, page), safeDpi(dpi), rotate);
   return { width, height };
 }
@@ -169,7 +177,7 @@ export async function renderPng(pdfPath: string, page: number, opts: RenderOptio
   }
   const { m, width, height } = t;
   const box = opts.clip ?? [0, 0, width, height];
-  if ((box[2] - box[0]) * (box[3] - box[1]) > RENDER_LIMITS.maxPixels) throw new RangeError(`render area ${box[2] - box[0]}x${box[3] - box[1]} exceeds ${RENDER_LIMITS.maxPixels} pixels`);
+  if ((box[2] - box[0]) * (box[3] - box[1]) > RENDER_LIMITS.maxPixels) throw new RangeError(`A ${box[2] - box[0]}x${box[3] - box[1]} render is over the ${RENDER_LIMITS.maxPixels}-pixel limit.`);
   return Buffer.from(await call<Uint8Array>("render", pdfPath, page, m, box, !!opts.gray, opts.mask ?? []));
 }
 
@@ -193,7 +201,7 @@ export async function tileLayout(pdfPath: string, page: number, opts: TileOption
     const cols = width <= tw ? 1 : Math.ceil((width - tw) / (tw * (1 - overlap))) + 1;
     const rows = height <= th ? 1 : Math.ceil((height - th) / (th * (1 - overlap))) + 1;
     if (rows * cols <= RENDER_LIMITS.maxTilesPerPage) return { dpi, width, height, tw, th, cols, rows, count: rows * cols };
-    if (dpi < 10) throw new RangeError(`page ${page} needs ${rows * cols} tiles even at ${dpi.toFixed(1)} DPI; limit is ${RENDER_LIMITS.maxTilesPerPage}`);
+    if (dpi < 10) throw new RangeError(`Page ${page} needs ${rows * cols} tiles even at ${dpi.toFixed(1)} DPI; the limit is ${RENDER_LIMITS.maxTilesPerPage}.`);
     dpi *= 0.85;
   }
 }
@@ -206,7 +214,7 @@ export async function tileLayout(pdfPath: string, page: number, opts: TileOption
 export async function renderTiles(pdfPath: string, page: number, opts: TileOptions & { maxTiles?: number }): Promise<Tile[]> {
   const layout = await tileLayout(pdfPath, page, opts);
   if (opts.maxTiles !== undefined && layout.count > opts.maxTiles)
-    throw new RangeError(`page ${page} needs ${layout.count} tiles; only ${opts.maxTiles} left in the budget`);
+    throw new RangeError(`Page ${page} needs ${layout.count} tiles; only ${opts.maxTiles} are left for this read.`);
   const { dpi, width, height, tw, th, cols, rows } = layout;
   const tiles: Tile[] = [];
   for (let r = 0; r < rows; r++) {

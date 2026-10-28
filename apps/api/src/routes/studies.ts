@@ -21,15 +21,13 @@ import type { Ctx } from "../app.js";
 import { documents, jobs, listKey, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
 import { appliesFromOf, audit, documentDto, manualRulebook, refreshStudyStatus, studySummaryDto, versionDto, versionSummaryDto } from "../domain.js";
 import { createJob, sendJob } from "../jobs.js";
-import { HttpError, notFound, parse } from "../lib/http.js";
+import { HttpError, like, notFound, parse, wordsOf } from "../lib/http.js";
 
 const SearchQuery = z.object({ q: z.string().default(""), limit: z.coerce.number().int().min(1).max(50).default(8) });
 
 /** Each list view is one `stage` (see the column). */
 const VIEW_STAGE = { "needs-you": 0, failed: 1, approval: 3, live: 5 } as const satisfies Record<StudyView, number>;
 
-const wordsOf = (q = "") => q.trim().split(/\s+/).filter(Boolean);
-const like = (w: string) => `%${w.replace(/[\\%_]/g, "\\$&")}%`;
 /** Every word of `q` in protocol, sponsor, site or investigator. */
 const matchesQ = (q?: string) =>
   and(...wordsOf(q).map((w) => or(...[studies.protocol, studies.sponsor, studies.siteName, studies.investigator].map((c) => ilike(c, like(w))))));
@@ -269,6 +267,6 @@ export const studyRoutes =
     app.get<{ Params: { id: string } }>("/jobs/:id", async (req): Promise<JobDto> => {
       const [job] = await db.select().from(jobs).where(eq(jobs.id, req.params.id));
       if (!job) throw notFound("Job");
-      return { id: job.id, state: job.state as JobDto["state"], progress: job.progress, step: job.step, error: job.error };
+      return { id: job.id, state: job.state as JobDto["state"], progress: job.progress, step: job.step, error: job.error, detail: job.errorDetail };
     });
   };

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { AlertPage, AuditEntryDto, DiffEntry, MasterSearch, RulebookVersionDto, SearchResults, StudyCounts, StudyDetailDto, StudyPage } from "@dct/shared";
+import { AlertPage, AuditPage, DiffEntry, MasterSearch, RulebookVersionDto, SearchResults, StudyCounts, StudyDetailDto, StudyPage } from "@dct/shared";
 import { blankInvoiceable } from "../byhand";
+import { askAbout, makeRulebook, SEEDS } from "./fixtures";
 import { mockRequest, mockReset } from "./server";
 
 const get = async (path: string) => (await mockRequest("GET", path, undefined)).json;
@@ -169,10 +170,97 @@ describe("mock API", () => {
     expect(draft.review[0]!.question).toMatch(/^What amount is printed for /);
     const st = StudyDetailDto.parse(await get("/studies/st-meridian"));
     expect(st).toMatchObject({ status: "amendment_in_review", liveVersion: 1 });
-    const audit = AuditEntryDto.array().parse(await get("/audit?studyId=st-meridian"));
-    expect(audit[0]).toMatchObject({ action: "number.reported", detail: { note: "Should be $104" } });
+    // the note names the value being typed blind on the draft: its numbers are blanked until that's answered
+    const audit = AuditPage.parse(await get("/audit?studyId=st-meridian")).items;
+    expect(audit[0]).toMatchObject({ action: "number.reported", protocol: "MTX-5510", detail: { note: "Should be $•••" } });
     // Only the newest version can be reported on now.
     expect((await post("/studies/st-meridian/versions/1/report", { path: "/payment/netDays/value", note: "x", by: "Sam" })).status).toBe(409);
+  });
+
+  it("a mismatch the PDF's text can't decide (a scan) needs a note saying where the page prints it, whichever value is kept", async () => {
+    // Cobalt is a scan: nothing printed to check against, so the typed value is compared with the reading (60 days).
+    const url = "/studies/st-cobalt/versions/1/review/c2";
+    let v = RulebookVersionDto.parse((await post(url, { value: 45, by: "Sam Rivera" })).json);
+    expect(v.review.find((i) => i.id === "c2")).toMatchObject({ outcome: "differs", compare: { typed: 45, read: 60, printed: null } });
+    for (const value of [45, 60]) {
+      const res = await post(url, { value, note: "  ", by: "Sam Rivera" });
+      expect(res.status).toBe(400);
+      expect((res.json as { message: string }).message).toBe("Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.");
+    }
+    v = RulebookVersionDto.parse((await post(url, { value: 45, note: "§4.2 on page 4, first line", by: "Sam Rivera" })).json);
+    expect(v.review.find((i) => i.id === "c2")).toMatchObject({ outcome: "chosen", answer: { value: 45, note: "§4.2 on page 4, first line", noPdfText: true } });
+    // where the PDF's text decides it, today's rule: only keeping your own value over it needs a note, and nothing is marked
+    await answer("st-northwind", "q5", { value: 2600 });
+    expect((await answer("st-northwind", "q5", { value: 2500 })).review.find((i) => i.id === "q5")!.answer).not.toHaveProperty("noPdfText");
+  }, 30_000);
+
+  it("a note never gives a value away while its question is open: the version, the log, its search and the alert", async () => {
+    const ha = RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"));
+    const a2 = ha.review.find((i) => i.id === "a2")!; // Remote monitoring visit, answered $420.00
+    const note = "Page 4 prints $420.00 (four hundred twenty), see §3";
+    const blanked = "Page 4 prints $••• (•••), see §3";
+    await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [a2.id], note, by: "Morgan Lee" });
+    const refused = await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [a2.id], note, by: "Morgan Lee" }); // now unanswered
+    expect(refused.status).toBe(400);
+    // the sample server leaves masking the values themselves to the web; the notes are its to blank
+    const notes = (v: RulebookVersionDto) => v.review.map((i) => [i.sentBack?.note, i.answer?.note, i.reported?.note]);
+    // ids and times can hold any digits; only what people read counts
+    const words = (x: unknown) => JSON.stringify(x).replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z|"id":"[^"]*"/g, "");
+    const raw = words([
+      refused.json,
+      notes(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"))),
+      await get("/audit?studyId=st-halcyon&limit=100"),
+      await get("/alerts?for=Avery%20Chen&limit=50"),
+      ...(await Promise.all(["420", "four", "hundred"].map((q) => get(`/audit?q=${q}`)))),
+    ]);
+    expect(raw).not.toMatch(/420|four|hundred|twenty/);
+    expect(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).review.find((i) => i.id === "a2")!.sentBack).toMatchObject({ note: blanked });
+    const log = AuditPage.parse(await get("/audit?studyId=st-halcyon&limit=100")).items;
+    expect(log[0]).toMatchObject({ action: "review.sent_back", detail: { note: blanked } });
+    expect(log.find((e) => e.action === "review.answered" && e.detail.itemId === "a2")!.detail).not.toHaveProperty("after");
+    expect(AuditPage.parse(await get("/audit?q=420")).items).toEqual([]);
+
+    // "This looks wrong": the note goes with the question, figures blanked for whoever answers it.
+    const rep = RulebookVersionDto.parse((await post("/studies/st-halcyon/versions/2/report", { path: "/payment/netDays/value", note: "Should be 45 days, see Amendment 1 §2", by: "Sam Rivera" })).json).review.at(-1)!;
+    expect(rep).toMatchObject({ reason: "reported", reported: { by: "Sam Rivera", note: "Should be ••• days, see Amendment 1 §2" } });
+    expect(words(notes(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"))))).not.toMatch(/45/);
+
+    // Answered again: the full note, found by its numbers; the alert went to everyone, so it stays blanked.
+    expect((await post(`/studies/st-halcyon/versions/2/review/${rep.id}`, { value: 30, by: "Taylor Brooks" })).status).toBe(200);
+    expect(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).review.at(-1)!.reported!.note).toBe("Should be 45 days, see Amendment 1 §2");
+    expect((await post("/studies/st-halcyon/versions/2/review/a2", { value: 42000, by: "Taylor Brooks" })).status).toBe(200);
+    expect(AuditPage.parse(await get("/audit?studyId=st-halcyon&limit=100")).items.find((e) => e.action === "review.sent_back")!.detail.note).toBe(note);
+    expect(AuditPage.parse(await get("/audit?q=420.00")).items.map((e) => e.action)).toEqual(["review.sent_back"]);
+    expect(AlertPage.parse(await get("/alerts?for=Avery%20Chen&limit=50")).items.find((a) => a.kind === "sent_back")!.note).toBe(blanked);
+  }, 30_000);
+
+  it("pages and searches the activity log on the server", async () => {
+    const all = AuditPage.parse(await get("/audit?limit=100"));
+    expect(all.nextCursor).toBeNull();
+    expect(all.items.map((e) => e.at)).toEqual([...all.items.map((e) => e.at)].sort().reverse());
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: AuditPage = AuditPage.parse(await get(`/audit?limit=6${cursor ? `&cursor=${cursor}` : ""}`));
+      seen.push(...page.items.map((e) => e.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual(all.items.map((e) => e.id));
+    const mine = AuditPage.parse(await get("/audit?studyId=st-meridian&limit=100")).items;
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((e) => e.studyId === "st-meridian" && e.protocol === "MTX-5510" && e.sponsor === "Meridian Therapeutics")).toBe(true);
+    const actions = async (q: string) => AuditPage.parse(await get(`/audit?q=${encodeURIComponent(q)}&limit=100`)).items.map((e) => `${e.by} ${e.action}`);
+    expect(await actions("sam approved")).toEqual(["Sam Rivera version.signed"]); // the person and what the action is called
+    expect(await actions("faint")).toEqual(["system extraction.failed"]); // the details
+    expect(await actions("nobody here")).toEqual([]);
+    expect((await mockRequest("GET", "/audit?limit=500", undefined)).status).toBe(400);
+  }, 30_000);
+
+  it("asks for an amount cap's limit as money, as the real API", () => {
+    const rb = makeRulebook(SEEDS.meridian.cfg!);
+    rb.invoiceables[0]!.cap = { kind: "amount", n: 500000, ratio: null };
+    rb.invoiceables[1]!.cap = { kind: "count", n: 3, ratio: null };
+    expect([askAbout(rb, [], "/invoiceables/0/cap/n", "x", "reported").input, askAbout(rb, [], "/invoiceables/1/cap/n", "y", "reported").input]).toEqual(["money", "number"]);
   });
 
   it("refuses typing values on a draft that isn't typed by hand", async () => {

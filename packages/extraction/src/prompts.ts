@@ -6,7 +6,7 @@ import { z } from "zod";
  * structured outputs can't express records, so grid cells come back as a list.
  */
 
-export const PageKind = z.enum(["terms", "budget_grid", "invoiceables", "signatures", "boilerplate"]);
+const PageKind = z.enum(["terms", "budget_grid", "invoiceables", "signatures", "boilerplate"]);
 
 export const AiPages = z.object({
   pages: z.array(
@@ -28,7 +28,7 @@ export const AiIdentify = z.object({
   studyGuess: z.object({ sponsor: z.string().nullable(), protocol: z.string().nullable(), siteName: z.string().nullable(), investigator: z.string().nullable() }),
 });
 
-export const AiNote = z.object({
+const AiNote = z.object({
   kind: z.enum(["ambiguous", "retroactive_no_date"]),
   topic: z.string(),
   path: z.string().nullable(),

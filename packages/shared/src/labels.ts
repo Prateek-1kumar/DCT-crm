@@ -31,3 +31,38 @@ export const ENUM_LABELS: Record<string, Record<string, string>> = {
     edc_entry_business_days: "EDC entry within N business days",
   },
 };
+
+/** What each audit-log action is called on the Activity page; searching the log matches these words too. */
+export const ACTION_LABELS: Record<string, string> = {
+  "study.created": "Contract added",
+  "study.identified": "Files sorted",
+  "study.confirmed": "Details confirmed",
+  "document.uploaded": "File uploaded",
+  "document.kind_changed": "File kind changed",
+  "document.kind_set": "File kind changed",
+  "amendment.uploaded": "Amendment uploaded",
+  "extraction.queued": "Reading started",
+  "extraction.succeeded": "Read and checked",
+  "extraction.completed": "Read and checked",
+  "extraction.failed": "Couldn't read",
+  "review.answered": "Question answered",
+  "review.changed": "Answer changed",
+  "review.sent_back": "Answers sent back",
+  "value.corrected": "Value corrected",
+  "anomaly.resolved": "Problem settled",
+  "grid.chosen": "Budget grid chosen",
+  "version.manual_created": "Started typing by hand",
+  "value.typed": "Typed by hand",
+  "byhand.done": "Done typing",
+  "number.reported": "Reported a number",
+  "value.reported": "Reported a value",
+  "version.correction_opened": "Correction started",
+  "version.corrections_carried": "Corrections carried over",
+  "version.signed": "Approved",
+  "version.exported": "Exported",
+  "master.exported": "Exported",
+  "values.proofread": "Proofread",
+  "settings.updated": "Settings changed",
+};
+/** "review.sent_back" → "Answers sent back"; an action without a label reads as its words. */
+export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase());

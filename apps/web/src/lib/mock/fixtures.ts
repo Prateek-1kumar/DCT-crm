@@ -335,10 +335,13 @@ export const pb = (documentId: string, page: number, box: PageBox["box"] = null)
 /** Box for the n-th question on a page: full-width lines in the lower half, so they never overlap. */
 export const box = (n: number): [number, number, number, number] => [0.07, 0.5 + (n % 7) * 0.06, 0.86, 0.042];
 
-const inputFor = (path: string, value?: unknown): NonNullable<ReviewItem["input"]> =>
+/** As the real API: a cap's limit is cents when its kind says it caps an amount; every other value's unit is in its name. */
+const inputFor = (rb: Rulebook, path: string, value?: unknown): NonNullable<ReviewItem["input"]> =>
   typeof value === "string" || Array.isArray(value)
     ? /date|appliesFrom/i.test(fieldKey(path)) ? "date" : "text"
-    : isMoneyPath(path) || segments(path).includes("cells") ? "money" : /pct$/i.test(fieldKey(path)) ? "percent" : "number";
+    : isMoneyPath(path) || segments(path).includes("cells") || (/\/cap\/n$/.test(path) && getAt(rb, path.replace(/n$/, "kind")) === "amount")
+      ? "money"
+      : /pct$/i.test(fieldKey(path)) ? "percent" : "number";
 
 /** The DTO side of a question: explicit fields, so nothing secret can reach a response. */
 export const toItem = (x: Spec): ReviewItem => ({
@@ -357,7 +360,7 @@ export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, 
   const list = typeof value === "string" ? ENUM_OPTIONS[fieldKey(path)] : undefined;
   const options =
     typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }] : list ? Object.entries(list).map(([k, l]) => ({ id: k, label: l })) : undefined;
-  const input = options ? undefined : inputFor(path, value);
+  const input = options ? undefined : inputFor(rb, path, value);
   const src = evidence.find((e) => e.path === path)?.where[0] ?? findProv(rb, path)?.source;
   return {
     id, kind: "confirm_value", reason, path, blocking: true, input, options,
@@ -379,7 +382,7 @@ function scanSpecs(rb: Rulebook, have: Spec[]): Spec[] {
       const label = labelFor(path, rb);
       const value = getAt(rb, path);
       return {
-        id: `scan-${i + 1}`, kind: "confirm_value", reason: "SCAN_VALUE", path, blocking: true, input: inputFor(path, value),
+        id: `scan-${i + 1}`, kind: "confirm_value", reason: "SCAN_VALUE", path, blocking: true, input: inputFor(rb, path, value),
         question: `Type what the contract prints for: ${label}`,
         where: src ? [pb(src.documentId, src.page)] : [], truth: value, lines: [`${label}: ${formatValue(path, value)}`],
       };

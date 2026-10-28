@@ -44,14 +44,41 @@ export async function sendJob(boss: PgBoss, kind: (typeof QUEUES)[number], data:
 }
 
 /** What a failed job says on screen: its own message, never a database error's (the SQL and every value bound to it). */
-const failure = (err: unknown) => {
-  const e = err as Error & { query?: string };
-  if (e.query !== undefined) {
-    console.error("job failed:", (e.cause as Error | undefined)?.message ?? e.name, "in:", e.query);
-    return "A database error stopped this. Try again; if it keeps happening, tell the team.";
-  }
-  return (e.message ?? String(err)).slice(0, 1000);
+const PLAIN = {
+  database: "A database error stopped this. Try again; if it keeps happening, tell the team.",
+  setup: "Reading isn't set up correctly on this computer. Tell the team; nothing was saved, so nothing is lost.",
+  busy: "The reading service is busy right now. Wait a few minutes, then try again.",
+  unreachable: "We couldn't reach the reading service. Check the internet connection, then try again.",
+  incomplete: "The reading came back incomplete. Try again; if it fails again, type the contract in by hand.",
+  pdf: "This PDF couldn't be read: it may be damaged, password-protected, or have a page that's too large. Upload a fresh copy, or type it in by hand.",
+  other: "Something went wrong while reading. Try again; if it keeps happening, tell the team.",
 };
+
+/**
+ * Why a job failed: what a person reads (`error`: plain words, never SQL, values or internals) and the technical reason
+ * for the team (`detail`). The reading's own limits are already written for people. A database error's message is the SQL
+ * with every value bound to it, so the log gets the query and the detail only the error code.
+ */
+export function failure(err: unknown): { error: string; detail: string | null } {
+  const e = (err instanceof Error ? err : new Error(String(err))) as Error & { query?: string; status?: unknown; cause?: { code?: string; message?: string } };
+  if (e.query !== undefined) {
+    console.error("job failed:", e.cause?.message ?? e.name, "in:", e.query);
+    return { error: PLAIN.database, detail: `Database error${e.cause?.code ? ` ${e.cause.code}` : ""}` };
+  }
+  // by class name: the API reaches @dct/extraction only through the port, and the build doesn't minify
+  const kind = e.constructor.name;
+  if (kind === "ExtractionLimitError" || kind === "RenderTimeoutError") return { error: e.message.slice(0, 1000), detail: null };
+  const status = typeof e.status === "number" ? e.status : null;
+  const said = `${kind} ${e.name} ${e.message}`;
+  const error =
+    status === 401 || status === 403 || /api[_ ]key/i.test(said) ? PLAIN.setup
+    : status === 429 || (status !== null && status >= 500) || /overloaded/i.test(said) ? PLAIN.busy
+    : /connection|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed/i.test(said) ? PLAIN.unreachable
+    : /ZodError|LlmError|incomplete/i.test(said) ? PLAIN.incomplete
+    : e instanceof RangeError || /cannot open|password|encrypt|damaged|corrupt|not a pdf|format error|pdf reader/i.test(said) ? PLAIN.pdf
+    : PLAIN.other;
+  return { error, detail: `${kind === "Error" ? "" : `${kind}: `}${e.message}`.slice(0, 1000) };
+}
 
 const setJob = (db: Tx, id: string, v: Partial<typeof jobs.$inferInsert>) => db.update(jobs).set({ ...v, updatedAt: new Date() }).where(eq(jobs.id, id));
 
@@ -94,7 +121,8 @@ export async function runIdentify(db: Db, { jobId, studyId }: IdentifyData) {
       await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done" });
     });
   } catch (err) {
-    await setJob(db, jobId, { state: "failed", step: "failed", error: failure(err) });
+    const { error, detail } = failure(err);
+    await setJob(db, jobId, { state: "failed", step: "failed", error, errorDetail: detail });
   }
 }
 
@@ -159,16 +187,16 @@ export async function runExtract(db: Db, { jobId, studyId, version }: ExtractDat
       await refreshStudyStatus(tx, studyId);
       if (carriedDetail) await audit(tx, "system", studyId, CARRIED, carriedDetail);
       await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd") });
-      await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null });
+      await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null, errorDetail: null });
     });
   } catch (err) {
     await progress;
-    const error = failure(err);
+    const { error, detail } = failure(err);
     await db.transaction(async (tx) => {
       await tx.update(rulebookVersions).set({ status: "failed", error, updatedAt: new Date() }).where(where);
       await refreshStudyStatus(tx, studyId);
-      await audit(tx, "system", studyId, "extraction.failed", { version, error });
-      await setJob(tx, jobId, { state: "failed", step: "failed", error });
+      await audit(tx, "system", studyId, "extraction.failed", { version, error, ...(detail ? { detail } : {}) });
+      await setJob(tx, jobId, { state: "failed", step: "failed", error, errorDetail: detail });
     });
   }
 }

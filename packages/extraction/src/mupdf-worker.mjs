@@ -25,7 +25,7 @@ function open(path) {
 function loadPage(path, page) {
   const doc = open(path);
   const n = doc.countPages();
-  if (!Number.isInteger(page) || page < 1 || page > n) throw new RangeError(`page ${page} out of range (1-${n})`);
+  if (!Number.isInteger(page) || page < 1 || page > n) throw new RangeError(`Page ${page} is out of range (1–${n}).`);
   return doc.loadPage(page - 1);
 }
 

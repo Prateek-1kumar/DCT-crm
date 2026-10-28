@@ -2,14 +2,14 @@
 
 import { settled, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, Undo2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo, useState, type ReactNode } from "react";
 import { DiffView } from "@/components/DiffView";
 import { initials, NeedsPerson } from "@/components/Sidebar";
 import { SpotView, DEFAULT_ZOOM } from "@/components/SpotView";
-import { Badge, Button, btnCls, cx, Dialog, ErrorNote, fieldCls, inputCls, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
+import { Badge, Button, btnCls, cx, Dialog, ErrorNote, fieldCls, inputCls, LoadError, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
 import { keyTerms, type KeyTerm } from "@/lib/approve";
@@ -22,12 +22,18 @@ export default function ApprovePage() {
   const study = useStudy(id);
   const draft = study.data ? [...study.data.versions].sort((a, b) => b.version - a.version).find((v) => v.status === "draft") : undefined;
   const version = useVersion(id, draft?.version ?? null);
+  // Kept here, not in Approve: once approved the study has no draft any more, and the screens below would replace this one.
+  const [approved, setApproved] = useState<number | null>(null);
 
-  if (study.error || version.error)
+  if (approved !== null && study.data) return <Approved study={study.data} version={approved} />;
+  const failed = (!study.data && study.error) || (!version.data && version.error);
+  if (failed)
     return (
-      <div className={pageCls}>
-        <ErrorNote error={study.error ?? version.error} />
-      </div>
+      <LoadError
+        error={failed}
+        retry={() => void (study.error ? study.refetch() : version.refetch())}
+        back={study.data ? { href: `/studies/${id}`, label: "Back to the contract" } : undefined}
+      />
     );
   if (!study.data || (draft && !version.data))
     return (
@@ -47,12 +53,12 @@ export default function ApprovePage() {
         </div>
       </div>
     );
-  return <Approve key={`${id}/${draft.version}`} study={study.data} version={version.data} />;
+  return <Approve key={`${id}/${draft.version}`} study={study.data} version={version.data} onApproved={setApproved} />;
 }
 
 type Step = 1 | 2 | 3;
 
-function Approve({ study, version }: { study: StudyDetailDto; version: RulebookVersionDto }) {
+function Approve({ study, version, onApproved }: { study: StudyDetailDto; version: RulebookVersionDto; onApproved: (v: number) => void }) {
   const by = useActingAs();
   const settings = useSettings();
   const rb = version.rulebook!;
@@ -61,12 +67,9 @@ function Approve({ study, version }: { study: StudyDetailDto; version: RulebookV
   const open = order.filter((i) => i.blocking && !settled(i));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [step, setStep] = useState<Step>(open.length ? 1 : 2);
-  const [approved, setApproved] = useState<number | null>(null);
   const answersOk = open.length === 0;
   const termsOk = ticked.size === terms.length;
-  const done: Record<Step, boolean> = { 1: answersOk, 2: termsOk, 3: approved !== null };
-
-  if (approved !== null) return <Approved study={study} version={approved} />;
+  const done: Record<Step, boolean> = { 1: answersOk, 2: termsOk, 3: false };
 
   return (
     <div className={pageCls}>
@@ -135,7 +138,7 @@ function Approve({ study, version }: { study: StudyDetailDto; version: RulebookV
               gate={approveState(version, settings.data, by)}
               makerChecker={!!settings.data?.makerChecker}
               ticked={terms.filter((t) => ticked.has(t.id)).map((t) => t.label)}
-              onApproved={setApproved}
+              onApproved={onApproved}
             />
           )}
         </section>
@@ -162,11 +165,13 @@ function Summary({ version }: { version: RulebookVersionDto }) {
   const proofed = (version.proofread ?? []).length;
   const people = [...new Set(version.review.flatMap((i) => (i.answer ? [i.answer.by] : [])))];
   const handBilled = version.review.filter((i) => i.kind === "unclassified").length;
+  const unprinted = version.review.filter(notInPdf).length;
   const g = rb.budgetGrids.find((x) => !rb.governingGridId || x.id === rb.governingGridId);
   const perPatient = g?.perPatientTotals[0]?.cents ?? g?.visits.reduce((n, v) => n + v.totalCents, 0) ?? null;
   const rows: [string, ReactNode][] = [
     ...(version.pdfCheck ? ([["Matched the PDF", <span key="m" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-ok" />{ev("confirmed").toLocaleString("en-US")}</span>]] as [string, ReactNode][]) : []),
     ["Confirmed by people", <span key="c" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-info" />{ev("attested")}</span>],
+    ...(unprinted ? ([["Not in the PDF text", <span key="u" className="text-warn">{unprinted}</span>]] as [string, ReactNode][]) : []),
     ["Proofread", `${proofed.toLocaleString("en-US")} of ${checked.toLocaleString("en-US")}`],
     ["To bill by hand", String(handBilled)],
   ];
@@ -191,6 +196,9 @@ function Summary({ version }: { version: RulebookVersionDto }) {
     </div>
   );
 }
+
+/** Settled on someone's reading of the page alone: the PDF's text couldn't decide between what they typed and what we read. */
+const notInPdf = (i: ReviewItem) => settled(i) && !!i.answer?.noPdfText;
 
 const outcomeText = (i: ReviewItem) => {
   const a = i.answer;
@@ -220,6 +228,7 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
     },
   });
   const review = (i: ReviewItem) => `/studies/${study.id}/review?item=${encodeURIComponent(i.id)}&return=approve`;
+  const unprinted = order.filter(notInPdf).length;
 
   if (!order.length)
     return (
@@ -257,6 +266,19 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
           </ul>
         </div>
       )}
+      {unprinted > 0 && (
+        <div className="mb-5 flex items-start gap-3 rounded-tile bg-warn-soft p-5">
+          <FileQuestion className="mt-0.5 size-5 shrink-0 text-warn" strokeWidth={1.75} />
+          <div className="text-body text-ink-2">
+            <p className="font-medium text-ink">
+              {unprinted} {unprinted === 1 ? "answer isn't" : "answers aren't"} backed by the PDF text
+            </p>
+            <p className="mt-1 max-w-[66ch]">
+              What the person entered didn&apos;t match what we had, and the PDF&apos;s text couldn&apos;t say which is right (a scan, or a number the check couldn&apos;t find). Each rests on their reading of the page. Open each one and check it against the page, using their note on where it&apos;s printed.
+            </p>
+          </div>
+        </div>
+      )}
       <ul className="flex flex-col divide-y divide-line rounded-tile ring-1 ring-line">
         {order
           .filter((i) => i.outcome !== null)
@@ -274,18 +296,28 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-body text-ink">{i.question}</p>
+                  {i.reported && (
+                    <p className="mt-1 text-small text-muted">
+                      <span className="font-medium text-ink-2">Reported by {i.reported.by}:</span> “{i.reported.note}”
+                    </p>
+                  )}
                   <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-small">
                     <Badge tone={o.tone}>{o.text}</Badge>
+                    {notInPdf(i) && <Badge tone="warn">Not in the PDF text</Badge>}
                     {i.answer && (
                       <span className="text-faint">
                         {i.answer.by} · {relativeTime(i.answer.at)}
                       </span>
                     )}
                   </p>
-                  {i.answer?.note && <p className="mt-1 text-small text-muted">“{i.answer.note}”</p>}
+                  {i.answer?.note && (
+                    <p className="mt-1 text-small text-muted">
+                      {notInPdf(i) && <span className="font-medium text-ink-2">Where it&apos;s printed: </span>}“{i.answer.note}”
+                    </p>
+                  )}
                 </div>
                 <Link href={review(i)} className={btnCls("ghost", "sm")}>
-                  Change
+                  {notInPdf(i) ? "Look at the page" : "Change"}
                 </Link>
               </li>
             );
@@ -305,11 +337,14 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
         </div>
       )}
       <Dialog open={dialog} onClose={() => setDialog(false)} title={`Send ${picked.size} ${picked.size === 1 ? "answer" : "answers"} back`}>
-        <p className="text-body text-muted">They&apos;re reopened and answered again, blind. The contract goes back to Needs you, and whoever answered sees your note.</p>
+        <p className="text-body text-muted">
+          They&apos;re reopened and answered again, blind. The contract goes back to Needs you, and whoever answers sees your note with any figures in it shown as •••, so
+          they still type what the page says. Point them to the spot instead.
+        </p>
         <label htmlFor="sb-note" className="mt-5 block text-small font-medium text-ink-2">
           What should they look at again?
         </label>
-        <textarea id="sb-note" rows={3} className={cx("mt-2 w-full py-2.5 text-body", fieldCls)} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Page 9 prints $45.00 for this visit, not $25.00" />
+        <textarea id="sb-note" rows={3} className={cx("mt-2 w-full py-2.5 text-body", fieldCls)} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Look again at page 9, the Week 4 column" />
         <ErrorNote error={send.error} />
         <div className="mt-5 flex justify-end gap-2.5">
           <Button variant="ghost" onClick={() => setDialog(false)}>
@@ -403,9 +438,9 @@ function Sign(p: {
   const handBilled = version.review.filter((i) => i.kind === "unclassified");
   const approve = useMutation({
     mutationFn: () => api.signOff(study.id, version.version, { by: by!, note: [`Key terms checked: ${p.ticked.join(", ")}.`, note.trim()].filter(Boolean).join(" ") }),
-    onSuccess: async () => {
-      await invalidate(study.id);
+    onSuccess: () => {
       p.onApproved(version.version);
+      void invalidate(study.id);
     },
   });
   const blockers = [...p.missing.map((m) => `First, ${m}.`), ...p.gate.reasons];

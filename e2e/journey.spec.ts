@@ -1,319 +1,404 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import { type Browser, expect, type Page, test } from "@playwright/test";
 
 /**
- * The Phase 1 journey against the real API (EXTRACTION_FAKE=1 fakes only the AI) and the web in real-API mode.
- * Real contracts are used when present (git-ignored data/contracts; set DCT_ROOT when running from a worktree);
- * otherwise synthetic PDFs are printed by the browser.
+ * Today's journey, against the real API (EXTRACTION_FAKE=1 fakes only the AI) and a production build of the web in real
+ * mode: add a contract → reading → answering (with a mismatch) → proofreading → approval → live → search and ⌘K → export →
+ * amendment → "This looks wrong" → send back → alerts. The PDFs are synthetic, printed by the browser: a text PDF whose
+ * numbers match the fake reading, so most of them are confirmed against the PDF's own text, as with a DocuSign copy.
  */
-
-const CONTRACTS = path.join(process.env.DCT_ROOT ?? path.resolve(__dirname, ".."), "data/contracts");
-// first two real PDFs by name (no contract names in the repo); real contracts can exceed Next's default 10 MB proxy body limit
-const REAL = existsSync(CONTRACTS) ? readdirSync(CONTRACTS).filter((f) => f.endsWith(".pdf")).sort().slice(0, 2).map((f) => path.join(CONTRACTS, f)) : null;
 
 type Pdf = { name: string; mimeType: string; buffer: Buffer };
 
-async function printPdf(browser: Browser, name: string, pages: number): Promise<Pdf> {
+const STYLE = `<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 12px; }
+  .page { page-break-after: always; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+  td, th { padding: 6px 8px; text-align: left; border-bottom: 1px solid #999; }
+  .n { text-align: right; }
+</style>`;
+const PROSE =
+  "This work order sets out the payments the Sponsor, Synthetic Pharma, makes to the Institution for the clinical study named in the agreement. The Institution invoices the Sponsor for the items below, naming the protocol, with the supporting documents the Sponsor asks for.";
+
+/** The fake reading's fees on page 1 and its revised grid on page 2. Rules (days, %, dates) aren't printed: the fake gives no quote for them, so they're asked. */
+const WORK_ORDER = `${STYLE}
+<div class="page">
+  <h1>Work Order</h1><p>${PROSE}</p>
+  <table>
+    <tr><th>Item</th><th>Code</th><th class="n">Amount</th><th class="n">With overhead</th></tr>
+    <tr><td>Unscheduled visit</td><td>UNSCH</td><td class="n">$572.00</td><td class="n">$800.00</td></tr>
+    <tr><td>Administrative fee</td><td>SC003</td><td class="n">$12,000.00</td><td></td></tr>
+    <tr><td>Screen failure</td><td></td><td class="n">$7,455.00</td><td></td></tr>
+  </table>
+  <p>Payments are made in United States dollars, by electronic funds transfer to the account the Institution names in writing.</p>
+</div>
+<div class="page">
+  <h1>Exhibit A: Budget</h1>
+  <p>The per patient payments below include institutional overhead (40%) on each procedure. Visits are paid automatically from the electronic data capture system once the case report forms for the visit are accepted by the Sponsor.</p>
+  <table>
+    <tr><th>Procedure</th><th>Code</th><th class="n">Unit</th><th class="n">Screening</th><th class="n">Week 0</th></tr>
+    <tr><td>Blood draw</td><td>36415</td><td class="n">$55.00</td><td class="n">$55.00</td><td class="n">$55.00</td></tr>
+    <tr><td>Procedure subtotal</td><td></td><td></td><td class="n">$3,801.00</td><td class="n">$4,047.00</td></tr>
+    <tr><td>Overhead</td><td></td><td></td><td class="n">$2,130.00</td><td class="n">$2,425.00</td></tr>
+    <tr><td>Non-procedure</td><td></td><td></td><td class="n">$1,524.00</td><td class="n">$2,016.00</td></tr>
+    <tr><td>Visit total</td><td></td><td></td><td class="n">$7,455.00</td><td class="n">$8,488.00</td></tr>
+  </table>
+  <p>Total $15,943.00</p>
+</div>`;
+
+const AMENDMENT = `${STYLE}
+<div class="page">
+  <h1>Amendment 1</h1><p>${PROSE}</p>
+  <p>This amendment changes the payment for an unscheduled visit and adds a start-up fee. Everything else in the work order stays as it is.</p>
+</div>`;
+
+async function printPdf(browser: Browser, name: string, html: string): Promise<Pdf> {
   const p = await browser.newPage();
-  await p.setContent(Array.from({ length: pages }, (_, i) => `<h1 style="page-break-after:always">${name} — page ${i + 1}</h1>`).join(""));
+  await p.setContent(html);
   const buffer = await p.pdf({ format: "Letter" });
   await p.close();
   return { name, mimeType: "application/pdf", buffer };
 }
 
-const realPdf = (file: string): Pdf => ({ name: path.basename(file), mimeType: "application/pdf", buffer: readFileSync(file) });
-
-/** Console errors and failed API calls, checked at the end. Expected 4xx responses are listed by the test. */
-function watch(page: Page) {
+/** Browser errors (CSP violations included), failed API calls and server errors, checked at the end. */
+async function watch(page: Page) {
   const problems: string[] = [];
+  await page.addInitScript(() => document.addEventListener("securitypolicyviolation", (e) => console.error(`CSP violation: ${e.violatedDirective} ${e.blockedURI}`)));
   page.on("pageerror", (e) => problems.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {
+    // A 4xx the test asks for on purpose shows as "Failed to load resource"; its response is checked below instead.
     if (m.type() === "error" && !/Failed to load resource/.test(m.text())) problems.push(`console: ${m.text()}`);
   });
   page.on("response", (r) => {
-    if (r.url().includes("/api/v1/") && r.status() >= 500) problems.push(`${r.status()} ${r.request().method()} ${r.url()}`);
+    if (r.status() >= 500) problems.push(`${r.status()} ${r.request().method()} ${r.url()}`);
   });
   return problems;
 }
 
-async function actAs(page: Page, name: string) {
-  await page.getByLabel("Acting as").selectOption(name);
+/** The answer to each question the fake reading of WORK_ORDER asks, by its wording. */
+const ANSWERS: [RegExp, { type: string } | { pick: RegExp }][] = [
+  [/effective date/, { type: "2025-08-22" }],
+  [/overhead percentage/, { type: "40" }],
+  [/how many days must an invoice be paid/, { type: "45" }],
+  [/months after the study closes/, { type: "6" }],
+  [/"Administrative fee" due/, { type: "45" }],
+  [/screen failures can be billed/, { type: "7" }],
+  [/Master CTA/, { pick: /doesn't affect billing/ }],
+  [/bill from/, { pick: /Exhibit A \(revised\)/ }],
+];
+
+/** Clicks a button that sends an answer, and waits until the API has taken it. */
+async function send(page: Page, name: string) {
+  const saved = page.waitForResponse((r) => r.request().method() === "POST" && /\/versions\/\d+\/review\/[^/]+$/.test(new URL(r.url()).pathname));
+  await page.getByRole("button", { name }).click();
+  expect((await saved).ok()).toBe(true);
 }
 
-test("bring on board → review → sign off → amend → sign v2 → audit → maker-checker", async ({ page, browser, request }, testInfo) => {
-  const problems = watch(page);
-  const docs = REAL ? REAL.map(realPdf) : [await printPdf(browser, "Work Order.pdf", 4), await printPdf(browser, "Budget.pdf", 3)];
+/** Answers the open question on the review page from ANSWERS. */
+async function answer(page: Page, question: string) {
+  const a = ANSWERS.find(([q]) => q.test(question))?.[1];
+  if (!a) throw new Error(`No answer in the test for: ${question}`);
+  if ("type" in a) await page.getByLabel("What the contract says").fill(a.type);
+  else await page.getByRole("radio", { name: a.pick }).check();
+  await send(page, "Save and next");
+}
 
-  await test.step("settings: people", async () => {
+const questionHeading = (page: Page) => page.getByRole("region", { name: "Question" }).getByRole("heading", { level: 1 });
+
+/** Answers every open question on the review page with `reply`, one at a time, until the finished screen. */
+async function answerAll(page: Page, reply: (question: string) => Promise<void>) {
+  const finished = page.getByRole("heading", { name: /Every question has an answer|Almost done/ });
+  const region = page.getByRole("region", { name: "Question" });
+  for (let n = 0; n < 30 && !(await finished.isVisible()); n++) {
+    // Two questions can read the same (one per grid), so "moved on" is judged by the whole panel, its "n of m" included.
+    const before = await region.textContent();
+    await reply((await questionHeading(page).textContent())!);
+    await expect
+      .poll(async () => {
+        if (await finished.isVisible()) return true;
+        const now = (await region.textContent())!;
+        return now !== before && !now.includes("Saving…");
+      })
+      .toBe(true);
+  }
+  await expect(finished).toBeVisible();
+}
+
+async function actAs(page: Page, name: string) {
+  await page.getByRole("button", { name: /Choose your name|Working now/ }).first().click();
+  await page.getByRole("dialog", { name: "Who's working today?" }).getByRole("button", { name }).click();
+  await expect(page.getByRole("dialog", { name: "Who's working today?" })).toBeHidden();
+}
+
+test("add a contract → answer → proofread → approve → live → search → export → amend → report → send back → alerts", async ({ page, browser, context, request }) => {
+  const problems = await watch(page);
+  const workOrder = await printPdf(browser, "Work order.pdf", WORK_ORDER);
+  let studyUrl = "";
+
+  await test.step("security headers on every page", async () => {
+    const res = await page.goto("/");
+    const h = res!.headers();
+    expect(h["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(h["content-security-policy"]).not.toContain("unsafe-eval");
+    expect(h["x-frame-options"]).toBe("DENY");
+    expect(h["x-content-type-options"]).toBe("nosniff");
+    expect(h["referrer-policy"]).toBe("same-origin");
+    expect(h["permissions-policy"]).toContain("camera=()");
+    expect(h["x-powered-by"]).toBeUndefined();
+  });
+
+  await test.step("missing pages read as such", async () => {
+    await page.goto("/no-such-page");
+    await expect(page.getByRole("heading", { name: "There's no page here" })).toBeVisible();
+    await page.goto("/studies/00000000-0000-4000-8000-000000000000");
+    await expect(page.getByRole("heading", { name: "We can't find this contract" })).toBeVisible();
+    await page.getByRole("link", { name: "Back to contracts" }).click();
+    await expect(page.getByRole("heading", { name: "No contracts yet" })).toBeVisible();
+  });
+
+  await test.step("people, and who's working", async () => {
     await page.goto("/settings");
-    for (const n of ["Asha", "Ben"]) {
+    // Nobody is picked yet, so the name picker opens by itself; there's nobody to pick until people are added.
+    const picker = page.getByRole("dialog", { name: "Who's working today?" });
+    await expect(picker).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(picker).toBeHidden();
+    for (const n of ["Asha Patel", "Ben Okafor"]) {
       await page.getByLabel("New person's name").fill(n);
-      await page.getByRole("button", { name: "Add" }).click();
+      await page.getByRole("button", { name: "Add", exact: true }).click();
       await expect(page.getByRole("listitem").filter({ hasText: n })).toBeVisible();
     }
-    await actAs(page, "Asha");
+    await actAs(page, "Asha Patel");
   });
 
-  await test.step("upload 2 PDFs and a duplicate", async () => {
-    await page.goto("/studies/new");
-    const input = page.locator('input[type="file"]');
-    await input.setInputFiles(docs);
-    for (const d of docs) await expect(page.getByText(d.name, { exact: true })).toBeVisible({ timeout: 60_000 });
-    await input.setInputFiles([{ ...docs[1]!, name: "copy of second.pdf" }]);
-    // same sha256 as a file already in the list: skipped, not added twice
-    await expect(page.getByText("Some files were already in this list and were skipped.")).toBeVisible();
-    await expect(page.getByText("copy of second.pdf")).toHaveCount(0);
+  await test.step("add a contract", async () => {
+    await page.goto("/");
+    await page.getByRole("link", { name: "Add your first contract" }).click();
+    await page.locator('input[type="file"]').setInputFiles(workOrder);
+    const file = page.getByRole("listitem").filter({ hasText: "Work order.pdf" });
+    await expect(file.getByText("Text PDF, numbers can be checked")).toBeVisible();
+    await expect(file.getByLabel("What kind of file Work order.pdf is")).toHaveValue("other");
+    await file.getByLabel("What kind of file Work order.pdf is").selectOption("work_order");
+    await expect(file.getByLabel("What kind of file Work order.pdf is")).toHaveValue("work_order");
+    await page.getByRole("button", { name: "Continue with 1 file" }).click();
+    // The cover pages are read for the details, which wait to be checked.
+    await expect(page.getByLabel("Sponsor")).toHaveValue("Synthetic Pharma", { timeout: 30_000 });
+    await expect(page.getByLabel("Protocol number")).toHaveValue("SYN-001");
+    await page.reload(); // the study is in the URL: a refresh picks up where it was
+    await expect(page.getByLabel("Principal investigator")).toHaveValue("Dr. Test");
+    await page.getByRole("button", { name: "Start reading" }).click();
   });
 
-  await test.step("identify and confirm", async () => {
-    await page.getByRole("button", { name: /Identify 2 documents/ }).dblclick();
-    await expect(page.getByLabel("Sponsor")).toHaveValue(/\S/, { timeout: 30_000 });
-    expect((await (await request.get("/api/v1/studies")).json()).total).toBe(1); // the double-click made one study
-    await page.reload(); // refresh on the confirm step resumes it
-    await expect(page.getByLabel("Sponsor")).toHaveValue(/\S/);
-    await expect(page.getByLabel("Principal investigator")).not.toHaveValue("");
-    await page.getByRole("button", { name: /Confirm and start extraction/ }).click();
+  await test.step("reading and checking", async () => {
+    await page.waitForURL(/\/reading\?job=/);
+    await expect(page.getByRole("heading", { name: "Read and checked" })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText("numbers match the contract PDF")).toBeVisible();
+    studyUrl = new URL(page.url()).pathname.replace(/\/reading$/, "");
+    await page.getByRole("link", { name: "Start answering" }).click();
+    await page.waitForURL(/\/review/);
   });
 
-  await test.step("extraction progress → review", async () => {
-    await page.waitForURL(/\/extracting\?job=/);
-    await page.waitForURL(/\/review\?v=1/, { timeout: 60_000 });
-    await expect(page.getByRole("img", { name: /page 1/ })).toBeVisible();
-    const img = page.getByRole("img", { name: /page 1/ });
-    await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(400);
-  });
-  const studyUrl = page.url().replace(/\/review\?.*$/, "");
-
-  await test.step("clicking a value jumps to its page", async () => {
-    await page.getByRole("region", { name: /Budget grid/ }).getByRole("button", { name: "$8,489.00" }).click();
-    await expect(pageNumber(page)).toHaveValue("2");
-    await expect(page.getByRole("img", { name: /page 2/ })).toBeVisible();
-  });
-
-  await test.step("inline edit: note required, text rejected in a money field", async () => {
-    await page.getByRole("button", { name: "Edit Unscheduled visit Amount" }).click();
-    const editor = page.locator("form").filter({ hasText: "· was $572.00" });
-    await editor.getByRole("textbox").first().fill("abc");
-    await editor.getByRole("button", { name: "Save correction" }).click();
-    await expect(editor.getByText("Enter a dollar amount like 1,234.56")).toBeVisible();
-    await editor.getByRole("textbox").first().fill("600");
-    await editor.getByRole("button", { name: "Save correction" }).click();
-    await expect(editor.getByText(/Add a note saying why/)).toBeVisible();
-    await editor.getByLabel("Note (required)").fill("Exhibit B p.2 prints $600.00");
-    await editor.getByRole("button", { name: "Save correction" }).click();
-    await expect(editor).toHaveCount(0);
-    await expect(page.getByRole("region", { name: /Invoiceables/ }).getByRole("button", { name: "$600.00" })).toBeVisible();
+  await test.step("answering, blind, with a mismatch", async () => {
+    // The page shows the spot, never our reading.
+    await expect(page.getByRole("region", { name: "The spot in the contract" }).getByRole("img").first()).toBeVisible();
+    let mismatch = false;
+    await answerAll(page, async (q) => {
+      if (!/Week 0 total/.test(q)) return answer(page, q);
+      // Type the AI's figure; the PDF's own text says otherwise, so the page asks which one it shows.
+      await page.getByLabel("What the contract says").fill("8,489.00");
+      await send(page, "Save and next");
+      await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
+      await page.getByRole("radio", { name: /PDF text says.*\$8,488\.00/ }).click();
+      await send(page, "Save and next");
+      mismatch = true;
+    });
+    expect(mismatch).toBe(true);
+    await expect(page.getByRole("heading", { name: "Every question has an answer" })).toBeVisible();
   });
 
-  await test.step("refresh mid-review keeps the correction", async () => {
-    await page.reload();
-    await expect(page.getByRole("region", { name: /Invoiceables/ }).getByRole("button", { name: "$600.00" })).toBeVisible();
+  await test.step("proofreading the checked numbers", async () => {
+    await page.goto(`${studyUrl}/proofread`);
+    const done = page.getByRole("heading", { name: "Everything is proofread" });
+    const tally = page.getByText(/ numbers proofread$/);
+    await expect(tally).toHaveText(/^0 of \d+ numbers proofread$/);
+    for (let n = 0; n < 30 && !(await done.isVisible()); n++) {
+      const before = await tally.textContent();
+      await page.getByRole("button", { name: "Looks right" }).click();
+      await expect.poll(async () => (await done.isVisible()) || (await tally.textContent()) !== before).toBe(true);
+    }
+    await expect(done).toBeVisible();
+    await page.getByRole("link", { name: "Back to the contract" }).click();
   });
 
-  const signOff = page.getByRole("button", { name: "Sign off v1" });
-  await test.step("sign-off is blocked while anomalies are open", async () => {
-    await expect(signOff).toBeDisabled();
-    await expect(page.getByText(/Sign-off is locked: 4 anomalies are not settled yet/)).toBeVisible();
-  });
-
-  await test.step("fix value (VISIT_TOTAL_MISMATCH)", async () => {
-    const card = anomaly(page, "Visit total doesn't add up");
-    await card.getByRole("button", { name: "Fix value" }).click();
-    await card.getByRole("textbox").first().fill("8,488.00");
-    await card.getByLabel("Note (required)").fill("Parts on p.2 add up to $8,488.00");
-    await card.getByRole("button", { name: "Save and mark fixed" }).click();
-    await expect(card.getByText("Fixed", { exact: true })).toBeVisible();
-    await expect(card.getByRole("alert")).toHaveCount(0);
-  });
-
-  await test.step("choose reading (AI_DISAGREEMENT)", async () => {
-    const card = anomaly(page, "The two AI reads disagree");
-    await card.getByRole("button", { name: "Choose reading" }).click();
-    await card.getByRole("button", { name: "Use this reading" }).click();
-    await expect(card.getByText("Pick a reading and add a note.")).toBeVisible();
-    await card.getByLabel(/OpenAI \(second read\)/).check();
-    await card.getByLabel("Note (required)").fill("p.2 prints $801.00");
-    await card.getByRole("button", { name: "Use this reading" }).click();
-    await expect(card.getByText("Chosen", { exact: true })).toBeVisible();
-    await expect(page.getByRole("region", { name: /Invoiceables/ }).getByRole("button", { name: "$801.00" })).toBeVisible();
-  });
-
-  await test.step("compare & choose grid (GRID_CONFLICT)", async () => {
-    const card = anomaly(page, "Two budget grids conflict");
-    await expect(card.getByRole("button", { name: "Fix value" })).toHaveCount(0);
-    await card.getByRole("button", { name: "Compare & choose grid" }).click();
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel(/Exhibit A \(revised\)/).check();
-    await dialog.getByLabel("Why this grid governs (required)").fill("Revised exhibit supersedes per sponsor email");
-    await dialog.getByRole("button", { name: "Use Exhibit A (revised)" }).click();
-    await expect(dialog).toBeHidden();
-    await expect(card.getByText("Chosen", { exact: true })).toBeVisible();
-  });
-
-  await test.step("accept with note (MISSING_REFERENCED_DOC): empty note refused, double-click saves once", async () => {
-    const card = anomaly(page, "Referenced document missing");
-    await card.getByRole("button", { name: "Accept with note" }).click();
-    await card.getByRole("button", { name: "Accept", exact: true }).click();
-    await expect(card.getByText("A note is required to accept.")).toBeVisible();
-    await card.getByLabel("Note (required)").fill("Master CTA is on file with legal");
-    await card.getByRole("button", { name: "Accept", exact: true }).dblclick();
-    await expect(card.getByText("Accepted", { exact: true })).toBeVisible();
-  });
-
-  await test.step("sign off v1", async () => {
-    await expect(page.getByText("4 of 4 anomalies settled")).toBeVisible();
-    await expect(signOff).toBeEnabled();
-    await signOff.click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog.getByLabel("Signing as")).toHaveValue("Asha");
-    await dialog.getByLabel("Note (optional)").fill("All four settled");
-    await dialog.getByRole("button", { name: "Sign off and make live" }).dblclick();
-    await page.waitForURL(/\?signed=1/);
-    await expect(page.getByText("Version 1 signed off and live.")).toBeVisible();
-    await expect(page.getByText("Live: v1")).toBeVisible();
-  });
-
-  await test.step("browser back to the signed review is read-only", async () => {
-    await page.goBack();
-    await expect(page.getByText(/Version 1 is signed — signed by Asha/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign off v1" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^Edit / })).toHaveCount(0);
+  await test.step("approval, signed with initials", async () => {
+    await page.getByRole("link", { name: "Review and approve" }).click();
+    // Every question is answered, so it opens on the key terms.
+    await expect(page.getByRole("heading", { name: "Check the key terms" })).toBeVisible();
+    const terms = page.getByRole("checkbox");
+    for (let i = 0; i < (await terms.count()); i++) await terms.nth(i).click();
+    await page.getByRole("button", { name: "Next: approve" }).click();
+    const sign = page.getByRole("button", { name: "Approve invoicing master" });
+    await expect(sign).toBeDisabled();
+    await page.getByLabel("Type AP to sign as Asha Patel").fill("ap");
+    await sign.click();
+    await expect(page.getByRole("heading", { name: "Approved. Version 1 is live." })).toBeVisible();
     await page.goto(studyUrl);
+    await expect(page.getByText("Live: version 1")).toBeVisible();
   });
 
-  await test.step("amendment upload (+ a duplicate of a stored file)", async () => {
+  await test.step("live: tabs and the value drawer by keyboard", async () => {
+    const tabs = page.getByRole("tablist", { name: "Invoicing master" });
+    await tabs.getByRole("tab", { name: "Overview" }).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(tabs.getByRole("tab", { name: "Budget grid" })).toHaveAttribute("aria-selected", "true");
+    await expect(tabs.getByRole("tab", { name: "Budget grid" })).toBeFocused();
+    // The tab opens on the grid billing uses, the revised Exhibit A picked when answering.
+    const cell = page.locator('[data-path="/budgetGrids/1/procedures/0/cells/V1"]');
+    await cell.focus();
+    await page.keyboard.press("Enter");
+    const drawer = page.getByRole("complementary", { name: /In the contract/ });
+    await expect(drawer).toBeFocused();
+    await expect(drawer.getByText("Matches the PDF.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(drawer).toBeHidden();
+    await expect(cell).toBeFocused();
+  });
+
+  await test.step("search in the contract and ⌘K", async () => {
+    await page.getByLabel("Search this contract").fill("blood");
+    await expect(page.getByText(/^\d+ match(es)?:$/)).toBeVisible();
+    await page.getByLabel("Search this contract").fill("");
+
+    await page.keyboard.press("ControlOrMeta+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await expect(palette).toBeVisible();
+    await palette.getByRole("combobox", { name: "Search" }).fill("blood draw");
+    const rate = palette.getByRole("option", { name: /Blood draw/ }).first();
+    await expect(rate).toBeVisible();
+    while ((await rate.getAttribute("aria-selected")) !== "true") await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(palette).toBeHidden();
+    await expect(page.getByRole("complementary", { name: /Blood draw/ })).toBeVisible();
+    await page.getByRole("complementary", { name: /Blood draw/ }).getByRole("button", { name: "Close" }).click();
+  });
+
+  await test.step("export: Excel and the printable summary", async () => {
+    const button = page.getByRole("button", { name: "Export" });
+    // A menu button: arrow down opens it on the first choice, Escape closes it back to the button.
+    await button.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("menuitem", { name: /Excel spreadsheet/ })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toBeHidden();
+    await expect(button).toBeFocused();
+
+    await button.click();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: /Excel spreadsheet/ }).click()]);
+    expect(download.suggestedFilename()).toMatch(/\.xlsx$/);
+    expect(readFileSync((await download.path())!).subarray(0, 2).toString()).toBe("PK"); // an xlsx is a zip
+
+    await button.click();
+    const [summary] = await Promise.all([context.waitForEvent("page"), page.getByRole("menuitem", { name: /PDF summary/ }).click()]);
+    await expect(summary.getByText("Invoicing master · summary")).toBeVisible();
+    await expect(summary.getByRole("heading", { name: "SYN-001" })).toBeVisible();
+    await summary.close();
+  });
+
+  await test.step("amendment: a new version while version 1 stays live", async () => {
     await page.getByRole("link", { name: "Upload amendment" }).click();
-    const amendment = await printPdf(browser, "Amendment 1.pdf", 2);
-    await page.locator('input[type="file"]').setInputFiles([amendment, { ...docs[0]!, name: "again.pdf" }]);
-    await expect(page.getByText("Amendment 1.pdf")).toBeVisible();
-    await expect(page.getByText("Duplicate: already uploaded")).toBeVisible();
-    await page.getByLabel("Document kind for Amendment 1.pdf").selectOption("amendment");
-    await expect(page.getByLabel("Document kind for Amendment 1.pdf")).toHaveValue("amendment");
-    await page.getByRole("button", { name: "Extract amendment →" }).click();
-    await page.waitForURL(/\/review\?v=2/, { timeout: 60_000 });
-  });
-
-  await test.step("diff-only review, v1 stays live", async () => {
-    await expect(page.getByText("Amendment · diff vs live v1")).toBeVisible();
-    await expect(page.getByText("Amendment in review")).toBeVisible();
-    const inv = page.locator("section").filter({ has: page.getByRole("heading", { name: /^Invoiceable/ }) });
-    await expect(inv.getByText("Unscheduled visit › Amount with overhead")).toBeVisible();
-    await expect(page.getByRole("heading", { name: /^Applies from/ })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Study" })).toHaveCount(0); // full rulebook hidden by default
-    expect((await (await request.get(`/api/v1${new URL(studyUrl).pathname}`)).json()).liveVersion).toBe(1);
-  });
-
-  await test.step("settle v2 and sign it; v1 is superseded", async () => {
-    await settleAll(page);
-    await page.getByRole("button", { name: "Sign off v2" }).click();
-    await page.getByRole("dialog").getByRole("button", { name: "Sign off and make live" }).click();
-    await page.waitForURL(/\?signed=2/);
-    await page.getByRole("tab", { name: /Versions & changes/ }).click();
-    await expect(page.getByText("superseded").first()).toBeVisible();
-    await expect(page.getByText("Live: v2")).toBeVisible();
-  });
-
-  await test.step("audit log shows everything, newest first", async () => {
-    await page.getByRole("link", { name: "Audit log" }).last().click();
-    await page.waitForURL(/\/audit\?studyId=/);
-    const entries = await (await request.get(`/api/v1/audit?studyId=${new URL(studyUrl).pathname.split("/").pop()}`)).json();
-    const actions: string[] = entries.map((e: { action: string }) => e.action);
-    expect(actions[0]).toBe("version.signed");
-    for (const a of ["study.created", "study.identified", "study.confirmed", "extraction.queued", "extraction.completed", "value.corrected", "anomaly.resolved", "grid.chosen", "version.signed"])
-      expect(actions).toContain(a);
-    // double-clicks didn't record anything twice
-    expect(actions.filter((a) => a === "version.signed")).toHaveLength(2);
-    expect(entries.filter((e: { action: string; detail: { code?: string; version?: number } }) => e.action === "anomaly.resolved" && e.detail.code === "MISSING_REFERENCED_DOC" && e.detail.version === 1)).toHaveLength(1);
-    await expect(page.getByText("value.corrected").or(page.getByText(/corrected/i)).first()).toBeVisible();
-  });
-
-  await test.step("page image URL: wrong page numbers are 404s", async () => {
-    const study = await (await request.get(`/api/v1${new URL(studyUrl).pathname}`)).json();
-    const doc = study.documents[0];
-    for (const n of [0, doc.pageCount + 1, 9999]) expect((await request.get(`/api/v1/documents/${doc.id}/pages/${n}.png`)).status()).toBe(404);
-    expect((await request.get(`/api/v1/documents/${doc.id}/pages/abc.png`)).status()).toBe(404);
-    expect((await request.get(`/api/v1/documents/not-a-uuid/pages/1.png`)).status()).toBe(400);
-    expect((await request.get(`/api/v1/documents/${doc.id}/pages/${doc.pageCount}.png`)).status()).toBe(200);
-  });
-
-  await test.step("non-PDF rejected in the browser and by the API", async () => {
-    await page.goto("/studies/new");
-    await page.locator('input[type="file"]').setInputFiles([
-      { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hi") },
-      { name: "fake.pdf", mimeType: "application/pdf", buffer: Buffer.from("not really a pdf") },
-    ]);
-    await expect(page.getByText(/Skipped: notes.txt \(not a PDF\)/)).toBeVisible();
-    await expect(page.getByText("fake.pdf is not a PDF")).toBeVisible();
-    const huge = testInfo.outputPath("huge.pdf");
-    writeFileSync(huge, Buffer.alloc(51 * 1024 * 1024));
-    await page.locator('input[type="file"]').setInputFiles(huge);
-    await expect(page.getByText(/Skipped: huge.pdf \(over 50 MB\)/)).toBeVisible();
-  });
-
-  await test.step("failed amendment extraction: study page offers retry / manual entry seeded from live", async () => {
-    await page.goto(`${studyUrl}/amend`);
-    await page.locator('input[type="file"]').setInputFiles([await printPdf(browser, "unreadable amendment 2.pdf", 1)]);
-    await page.getByRole("button", { name: "Extract amendment →" }).click();
-    await expect(page.getByText("Extraction failed")).toBeVisible({ timeout: 30_000 });
+    await page.locator('input[type="file"]').setInputFiles(await printPdf(browser, "Amendment 1.pdf", AMENDMENT));
+    const kind = page.getByLabel("What kind of file Amendment 1.pdf is");
+    await expect(kind).toBeVisible();
+    await kind.selectOption("amendment");
+    await expect(kind).toHaveValue("amendment");
+    await page.getByRole("button", { name: /Start reading/ }).click();
+    await expect(page.getByRole("heading", { name: "Read and checked" })).toBeVisible({ timeout: 60_000 });
     await page.goto(studyUrl);
-    await expect(page.getByText("Amendment in review")).toBeVisible();
-    await expect(page.getByText("The last extraction failed.")).toBeVisible();
-    await page.getByRole("button", { name: "Enter manually" }).click();
-    await page.waitForURL(/\/review\?v=3/);
-    await expect(page.getByText("Amendment · diff vs live v2")).toBeVisible();
-    await expect(page.getByText("Unscheduled visit › Amount with overhead")).toHaveCount(0); // seeded from v2: unchanged terms aren't in the diff
-    await expect(page.getByRole("heading", { name: /^Applies from/ })).toBeVisible(); // must be entered for the amendment
+    await expect(page.getByText("A new version is in progress. Version 1 stays live until it's approved.")).toBeVisible();
+    await expect(page.getByText("Live: version 1")).toBeVisible();
   });
 
-  await test.step("failed extraction → enter manually; maker-checker blocks the editor", async () => {
-    await page.goto("/settings");
-    await page.getByRole("switch", { name: "Maker-checker" }).click();
-    await expect(page.getByText("On: corrector and signer must be different people.")).toBeVisible();
+  await test.step("“This looks wrong” goes to the version in progress", async () => {
+    const report = async (card: RegExp) => {
+      await page.getByRole("tab", { name: "Overview" }).click();
+      await page.getByRole("button", { name: card }).click();
+      await page.getByRole("complementary", { name: /In the contract/ }).getByRole("button", { name: "This looks wrong" }).click();
+      const dialog = page.getByRole("dialog", { name: "This looks wrong" });
+      await expect(dialog.getByLabel("What looks wrong? (required)")).toBeFocused();
+      await dialog.getByLabel("What looks wrong? (required)").fill("The total on page 2 doesn't match the visits above it.");
+      await dialog.getByRole("button", { name: "Report it" }).click();
+      return dialog;
+    };
+    // On live version 1 while version 2 is in progress: refused, in words.
+    const refused = await report(/^Per patient/);
+    await expect(refused.getByRole("alert")).toContainText("Version 2 is already in progress");
+    await page.keyboard.press("Escape");
+    await expect(refused).toBeHidden();
+    await page.keyboard.press("Escape"); // and the drawer
+    await page.getByRole("combobox", { name: /^Version/ }).selectOption("2");
+    // On the draft, a value still waiting for its blind answer shows as such, not as missing.
+    await expect(page.getByRole("button", { name: /^Payment Needs you/ })).toBeVisible();
+    await report(/^Per patient/);
+    await expect(page.getByText("Added to Needs you. Someone will type what the contract says.")).toBeVisible();
+  });
 
-    await page.goto("/studies/new");
-    await page.locator('input[type="file"]').setInputFiles([await printPdf(browser, "unreadable scan.pdf", 2)]);
-    await page.getByRole("button", { name: /Identify 1 document/ }).click();
-    await page.getByRole("button", { name: /Confirm and start extraction/ }).click();
-    await expect(page.getByText("Extraction failed")).toBeVisible({ timeout: 30_000 });
-    await page.reload(); // refresh on the failed job keeps the choices
-    await page.getByRole("button", { name: "Enter manually" }).dblclick();
-    await page.waitForURL(/\/review\?v=1/);
-    await expect(page.getByText("Manual").first()).toBeVisible();
+  let sentBack = "";
+  await test.step("answer version 2, then the approver sends one answer back", async () => {
+    await page.goto(`${studyUrl}/review`);
+    await answerAll(page, async (q) => {
+      if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
+      if (/printed for "Total"/.test(q)) {
+        // The value reported above, typed blind.
+        await page.getByLabel("What the contract says").fill("15,943.00");
+        return send(page, "Save and next");
+      }
+      // Whatever else the amendment asks is left for the approver.
+      await page.getByRole("button", { name: "Can't tell" }).click();
+      await send(page, "Leave it for the approver");
+    });
+    await page.goto(`${studyUrl}/approve`);
+    const answered = page.getByRole("checkbox", { name: /Send back: Within how many days must an invoice be paid/ });
+    sentBack = (await answered.getAttribute("aria-label"))!.replace(/^Send back: /, "");
+    await answered.check();
+    await page.getByRole("button", { name: "Send 1 back" }).click();
+    const dialog = page.getByRole("dialog", { name: "Send 1 answer back" });
+    await dialog.getByLabel("What should they look at again?").fill("Check the payment terms page again.");
+    await dialog.getByRole("button", { name: "Send back" }).click();
+    await expect(dialog).toBeHidden();
+  });
 
-    await page.getByRole("button", { name: "Edit Net days", exact: true }).click();
-    const editor = page.locator("form").filter({ hasText: "· was" });
-    await editor.locator("input").first().fill("45");
-    await editor.getByLabel("Note (required)").fill("p.1 says net 45");
-    await editor.getByRole("button", { name: "Save correction" }).click();
-    await expect(page.getByText(/corrected by Asha/)).toBeVisible();
-    await settleAll(page);
+  await test.step("alerts: another person sees what needs them", async () => {
+    await page.goto("/");
+    await actAs(page, "Ben Okafor");
+    const bell = page.getByRole("button", { name: /^Alerts, \d+ unread$/ }).first();
+    await expect(bell).toBeVisible();
+    // Keyboard: the panel takes focus, Escape hands it back to the bell.
+    await bell.focus();
+    await page.keyboard.press("Enter");
+    const panel = page.getByRole("dialog", { name: "Alerts" });
+    await expect(panel).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(bell).toBeFocused();
 
-    await expect(page.getByRole("button", { name: "Sign off v1" })).toBeDisabled();
-    await expect(page.getByText(/maker-checker/i).first()).toBeVisible();
-    await actAs(page, "Ben");
-    await page.getByRole("button", { name: "Sign off v1" }).click();
-    await page.getByRole("dialog").getByRole("button", { name: "Sign off and make live" }).click();
-    await page.waitForURL(/\?signed=1/);
+    await bell.click();
+    await panel.getByRole("button", { name: /SYN-001: 1 answer sent back/ }).click();
+    await page.waitForURL(/\/review/);
+    await expect(page.getByText("Sent back by Asha Patel:")).toBeVisible();
+    await expect(questionHeading(page)).toHaveText(sentBack);
+  });
+
+  await test.step("activity: every step was recorded, newest first", async () => {
+    const id = studyUrl.split("/").pop()!;
+    // Paged by the API (`{ items, nextCursor }`); 100 is its page limit, plenty for one contract.
+    const { items } = await (await request.get(`/api/v1/audit?studyId=${id}&limit=100`)).json();
+    const actions: string[] = items.map((e: { action: string }) => e.action);
+    expect(actions[0]).toBe("review.sent_back");
+    for (const a of ["study.created", "study.confirmed", "extraction.completed", "review.answered", "values.proofread", "version.signed", "version.exported", "number.reported"]) expect(actions).toContain(a);
+    expect(actions.filter((a) => a === "version.signed")).toHaveLength(1);
+    await page.goto(`/audit?studyId=${id}`);
+    await expect(page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
   });
 
   expect(problems).toEqual([]);
 });
-
-const pageNumber = (page: Page) => page.getByRole("spinbutton", { name: /Page number/ });
-const anomaly = (page: Page, title: string) => page.getByRole("region", { name: "Anomalies" }).getByRole("listitem").filter({ hasText: title });
-
-/** Accept every open anomaly with a note. */
-async function settleAll(page: Page) {
-  const panel = page.getByRole("region", { name: "Anomalies" });
-  for (;;) {
-    const open = panel.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Accept with note" }) });
-    if (!(await open.count())) break;
-    // pin the card by its message: once opened it no longer has the "Accept with note" button
-    const card = panel.getByRole("listitem").filter({ hasText: (await open.first().locator("p").nth(1).textContent())! });
-    await card.getByRole("button", { name: "Accept with note" }).click();
-    await card.getByLabel("Note (required)").fill("Checked against the contract");
-    await card.getByRole("button", { name: "Accept", exact: true }).click();
-    await expect(card.getByRole("button", { name: "Accept", exact: true })).toHaveCount(0);
-  }
-}

@@ -118,20 +118,29 @@ export const jobs = pgTable("jobs", {
   state: text("state").notNull().default("queued"),
   progress: integer("progress").notNull().default(0),
   step: text("step").notNull().default("queued"),
+  /** What a person reads when it failed: plain words, never SQL, values or internals (jobs.ts failure). */
   error: text("error"),
+  /** The technical reason, for the team. */
+  errorDetail: text("error_detail"),
   createdAt: ts("created_at"),
   updatedAt: ts("updated_at"),
 });
 
 /** Append-only: UPDATE/DELETE are rejected by a trigger (see the custom migration). */
-export const auditLog = pgTable("audit_log", {
-  id: bigserial("id", { mode: "number" }).primaryKey(),
-  at: ts("at"),
-  by: text("by").notNull(),
-  studyId: uuid("study_id").references(() => studies.id),
-  action: text("action").notNull(),
-  detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
-});
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    at: ts("at"),
+    by: text("by").notNull(),
+    studyId: uuid("study_id").references(() => studies.id),
+    action: text("action").notNull(),
+    detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+  },
+  // one contract's log, newest first, a page at a time (GET /audit?studyId=): read backwards
+  // ponytail: `q` is an ILIKE scan over the page order; a pg_trgm GIN index on a search column if the log gets large.
+  (t) => [index("audit_log_study_idx").on(t.studyId, t.id)],
+);
 
 /** A contract reached a step where someone is needed (see AlertDto); raised by refreshStudyStatus. Everyone sees every alert. */
 export const alerts = pgTable(

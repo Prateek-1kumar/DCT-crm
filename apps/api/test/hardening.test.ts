@@ -1,4 +1,4 @@
-import type { AuditEntryDto, DocumentDto, RulebookVersionDto } from "@dct/shared";
+import type { AuditPage, DocumentDto, RulebookVersionDto } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -75,6 +75,8 @@ describe("H7: blind entry has no side doors", () => {
     expect(problem.question).not.toMatch(/848900/);
     expect(await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 })).toMatchObject({ outcome: "matched" });
     await answer(studyId, problem.id, { optionId: "as_printed" });
+    // the typed total doesn't add up in its own grid either: asked on the typed numbers (recheck), and settled
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
     expect((await version(studyId)).review.find((i) => i.id === problem.id)!.question).toMatch(/848900/); // nothing in its grid withheld now
 
     // "This looks wrong" on two values: one the earlier answer holds, one in the problem's grid.
@@ -88,7 +90,7 @@ describe("H7: blind entry has no side doors", () => {
     expect(v.review.find((i) => i.id === problem.id)!.question).not.toMatch(/\d{4,}/);
     expect(at(v.rulebook, "/budgetGrids/0/visits/0/totalCents")).toBeNull();
 
-    const audit = (await get(`/audit?studyId=${studyId}`)).json<AuditEntryDto[]>();
+    const audit = (await get(`/audit?studyId=${studyId}`)).json<AuditPage>().items;
     const answered = audit.filter((e) => e.action === "review.answered");
     expect(answered.find((e) => e.detail.itemId === `confirm:${G2_TOTAL}`)!.detail).not.toHaveProperty("after");
     expect(String(answered.find((e) => e.detail.itemId === problem.id)!.detail.question)).not.toMatch(/\d{4,}/);
@@ -138,7 +140,7 @@ describe("M5/M6: request sizes and shapes", () => {
     const v0 = (await post(`/studies/${studyId}/versions/by-hand`, { by: "Avery" })).json<RulebookVersionDto>();
     const row = v0.rulebook!.budgetGrids[0]!.procedures[0]!;
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/procedures", value: [row, row], note: "x", by: "Avery" })).statusCode).toBe(200);
-    const [last] = (await get(`/audit?studyId=${studyId}`)).json<AuditEntryDto[]>();
+    const [last] = (await get(`/audit?studyId=${studyId}`)).json<AuditPage>().items;
     expect(last).toMatchObject({ action: "value.typed", by: "Avery", detail: { path: "/budgetGrids/0/procedures", items: 2 } });
   });
 });

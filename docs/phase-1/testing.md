@@ -1,23 +1,32 @@
 # Phase 1 · Integration testing (api + extraction + web together)
 
-Run against the real API (Postgres in Apple `container`, pg-boss jobs), the web in real-API mode (`dev:api`, `/api` rewrite), and `EXTRACTION_FAKE=1`, which now fakes **only the AI**: page images are rendered from the uploaded PDFs by `@dct/extraction`.
+Run against the real API (Postgres in Apple `container`, pg-boss jobs), a **production build** of the web in real-API mode (`/api` rewrite), and `EXTRACTION_FAKE=1`, which fakes **only the AI**: page images, the PDF's text layer and the evidence binder are the real ones from `@dct/extraction`.
 
 ## How to run the e2e journey
 
 ```sh
 apps/api/scripts/db.sh start          # also creates dct_finance_e2e
 pnpm install                          # @playwright/test is a root dev dependency; uses the installed Google Chrome
-pnpm e2e                              # synthetic, browser-printed PDFs
-DCT_ROOT=/Users/prateekkumar/dct-finance pnpm e2e   # from a worktree: also uploads two real contracts from data/contracts
+pnpm e2e                              # builds the web, starts both servers, runs e2e/journey.spec.ts
 ```
 
-- `playwright.config.ts` starts the API on :4100 (`EXTRACTION_FAKE=1`, database `dct_finance_e2e`, upload dir `$TMPDIR/dct-e2e-uploads`, both wiped by `apps/api/scripts/e2e-reset.ts`, which refuses any database not ending in `_e2e`) and `pnpm --filter web dev:api` on :3100. Ports 3100/4100 must be free.
+- `playwright.config.ts` runs everything on its own ports, so the dev servers on 3100 / 4100 keep running:
+  - API on **:4301** (`EXTRACTION_FAKE=1`, database `dct_finance_e2e`, upload dir `$TMPDIR/dct-e2e-uploads`, both wiped first by `apps/api/scripts/e2e-reset.ts`, which refuses any database not ending in `_e2e`; `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` set for the e2e web port).
+  - Web on **:3301**: `pnpm --filter web build` with `E2E=1`, which builds into `apps/web/.next-e2e` (the e2e `API_URL` is baked into the proxy at build time, and the dev server's `.next` is left alone), then `next start`. The build is the shipped one: same CSP and headers, no sample server.
+  - Ports 3301 / 4301 must be free. Postgres must be running on 5434.
 - Other browser: `PW_CHANNEL=chromium` after `pnpm exec playwright install chromium`.
-- The test fails on any browser console error, page error or API 5xx.
+- The test fails on any browser console error (CSP violations included), page error or HTTP 5xx.
+- The PDFs are synthetic, printed by the browser: a text PDF whose numbers match the fake reading (fees on page 1, the revised budget grid on page 2), so most numbers are confirmed against the PDF's own text, as with a DocuSign copy. Real contracts are never uploaded.
 
 ## What `e2e/journey.spec.ts` covers
 
-People in settings → upload 2 PDFs (real contracts, one over 10 MB) + the same file again → double-click "Identify" (one study) → refresh on the confirm step → confirm → progress → review with a real page image → click a grid value jumps to p.2 → inline edit: text in a money field refused, empty note refused, saved → refresh keeps it → sign-off locked with reasons → **Fix value** (VISIT_TOTAL_MISMATCH) → **Choose reading** (AI_DISAGREEMENT, empty choice refused) → **Compare & choose grid** (GRID_CONFLICT) → **Accept with note** (empty note refused, double-click saves once) → sign off (double-click) → browser back shows the signed version read-only → amendment upload (+ duplicate of a stored file, kind fixed to Amendment) → diff-only review, v1 still live → settle and sign v2 → v1 superseded → audit log newest first, each double-clicked action logged once → page image URLs with page 0 / past the end / 9999 / `abc` → 404, bad uuid → 400 → `.txt`, fake `.pdf` and a 51 MB file rejected with readable messages → failed amendment extraction → study page offers retry / **Enter manually** (seeded from live v2) → failed new-study extraction → refresh → Enter manually (double-click) → manual correction → maker-checker on blocks the corrector, another person signs.
+Security headers on a page (CSP with `frame-ancestors 'none'` and no `unsafe-eval`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, no `X-Powered-By`) → an unknown address and an unknown contract read as such, with a way back → settings: the name picker opens by itself, people added, a name picked → **add a contract**: upload, text-PDF badge, file kind changed, details filled from the cover pages, refresh keeps the step → **reading** and checking (numbers matched against the PDF) → **answering**, blind, one question at a time, including a **mismatch** (the AI's figure typed, the page asks which one it shows, the PDF text's value picked), a grid choice and a missing-document choice → **proofread** every checked number → **approve**: key terms ticked, initials typed → **live**: tablist by arrow keys, the value drawer by keyboard (Enter opens it with focus, Escape closes it and focus returns to the value) → in-contract **search** and **⌘K** (arrow keys + Enter to a rate, which opens that value) → **export**: the menu by keyboard, the Excel file downloaded (an xlsx), the printable summary in a new tab → **amendment** upload, version 1 stays live → **"This looks wrong"** on live version 1 is refused in words while version 2 is in progress; on the draft, a withheld value shows "Needs you"; reported there it becomes a question → version 2 answered (the reported value typed blind, the rest left for the approver) → the approver **sends one answer back** with a note → **alerts**: another person sees an unread count; the panel by keyboard (focus moves in, Escape returns it to the bell); the "sent back" alert opens that question with the note → **activity**: the audit log (paged, `limit=100`) holds every step, newest first.
+
+Not covered yet: maker-checker, typing a contract in by hand, failed readings, and the audit page's own paging and filters (the run only checks that it opens).
+
+## Earlier integration notes
+
+The rest of this page is the first integration pass (the anomaly-card review that the question flow replaced); kept for the bugs and decisions it records.
 
 Also checked by hand with curl/screenshots: Host/Origin guard through the Next proxy (Next forwards `Host: localhost:4100` and the browser's `Origin`, both allowed by default), 409 texts, `PATCH /settings` partial + `by`, anomaly ids with `:` and `/` URL-encoded, real contract page counts (pdf-lib and mupdf agree on all 4).
 

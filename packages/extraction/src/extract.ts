@@ -12,7 +12,7 @@ export type InputDoc = { id: string; filename: string; path: string; kind: Docum
 export type ExtractionOutput = {
   /** Primary read (Claude). */
   rulebook: Rulebook;
-  /** Second, independent read (OpenAI); null if unavailable. */
+  /** Second, independent read (CROSS_READ: Haiku or OpenAI); null if off or failed. */
   crossRead: Rulebook | null;
   pages: PageInfo[];
   cost: CostEntry[];
@@ -22,7 +22,7 @@ export type ExtractionOutput = {
   warnings: string[];
 };
 
-/** primary reads (Sonnet), fast sorts pages and identifies documents (Haiku; falls back to primary), cross re-reads (OpenAI). */
+/** primary reads (Sonnet), fast sorts pages and identifies documents (Haiku; falls back to primary), cross re-reads (Haiku or OpenAI). */
 export type Clients = { primary: LlmClient; cross: LlmClient | null; fast?: LlmClient | null };
 
 // Claude's vision input tops out at 2576 px long edge and ~3.75 MP; anything larger is downscaled
@@ -65,7 +65,7 @@ function budget(cap: number, what: string) {
   let used = 0;
   return {
     take(n: number) {
-      if (used + n > cap) throw new ExtractionLimitError(`This extraction needs more than ${cap} ${what} (limit); split the upload or raise the limit in CONFIG`);
+      if (used + n > cap) throw new ExtractionLimitError(`This read needs more than ${cap} ${what}, the limit for one contract. Split the upload into smaller PDFs.`);
       used += n;
     },
   };
@@ -75,10 +75,10 @@ function budget(cap: number, what: string) {
 async function countPages(documents: InputDoc[]): Promise<number[]> {
   const counts = await Promise.all(documents.map((d) => pageCount(d.path)));
   documents.forEach((d, i) => {
-    if (counts[i]! > CONFIG.maxPagesPerDoc) throw new ExtractionLimitError(`${d.filename} has ${counts[i]} pages; the limit is ${CONFIG.maxPagesPerDoc} per document`);
+    if (counts[i]! > CONFIG.maxPagesPerDoc) throw new ExtractionLimitError(`${d.filename} has ${counts[i]} pages; the limit is ${CONFIG.maxPagesPerDoc} per document. Split it into smaller PDFs and upload those.`);
   });
   const total = counts.reduce((a, b) => a + b, 0);
-  if (total > CONFIG.maxPagesTotal) throw new ExtractionLimitError(`The study's documents have ${total} pages in total; the limit is ${CONFIG.maxPagesTotal}`);
+  if (total > CONFIG.maxPagesTotal) throw new ExtractionLimitError(`The study's documents have ${total} pages in total; the limit is ${CONFIG.maxPagesTotal}.`);
   return counts;
 }
 
@@ -153,7 +153,7 @@ export async function extractWith(
 ): Promise<ExtractionOutput> {
   const progress = (pct: number, step: string) => onProgress?.(Math.round(pct), step);
   const warnings: string[] = [];
-  if (!documents.length) throw new Error("extractStudy: no documents");
+  if (!documents.length) throw new Error("There are no documents to read.");
 
   // Runaway cap on what was really spent: checked before every model call. ponytail: calls already in flight (a few, run in
   // parallel) can each still finish, so the overshoot is at most their cost. Upgrade: reserve each call's worst case first.
@@ -162,7 +162,7 @@ export async function extractWith(
     ...c,
     async call<T>(req: LlmRequest<T>): Promise<T> {
       if (spent() >= CONFIG.maxUsd)
-        throw new ExtractionLimitError(`This read has spent $${spent().toFixed(2)}, the $${CONFIG.maxUsd.toFixed(2)} limit per contract, so it was stopped before the next AI call`);
+        throw new ExtractionLimitError(`This read has spent $${spent().toFixed(2)}, the $${CONFIG.maxUsd.toFixed(2)} limit per contract, so it was stopped before the next AI call.`);
       return c.call(req);
     },
   });
@@ -265,14 +265,14 @@ export async function extractWith(
       const visits = res.grids.reduce((n, g) => n + g.visits.length, 0);
       const affordable = spent() + est.perGrid[i]! * 1.5 <= CONFIG.maxUsd;
       if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && isPrimary && !affordable)
-        warnings.push(`Budget grid ${i + 1}: ${bad} total(s) don't add up; re-read skipped to stay within the $${CONFIG.maxUsd.toFixed(2)} budget`);
+        warnings.push(`Budget grid ${i + 1}: ${bad} total(s) don't add up; the re-read was skipped to stay within the $${CONFIG.maxUsd.toFixed(2)} limit.`);
       if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && isPrimary && affordable) {
         tick(`Re-reading budget grid ${i + 1} (${bad} total(s) didn't add up)`);
         try {
           const again = await readGrid("high");
           if (gridMismatches(again.grids) < bad) res = again;
         } catch (e) {
-          warnings.push(`Re-read of budget grid ${i + 1} failed, kept the first read: ${(e as Error).message}`);
+          warnings.push(`The re-read of budget grid ${i + 1} failed, so the first read was kept: ${(e as Error).message}`);
         }
       }
       tick(`Read budget grid ${i + 1}/${groups.length} (${who})`);
@@ -286,13 +286,13 @@ export async function extractWith(
     read(clients.primary),
     clients.cross
       ? read(clients.cross).catch((e: unknown) => {
-          warnings.push(`Cross-read failed: ${(e as Error).message}`);
+          warnings.push(`The cross-read failed: ${(e as Error).message}`);
           return null;
         })
       : Promise.resolve(null),
   ]);
-  if (!clients.cross) warnings.push("Cross-read off (CROSS_READ=off or no key)");
-  if (spent() > CONFIG.maxUsd) warnings.push(`Cost $${spent().toFixed(2)} went over the $${CONFIG.maxUsd.toFixed(2)} budget (estimate was $${est.required.toFixed(2)})`);
+  if (!clients.cross) warnings.push("The cross-read is off (CROSS_READ=off, or no key).");
+  if (spent() > CONFIG.maxUsd) warnings.push(`The read cost $${spent().toFixed(2)}, over the $${CONFIG.maxUsd.toFixed(2)} limit (estimated $${est.required.toFixed(2)}).`);
 
   // 4. Mark each primary value agree/disagree with the second read.
   if (cross) markCrossCheck(primary.rulebook, cross.rulebook);
@@ -311,7 +311,7 @@ export async function extractWith(
 }
 
 /** Merge one provider's term + grid reads into a Rulebook that passes Rulebook.parse. */
-export function assemble(terms: AiTerms, grids: AiGrid[], docs: InputDoc[]): { rulebook: Rulebook; notes: ExtractionNote[] } {
+function assemble(terms: AiTerms, grids: AiGrid[], docs: InputDoc[]): { rulebook: Rulebook; notes: ExtractionNote[] } {
   const { notes, ...t } = terms;
   const documents = docs.map((d) => {
     const m = t.documents.find((x) => x.id === d.id);
@@ -343,7 +343,7 @@ const DIGIT_RUN = /\b(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){7,}\b/g;
 const BIC = /\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/;
 
 /** Long digit runs and IBANs go; a string about a bank that still carries an account or SWIFT code goes whole. */
-export function scrub(s: string): string {
+function scrub(s: string): string {
   const t = s.replace(IBAN, "[redacted]").replace(DIGIT_RUN, "[redacted]");
   return BANKISH.test(t) && (t.includes("[redacted]") || BIC.test(t)) ? "[redacted]" : t;
 }
@@ -401,7 +401,7 @@ export function gridMismatches(grids: AiGrid[]): number {
 }
 
 /** Claude image tokens ≈ width × height / 750 (read from the PNG header). */
-export function imageTokens(png: Buffer): number {
+function imageTokens(png: Buffer): number {
   return Math.ceil((png.readUInt32BE(16) * png.readUInt32BE(20)) / 750);
 }
 
@@ -409,7 +409,7 @@ export function imageTokens(png: Buffer): number {
  * Rough USD estimate of the required reads (terms + grids, primary + terms cross-read) and per grid.
  * Output allowances are generous on purpose: the check refuses up front rather than overspend.
  */
-export function estimateUsd(clients: Clients, termImages: Image[], gridImages: Image[][]) {
+function estimateUsd(clients: Clients, termImages: Image[], gridImages: Image[][]) {
   const price = (c: LlmClient | null | undefined) => (c && c.provider === "anthropic" ? priceOf(c.model) : null);
   const p = price(clients.primary) ?? priceOf("claude-sonnet-5-5");
   const termsTok = termImages.reduce((n, i) => n + imageTokens(i.png), 0) + 3000;

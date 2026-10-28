@@ -3,7 +3,7 @@
  * pnpm --filter @dct/extraction score [name...]  score saved outputs only (no AI calls)
  *
  * Repo root (for .env and data/) = DCT_ROOT, else two levels above this package.
- * Prints values and scores only; never contract text.
+ * Prints counts and scores only; never contract text or amounts.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -91,7 +91,8 @@ console.log("\n");
 console.table(table);
 const totalUsd = rows.reduce((a, r) => a + (r.usd ?? 0), 0);
 console.log(`Total cost: $${totalUsd.toFixed(2)} (avg $${(totalUsd / rows.length).toFixed(2)} per contract)`);
+// Misses as counts per category: their text names items and amounts of the contract.
 for (const r of rows) {
-  console.log(`\n[${r.score.name}] anomalies: ${r.anomalies || "none"}`);
-  for (const m of r.score.misses) console.log(`  miss  ${m}`);
+  const misses = r.score.categories.filter((c) => c.hit < c.total).map((c) => `${c.name} ${c.total - c.hit}`);
+  console.log(`\n[${r.score.name}] anomalies: ${r.anomalies || "none"}; misses: ${misses.join(", ") || "none"}`);
 }

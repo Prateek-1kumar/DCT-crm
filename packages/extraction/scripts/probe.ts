@@ -6,6 +6,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ZodType } from "zod";
 import { anthropicClient, DEFAULT_FAST_MODEL, openaiClient, type LlmClient } from "../src/llm";
 import { AiGrids, AiIdentify, AiPages, AiTermsItems, AiTermsPayment, AiTermsStudy } from "../src/prompts";
 
@@ -20,7 +21,7 @@ if (!clients.length) {
   process.exit(0);
 }
 
-const schemas = { AiPages, AiIdentify, AiTermsItems, AiTermsPayment, AiTermsStudy, AiGrids };
+const schemas: Record<string, ZodType> = { AiPages, AiIdentify, AiTermsItems, AiTermsPayment, AiTermsStudy, AiGrids };
 // Page sorting and identify run on the fast model (Haiku).
 if (process.env.ANTHROPIC_API_KEY) clients.push(anthropicClient({ apiKey: process.env.ANTHROPIC_API_KEY, model: process.env.ANTHROPIC_FAST_MODEL || DEFAULT_FAST_MODEL }));
 let failed = 0;

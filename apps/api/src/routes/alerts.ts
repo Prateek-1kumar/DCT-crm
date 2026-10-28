@@ -1,4 +1,4 @@
-import { AlertListQuery, type AlertPage, ReadAlertsBody } from "@dct/shared";
+import { AlertListQuery, type AlertPage, blankNumbers, ReadAlertsBody } from "@dct/shared";
 import { count, desc, eq, inArray, not, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
@@ -51,7 +51,8 @@ export const alertRoutes =
           at: a.createdAt.toISOString(),
           by: a.by,
           count: a.count,
-          note: a.note,
+          // everyone sees every alert, and a send-back note can name the value being answered again blind
+          note: a.note && blankNumbers(a.note),
           read,
         })),
         unread: await unreadFor(q.for),

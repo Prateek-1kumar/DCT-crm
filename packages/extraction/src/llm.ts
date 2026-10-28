@@ -29,7 +29,7 @@ export interface LlmClient {
   cost(): CostEntry;
 }
 
-export class LlmError extends Error {}
+class LlmError extends Error {}
 
 const TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_RETRIES = 3;
@@ -43,7 +43,7 @@ const ANTHROPIC_PRICES: Record<string, { in: number; out: number; cacheWrite: nu
 };
 
 /** Defaults (user decision 2026-10-26): no Opus. Sonnet reads, Haiku sorts pages. Override via env. */
-export const DEFAULT_MODEL = "claude-sonnet-5-5";
+const DEFAULT_MODEL = "claude-sonnet-5-5";
 
 /** USD per million tokens for budget estimates; unknown models are priced as the default model. */
 export const priceOf = (model: string) => ANTHROPIC_PRICES[model] ?? ANTHROPIC_PRICES[DEFAULT_MODEL]!;
@@ -59,10 +59,10 @@ async function withParseRetry<T>(name: string, schema: z.ZodType<T>, attempt: ()
       if (r.success) return r.data;
       lastErr = z.prettifyError(r.error).slice(0, 2000);
     } catch (e) {
-      lastErr = `invalid JSON: ${(e as Error).message}`;
+      lastErr = `not JSON: ${(e as Error).message}`;
     }
   }
-  throw new LlmError(`${name}: model output did not match the schema: ${lastErr}`);
+  throw new LlmError(`The AI's answer for "${name}" didn't have the expected shape, twice: ${lastErr}`);
 }
 
 export function anthropicClient(opts: { apiKey: string; model?: string }): LlmClient {
@@ -107,8 +107,8 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
         usage.input += u.input_tokens + cacheW + cacheR;
         usage.output += u.output_tokens;
         if (price) usage.usd += (u.input_tokens * price.in + cacheW * price.cacheWrite + cacheR * price.cacheRead + u.output_tokens * price.out) / 1e6;
-        if (msg.stop_reason === "refusal") throw new LlmError(`${req.name}: model refused (${msg.stop_details?.category ?? "no category"}) even after fallback`);
-        if (msg.stop_reason === "max_tokens") throw new LlmError(`${req.name}: output hit max_tokens`);
+        if (msg.stop_reason === "refusal") throw new LlmError(`The AI declined to read "${req.name}" (${msg.stop_details?.category ?? "no category given"}), even with the fallback model.`);
+        if (msg.stop_reason === "max_tokens") throw new LlmError(`The AI's answer for "${req.name}" was cut off at its length limit.`);
         return msg.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
       });
     },
@@ -152,7 +152,7 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
         });
         usage.input += res.usage?.input_tokens ?? 0;
         usage.output += res.usage?.output_tokens ?? 0;
-        if (res.status === "incomplete") throw new LlmError(`${req.name}: OpenAI response incomplete (${res.incomplete_details?.reason ?? "unknown"})`);
+        if (res.status === "incomplete") throw new LlmError(`The OpenAI answer for "${req.name}" is incomplete (${res.incomplete_details?.reason ?? "no reason given"}).`);
         return res.output_text;
       });
     },
@@ -161,10 +161,9 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
 
 const round = (usd: number) => Math.round(usd * 10000) / 10000;
 
-/** Build clients from env. Missing key/model → null (caller decides whether that's fatal). */
 /**
- * CROSS_READ picks the second reader: "haiku" (default; ~1–2 cents per contract), "openai"
- * (OPENAI_MODEL; costs more than the primary read), or "off". Cost decision 2026-10-26: $1/contract max.
+ * Clients from env; a missing key or model gives null (the caller decides whether that's fatal). CROSS_READ picks the
+ * second reader: "haiku" (default; ~1–2 cents per contract), "openai" (OPENAI_MODEL; costs more than the primary read), or "off".
  */
 export function clientsFromEnv(env: NodeJS.ProcessEnv = process.env): { primary: LlmClient | null; fast: LlmClient | null; cross: LlmClient | null } {
   const key = env.ANTHROPIC_API_KEY;

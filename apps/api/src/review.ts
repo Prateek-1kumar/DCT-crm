@@ -1,6 +1,7 @@
 import type { TextPage } from "@dct/extraction";
 import {
   AnswerReviewBody,
+  blankNumbers,
   type ContractAnomaly,
   ENUM_LABELS,
   type PageBox,
@@ -53,34 +54,42 @@ export const needsYouOf = (v: { status: string; byHand: boolean; review: ReviewI
 /** On a draft, every value with an open question: withheld from every response until it's answered (@dct/shared withheldPaths). */
 export const hiddenPaths = withheldPaths;
 
-// amounts and percentages: with a $ or %, grouped by commas, with decimals, or 3+ digits; not "V2", "Week 0" or "page 4"
-const AMOUNTS = /\$\s?\d[\d,]*(?:\.\d+)?|\d+(?:\.\d+)?\s?%|(?<![\w.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?<![\w.,])\d+\.\d+|(?<![\w.,])\d{3,}/g;
-/** A question's numbers blanked, for when they could give a withheld value away. */
-const blankAmounts = (s: string) => s.replace(AMOUNTS, "…");
 const gridOf = (path: string | null) => /^\/budgetGrids\/\d+\//.exec(path ?? "")?.[0];
 
 /**
+ * Whether a question's notes (and a contract problem's wording) could give a withheld value away: its value is withheld,
+ * or, for a contract problem (item id `anomaly:<code>:<path>`), a value in the grid it's about. A contract problem's
+ * question quotes the read numbers of its grid ("printed total $8,489.00 ≠ …").
+ */
+export function blindItem(i: Pick<ReviewItem, "id" | "path">, hidden: Set<string>): boolean {
+  if (i.path && hidden.has(i.path)) return true;
+  if (!i.id.startsWith("anomaly:")) return false;
+  const path = i.id.replace(/^anomaly:[A-Z_]+:/, "");
+  const grid = gridOf(path);
+  return hidden.has(path) || (!!grid && [...hidden].some((p) => p.startsWith(grid)));
+}
+
+/**
  * The questions as a response may show them while values are withheld. An earlier, settled question about a value that's
- * open again (reported, sent back) keeps its outcome but not the answer or comparison, which hold the value. A contract
- * problem's question quotes the read numbers of its grid ("printed total $8,489.00 ≠ …"), so they're blanked while a
- * value in that grid is withheld.
+ * open again (reported, sent back) keeps its outcome but not the answer or comparison, which hold the value. Notes about
+ * a withheld value (an answer's, a send-back's, the "This looks wrong" report's: "Should be $104") have their numbers
+ * blanked (blankNumbers) until its question is settled, and so does a contract problem's wording.
  */
 export function blindReview(review: ReviewItem[], hidden: string[]): ReviewItem[] {
   if (!hidden.length) return review;
   const h = new Set(hidden);
   return review.map((i) => {
-    let out = i;
-    if (i.path && h.has(i.path) && settled(i)) out = { ...out, answer: out.answer && { ...out.answer, value: undefined, optionId: undefined }, compare: null };
-    if (i.id.startsWith("anomaly:")) out = { ...out, question: blindQuestion(i.id, out.question, h) };
+    if (!blindItem(i, h)) return i;
+    const out = {
+      ...i,
+      answer: i.answer && { ...i.answer, ...(i.answer.note ? { note: blankNumbers(i.answer.note) } : {}) },
+      sentBack: i.sentBack && { ...i.sentBack, note: blankNumbers(i.sentBack.note) },
+      ...(i.reported ? { reported: { ...i.reported, note: blankNumbers(i.reported.note) } } : {}),
+    };
+    if (i.path && h.has(i.path) && settled(i)) Object.assign(out, { answer: out.answer && { ...out.answer, value: undefined, optionId: undefined }, compare: null });
+    if (i.id.startsWith("anomaly:")) out.question = blankNumbers(i.question);
     return out;
   });
-}
-
-/** A contract problem's question (item id `anomaly:<code>:<path>`), its numbers blanked while its value or a value in its grid is withheld. */
-export function blindQuestion(itemId: string, question: string, hidden: Set<string>): string {
-  const path = itemId.replace(/^anomaly:[A-Z_]+:/, "");
-  const grid = gridOf(path);
-  return hidden.has(path) || (grid && [...hidden].some((p) => p.startsWith(grid))) ? blankAmounts(question) : question;
 }
 
 /**
@@ -112,10 +121,12 @@ const fieldKey = (path: string) => {
   const [last, prev] = [t.at(-1) ?? "", t.at(-2)];
   return last === "value" && prev && !/^\d+$/.test(prev) ? prev : last;
 };
-const inputFor = (path: string, value: unknown): NonNullable<ReviewItem["input"]> => {
+/** A cap's limit is cents when its kind says it caps an amount; every other value's unit is in its own name. */
+const amountCap = (rb: Rulebook, path: string) => /\/cap\/n$/.test(path) && at(rb, path.replace(/n$/, "kind")) === "amount";
+const inputFor = (rb: Rulebook, path: string, value: unknown): NonNullable<ReviewItem["input"]> => {
   const key = fieldKey(path);
   if (/date|appliesFrom/i.test(key)) return "date";
-  if (/cents$/i.test(key) || path.includes("/cells/")) return "money";
+  if (/cents$/i.test(key) || path.includes("/cells/") || amountCap(rb, path)) return "money";
   if (/pct$/i.test(key)) return "percent";
   if (typeof value === "number" || (value === null && /days|value$|^n$|count|ratio/i.test(key))) return "number";
   return "text";
@@ -134,7 +145,7 @@ export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, 
     typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }]
     : list && (value as string) in list ? Object.entries(list).map(([k, l]) => ({ id: k, label: l }))
     : [];
-  const input = options.length ? null : inputFor(path, value);
+  const input = options.length ? null : inputFor(rb, path, value);
   const ev = evidence.find((e) => e.path === path)?.where[0];
   const src = provOf(rb, path)?.source;
   return {
@@ -182,6 +193,20 @@ function byTotals(rb: Rulebook) {
   };
 }
 
+/**
+ * One flag per root cause: a check about a value that's being typed is covered by its question, and a total that doesn't
+ * add up isn't asked while a number in its grid's visits, rows or per-patient totals is being typed (its overhead % alone
+ * doesn't hold it back). Held back is never dropped: recheck runs these on the typed numbers. An overhead label that
+ * doesn't match what the amounts compute to is asked whatever is being typed.
+ * ponytail: per grid, not per visit. Upgrade: only the visit whose numbers are asked.
+ */
+function heldBack(a: ContractAnomaly, asked: Set<string>): boolean {
+  if (a.code === "OVERHEAD_LABEL_MISMATCH") return false;
+  if (a.path && asked.has(a.path)) return true;
+  const grid = gridOf(a.path);
+  return ARITHMETIC.has(a.code) && !!grid && [...asked].some((p) => p.startsWith(grid) && /^(visits|procedures|perPatientTotals)\//.test(p.slice(grid.length)));
+}
+
 // The cross-read, its text-layer page check and self-reported confidence are not evidence (ADR-001 §4, §6): the binder replaces them.
 const SUPERSEDED = new Set<ContractAnomaly["code"]>(["TEXT_LAYER_MISMATCH", "AI_DISAGREEMENT", "LOW_CONFIDENCE"]);
 const ARITHMETIC = new Set<ContractAnomaly["code"]>(["VISIT_TOTAL_MISMATCH", "PER_PATIENT_TOTAL_MISMATCH"]);
@@ -193,11 +218,7 @@ const AS_PRINTED = [{ id: "as_printed", label: "Yes, go ahead as printed" }];
  */
 function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked: Set<string>): ReviewItem[] {
   return anomalies.flatMap((a): ReviewItem[] => {
-    if (SUPERSEDED.has(a.code) || (a.path && asked.has(a.path))) return [];
-    // One flag per root cause: a total that doesn't add up isn't asked while a number in its grid is being typed.
-    // ponytail: per grid, not per visit. Upgrade: only the visit whose numbers are asked.
-    const grid = /^\/budgetGrids\/\d+\//.exec(a.path ?? "")?.[0];
-    if (ARITHMETIC.has(a.code) && grid && [...asked].some((p) => p.startsWith(grid))) return [];
+    if (SUPERSEDED.has(a.code) || heldBack(a, asked)) return [];
     const base = {
       ...BLANK,
       id: `anomaly:${a.id}`,
@@ -223,6 +244,30 @@ function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked: Set<st
       return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} How should we go on?`, options: [{ id: "later", label: "Go ahead; I'll upload it later" }, { id: "not_needed", label: "It doesn't affect billing" }] }];
     return [{ ...base, kind: a.code === "AMBIGUOUS_TERM" ? "interpretation" : "contract_problem", question: `${sentence(a.message)} Go ahead with the contract as printed?`, options: AS_PRINTED }];
   });
+}
+
+/** Checks whose truth depends on numbers a person may type: held back while they're open (heldBack), then run again. */
+const RECHECKED = new Set<ContractAnomaly["code"]>([...ARITHMETIC, "OVERHEAD_LABEL_MISMATCH"]);
+
+/**
+ * The checks don't run again by themselves, so a total held back while its grid's numbers were typed would never be
+ * asked. Once the last number of a grid is answered, its arithmetic checks run on the typed numbers, and each finding is
+ * asked unless it's a question here already, or the read found it on the same numbers and asked it then (a correction
+ * draft's checks were settled on the live version). New findings (typed numbers that no longer add up) are asked too.
+ * Not for a contract typed by hand: its read never ran the checks.
+ */
+export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: Pick<Draft, "byHand" | "rulebook" | "review"> & { anomalies: ContractAnomaly[] }, path: string): ReviewItem[] {
+  const grid = gridOf(path);
+  if (v.byHand || !grid || openItems(v.review).some((i) => i.kind === "confirm_value" && i.path?.startsWith(grid))) return [];
+  // what the read asked: its value questions, and the checks it didn't hold back
+  const readAsked = new Set(v.review.flatMap((i) => (i.id.startsWith("confirm:") && i.path ? [i.path] : [])));
+  const askedAtRead = new Set(v.anomalies.filter((a) => !SUPERSEDED.has(a.code) && !heldBack(a, readAsked)).map((a) => a.id));
+  const read = new Map(v.anomalies.map((a) => [a.id, a.message]));
+  const have = new Set(v.review.map((i) => i.id));
+  const found = checks(v.rulebook).filter(
+    (a) => RECHECKED.has(a.code) && gridOf(a.path) === grid && !have.has(`anomaly:${a.id}`) && !(read.get(a.id) === a.message && askedAtRead.has(a.id)),
+  );
+  return fromAnomalies(found, v.rulebook, new Set());
 }
 
 /** Scan pages can't be swept for money terms, so a person attests each one (ADR-001 §3, I5); hidden text is shown to a person. */
@@ -278,8 +323,11 @@ const same = (a: unknown, b: unknown) =>
   Array.isArray(a) && Array.isArray(b) ? JSON.stringify(a.map(norm).sort()) === JSON.stringify(b.map(norm).sort()) : JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 export const empty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length);
 
-/** The PDF text at the value's spot as the input type, parsed the way the web parses it (lib/review.ts parseAnswer); undefined when it doesn't parse. */
-function parsePrinted(input: ReviewItem["input"], printed: string | null): unknown {
+/**
+ * The PDF text at the value's spot as the input type, parsed the way the web parses it (lib/review.ts parseAnswer), and a
+ * date the way the binder reads it ("August 22, 2025"); undefined when it doesn't parse.
+ */
+function parsePrinted(input: ReviewItem["input"], printed: string | null, isoDate: (text: string) => string | null): unknown {
   // the sentence's full stop or comma after the number isn't part of it ("$7,455.00.")
   const t = printed?.trim().replace(/[.,;:]+$/, "");
   if (!t) return undefined;
@@ -293,7 +341,7 @@ function parsePrinted(input: ReviewItem["input"], printed: string | null): unkno
     const n = Number(t.replace(/[,%\s]/g, ""));
     return Number.isFinite(n) ? n : undefined;
   }
-  if (input === "date") return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : undefined;
+  if (input === "date") return isoDate(t) ?? undefined;
   return t;
 }
 
@@ -306,13 +354,18 @@ function optionValue(item: ReviewItem, optionId: string, current: unknown): { pa
 
 export type Draft = { version: number; byHand: boolean; rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[] };
 
+const WHY = "Add a short note saying why the PDF text is wrong here.";
+const WHERE = "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.";
+
 /**
  * POST .../review/:itemId on a draft (mutates `v`). A typed value is compared with the PDF's own text at its spot, or,
- * where nothing is printed there, with the value we hold: matched, or differs (then picking a value settles it as chosen;
- * keeping your own over the PDF text needs a note). Options are chosen. Can't tell is left for the approver. Answering
- * again changes the answer. Returns what was written to the master, for the audit log.
+ * where nothing is printed there, with the value we hold: matched, or differs (then picking a value settles it as chosen).
+ * Settling a differs needs a note: keeping your own value over the PDF text says why the text is wrong; where the PDF's
+ * text prints nothing (a scan, a value the check didn't find, a pick), either value says where the page prints it, and the
+ * answer is marked `noPdfText` for the approver. Options are chosen. Can't tell is left for the approver. Answering again
+ * changes the answer. Returns what was written to the master, for the audit log.
  */
-export function answer(v: Draft, itemId: string, raw: unknown, now = new Date().toISOString()) {
+export function answer(v: Draft, itemId: string, raw: unknown, isoDate: (text: string) => string | null, now = new Date().toISOString()) {
   const item = v.review.find((i) => i.id === itemId);
   if (!item) throw new HttpError(404, "Question not found");
   const parsed = AnswerReviewBody.safeParse(raw);
@@ -325,8 +378,10 @@ export function answer(v: Draft, itemId: string, raw: unknown, now = new Date().
   let value = b.value;
   if (Array.isArray(current) && typeof value === "string") value = value.split(",").map((x) => x.trim()).filter(Boolean);
   const ev = item.path ? v.evidence.find((e) => e.path === item.path) : undefined;
+  const note = b.note?.trim();
   let outcome: NonNullable<ReviewItem["outcome"]>;
   let set: { path: string; value: unknown } | undefined;
+  let noPdfText = false;
   if (b.cantTell) outcome = "cant_tell";
   else if (item.options.length) {
     if (!item.options.some((o) => o.id === b.optionId)) throw new HttpError(400, "Pick one of the options.");
@@ -334,15 +389,20 @@ export function answer(v: Draft, itemId: string, raw: unknown, now = new Date().
     // A yes/no or fixed-list value is checked like a typed one: against the value we hold (a re-type of a hand-typed
     // value, "This looks wrong"). A missing one has nothing to check against; a second pick after "differs" settles it.
     const checkable = set && item.kind === "confirm_value" && item.reason !== "REQUIRED_MISSING" && !empty(current) && item.outcome !== "differs";
+    // a pick is never in the PDF's text
+    if (item.outcome === "differs" && !note) throw new HttpError(400, WHERE);
+    noPdfText = item.outcome === "differs";
     outcome = checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
     if (outcome === "differs") set = undefined;
   } else {
     if (value === undefined || value === null || value === "") throw new HttpError(400, "Type a value, or say you can't tell.");
     if (item.path && !fits(v.rulebook, item.path, value)) throw new HttpError(400, "That value can't go in this field. Check what you typed.");
-    const printed = parsePrinted(item.input, ev?.printed ?? null);
+    const printed = parsePrinted(item.input, ev?.printed ?? null, isoDate);
     const truth = printed ?? (empty(current) ? undefined : current);
     if (item.outcome === "differs") {
-      if (printed !== undefined && !same(value, printed) && !b.note?.trim()) throw new HttpError(400, "Add a short note saying why the PDF text is wrong here.");
+      if (printed === undefined && !note) throw new HttpError(400, WHERE);
+      if (printed !== undefined && !same(value, printed) && !note) throw new HttpError(400, WHY);
+      noPdfText = printed === undefined;
       outcome = "chosen";
     } else if (truth === undefined) outcome = "chosen";
     else outcome = same(value, truth) ? "matched" : "differs";
@@ -353,7 +413,7 @@ export function answer(v: Draft, itemId: string, raw: unknown, now = new Date().
   item.compare = outcome === "differs" ? { typed: picked ?? value, read: current ?? null, printed: ev?.printed ?? null } : null;
   // Only what was answered is kept: a value sent along with a pick or "can't tell" isn't stored.
   const typed = !b.cantTell && !item.options.length;
-  item.answer = { value: typed ? value : undefined, optionId: b.optionId, cantTell: b.cantTell, note: b.note?.trim() || undefined, by: b.by, at: now };
+  item.answer = { value: typed ? value : undefined, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at: now };
   item.sentBack = null;
   item.outcome = outcome;
   const before = set ? at(v.rulebook, set.path) : undefined;

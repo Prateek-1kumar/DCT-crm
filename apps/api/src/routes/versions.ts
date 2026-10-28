@@ -23,7 +23,8 @@ import { appliesFromOf, assertDraft, audit, CORRECTION_OPENED, loadVersion, rais
 import { diffRulebooks, itemIds, labelFor } from "../lib/diff.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
-import { answer, askAbout, at, empty, hiddenPaths, leaf, mask } from "../review.js";
+import { getExtraction } from "../extraction/port.js";
+import { answer, askAbout, at, empty, hiddenPaths, leaf, mask, recheck } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
 const versionNo = (v: unknown) => {
@@ -164,13 +165,16 @@ export const versionRoutes =
     });
 
     /** One answer to one question (AnswerReviewBody); answering again changes it while the version is a draft. */
-    app.post<{ Params: { id: string; v: string; itemId: string } }>("/studies/:id/versions/:v/review/:itemId", async (req) =>
-      db.transaction(async (tx) => {
+    app.post<{ Params: { id: string; v: string; itemId: string } }>("/studies/:id/versions/:v/review/:itemId", async (req) => {
+      const port = await getExtraction();
+      return db.transaction(async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.rulebook) throw new HttpError(409, `Version ${row.version} is ${row.status}; only a draft takes answers.`);
         const draft = { version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors] };
-        const { item, outcome, changed, set } = answer(draft, req.params.itemId, req.body);
+        const { item, outcome, changed, set } = answer(draft, req.params.itemId, req.body, port.isoDate);
         const { by, note } = item.answer!;
+        // the grid's held-back totals, checked on the typed numbers once its last one is answered
+        if (set) draft.review.push(...recheck((rb) => port.runContractChecks(rb), { ...draft, anomalies: row.anomalies }, set.path));
         const [updated] = await tx
           .update(rulebookVersions)
           .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: new Date() })
@@ -185,8 +189,8 @@ export const versionRoutes =
           : { path: set.path, before: set.before, after: set.after, items: itemIds(row.rulebook, parsePointer(set.path)) };
         await audit(tx, by, row.studyId, changed ? "review.changed" : "review.answered", { version: row.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote });
         return versionDto(updated!);
-      }),
-    );
+      });
+    });
 
     /**
      * "This looks wrong". On a draft: a blocking blind question about the value. On the live version: a correction draft
@@ -215,7 +219,8 @@ export const versionRoutes =
           await audit(tx, by, row.studyId, CORRECTION_OPENED, { version: draft.version, seededFromVersion: row.version });
         } else if (row.status !== "draft" || row.byHand) throw new HttpError(409, `Version ${row.version} is ${row.status}; report a value on the live version or a draft.`);
         if (draft.review.some((i) => i.path === path && !settled(i))) throw new HttpError(409, "There's already an open question about this value.");
-        const item = askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported");
+        // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
+        const item = { ...askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported"), reported: { by, note, at: new Date().toISOString() } };
         const [updated] = await tx.update(rulebookVersions).set({ review: [...draft.review, item], updatedAt: new Date() }).where(eq(rulebookVersions.id, draft.id)).returning();
         await refreshStudyStatus(tx, row.studyId, by);
         await audit(tx, by, row.studyId, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, path, value: labelFor(draft.rulebook, path), note });
@@ -264,7 +269,8 @@ export const versionRoutes =
         // Its own alert, with the note; no "questions ready" on top.
         await refreshStudyStatus(tx, row.studyId, by, { alert: false });
         await raiseAlert(tx, { kind: "sent_back", studyId: row.studyId, version: row.version, by, count: items.length, note });
-        await audit(tx, by, row.studyId, "review.sent_back", { version: row.version, questions: items.length, note });
+        // which questions, so the log can blank the note while they're open again
+        await audit(tx, by, row.studyId, "review.sent_back", { version: row.version, questions: items.length, itemIds: items.map((i) => i!.id), note });
         return versionDto(updated!);
       });
     });

@@ -16,7 +16,9 @@ const kindFromName = (filename: string, i: number): DocumentKind => {
 function fixture(docs: InputDoc[]): Rulebook {
   const documentId = docs[0]?.id ?? "d1";
   const prov = { source: { documentId, page: 1 }, confidence: 0.98, method: "ai", crossCheck: "agree" } as const;
-  const s = <T>(value: T) => ({ value, prov });
+  const s = <T>(value: T, p: typeof prov = prov) => ({ value, prov: p });
+  // a rule's value is checked inside the sentence it quotes (test/helpers.ts makeTextPdf prints these)
+  const quoted = (quote: string) => ({ ...prov, source: { ...prov.source, quote } });
   const amended = docs.some((d) => d.kind === "amendment" || /amend/i.test(d.filename));
   // grids are on page 2, so "show in contract" visibly jumps
   const gridProv = { ...prov, source: { documentId, page: 2 } };
@@ -45,7 +47,7 @@ function fixture(docs: InputDoc[]): Rulebook {
       protocol: s("SYN-001"),
       siteName: s("Site A"),
       investigator: s("Dr. Test"),
-      effectiveDate: s("2025-08-22"),
+      effectiveDate: s("2025-08-22", quoted("effective as of August 22, 2025")),
       currency: "USD",
     },
     documents: docs.map((d) => ({ id: d.id, kind: d.kind ?? "other", title: d.filename, date: null })),
@@ -77,11 +79,11 @@ function fixture(docs: InputDoc[]): Rulebook {
         prov,
       },
     ],
-    screenFail: { amountCents: 745500, basis: "fixed", cap: { kind: "blocks_with_reauth", n: 7, ratio: null }, paidVia: "invoice", requiredDocs: ["eCRFs", "detailed invoice"], prov },
+    screenFail: { amountCents: 745500, basis: "fixed", cap: { kind: "blocks_with_reauth", n: 7, ratio: null }, paidVia: "invoice", requiredDocs: ["eCRFs", "detailed invoice"], prov: quoted("paid up to a maximum of 7 before the Sponsor approves more") },
     siteFees: [
       // the amendment adds a fee in front (same amount), so index-based paths now point at a different item
       ...(amended ? [{ code: "SC001", name: "Start-up fee", amountCents: 1200000, trigger: "one_time" as const, dueDays: 30, prov }] : []),
-      { code: "SC003", name: "Administrative fee", amountCents: 1200000, trigger: "study_initiation", dueDays: 45, prov },
+      { code: "SC003", name: "Administrative fee", amountCents: 1200000, trigger: "study_initiation", dueDays: 45, prov: quoted("due within 45 days of study initiation") },
     ],
     holdback: null,
     deadlines: [{ kind: "invoice_months_after_study_close", value: 6, consequence: "may not be approved", prov }],

@@ -1,4 +1,4 @@
-import type { AuditEntryDto, DiffEntry, DocumentDto, RulebookVersionDto, StudyDetailDto, StudyPage } from "@dct/shared";
+import type { AuditPage, DiffEntry, DocumentDto, RulebookVersionDto, StudyDetailDto, StudyPage } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
@@ -20,7 +20,8 @@ beforeEach(async () => {
 const get = async <T>(url: string) => (await app.inject({ url })).json<T>();
 const study = (id: string) => get<StudyDetailDto>(`/api/v1/studies/${id}`);
 const version = (id: string, v: number) => get<RulebookVersionDto>(`/api/v1/studies/${id}/versions/${v}`);
-const auditActions = async (studyId: string) => (await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`)).map((a) => a.action);
+const auditOf = async (studyId: string) => (await get<AuditPage>(`/api/v1/audit?studyId=${studyId}&limit=100`)).items;
+const auditActions = async (studyId: string) => (await auditOf(studyId)).map((a) => a.action);
 const post = (url: string, payload: object) => app.inject({ method: "POST", url, payload });
 const patch = (url: string, payload: object) => app.inject({ method: "PATCH", url, payload });
 const answer = (studyId: string, v: number, item: string, body: object) => post(`/api/v1/studies/${studyId}/versions/${v}/review/${encodeURIComponent(item)}`, { by: "Sam", ...body });
@@ -73,7 +74,7 @@ describe("extraction", () => {
     expect((await storedVersion(built, studyId, 1)).anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "GRID_CONFLICT", "MISSING_REFERENCED_DOC", "VISIT_TOTAL_MISMATCH"]);
     const [summary] = (await get<StudyPage>("/api/v1/studies")).items;
     expect(summary).toMatchObject({ status: "needs_review", needsYou: 8, openAnomalies: 8, liveVersion: null });
-    expect((await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`))[0]).toMatchObject({ action: "extraction.completed", detail: { questions: 8, pdfCheck: { values: 31, matched: 27 } } });
+    expect((await auditOf(studyId))[0]).toMatchObject({ action: "extraction.completed", detail: { questions: 8, pdfCheck: { values: 36, matched: 32 } } });
     // a draft is under review: no second extraction on top of it
     expect((await post(`/api/v1/studies/${studyId}/extract`, {})).statusCode).toBe(409);
   });
@@ -82,7 +83,9 @@ describe("extraction", () => {
     const { studyId } = await newStudy(app, "s");
     fakeControls.failNext = 1;
     const first = await extract(app, studyId);
-    expect(first.job).toMatchObject({ state: "failed", error: "fake extraction failure" });
+    // plain words for people; the reader's own reason kept for the team
+    expect(first.job).toMatchObject({ state: "failed", error: "Something went wrong while reading. Try again; if it keeps happening, tell the team.", detail: "fake extraction failure" });
+    expect((await get<AuditPage>(`/api/v1/audit?studyId=${studyId}`)).items[0]).toMatchObject({ action: "extraction.failed", detail: { error: first.job.error, detail: "fake extraction failure" } });
     expect((await study(studyId)).status).toBe("extraction_failed");
     expect((await version(studyId, 1)).status).toBe("failed");
 
@@ -171,7 +174,7 @@ describe("amendment carries the live version's corrections", () => {
     await extract(app, studyId);
     expect((await answer(studyId, 1, `confirm:${g2Total}`, { value: 848900 })).statusCode).toBe(200); // the page prints 8,489.00
     await answer(studyId, 1, `confirm:${netDays}`, { value: 30 }); // differs from the read 45…
-    await answer(studyId, 1, `confirm:${netDays}`, { value: 30 }); // …and kept: no PDF text to say otherwise
+    await answer(studyId, 1, `confirm:${netDays}`, { value: 30, note: "§4.2 on page 1" }); // …and kept: no PDF text, so the note says where
     await answer(studyId, 1, "anomaly:GRID_CONFLICT:/budgetGrids/0", { optionId: "g2" });
     await settleAll(built, studyId, 1);
     expect((await post(`/api/v1/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
@@ -190,7 +193,7 @@ describe("amendment carries the live version's corrections", () => {
     expect(v2.review.map((i) => i.reason)).not.toContain("GRID_CONFLICT");
     expect(v2.editors).toEqual([]);
 
-    const carried = async () => (await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`)).find((e) => e.action === "version.corrections_carried")!.detail;
+    const carried = async () => (await auditOf(studyId)).find((e) => e.action === "version.corrections_carried")!.detail;
     // both paths have an open question on v2, so the log withholds their values for now
     expect((await carried()).carried).toEqual([expect.not.objectContaining({ after: expect.anything() }), expect.not.objectContaining({ after: expect.anything() })]);
     await settleAll(built, studyId, 2);
@@ -220,10 +223,10 @@ describe("amendment carries the live version's corrections", () => {
 describe("audit log", () => {
   it("is append-only", async () => {
     const { studyId } = await newStudy(app, "s");
-    const entries = await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`);
+    const entries = await auditOf(studyId);
     expect(entries.length).toBeGreaterThan(0);
     await expect(built.ctx.db.execute(sql`UPDATE audit_log SET by = 'mallory'`)).rejects.toThrow();
     await expect(built.ctx.db.execute(sql`DELETE FROM audit_log`)).rejects.toThrow();
-    expect(await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`)).toEqual(entries);
+    expect(await auditOf(studyId)).toEqual(entries);
   });
 });

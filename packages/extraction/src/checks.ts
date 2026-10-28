@@ -388,7 +388,7 @@ export function sameName(a: string, b: string): boolean {
 // ---------- provenance walking ----------
 
 /** Every `prov` in the rulebook with the JSON pointer of the value it describes. */
-export function provenances(rb: Rulebook): { path: string; prov: Provenance }[] {
+function provenances(rb: Rulebook): { path: string; prov: Provenance }[] {
   const out: { path: string; prov: Provenance }[] = [];
   const walk = (v: unknown, path: string) => {
     if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}/${i}`));

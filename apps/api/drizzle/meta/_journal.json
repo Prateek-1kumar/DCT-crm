@@ -50,6 +50,20 @@
       "when": 1793200355235,
       "tag": "0006_signed_versions_locked",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793205722393,
+      "tag": "0007_sharp_barracuda",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793208967565,
+      "tag": "0008_unique_captain_midlands",
+      "breakpoints": true
     }
   ]
 }

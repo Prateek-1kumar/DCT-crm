@@ -72,7 +72,7 @@ describe("POST /api/v1/uploads", () => {
     const res = await app.inject({ method: "PATCH", url: `/api/v1/documents/${doc!.id}`, payload: { kind: "budget", by: "Asha" } });
     expect(res.json()).toMatchObject({ kind: "budget" });
     expect((await app.inject({ method: "PATCH", url: `/api/v1/documents/${doc!.id}`, payload: { kind: "nope", by: "Asha" } })).statusCode).toBe(400);
-    const audit = (await app.inject({ url: "/api/v1/audit" })).json<{ action: string; by: string }[]>();
+    const audit = (await app.inject({ url: "/api/v1/audit" })).json<{ items: { action: string; by: string }[] }>().items;
     expect(audit.map((a) => a.action)).toEqual(["document.kind_set", "document.uploaded"]); // newest first
     expect(audit[0]!.by).toBe("Asha");
   });

@@ -1,0 +1,1 @@
+CREATE INDEX "audit_log_study_idx" ON "audit_log" USING btree ("study_id","id");

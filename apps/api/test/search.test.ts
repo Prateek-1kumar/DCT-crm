@@ -1,4 +1,4 @@
-import type { AuditEntryDto, MasterSearch, SearchResults, StudyCounts, StudyPage } from "@dct/shared";
+import type { AuditPage, MasterSearch, SearchResults, StudyCounts, StudyPage } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -198,7 +198,7 @@ describe("one invoicing master", () => {
     const summary = wb.worksheets[0]!;
     const cell = (label: string) => summary.getColumn(1).values.indexOf(label);
     expect(summary.getRow(cell("Sponsor")).getCell(2).value).toBe("Synthetic Pharma");
-    expect((await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${id}`))[0]).toMatchObject({ by: "Asha", action: "version.exported", detail: { version: 1, format: "xlsx" } });
+    expect((await get<AuditPage>(`/api/v1/audit?studyId=${id}`)).items[0]).toMatchObject({ by: "Asha", action: "version.exported", detail: { version: 1, format: "xlsx" } });
   });
 
   it("exports only approved versions", async () => {
@@ -213,5 +213,54 @@ describe("one invoicing master", () => {
     await extract(id);
     expect((await app.inject({ url: `/api/v1/studies/${id}/versions/1/export.xlsx` })).statusCode).toBe(404);
     expect((await app.inject({ url: `/api/v1/studies/${id}/versions/1/search?q=a` })).statusCode).toBe(404);
+  });
+});
+
+describe("activity log", () => {
+  const audit = async (qs: string) => {
+    const res = await app.inject({ url: `/api/v1/audit${qs}` });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json<AuditPage>();
+  };
+
+  it("pages newest first with an opaque cursor: no duplicates or gaps", async () => {
+    await liveStudy();
+    await newStudy("other");
+    const all = (await audit("?limit=100")).items;
+    expect(all.length).toBeGreaterThan(10);
+    expect(all.map((e) => Number(e.id))).toEqual([...all.map((e) => Number(e.id))].sort((a, b) => b - a));
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: AuditPage = await audit(`?limit=4${cursor ? `&cursor=${cursor}` : ""}`);
+      expect(page.items.length).toBeLessThanOrEqual(4);
+      seen.push(...page.items.map((e) => e.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual(all.map((e) => e.id));
+    expect((await app.inject({ url: "/api/v1/audit?cursor=nope" })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/audit?limit=500" })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/audit?studyId=nope" })).json()).toMatchObject({ statusCode: 400, message: "Malformed id" });
+  });
+
+  it("narrows to one contract, names it, and searches the person, the action and the details on the server", async () => {
+    const id = await liveStudy();
+    const other = await newStudy("other");
+    const mine = (await audit(`?studyId=${id}&limit=100`)).items;
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((e) => e.studyId === id && e.protocol === "SYN-001" && e.sponsor === "Synthetic Pharma")).toBe(true);
+    expect(mine.map((e) => e.studyId)).not.toContain(other);
+    const actions = async (q: string, qs = "") => (await audit(`?q=${encodeURIComponent(q)}&limit=100${qs}`)).items.map((e) => e.action);
+    expect(await actions("ben")).toEqual(["version.signed"]); // the person
+    expect(await actions("Approved")).toEqual(["version.signed"]); // what the action is called
+    expect(await actions("version.signed")).toEqual(["version.signed"]); // its code
+    expect(await actions("ben approved")).toEqual(["version.signed"]); // every word
+    expect(await actions("asha approved")).toEqual([]);
+    expect(new Set(await actions("Synthetic"))).toEqual(new Set(["study.identified"])); // the details: the study guess
+    expect(await actions("synthetic", `&studyId=${other}`)).toEqual(["study.identified"]);
+    expect(await actions("100%_")).toEqual([]); // wildcards are literal
+    // settings changes belong to no contract
+    await app.inject({ method: "PATCH", url: "/api/v1/settings", payload: { makerChecker: true, by: "Morgan" } });
+    expect((await audit("?q=settings")).items[0]).toMatchObject({ action: "settings.updated", studyId: null, protocol: null, sponsor: null });
   });
 });

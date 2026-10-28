@@ -7,7 +7,11 @@ import {
   SendBackBody,
   StudyListQuery,
   AlertListQuery,
+  AuditListQuery,
+  auditMatches,
+  blankNumbers,
   ReadAlertsBody,
+  withheldPaths,
   type AlertDto,
   searchMaster,
   amountOf,
@@ -33,7 +37,7 @@ import { blankRulebook } from "../byhand";
 import { labelFor } from "../format";
 import { layoutPage } from "./layout";
 import { getAt, segments, setAt } from "../pointer";
-import { needsYou, summaryStage, VIEWS } from "../review";
+import { needsYou, parseAnswer, summaryStage, VIEWS } from "../review";
 import {
   amendmentSpecs,
   amendRulebook,
@@ -63,8 +67,9 @@ type Study = { id: string; sponsor: string | null; protocol: string | null; site
 type Job = { id: string; kind: "identify" | "extract"; studyId: string; version: number | null; startedAt: number; durationMs: number; fail: boolean; applied: boolean };
 /** `secrets` is the "server side": right answers keyed `studyId/version/itemId`, never in a response. */
 type Alert = Omit<AlertDto, "read" | "protocol" | "sponsor">;
+type Entry = Omit<AuditEntryDto, "protocol" | "sponsor">;
 type Db = {
-  studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number;
+  studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: Entry[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number;
   alerts: Alert[];
   /** person → ids of the alerts they've read */
   alertReads: Record<string, string[]>;
@@ -235,10 +240,11 @@ const IDENTIFY_STEPS: [number, string][] = [
 function jobView(j: Job): JobDto {
   const p = Math.min(100, Math.floor(((Date.now() - j.startedAt) / j.durationMs) * 100));
   const failAt = 55;
-  if (j.fail && p >= failAt) return { id: j.id, state: "failed", progress: failAt, step: "Reading the contract terms", error: "Pages 3–7 couldn't be read: the scan is too faint." };
+  if (j.fail && p >= failAt)
+    return { id: j.id, state: "failed", progress: failAt, step: "Reading the contract terms", error: "Pages 3–7 couldn't be read: the scan is too faint.", detail: "Sample data: pages 3–7 have no text layer and too little contrast to read." };
   const steps = j.kind === "extract" ? EXTRACT_STEPS : IDENTIFY_STEPS;
   const step = [...steps].reverse().find(([t]) => p >= t)![1];
-  return { id: j.id, state: p >= 100 ? "succeeded" : p > 2 ? "running" : "queued", progress: p, step, error: null };
+  return { id: j.id, state: p >= 100 ? "succeeded" : p > 2 ? "running" : "queued", progress: p, step, error: null, detail: null };
 }
 
 /** Apply effects of finished jobs (called on every request). */
@@ -367,7 +373,8 @@ function listAlerts(d: Db, query: URLSearchParams): Res {
   const start = cursor ? Number(atob(cursor)) || 0 : 0;
   const items = all.slice(start, start + limit).map((a) => {
     const st = d.studies.find((x) => x.id === a.studyId);
-    return { ...a, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, read: isRead(a) };
+    // everyone sees every alert, and a send-back note can name the value being answered again blind
+    return { ...a, note: a.note && blankNumbers(a.note), protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, read: isRead(a) };
   });
   return ok({ items, unread: all.filter((a) => !isRead(a)).length, nextCursor: start + limit < all.length ? btoa(String(start + limit)) : null });
 }
@@ -515,11 +522,16 @@ export function diffRulebooks(before: Rulebook | null, after: Rulebook | null): 
 
 const same = (a: unknown, b: unknown) =>
   typeof a === "string" && typeof b === "string" ? a.trim().toLowerCase() === b.trim().toLowerCase() : JSON.stringify(a) === JSON.stringify(b);
+const empty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length);
+const WHY = "Add a short note saying why the PDF text is wrong here.";
+const WHERE = "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.";
 
 /**
- * POST .../review/:itemId. A typed value is compared with the hidden right answer: matched, or differs (then picking a
- * value settles it as chosen; keeping your own over the PDF text needs a note). Options are chosen. Can't tell is left
- * for the approver. Answering again changes the answer while the version is a draft.
+ * POST .../review/:itemId, as the real API. A typed value is compared with the PDF's own text at its spot, or, where it
+ * prints nothing parseable, with the value we hold: matched, or differs (then picking a value settles it as chosen).
+ * Settling a differs needs a note: keeping your own value over the PDF text says why the text is wrong; with no PDF
+ * text, either value says where the page prints it, and the answer is marked `noPdfText`. Options are chosen. Can't tell
+ * is left for the approver. Answering again changes the answer while the version is a draft.
  */
 function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: unknown, at = now()): Res {
   if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only a draft takes answers.`);
@@ -534,8 +546,11 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   const secret = d.secrets[`${st.id}/${ver.version}/${item.id}`];
   const current = item.path ? getAt(ver.rulebook, item.path) : undefined;
   if (Array.isArray(current) && typeof b.value === "string") b.value = b.value.split(",").map((x) => x.trim()).filter(Boolean);
+  const ev = item.path ? ver.evidence.find((e) => e.path === item.path) : undefined;
+  const note = b.note?.trim();
   let outcome: NonNullable<ReviewItem["outcome"]>;
   let set: { path: string; value: unknown } | undefined;
+  let noPdfText = false;
   if (b.cantTell) outcome = "cant_tell";
   else if (item.options.length) {
     if (!item.options.some((o) => o.id === b.optionId)) return err(400, "Pick one of the options.");
@@ -543,25 +558,85 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
     set = secret?.apply?.[b.optionId!];
   } else {
     if (b.value === undefined || b.value === null || b.value === "") return err(400, "Type a value, or say you can't tell.");
+    // the sentence's full stop or comma after the number isn't part of it
+    const text = ev?.printed ? parseAnswer(item.input ?? "text", ev.printed.trim().replace(/[.,;:]+$/, "")) : null;
+    const printed = text && "value" in text ? text.value : undefined;
+    const truth = printed ?? (empty(current) ? undefined : current);
     if (item.outcome === "differs") {
-      if (secret?.truth !== undefined && !same(b.value, secret.truth) && !b.note?.trim()) return err(400, "Add a short note saying why the PDF text is wrong here.");
+      if (printed === undefined && !note) return err(400, WHERE);
+      if (printed !== undefined && !same(b.value, printed) && !note) return err(400, WHY);
+      noPdfText = printed === undefined;
       outcome = "chosen";
-    } else if (secret?.truth === undefined) outcome = "chosen";
-    else outcome = same(b.value, secret.truth) ? "matched" : "differs";
+    } else if (truth === undefined) outcome = "chosen";
+    else outcome = same(b.value, truth) ? "matched" : "differs";
     if (outcome !== "differs" && item.path) set = { path: item.path, value: b.value };
   }
-  const ev = item.path ? ver.evidence.find((e) => e.path === item.path) : undefined;
   const changed = settled(item);
   item.compare = outcome === "differs" ? { typed: b.value, read: current ?? null, printed: ev?.printed ?? null } : null;
-  item.answer = { value: b.value, optionId: b.optionId, cantTell: b.cantTell, note: b.note?.trim() || undefined, by: b.by, at };
+  item.answer = { value: b.value, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at };
   item.sentBack = null;
   item.outcome = outcome;
+  const before = set ? getAt(ver.rulebook, set.path) : undefined;
   if (set) ver.rulebook = setAt(ver.rulebook, set.path, set.value);
   if (ev && (outcome === "matched" || outcome === "chosen")) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
   if (outcome !== "cant_tell" && !retype && !ver.editors.includes(b.by)) ver.editors.push(b.by);
   st.updatedAt = at;
-  log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, question: item.question, outcome: outcome.replace("_", " "), ...(b.note ? { note: b.note } : {}) }, at);
-  return ok(ver);
+  const wrote = set && JSON.stringify(before) !== JSON.stringify(set.value) ? { path: set.path, before: before ?? null, after: set.value } : {};
+  log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote }, at);
+  return ok(view(ver));
+}
+
+/**
+ * A version as a response shows it: notes about a value being typed blind (an answer's, a send-back's, a report's) have
+ * their numbers blanked until its question is settled, as the real API does. (The web masks the values themselves.)
+ */
+function view(ver: RulebookVersionDto): RulebookVersionDto {
+  const hidden = new Set(withheldPaths(ver));
+  if (!hidden.size) return ver;
+  return {
+    ...ver,
+    review: ver.review.map((i) =>
+      !i.path || !hidden.has(i.path)
+        ? i
+        : {
+            ...i,
+            answer: i.answer && (i.answer.note ? { ...i.answer, note: blankNumbers(i.answer.note) } : i.answer),
+            sentBack: i.sentBack && { ...i.sentBack, note: blankNumbers(i.sentBack.note) },
+            ...(i.reported ? { reported: { ...i.reported, note: blankNumbers(i.reported.note) } } : {}),
+          },
+    ),
+  };
+}
+
+/**
+ * GET /audit, as the real API: newest first, narrowed to a contract, every word of `q` in what's shown. While a value's
+ * question is open on its draft, an entry about it (its path, or the question it answered or sent back) shows no
+ * before/after value, and its note has its numbers blanked.
+ */
+function listAudit(d: Db, query: URLSearchParams): Res {
+  const parsed = AuditListQuery.safeParse(Object.fromEntries(query));
+  if (!parsed.success) return err(400, "That activity filter isn't valid.");
+  const { studyId, q, cursor, limit } = parsed.data;
+  const shown = (e: Entry): AuditEntryDto => {
+    const st = d.studies.find((s) => s.id === e.studyId);
+    const ver = d.versions.find((v) => v.studyId === e.studyId && v.version === e.detail.version);
+    const hidden = new Set(ver ? withheldPaths(ver) : []);
+    const ids = [e.detail.itemId, ...(Array.isArray(e.detail.itemIds) ? e.detail.itemIds : [])];
+    const about = (typeof e.detail.path === "string" && hidden.has(e.detail.path)) || ver?.review.some((i) => ids.includes(i.id) && i.path && hidden.has(i.path)) || (e.action === "review.sent_back" && !Array.isArray(e.detail.itemIds) && hidden.size > 0);
+    const rest = Object.fromEntries(Object.entries(e.detail).filter(([k]) => k !== "before" && k !== "after"));
+    const detail = !about ? e.detail : typeof rest.note === "string" ? { ...rest, note: blankNumbers(rest.note) } : rest;
+    return { ...e, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, detail };
+  };
+  // newest first; reversed first so that, at the same time, the later entry comes first
+  const all = [...d.audit]
+    .reverse()
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .filter((e) => !studyId || e.studyId === studyId)
+    .map(shown)
+    .filter((e) => !q?.trim() || auditMatches(e, q));
+  // ponytail: an offset cursor in the sample server; the real API pages by key.
+  const start = cursor ? Number(atob(cursor)) || 0 : 0;
+  return ok({ items: all.slice(start, start + limit), nextCursor: start + limit < all.length ? btoa(String(start + limit)) : null });
 }
 
 /** POST .../send-back: the approver reopens answered questions with a note; they're answered again, blind. */
@@ -578,9 +653,9 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
     if (ev?.status === "attested") Object.assign(ev, { status: "conflict", note: `Sent back by ${by}` });
   }
   st.updatedAt = at;
-  log(d, by, st.id, "review.sent_back", { version: ver.version, questions: items.length, note }, at);
+  log(d, by, st.id, "review.sent_back", { version: ver.version, questions: items.length, itemIds: items.map((i) => i!.id), note }, at);
   raiseAlert(d, { kind: "sent_back", studyId: st.id, version: ver.version, by, count: items.length, note, at });
-  return ok(ver);
+  return ok(view(ver));
 }
 
 /** POST .../proofread: values that looked right. Any version with a master, live ones too: the marks never change its numbers. */
@@ -594,7 +669,7 @@ function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at =
   for (const path of paths) marks.set(path, { path, by, at });
   ver.proofread = [...marks.values()];
   log(d, by, st.id, "values.proofread", { version: ver.version, values: paths.length }, at);
-  return ok(ver);
+  return ok(view(ver));
 }
 
 // ---------------------------------------------------------------- "This looks wrong" and typing by hand
@@ -626,10 +701,12 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   if (draft.review.some((i) => i.path === path && !settled(i))) return err(409, "There's already an open question about this value.");
   const x = askAbout(draft.rulebook!, draft.evidence, path, `r${++d.seq}`, "reported");
   addQuestion(d, draft, x);
+  // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
+  draft.review.at(-1)!.reported = { by, note, at: now() };
   st.updatedAt = now();
   const value = getAt(draft.rulebook!, path);
-  log(d, by, st.id, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, value: labelFor(path, draft.rulebook), note });
-  return ok(draft);
+  log(d, by, st.id, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, path, value: labelFor(path, draft.rulebook), note });
+  return ok(view(draft));
 }
 
 /** POST /studies/:id/versions/by-hand: a blank draft for a contract that couldn't be read. */
@@ -646,7 +723,7 @@ function startByHand(d: Db, st: Study, raw: unknown): Res {
   st.status = latestSigned(d, st.id) ? "amendment_in_review" : "needs_review";
   st.updatedAt = now();
   log(d, parsed.data.by, st.id, "version.manual_created", { version: ver.version });
-  return ok(ver);
+  return ok(view(ver));
 }
 
 /**
@@ -681,8 +758,8 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   ver.evidence = ev.filter((e) => getAt(rb, e.path) !== undefined);
   if (!ver.editors.includes(by)) ver.editors.push(by);
   st.updatedAt = now();
-  if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, value: labelFor(path, rb), typed: value });
-  return ok(ver);
+  if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, path, value: labelFor(path, rb), before: before ?? null, after: value });
+  return ok(view(ver));
 }
 
 /** POST .../by-hand/done: someone else re-types 10 randomly chosen typed values (all of them if fewer), blind. */
@@ -698,7 +775,7 @@ function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): 
   for (const e of sample) addQuestion(d, ver, askAbout(ver.rulebook!, ver.evidence, e.path, `t${++d.seq}`, "spot_check"));
   st.updatedAt = now();
   log(d, parsed.data.by, st.id, "byhand.done", { version: ver.version, typed: typed.length, "re-type": sample.length });
-  return ok(ver);
+  return ok(view(ver));
 }
 
 // ---------------------------------------------------------------- page images
@@ -789,10 +866,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     log(d, by, null, "settings.updated", b);
     return ok(d.settings);
   }
-  if (method === "GET" && path === "/audit") {
-    const sid = query.get("studyId");
-    return ok(d.audit.filter((a) => !sid || a.studyId === sid).sort((a, b2) => b2.at.localeCompare(a.at)));
-  }
+  if (method === "GET" && path === "/audit") return listAudit(d, query);
   if (method === "POST" && path === "/uploads") {
     const fd = body as FormData;
     const uploader = (fd.get("by") as string | null) ?? "system";
@@ -872,7 +946,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (!ver) return err(404, "Version not found");
   const vrest = vm[2] ?? "";
 
-  if (vrest === "" && method === "GET") return ok(ver);
+  if (vrest === "" && method === "GET") return ok(view(ver));
   if (vrest === "/search" && method === "GET") {
     const q = query.get("q") ?? "";
     // On a draft, a value still hidden for someone to type blind must not be findable: amounts match values, and a
@@ -903,7 +977,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     st.status = "live";
     st.updatedAt = now();
     log(d, by, st.id, "version.signed", { version: ver.version, ...(b.note ? { note: b.note } : {}) });
-    return ok(ver);
+    return ok(view(ver));
   }
   return err(404, `No mock route for ${method} ${path}`);
 }

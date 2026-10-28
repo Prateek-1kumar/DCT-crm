@@ -52,9 +52,9 @@ All under `/api/v1`. Bodies and responses are the types in `packages/shared` (`a
 | PATCH | `/studies/:id/versions/:v/values` | `CorrectValueBody` | Types one value; by-hand drafts only, until typing is done → `RulebookVersionDto` |
 | POST | `/studies/:id/versions/:v/by-hand/done` | `ByHandBody` | Typing done: up to 10 typed values to re-type blind → `RulebookVersionDto` |
 | POST | `/studies/:id/versions/:v/sign-off` | `SignOffBody` | Approves (gate below) → `RulebookVersionDto` |
-| GET | `/alerts` | `AlertListQuery` | One person's alerts, newest first → `AlertPage` |
+| GET | `/alerts` | `AlertListQuery` | One person's alerts, newest first → `AlertPage`; a send-back note's numbers blanked |
 | POST | `/alerts/read` | `ReadAlertsBody` | Marks alerts read → `{ unread }` |
-| GET | `/audit` | `?studyId=` | `AuditEntryDto[]`, newest first; hidden values withheld |
+| GET | `/audit` | `AuditListQuery` | One page of the log, newest first, searched by `q` → `AuditPage`; hidden values withheld, notes about them blanked |
 | GET, PATCH | `/settings` | `PatchSettingsBody` | `SettingsDto` (people, makerChecker) |
 
 Removed on 2026-10-28, because the web no longer calls them and they bypass the gate: `POST .../anomalies/:aid/resolve` (any blocker could be cleared with free text, against I6), `POST .../grid-choice` (now the `GRID_CONFLICT` question), `POST /studies/:id/versions {manual}` (now `versions/by-hand`), and value corrections through `PATCH .../values` on a read draft (now "This looks wrong", answered blind).
@@ -93,7 +93,9 @@ The questions, in order:
 
 **Answering** (`answer`, mirrors the sample server's `answer()`):
 - A typed value is compared with the PDF's text at its spot (`evidence.printed`, parsed as the web's `parseAnswer` does), or, where nothing parseable is printed, with the value we hold. Same → `matched`; else `differs`, and `compare = { typed, read, printed }` is filled for that item only.
-- Answering a `differs` item settles it as `chosen`. A note is required only when keeping your own value over the PDF's text (`400 "Add a short note saying why the PDF text is wrong here."`); with no PDF text, none.
+- Answering a `differs` item settles it as `chosen`, and needs a note:
+  - Where the PDF's text has the value: only to keep your own value over it (`400 "Add a short note saying why the PDF text is wrong here."`).
+  - Where it prints nothing parseable (a scan, a value the check didn't find, a by-hand re-type, a yes/no or fixed-list pick): with either value, saying where the page prints it (`400 "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note."`). The answer is marked `noPdfText: true`, and the approval page flags it "Not in the PDF text" with the value, the note and who answered.
 - Options are `chosen`; `cantTell` leaves it for the approver (a blocking one still holds approval).
 - A settled answer writes its value into the master (validated against the schema first; a value that can't go there is a 400), marks the evidence `attested`, and adds the person to `editors`. Answering again re-checks it (`review.changed`).
 - The re-type of a by-hand value must be by someone who didn't type it (409), and doesn't add to `editors`.
@@ -103,7 +105,7 @@ The questions, in order:
 
 **Proofreading** stores `{ path, by, at }` marks, one per value, the latest. Any version with a master, signed ones too, never superseded (409). It never changes the numbers.
 
-**Send back**: reopens answered questions (`outcome`, `answer`, `compare` cleared; `sentBack = { by, note, at }`), turns their `attested` evidence back to `conflict`, and raises a `sent_back` alert with the count and note. `refreshStudyStatus(…, { alert: false })` so the move back to Needs you doesn't also raise `questions_ready`. An unanswered or unknown question is a 400.
+**Send back**: reopens answered questions (`outcome`, `answer`, `compare` cleared; `sentBack = { by, note, at }`), turns their `attested` evidence back to `conflict`, and raises a `sent_back` alert with the count and note (its numbers always blanked: everyone sees every alert). The log entry names the questions (`itemIds`). `refreshStudyStatus(…, { alert: false })` so the move back to Needs you doesn't also raise `questions_ready`. An unanswered or unknown question is a 400.
 
 **Typing by hand**: `versions/by-hand` starts a blank draft (one empty budget grid, as the web's `blankRulebook`), replacing a failed version in place; 409 while a draft or a read is in progress. `PATCH .../values` types one value: every typed value is `attested`; removing one row or visit moves the evidence of the ones below; the master must stay valid (400). Values only on by-hand drafts, and only until `by-hand/done`, which picks up to 10 typed numbers and texts at random for someone else to re-type blind. Until then the draft counts as one thing that needs you.
 
@@ -113,7 +115,8 @@ The questions, in order:
 - `GET .../versions/:v` (and every write that returns a version): the value is null in the master, the quote of the item that holds it is dropped (a rule's quote prints its number), its evidence `printed` is null, `anomalies` is empty, and `compare` exists only after an answer differs. Item- and section-level paths (a grid header, a referenced document) aren't values and stay.
 - `GET .../search`: an amount, or a term's words, never find an item holding a hidden value (as the sample server); names and codes still do.
 - `GET .../diff`: both sides masked, and entries at a hidden path dropped.
-- `GET /audit`: `before` / `after` of an entry about a hidden path (an earlier answer, a typed or carried value) are left out until the question is settled.
+- `GET /audit`: `before` / `after` of an entry about a hidden path (an earlier answer, a typed or carried value) are left out until the question is settled. `q` is matched in SQL, then against what's shown, so a withheld or blanked number never finds an entry (a page can then hold fewer than `limit`).
+- **Notes** ("This looks wrong", send-back, an answer's note, a carried correction's) about a value whose question is open have their numbers blanked by `blankNumbers` (`@dct/shared`): in the version (`answer.note`, `sentBack.note`, and a contract problem's wording) and in the log. Once the question is settled the full note is shown. Blanked: amounts, percentages, counts and durations, every bare number, dates (and month names), numbers in words. Kept: numbers after page, §, section, clause, exhibit, attachment, schedule, amendment, table, row, line, column, item, visit, week, version or code (unless a unit follows), and codes that start with letters (V2, NWP-418-02; not Net45 or USD100).
 - The export is approved versions only, and `GET /search` searches live versions only, so neither ever holds one.
 
 **`needs_you`** is computed in `refreshStudyStatus` only, as the web's `needsYou()`: questions with no outcome, `differs`, or a blocking `cant_tell`; a by-hand draft still being typed counts 1.
@@ -165,6 +168,7 @@ The questions, in order:
   - A request with no `Origin` passes (curl, server-to-server).
   - Both lists are comma-separated env vars.
 - No CORS is set. The web app proxies `/api` with a Next rewrite to the API.
+- **Migration `0007`** indexes `audit_log (study_id, id)` for one contract's log, paged newest first. `GET /audit` pages by id (keyset cursor, as `/studies` and `/alerts`); `q` is an ILIKE over the person, the action (its code or its `ACTION_LABELS` name) and every text and number in the details.
 - **Migration `0006`** locks a signed or superseded version as a whole row: only signed → superseded, `updated_at` and `proofread` may change, and it can't be deleted (0005's trigger listed columns, so `version`, `study_id`, `sign_note` and the rest could still change).
 - The `extract` queue never retries (each try pays for AI reads; a crashed read is started again from the contract page) and a read may run 2 hours. `identify` keeps 2 retries.
 - **Migration `0005`** marks every draft that existed before it `failed` ("Read before every number was checked against the PDF. Read it again."): it has no questions, so it would have gone straight to approval unchecked. The contract page then offers "Read it again" or typing it in by hand.

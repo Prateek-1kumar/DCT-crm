@@ -84,6 +84,7 @@ function rowsFor(lines: Line[], cands: Line[], code: string | null, name: string
 // ---------- grid columns ----------
 
 const UNIT = /unit|cost|price|amount|rate|fee|budget/i;
+const OVERHEAD = /overhead|indirect|f\s?&\s?a\b/i;
 
 /** Word runs on one line that spell one of the targets. */
 function runs(l: Line, targets: string[]): Word[][] {
@@ -177,6 +178,115 @@ function findQuote(pg: Page, quote: string | undefined): Word[] | null {
   return null;
 }
 
+// ---------- figures: %, days, counts, ratios and dates as printed ----------
+
+/** What kind of figure a value is, so only figures of that kind where it's stated can back it. */
+type Unit = "pct" | "days" | "months" | "count" | "ratio" | "cents" | "date";
+/** A figure printed in some words: what it can mean (an all-number date like 03/04/2025 means two), and where it is. */
+type Figure = { words: Word[]; values: (number | string)[]; printed: string; at: PageBox };
+
+/** A number as printed, without the brackets of "forty-five (45)" or the sentence's punctuation: "45", "40%", "30-day" for "(30)-day". */
+const core = (s: string) => s.replace(/[.,;:]+$/, "").replace(/^\(/, "").replace(/\)(?=-|$)/, "");
+const NUM = /^(\d+(?:\.\d+)?)(%|-(?:calendar-|business-|working-)?(day|week|month|year)s?)?$/i;
+const UNIT_WORD = /^(?:(day)|(week)|(month)|(year))s?$/i;
+type Scanned = { i: number; n: number; unit: "pct" | "days" | "weeks" | "months" | "years" | null; words: Word[]; printed: string };
+
+/** Every number in some words with the unit printed with it: "40%", "40 percent", "45 days", "(45) business days", "45-day", "net 45". */
+function scan(ws: Word[]): Scanned[] {
+  const word = (w: Word | undefined) => (w ? w.text.replace(/[.,;:)]+$/, "").toLowerCase() : "");
+  return ws.flatMap((w, i): Scanned[] => {
+    const m = NUM.exec(core(w.text));
+    if (!m) return [];
+    const n = Number(m[1]);
+    const of = (u: string) => (u.startsWith("day") ? "days" : u.startsWith("week") ? "weeks" : u.startsWith("month") ? "months" : "years");
+    if (m[2] === "%") return [{ i, n, unit: "pct", words: [w], printed: `${m[1]}%` }];
+    if (m[3]) return [{ i, n, unit: of(m[3].toLowerCase()), words: [w], printed: m[1]! }];
+    if (word(ws[i + 1]) === "%" || word(ws[i + 1]) === "percent") return [{ i, n, unit: "pct", words: [w, ws[i + 1]!], printed: `${m[1]}%` }];
+    const k = /^(?:calendar|business|working)$/.test(word(ws[i + 1])) ? i + 2 : i + 1;
+    if (UNIT_WORD.test(word(ws[k]))) return [{ i, n, unit: of(word(ws[k])), words: ws.slice(i, k + 1), printed: m[1]! }];
+    return [{ i, n, unit: word(ws[i - 1]) === "net" ? "days" : null, words: [w], printed: m[1]! }];
+  });
+}
+
+// "not to exceed ten (10)", "up to a total of 5", "$500 maximum": the number a cap is stated as.
+const LIMIT_BEFORE = /\b(?:up to|maximum(?: of)?|max\.?|not to exceed|no more than|exceed(?:s|ing)?|limit(?:ed)? (?:of|to)|cap(?:ped)? (?:of|at)|blocks? of)(?: [^\d\s]+){0,3}$/i;
+const LIMIT_AFTER = /^(?:max(?:imum)?|cap|limit)\b/i;
+const limited = (ws: Word[], from: number, to: number) => LIMIT_BEFORE.test(txt(ws.slice(Math.max(0, from - 7), from))) || LIMIT_AFTER.test(ws[to + 1]?.text ?? "");
+
+const MONTH = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?";
+const month = (s: string) => ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(s.slice(0, 3).toLowerCase()) + 1;
+/** The ISO date of a calendar day, or null when there is none (31 June). Two-digit years are 20xx. */
+const iso = (y: number, m: number, d: number) => {
+  const year = y < 100 ? 2000 + y : y;
+  const t = new Date(Date.UTC(year, m - 1, d));
+  return t.getUTCFullYear() === year && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? t.toISOString().slice(0, 10) : null;
+};
+/**
+ * How contracts print a date: 2025-08-22 · August 22, 2025 · Aug. 22nd 2025 · 22 August 2025 · 22-Aug-25 · the 22nd day of
+ * August, 2025 · 8/22/2025 · 22.08.2025. All in numbers, it's read both ways (month/day and day/month): only a day over 12
+ * or the same number twice makes it one date.
+ * ponytail: dates in words ("the twenty-second day") aren't read; such a date is asked. Upgrade: number words.
+ */
+const DATES: [RegExp, (m: RegExpExecArray) => (string | null)[]][] = [
+  [/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g, (m) => [iso(+m[1]!, +m[2]!, +m[3]!)]],
+  [new RegExp(`\\b${MONTH}\\s?(\\d{1,2})(?:st|nd|rd|th)?,?\\s?(\\d{4})\\b`, "gi"), (m) => [iso(+m[3]!, month(m[1]!), +m[2]!)]],
+  [new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?(?:\\s(?:day\\s)?of)?[\\s-]?${MONTH},?[\\s-]?(\\d{4}|\\d{2})\\b`, "gi"), (m) => [iso(+m[3]!, month(m[2]!), +m[1]!)]],
+  [/\b(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})\b/g, (m) => [iso(+m[4]!, +m[1]!, +m[3]!), iso(+m[4]!, +m[3]!, +m[1]!)]],
+];
+/** The dates printed in a text, first reading first, with where each sits. */
+function datesIn(s: string): { values: string[]; printed: string; from: number; to: number }[] {
+  const out: { values: string[]; printed: string; from: number; to: number }[] = [];
+  for (const [re, read] of DATES)
+    for (const m of s.matchAll(re)) {
+      const [from, to] = [m.index, m.index + m[0].length];
+      const values = [...new Set(read(m).filter((v): v is string => v !== null))];
+      if (values.length && !out.some((d) => d.from < to && from < d.to)) out.push({ values, printed: m[0], from, to });
+    }
+  return out;
+}
+function dates(ws: Word[]): { words: Word[]; values: string[]; printed: string }[] {
+  const starts: number[] = [];
+  const s = ws.reduce((acc, w, i) => (starts.push(acc.length + (i ? 1 : 0)), acc + (i ? " " : "") + w.text), "");
+  return datesIn(s).map(({ values, printed, from, to }) => ({ words: ws.filter((w, i) => starts[i]! < to && starts[i]! + w.text.length > from), values, printed }));
+}
+
+/**
+ * The ISO date a printed text says ("Aug. 22nd, 2025" → "2025-08-22"), as the binder reads it; null unless it holds exactly
+ * one date that can be read only one way. For comparing a typed date with a value's `printed` text.
+ */
+export function isoDate(text: string): string | null {
+  const d = datesIn(text);
+  return d.length === 1 && d[0]!.values.length === 1 ? d[0]!.values[0]! : null;
+}
+
+/** The figures of one kind in some words of a page. A cap is the number stated as a limit ("up to 10"), else the only plain number. */
+function figures(p: TextPage, ws: Word[], unit: Unit): Figure[] {
+  const fig = (words: Word[], values: (number | string)[], printed: string): Figure => ({ words, values, printed, at: boxOf(p, words) });
+  if (unit === "date") return dates(ws).map((d) => fig(d.words, d.values, d.printed));
+  const money = amounts(ws);
+  if (unit === "cents") return money.filter((a) => limited(ws, ws.indexOf(a.words[0]!), ws.indexOf(a.words.at(-1)!))).map((a) => fig(a.words, [a.cents], txt(a.words)));
+  const taken = new Set([...money, ...dates(ws)].flatMap((x) => x.words));
+  const nums = scan(ws).filter((x) => !x.words.some((w) => taken.has(w)));
+  if (unit === "pct" || unit === "days" || unit === "months") return nums.filter((x) => x.unit === unit).map((x) => fig(x.words, [x.n], x.printed));
+  const plain = nums.filter((x) => x.unit === null);
+  if (unit === "count") {
+    const caps = plain.filter((x) => limited(ws, x.i, x.i));
+    return (caps.length ? caps : plain.filter((x) => Number.isInteger(x.n))).map((x) => fig(x.words, [x.n], x.printed));
+  }
+  // ratio: "1:3", or "1 screen failure per 3 randomized", "one (1) for every three (3)": the first number over the second
+  // ponytail: other ways of writing a ratio find none, so the value is asked.
+  const colon = ws.flatMap((w) => {
+    const m = /^(\d+)\s?:\s?(\d+)$/.exec(core(w.text));
+    return m && +m[2]! ? [fig([w], [+m[1]! / +m[2]!], core(w.text))] : [];
+  });
+  const per = plain.flatMap((a) => {
+    const b = plain.find((x) => x.i > a.i && x.i - a.i <= 10);
+    const between = b ? txt(ws.slice(a.i + 1, b.i)) : "";
+    return b && b.n && /\b(?:per|for (?:every|each))\b/i.test(between) ? [fig(ws.slice(a.i, b.i + 1), [a.n / b.n], txt(ws.slice(a.i, b.i + 1)))] : [];
+  });
+  return [...colon, ...per];
+}
+
 // ---------- binding ----------
 
 export type Bound = { evidence: ValueEvidence[]; unaccounted: Span[] };
@@ -191,6 +301,18 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     evidence.push({ path, status, where, printed, note });
   };
   const nowhere = (src: Provenance["source"]): PageBox[] => (src ? [{ documentId: src.documentId, page: src.page, box: null }] : []);
+  /**
+   * A value against the figures of its kind printed where it's stated: confirmed only when every one of them says exactly
+   * this value. When they differ, which one is this value's can't be told, so it's asked; when none says it, a conflict.
+   */
+  const settle = (path: string, value: number | string, figs: Figure[], fallback: PageBox[]) => {
+    const own = figs.filter((f) => f.values.includes(value));
+    const one = figs.every((f) => f.values.length === 1 && f.values[0] === figs[0]!.values[0]);
+    if (own.length && own.length === figs.length && one) return put(path, "confirmed", [own[0]!.at], own[0]!.printed, null, own.flatMap((f) => f.words));
+    if (own.length) return put(path, "ungrounded", fallback, null, own.some((f) => f.values.length > 1) ? "the date can be read as month/day or day/month" : "printed with another figure of the same kind, so which one it is can't be told", own.flatMap((f) => f.words));
+    if (figs.length && one) return put(path, "conflict", [figs[0]!.at], figs[0]!.printed, null, figs.flatMap((f) => f.words));
+    put(path, figs.length ? "conflict" : "ungrounded", fallback, null);
+  };
 
   rulebook.budgetGrids.forEach((g, gi) => {
     const gp = `/budgetGrids/${gi}`;
@@ -245,7 +367,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       totalCents: (s) => /\btotal/i.test(s) && !/sub[\s-]?total|patient|subject/i.test(s),
       procedureSubtotalCents: (s) => /sub[\s-]?total/i.test(s) && !/non[\s-]?proc/i.test(s),
       nonProcedureCents: (s) => /non[\s-]?proc/i.test(s),
-      overheadCents: (s) => /overhead|indirect|f\s?&\s?a\b/i.test(s) && !/\btotal/i.test(s),
+      overheadCents: (s) => OVERHEAD.test(s) && !/\btotal/i.test(s),
     };
     g.visits.forEach((v, vi) => {
       const c = ctx(v.prov.source);
@@ -260,6 +382,18 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       }
     });
     g.perPatientTotals.forEach((t, ti) => item(`${gp}/perPatientTotals/${ti}`, null, t.label, t.prov, [["cents", t.cents]]));
+
+    // The overhead % the grid states: a % within 3 words of "overhead" on a line of the grid's pages ("Overhead (30%)",
+    // "30% overhead", "Indirect costs @ 30%"), so another % on the same line can't back it.
+    if (g.statedOverheadPct !== null) {
+      const own = [...new Set([...pagesOf, ...(g.prov.source ? [`${g.prov.source.documentId}#${g.prov.source.page}`] : [])])].flatMap((k) => data.get(k) ?? []);
+      const near = (l: Line, f: Figure) => {
+        const [a, b] = [l.words.indexOf(f.words[0]!), l.words.indexOf(f.words.at(-1)!)];
+        return OVERHEAD.test(txt(l.words.slice(Math.max(0, a - 3), b + 4)));
+      };
+      const figs = own.flatMap((pg) => pg.lines.flatMap((l) => figures(pg.p, l.words, "pct").filter((f) => near(l, f))));
+      settle(`${gp}/statedOverheadPct`, g.statedOverheadPct, figs, nowhere(g.prov.source ?? g.visits[0]?.prov.source ?? null));
+    }
   });
 
   /** Label + amount on one row of the cited page, or the amount inside the quote; else a wrong page reference. */
@@ -268,29 +402,32 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const pg = pageAt(src);
     const lineAmounts = (pg: Page) => pg.lines.filter((l) => amounts(l.words).length);
     const found = pg ? rowsFor(pg.lines, lineAmounts(pg), code, name)[0] : undefined;
-    // Numbers on the item's row other than amounts (code, count) belong to it.
-    const rowNumbers = (l: Line) => l.words.filter((w) => NUMBER.test(bare(w.text)) && !amounts(l.words).some((a) => a.words.includes(w)));
+    // Numbers on the item's row other than amounts and figures with a unit (code, count) belong to it; "30 days" or "10%" is a term of its own.
+    const rowNumbers = (l: Line) => {
+      const units = new Set(scan(l.words).flatMap((x) => (x.unit ? x.words : [])));
+      return l.words.filter((w) => NUMBER.test(bare(w.text)) && !units.has(w) && !amounts(l.words).some((a) => a.words.includes(w)));
+    };
     const onRow = found ? amounts(found.row.words) : [];
     if (found) rowNumbers(found.row).forEach((w) => bound.add(w));
     const quote = pg ? findQuote(pg, src?.quote) : null;
     const inQuote = quote ? amounts(quote) : [];
-    quote?.forEach((w) => bound.add(w));
     const want = fields.filter((f): f is [string, number] => f[1] !== null);
-    // Two prices and two amounts on the row: by position, base price then price with overhead, as tables print them.
+    // Two prices and two amounts on the row (or in the quote): by position, base price then price with overhead, as tables print them.
     // ponytail: a table printing them the other way round gives conflicts. Upgrade: read the order from the column headers.
     const positional = want.length === 2 && onRow.length >= 2;
     want.forEach(([field, value], i) => {
       const path = `${base}/${field}`;
       const spot = positional ? onRow[i] : onRow.find((a) => a.cents === value);
-      const q = inQuote.find((a) => a.cents === value);
       const used = found?.code ? [found.code] : [];
       if (spot?.cents === value) return put(path, "confirmed", [boxOf(pg!.p, spot.words)], txt(spot.words), null, [...spot.words, ...used]);
       if (onRow.length) {
         const shown = positional ? [onRow[i]!] : onRow.filter((a) => !want.some(([, c]) => c === a.cents));
         return put(path, "conflict", [boxOf(pg!.p, found!.row.words)], txt(shown.flatMap((a) => a.words)) || null, null, [...onRow.flatMap((a) => a.words), ...used]);
       }
-      if (q) return put(path, "confirmed", [boxOf(pg!.p, quote!)], txt(q.words), null, quote!);
-      if (inQuote.length) return put(path, "conflict", [boxOf(pg!.p, quote!)], txt(inQuote.flatMap((a) => a.words)), null, quote!);
+      if (inQuote.length) {
+        const figs = (want.length === 2 && inQuote.length === 2 ? [inQuote[i]!] : inQuote).map((a) => ({ words: a.words, values: [a.cents], printed: txt(a.words), at: boxOf(pg!.p, a.words) }));
+        return settle(path, value, figs, [boxOf(pg!.p, quote!)]);
+      }
       // Wrong page reference: label and this amount on one line of exactly one other page of the same document.
       const elsewhere = [...data.values()].flatMap((o) => {
         if (!src || o.p.documentId !== src.documentId || o.p.page === src.page) return [];
@@ -310,23 +447,32 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   rulebook.siteFees.forEach((x, i) => item(`/siteFees/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents]]));
   if (rulebook.screenFail) item("/screenFail", null, "screen failure", rulebook.screenFail.prov, [["amountCents", rulebook.screenFail.amountCents]]);
 
-  /** % and day rules: the value must sit inside a quote that matches the cited page word for word. */
-  // ponytail: anywhere in the quote, so a quote with two day counts confirms either. Upgrade: the number next to the rule's unit.
-  const rule = (path: string, value: number | null | undefined, prov: Provenance | undefined) => {
+  /**
+   * Rules (%, days, caps, dates): the value must be the figure of its kind inside a quote that matches the cited page word
+   * for word. A quote that isn't on that page, or holds no figure of the kind, leaves the value to be typed.
+   * ponytail: a rule given without a quote is asked, not looked up by its wording. Upgrade: a label line, as fees have.
+   */
+  const rule = (path: string, value: number | string | null | undefined, prov: Provenance | undefined, unit: Unit) => {
     if (value === null || value === undefined || !prov) return;
     const pg = pageAt(prov.source);
     const quote = pg ? findQuote(pg, prov.source?.quote) : null;
     if (!pg || !quote) return put(path, "ungrounded", nowhere(prov.source), null);
-    const nums = quote.flatMap((w) => [...w.text.matchAll(/\d+(?:\.\d+)?/g)].map((m) => ({ w, n: Number(m[0]) })));
-    const hit = nums.find((x) => x.n === value);
-    const where = [boxOf(pg.p, quote)];
-    if (hit) put(path, "confirmed", where, hit.w.text, null, quote);
-    else put(path, nums.length ? "conflict" : "ungrounded", where, nums.length ? txt([...new Set(nums.map((x) => x.w))]) : null, null, quote);
+    settle(path, value, figures(pg.p, quote, unit), [boxOf(pg.p, quote)]);
   };
-  rule("/overhead/pct/value", rulebook.overhead.pct.value, rulebook.overhead.pct.prov);
-  rule("/holdback/pct", rulebook.holdback?.pct, rulebook.holdback?.prov);
-  rule("/payment/netDays/value", rulebook.payment.netDays.value, rulebook.payment.netDays.prov);
-  rulebook.deadlines.forEach((d, i) => rule(`/deadlines/${i}/value`, d.value, d.prov));
+  const cap = (base: string, c: Rulebook["invoiceables"][number]["cap"], prov: Provenance) => {
+    rule(`${base}/cap/n`, c.n, prov, c.kind === "amount" ? "cents" : "count");
+    rule(`${base}/cap/ratio`, c.ratio, prov, "ratio");
+  };
+  rule("/study/effectiveDate/value", rulebook.study.effectiveDate.value, rulebook.study.effectiveDate.prov, "date");
+  rule("/appliesFrom/value", rulebook.appliesFrom.value, rulebook.appliesFrom.prov, "date");
+  rule("/overhead/pct/value", rulebook.overhead.pct.value, rulebook.overhead.pct.prov, "pct");
+  rule("/holdback/pct", rulebook.holdback?.pct, rulebook.holdback?.prov, "pct");
+  rule("/payment/netDays/value", rulebook.payment.netDays.value, rulebook.payment.netDays.prov, "days");
+  rulebook.deadlines.forEach((d, i) => rule(`/deadlines/${i}/value`, d.value, d.prov, d.kind.includes("months") ? "months" : "days"));
+  rule("/overpayment/refundDays", rulebook.overpayment?.refundDays, rulebook.overpayment?.prov, "days");
+  rulebook.siteFees.forEach((x, i) => rule(`/siteFees/${i}/dueDays`, x.dueDays, x.prov, "days"));
+  rulebook.invoiceables.forEach((x, i) => cap(`/invoiceables/${i}`, x.cap, x.prov));
+  if (rulebook.screenFail) cap("/screenFail", rulebook.screenFail.cap, rulebook.screenFail.prov);
 
   const unaccounted = inventory(pages).filter((s) => !s.words.some((w) => bound.has(w)));
   return { evidence, unaccounted };
@@ -349,8 +495,15 @@ function ask(rb: Rulebook, path: string): Pick<ReviewItem, "question" | "input">
   const q = (s: string) => `"${s.replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…").trim()}"`;
   const [, top, i, sub, j, field, key] = path.split("/").map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"));
   const money = (question: string) => ({ question, input: "money" as const });
+  const number = (question: string) => ({ question, input: "number" as const });
+  // `many`: "times can "Re-consent" be billed" or "screen failures can be billed"; `what`: what an amount cap is the most for.
+  const capOf = (c: Rulebook["invoiceables"][number]["cap"], many: string, what: string, f: string | undefined) =>
+    f === "ratio" ? number(`How many ${many} for each randomized subject?`)
+    : c.kind === "amount" ? money(`What is the most that can be billed for ${what}?`)
+    : number(c.kind === "blocks_with_reauth" ? `How many ${many} before the sponsor has to approve more?` : `How many ${many} at most?`);
   if (top === "budgetGrids") {
     const g = rb.budgetGrids[Number(i)]!;
+    if (sub === "statedOverheadPct") return { question: `What overhead percentage is printed on the budget grid ${q(g.label)}?`, input: "percent" };
     if (sub === "procedures") {
       const p = g.procedures[Number(j)]!;
       if (field === "unitCents") return money(`What unit price is printed for ${q(p.name)}?`);
@@ -361,13 +514,18 @@ function ask(rb: Rulebook, path: string): Pick<ReviewItem, "question" | "input">
   }
   if (top === "invoiceables" || top === "siteFees") {
     const x = (top === "invoiceables" ? rb.invoiceables : rb.siteFees)[Number(i)]!;
+    if (sub === "cap" && "cap" in x) return capOf(x.cap, `times can ${q(x.name)} be billed`, q(x.name), j);
+    if (sub === "dueDays") return number(`Within how many days is ${q(x.name)} due?`);
     return money(`What amount${sub === "amountWithOverheadCents" ? " including overhead" : ""} is printed for ${q(x.name)}?`);
   }
-  if (top === "screenFail") return money("What amount is printed for a screen failure?");
+  if (top === "screenFail") return i === "cap" ? capOf(rb.screenFail!.cap, "screen failures can be billed", "screen failures", sub) : money("What amount is printed for a screen failure?");
   if (top === "overhead") return { question: "What overhead percentage does the contract state?", input: "percent" };
   if (top === "holdback") return { question: "What percentage of each payment is held back?", input: "percent" };
-  if (top === "payment") return { question: "Within how many days must an invoice be paid?", input: "number" };
-  if (top === "deadlines") return { question: DEADLINE[rb.deadlines[Number(i)]!.kind], input: "number" };
+  if (top === "payment") return number("Within how many days must an invoice be paid?");
+  if (top === "deadlines") return number(DEADLINE[rb.deadlines[Number(i)]!.kind]);
+  if (top === "overpayment") return number("Within how many days must an overpayment be paid back?");
+  if (top === "study") return { question: "What effective date does the contract give?", input: "date" };
+  if (top === "appliesFrom") return { question: "From what date do the new terms apply?", input: "date" };
   return { question: "What does the contract say for this value?", input: "text" };
 }
 

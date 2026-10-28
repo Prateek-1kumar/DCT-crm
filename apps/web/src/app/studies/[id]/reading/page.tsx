@@ -7,7 +7,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, type ReactNode } from "react";
 import { CheckResult } from "@/components/CheckResult";
 import { NeedsPerson } from "@/components/Sidebar";
-import { Button, cx, ErrorNote, PageTitle, pageCls, ProgressBar, Stepper } from "@/components/ui";
+import { Button, cx, ErrorNote, PageTitle, pageCls, ProgressBar, Spinner, Stepper } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
 import { notify, useNotifyPermission } from "@/lib/notify";
@@ -120,105 +120,111 @@ export default function ReadingPage() {
       <Stepper state={stage} className="mb-8" />
 
       {!jobId && <ErrorNote>This link has no reading in progress. Open the contract to see where it stands.</ErrorNote>}
-      <ErrorNote error={job.error} />
+      <ErrorNote error={job.error} retry={() => void job.refetch()} />
 
-      <section className="rounded-card bg-surface p-8 shadow-card ring-1 ring-ink/[0.05]">
-        {state === "failed" ? (
-          <div className="flex flex-col gap-6">
-            <Heading
-              icon={<FileWarning className="size-6" strokeWidth={1.75} />}
-              tone="bg-danger-soft text-danger"
-              title="We couldn't read this contract"
-              sub="Nothing was saved, so nothing is lost. Choose how to carry on."
-            />
-            {job.data?.error && (
-              <p className="rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">
-                <span className="font-medium">What happened: </span>
-                {job.data.error}
-              </p>
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-3 rounded-tile p-5 ring-1 ring-line">
-                <RotateCcw className="size-5 text-accent" strokeWidth={1.75} />
-                <div>
-                  <p className="text-body font-medium">Read it again</p>
-                  <p className="text-small text-muted">Often works if the problem was a one-off.</p>
-                </div>
-                <Button variant="primary" className="mt-auto self-start" disabled={!by || retry.isPending} onClick={() => retry.mutate()}>
-                  {retry.isPending ? "Starting…" : "Read it again"}
-                </Button>
-              </div>
-              <div className="flex flex-col gap-3 rounded-tile p-5 ring-1 ring-line">
-                <Keyboard className="size-5 text-accent" strokeWidth={1.75} />
-                <div>
-                  <p className="text-body font-medium">Type it in by hand</p>
-                  <p className="text-small text-muted">You type the values; someone else re-types 10 of them without seeing yours, to catch typos.</p>
-                </div>
-                <Button className="mt-auto self-start" disabled={!by || byHand.isPending} onClick={() => byHand.mutate()}>
-                  Type it in by hand
-                </Button>
-              </div>
-            </div>
-            {!by && <NeedsPerson />}
-            <ErrorNote error={retry.error ?? byHand.error} />
-            <p className="text-small text-faint">If it keeps failing, ask the sponsor for the signed DocuSign copy and add it as a new contract. It reads far more reliably than a scan.</p>
-          </div>
-        ) : done && version.data ? (
-          <CheckResult studyId={id} draft={version.data} />
-        ) : (
-          job.data && (
-            <div className="flex flex-col gap-7">
+      {jobId && (
+        <section className="rounded-card bg-surface p-8 shadow-card ring-1 ring-ink/[0.05]">
+          {state === "failed" ? (
+            <div className="flex flex-col gap-6">
               <Heading
-                icon={
-                  <>
-                    <ScanText className="size-6" strokeWidth={1.75} />
-                    <span aria-hidden className="absolute inset-0 animate-ping rounded-tile ring-2 ring-brand/30 [animation-duration:2.2s] motion-reduce:hidden" />
-                  </>
-                }
-                tone="bg-brand-soft text-accent"
-                title={progress >= CHECKING_AT ? "Checking every number" : "Reading your contract"}
-                sub="This takes a few minutes. You can leave this page; it keeps going without you."
+                icon={<FileWarning className="size-6" strokeWidth={1.75} />}
+                tone="bg-danger-soft text-danger"
+                title="We couldn't read this contract"
+                sub="Nothing was saved, so nothing is lost. Choose how to carry on."
               />
-              <div>
-                <div className="mb-2 flex items-baseline justify-between gap-3 text-small">
-                  <span className="text-ink-2">{now?.[1]}…</span>
-                  <span className="num text-muted">{Math.round(progress)}%</span>
+              {job.data?.error && <p className="text-body text-ink-2">{job.data.error}</p>}
+              {/* The technical reason is there if the team asks, folded away otherwise. */}
+              {job.data?.detail && (
+                <details className="rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">
+                  <summary className="cursor-pointer font-medium">Details for the team</summary>
+                  <p className="mt-2 break-words text-muted">{job.data.detail}</p>
+                </details>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-3 rounded-tile p-5 ring-1 ring-line">
+                  <RotateCcw className="size-5 text-accent" strokeWidth={1.75} />
+                  <div>
+                    <p className="text-body font-medium">Read it again</p>
+                    <p className="text-small text-muted">Often works if the problem was a one-off.</p>
+                  </div>
+                  <Button variant="primary" className="mt-auto self-start" disabled={!by || retry.isPending} onClick={() => retry.mutate()}>
+                    {retry.isPending ? "Starting…" : "Read it again"}
+                  </Button>
                 </div>
-                <ProgressBar value={progress} label="Reading the contract" />
+                <div className="flex flex-col gap-3 rounded-tile p-5 ring-1 ring-line">
+                  <Keyboard className="size-5 text-accent" strokeWidth={1.75} />
+                  <div>
+                    <p className="text-body font-medium">Type it in by hand</p>
+                    <p className="text-small text-muted">You type the values; someone else re-types 10 of them without seeing yours, to catch typos.</p>
+                  </div>
+                  <Button className="mt-auto self-start" disabled={!by || byHand.isPending} onClick={() => byHand.mutate()}>
+                    Type it in by hand
+                  </Button>
+                </div>
               </div>
-              <ol className="flex flex-col" aria-live="polite">
-                {PHASES.map(([t, label, what], i) => {
-                  const next = PHASES[i + 1]?.[0] ?? 100;
-                  const isDone = progress >= next;
-                  const current = !isDone && progress >= t;
-                  return (
-                    <li key={label} className={cx("flex items-start gap-3.5 rounded-[12px] px-3 py-2.5", current && "bg-brand-soft/60")}>
-                      <span
-                        className={cx(
-                          "mt-0.5 grid size-6 shrink-0 place-items-center rounded-full",
-                          isDone ? "bg-ok-soft text-ok" : current ? "bg-surface text-accent ring-1 ring-brand/30" : "ring-1 ring-line-strong",
-                        )}
-                      >
-                        {isDone ? (
-                          <Check className="size-3.5" strokeWidth={3} />
-                        ) : current ? (
-                          <span aria-hidden className="size-3 animate-spin rounded-full border-2 border-brand/25 border-t-brand" />
-                        ) : null}
-                      </span>
-                      <span>
-                        <span className={cx("block text-body", isDone ? "text-ink-2" : current ? "font-medium text-ink" : "text-faint")}>{label}</span>
-                        <span className={cx("block text-small", current ? "text-muted" : "text-faint")}>{what}</span>
-                      </span>
-                      <span className="sr-only">{isDone ? " (done)" : current ? " (now)" : ""}</span>
-                    </li>
-                  );
-                })}
-              </ol>
-              <NotifyMe />
+              {!by && <NeedsPerson />}
+              <ErrorNote error={retry.error ?? byHand.error} />
+              <p className="text-small text-faint">If it keeps failing, ask the sponsor for the signed DocuSign copy and add it as a new contract. It reads far more reliably than a scan.</p>
             </div>
-          )
-        )}
-      </section>
+          ) : done && version.data ? (
+            <CheckResult studyId={id} draft={version.data} />
+          ) : !job.data ? (
+            !job.error && <Spinner label="Checking on the reading" />
+          ) : (
+            job.data && (
+              <div className="flex flex-col gap-7">
+                <Heading
+                  icon={
+                    <>
+                      <ScanText className="size-6" strokeWidth={1.75} />
+                      <span aria-hidden className="absolute inset-0 animate-ping rounded-tile ring-2 ring-brand/30 [animation-duration:2.2s] motion-reduce:hidden" />
+                    </>
+                  }
+                  tone="bg-brand-soft text-accent"
+                  title={progress >= CHECKING_AT ? "Checking every number" : "Reading your contract"}
+                  sub="This takes a few minutes. You can leave this page; it keeps going without you."
+                />
+                <div>
+                  <div className="mb-2 flex items-baseline justify-between gap-3 text-small">
+                    <span className="text-ink-2">{now?.[1]}…</span>
+                    <span className="num text-muted">{Math.round(progress)}%</span>
+                  </div>
+                  <ProgressBar value={progress} label="Reading the contract" />
+                </div>
+                <ol className="flex flex-col" aria-live="polite">
+                  {PHASES.map(([t, label, what], i) => {
+                    const next = PHASES[i + 1]?.[0] ?? 100;
+                    const isDone = progress >= next;
+                    const current = !isDone && progress >= t;
+                    return (
+                      <li key={label} className={cx("flex items-start gap-3.5 rounded-[12px] px-3 py-2.5", current && "bg-brand-soft/60")}>
+                        <span
+                          className={cx(
+                            "mt-0.5 grid size-6 shrink-0 place-items-center rounded-full",
+                            isDone ? "bg-ok-soft text-ok" : current ? "bg-surface text-accent ring-1 ring-brand/30" : "ring-1 ring-line-strong",
+                          )}
+                        >
+                          {isDone ? (
+                            <Check className="size-3.5" strokeWidth={3} />
+                          ) : current ? (
+                            <span aria-hidden className="size-3 animate-spin rounded-full border-2 border-brand/25 border-t-brand" />
+                          ) : null}
+                        </span>
+                        <span>
+                          <span className={cx("block text-body", isDone ? "text-ink-2" : current ? "font-medium text-ink" : "text-faint")}>{label}</span>
+                          <span className={cx("block text-small", current ? "text-muted" : "text-faint")}>{what}</span>
+                        </span>
+                        <span className="sr-only">{isDone ? " (done)" : current ? " (now)" : ""}</span>
+                      </li>
+                    );
+                  })}
+                </ol>
+                <NotifyMe />
+              </div>
+            )
+          )}
+        </section>
+      )}
     </div>
   );
 }

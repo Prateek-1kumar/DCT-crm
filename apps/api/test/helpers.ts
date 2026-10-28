@@ -31,8 +31,10 @@ export async function makePdf(seed: string, pages = 2): Promise<Buffer> {
 
 /**
  * A born-digital work order printing what the fake read says (src/extraction/fake.ts), so the PDF checks run for real:
- * terms on page 1, the budget grid on page 2. Printed once, the grid backs both fake grids; "Exhibit A (revised)" reads
- * its Week 0 total as 8,488.00, which the page doesn't print. Parking at $12.00 is a money term the read doesn't hold.
+ * terms on page 1 (the fee's due days, the effective date and the screen-fail cap in the sentences the read quotes), the
+ * budget grid on page 2 (its overhead % in the row label). Printed once, the grid backs both fake grids; "Exhibit A
+ * (revised)" reads its Week 0 total as 8,488.00, which the page doesn't print. Parking at $12.00 is a money term the read
+ * doesn't hold. Overhead %, net days and the deadline have no quote, so nothing on the page backs them.
  */
 export async function makeTextPdf(seed: string): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -47,15 +49,17 @@ export async function makeTextPdf(seed: string): Promise<Buffer> {
   };
   page([
     [40, 60, "UNSCH Unscheduled visit $572.00 $800.00 per occurrence"],
-    [40, 80, "SC003 Administrative fee $12,000.00 due at study initiation."],
+    [40, 80, "SC003 Administrative fee $12,000.00 due within 45 days of study initiation."],
     [40, 100, "Each screen failure is paid at $7,455.00 per subject"],
     [40, 120, "Sponsor will reimburse parking at $12.00 per subject visit."],
+    [40, 140, "This Work Order is effective as of August 22, 2025."],
+    [40, 160, "Screen failures are paid up to a maximum of 7 before the Sponsor approves more."],
   ]);
   const rows = [
     ["Code", "Procedure", "Unit", "V1", "V2"],
     ["36415", "Blood draw", "55.00", "55.00", "55.00"],
     ["", "Procedure subtotal", "", "3,801.00", "4,047.00"],
-    ["", "Overhead", "", "2,130.00", "2,425.00"],
+    ["", "Overhead 40%", "", "2,130.00", "2,425.00"],
     ["", "Non-procedure subtotal", "", "1,524.00", "2,016.00"],
     ["", "Visit total", "", "7,455.00", "8,489.00"],
   ];
@@ -114,19 +118,22 @@ export async function storedVersion({ ctx }: Built, studyId: string, version: nu
 
 /**
  * Answers every question not settled yet: the first option, or the value the master holds (on a differs, the same value
- * again with a note). `n` stops after that many.
+ * again with a note), and then any an answer raised (a grid's totals checked again). `n` stops after that many.
  */
-export async function settleAll(built: Built, studyId: string, version: number, by = "Asha", n = Infinity) {
+export async function settleAll(built: Built, studyId: string, version: number, by = "Asha", n = Infinity): Promise<void> {
   const row = await storedVersion(built, studyId, version);
-  for (const i of row.review.filter((x) => !settled(x)).slice(0, n)) {
+  const open = row.review.filter((x) => !settled(x));
+  if (!open.length || n <= 0) return;
+  for (const i of open.slice(0, n)) {
     const current = i.path ? at(row.rulebook, i.path) : undefined;
-    const body = i.options.length ? { optionId: i.options[0]!.id } : { value: empty(current) ? (i.input === "date" ? "2026-01-01" : i.input === "text" ? "x" : 1) : current, note: "checked" };
+    const body = i.options.length ? { optionId: i.options[0]!.id, note: "checked" } : { value: empty(current) ? (i.input === "date" ? "2026-01-01" : i.input === "text" ? "x" : 1) : current, note: "checked" };
     for (let tries = 0; tries < 2; tries++) {
       const res = await built.app.inject({ method: "POST", url: `/api/v1/studies/${studyId}/versions/${version}/review/${encodeURIComponent(i.id)}`, payload: { ...body, by } });
       if (res.statusCode !== 200) throw new Error(`${i.id}: ${res.body}`);
       if (res.json<RulebookVersionDto>().review.find((x) => x.id === i.id)!.outcome !== "differs") break;
     }
   }
+  await settleAll(built, studyId, version, by, n - open.length);
 }
 
 /** A study whose first version is approved by Ben after Asha answered everything. */

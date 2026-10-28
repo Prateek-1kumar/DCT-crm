@@ -1,6 +1,6 @@
 "use client";
 
-import type { StudyListQuery } from "@dct/shared";
+import type { AuditListQuery, StudyListQuery } from "@dct/shared";
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "./api";
@@ -12,7 +12,7 @@ export const keys = {
   version: (id: string, v: number) => ["version", id, v] as const,
   diff: (id: string, v: number, against: number) => ["diff", id, v, against] as const,
   job: (id: string) => ["job", id] as const,
-  audit: (studyId?: string) => ["audit", studyId ?? "all"] as const,
+  audit: ["audit"] as const,
   settings: ["settings"] as const,
 };
 
@@ -21,6 +21,15 @@ export const useStudyPages = (query: Omit<StudyListQuery, "cursor">) =>
   useInfiniteQuery({
     queryKey: [...keys.studies, "page", query],
     queryFn: ({ pageParam }) => api.listStudies({ ...query, cursor: pageParam ?? undefined }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    placeholderData: keepPreviousData,
+  });
+/** The activity log, a page at a time; the server narrows and searches. `fetchNextPage` for "Show older". */
+export const useAuditPages = (query: Omit<AuditListQuery, "cursor">) =>
+  useInfiniteQuery({
+    queryKey: [...keys.audit, query],
+    queryFn: ({ pageParam }) => api.audit({ ...query, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     placeholderData: keepPreviousData,

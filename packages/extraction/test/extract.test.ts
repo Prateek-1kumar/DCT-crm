@@ -132,7 +132,7 @@ describe("extractWith (mocked AI)", () => {
     };
     const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: broken });
     expect(out.crossRead).toBeNull();
-    expect(out.warnings.join()).toMatch(/Cross-read failed: boom/);
+    expect(out.warnings.join()).toMatch(/The cross-read failed: boom/);
   });
 
   it("scrubs bank-like content and fixes unknown document ids", async () => {

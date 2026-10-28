@@ -1,4 +1,4 @@
-import type { AlertPage, AuditEntryDto } from "@dct/shared";
+import type { AlertPage, AuditPage } from "@dct/shared";
 import { desc, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { alerts, studies } from "../src/db/schema.js";
@@ -117,7 +117,7 @@ describe("read state", () => {
     expect(await markRead("Asha")).toEqual({ unread: 0 });
     expect(await readOf("Asha")).toEqual({ [a1!.id]: true, [a2!.id]: true, [mine!.id]: true });
     expect((await alertsFor("Ben")).unread).toBe(2);
-    expect((await get<AuditEntryDto[]>("/api/v1/audit")).some((e) => e.action === "alerts.read")).toBe(false); // reading alerts changes no contract
+    expect((await get<AuditPage>("/api/v1/audit")).items.some((e) => e.action === "alerts.read")).toBe(false); // reading alerts changes no contract
   });
 
   it("400s on a bad query or body", async () => {

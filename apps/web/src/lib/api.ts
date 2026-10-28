@@ -1,7 +1,8 @@
 import type {
   AlertListQuery,
   AlertPage,
-  AuditEntryDto,
+  AuditListQuery,
+  AuditPage,
   DiffEntry,
   DocumentDto,
   DocumentKind,
@@ -141,7 +142,8 @@ export const api = {
   /** Marks `ids`, or every alert, read for `by`. */
   readAlerts: (body: { by: string; ids?: string[] }) => request<{ unread: number }>("POST", "/alerts/read", body),
 
-  audit: (studyId?: string) => request<AuditEntryDto[]>("GET", `/audit${studyId ? `?studyId=${q(studyId)}` : ""}`),
+  /** One page of the activity log, newest first; the server narrows, searches and pages. Pass `nextCursor` back for older ones. */
+  audit: (query: AuditListQuery) => request<AuditPage>("GET", `/audit${qs(query)}`),
   getSettings: () => request<SettingsDto>("GET", "/settings"),
   patchSettings: (body: Partial<SettingsDto>) => request<SettingsDto>("PATCH", "/settings", body),
 

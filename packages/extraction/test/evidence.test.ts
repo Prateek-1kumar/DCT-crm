@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { describe, expect, it } from "vitest";
-import { bindEvidence, reviewFromEvidence } from "../src/binder";
+import { bindEvidence, isoDate, reviewFromEvidence } from "../src/binder";
 import { inventory, readTextLayer } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
@@ -16,12 +16,18 @@ const TERMS = [
   "Sponsor shall pay each invoice within forty-five (45) days of receipt of invoice.",
   "Overhead of 40% applies to all per-patient lines.",
   "Invoices must be submitted no later than 6 months after study close.",
-  "Administrative fee $12,000.00 due at study initiation.",
+  "Administrative fee $12,000.00 due within 45 days of study initiation.",
   "Interest of 1.5% per month applies to late payments.",
   "Payee bank ABA routing 021000021, account 123456789.",
   "Lidocaine 2% cream is supplied by the site.",
   "Sponsor may withhold payment for incomplete records.",
   "Courier shipment   $50.00   $70.00   per shipment",
+  "This Work Order is effective as of August 22, 2025.",
+  "The amended rates apply from 01/15/2026 for all visits.",
+  "Overpayments will be refunded within thirty (30) days of notice.",
+  "Courier costs are reimbursed up to $500.00 per month.",
+  "One (1) screen failure is paid for every two (2) randomized subjects, up to a maximum of ten (10).",
+  "Sponsor will hold back 10% of each payment until close-out.",
 ];
 
 /** Grid rows in reading order: [code, name, unit, V1, V2]. */
@@ -32,7 +38,7 @@ const GRID = [
   ["VA", "Visual acuity", "55.00", "", "Invoiceable"],
   ["NP008", "Patient stipend", "100.00", "100.00", "100.00"],
   ["", "Procedure subtotal", "", "500.00", "300.00"],
-  ["", "Overhead", "", "240.00", "160.00"],
+  ["", "Overhead 40%", "", "240.00", "160.00"],
   ["", "Non-procedure subtotal", "", "100.00", "100.00"],
   ["", "Visit total", "", "840.00", "560.00"],
   ["", "Total per patient", "", "$1,400.00", ""],
@@ -84,18 +90,58 @@ function rulebook(gridPage = 2): Rulebook {
   const rb = makeRulebook();
   const on = (page: number, quote?: string) => ({ source: { documentId: "d1", page, ...(quote && { quote }) }, confidence: 0.9, method: "ai" as const, crossCheck: "not_checked" as const });
   const g = rb.budgetGrids[0]!;
+  g.prov = on(gridPage);
   g.visits.forEach((v) => (v.prov = on(gridPage)));
   g.procedures.forEach((p) => (p.prov = on(gridPage)));
   g.perPatientTotals = [{ label: "Total per patient", cents: 140000, prov: on(gridPage) }];
-  rb.invoiceables = [{ ...rb.invoiceables[0]!, code: null, name: "Courier shipment", amountCents: 5000, amountWithOverheadCents: 7000, prov: on(1) }];
-  rb.screenFail = null;
+  rb.invoiceables = [
+    { ...rb.invoiceables[0]!, code: null, name: "Courier shipment", amountCents: 5000, amountWithOverheadCents: 7000, cap: { kind: "amount", n: 50000, ratio: null }, prov: on(1, "Courier costs are reimbursed up to $500.00 per month") },
+  ];
+  rb.screenFail = { amountCents: null, basis: "per_procedure", cap: { kind: "ratio_to_randomized", n: 10, ratio: 0.5 }, paidVia: "invoice", requiredDocs: [], prov: on(1, "One (1) screen failure is paid for every two (2) randomized subjects, up to a maximum of ten (10)") };
   rb.payment.netDays.prov = on(1, "pay each invoice within forty-five (45) days of receipt of invoice");
   rb.overhead.pct.prov = on(1, "Overhead of 40% applies to all per‑patient lines");
   rb.deadlines[0]!.prov = on(1, "no later than 6 months after study close");
-  rb.siteFees[0]!.prov = on(1);
+  rb.siteFees[0]!.prov = on(1, "Administrative fee $12,000.00 due within 45 days");
+  rb.study.effectiveDate = { value: "2025-08-22", prov: on(1, "effective as of August 22, 2025") };
+  rb.appliesFrom = { value: "2026-01-15", prov: on(1, "The amended rates apply from 01/15/2026") };
+  rb.overpayment = { refundDays: 30, sponsorMayOffset: false, prov: on(1, "refunded within thirty (30) days of notice") };
+  rb.holdback = { pct: 10, appliesTo: "each payment", releaseConditions: ["close-out"], prov: on(1, "hold back 10% of each payment") };
   return rb;
 }
 const statuses = (ev: ValueEvidence[]) => Object.fromEntries(ev.map((e) => [e.path, e.status]));
+
+/** The value at a JSON pointer, and a copy of the rulebook with another value there. */
+const valueAt = (rb: Rulebook, path: string) => path.split("/").slice(1).reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], rb);
+const setValue = (rb: Rulebook, path: string, v: unknown) => {
+  const keys = path.split("/").slice(1);
+  (keys.slice(0, -1).reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], rb) as Record<string, unknown>)[keys.at(-1)!] = v;
+  return rb;
+};
+const withValue = (rb: Rulebook, path: string, v: unknown) => setValue(structuredClone(rb), path, v);
+const realDay = (d: string) => {
+  const t = new Date(`${d}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().startsWith(d);
+};
+/**
+ * Every value one printed character away: a digit changed, dropped or added (cents as printed in dollars: 50000 → "500.00").
+ * Dates: one digit of the ISO date changed, when that is still a real day.
+ */
+function nearby(v: number | string, cents = false): (number | string)[] {
+  if (typeof v === "string") return [...v].flatMap((ch, i) => (/\d/.test(ch) ? [..."0123456789"].filter((d) => d !== ch).map((d) => v.slice(0, i) + d + v.slice(i + 1)) : [])).filter(realDay);
+  const s = cents ? (v / 100).toFixed(2) : String(v);
+  const back = (t: string) => (cents ? Math.round(Number(t) * 100) : Number(t));
+  const out = new Set<number>();
+  for (let i = 0; i <= s.length; i++) {
+    const digit = i < s.length && /\d/.test(s[i]!);
+    for (const d of "0123456789") {
+      out.add(back(s.slice(0, i) + d + s.slice(i)));
+      if (digit) out.add(back(s.slice(0, i) + d + s.slice(i + 1)));
+    }
+    if (digit && s.length > 1) out.add(back(s.slice(0, i) + s.slice(i + 1)));
+  }
+  out.delete(v);
+  return [...out].filter(Number.isFinite);
+}
 
 describe("readTextLayer", () => {
   it("page sources: text, image only, scanner OCR layer", () => {
@@ -147,8 +193,21 @@ describe("bindEvidence", () => {
     const cell = evidence.find((e) => e.path === "/budgetGrids/0/procedures/0/cells/V2")!;
     expect(cell.printed).toBe("300.00");
     expect(cell.where[0]!.box![0]).toBeCloseTo(340 / 612, 2);
-    expect(evidence.find((e) => e.path === "/payment/netDays/value")!.printed).toBe("(45)");
     expect(evidence.find((e) => e.path === "/budgetGrids/0/procedures/2/cells/V2")!.printed).toBe("Invoiceable");
+    // Rules: the figure of the value's kind in the quote, its number as printed (without the brackets of "forty-five (45)").
+    const printed = Object.fromEntries(evidence.filter((e) => !/procedures|visits|perPatient/.test(e.path)).map((e) => [e.path, e.printed]));
+    expect(printed).toMatchObject({
+      "/payment/netDays/value": "45",
+      "/overhead/pct/value": "40%",
+      "/budgetGrids/0/statedOverheadPct": "40%",
+      "/siteFees/0/dueDays": "45",
+      "/overpayment/refundDays": "30",
+      "/invoiceables/0/cap/n": "$500.00",
+      "/screenFail/cap/n": "10",
+      "/screenFail/cap/ratio": "(1) screen failure is paid for every two (2)",
+      "/study/effectiveDate/value": "August 22, 2025",
+      "/appliesFrom/value": "01/15/2026",
+    });
   });
 
   it("a misread to an amount printed elsewhere on the page is a conflict, not a match", () => {
@@ -194,6 +253,22 @@ describe("bindEvidence", () => {
     expect([s["/payment/netDays/value"], s["/deadlines/0/value"], s["/overhead/pct/value"]]).toEqual(["conflict", "ungrounded", "conflict"]);
   });
 
+  it("a rule, cap, due date or date one character off what the page prints is never confirmed", () => {
+    const rb = rulebook();
+    const before = statuses(bindEvidence(rb, pages).evidence);
+    const cents = new Set(["/invoiceables/0/cap/n", "/invoiceables/0/amountCents", "/invoiceables/0/amountWithOverheadCents", "/siteFees/0/amountCents"]);
+    const paths = ["/payment/netDays/value", "/overhead/pct/value", "/holdback/pct", "/deadlines/0/value", "/budgetGrids/0/statedOverheadPct", "/siteFees/0/dueDays", "/overpayment/refundDays", "/screenFail/cap/n", "/screenFail/cap/ratio", "/study/effectiveDate/value", "/appliesFrom/value", ...cents];
+    let tried = 0;
+    for (const path of paths) {
+      expect(before[path], path).toBe("confirmed");
+      for (const v of nearby(valueAt(rb, path) as number | string, cents.has(path))) {
+        tried++;
+        expect([path, v, statuses(bindEvidence(withValue(rb, path, v), pages).evidence)[path]]).not.toEqual([path, v, "confirmed"]);
+      }
+    }
+    expect(tried).toBeGreaterThan(500);
+  });
+
   it("a wrong page reference is re-pointed when label and amount sit on one line of exactly one other page", () => {
     const rb = rulebook();
     rb.siteFees[0]!.prov.source!.page = 2;
@@ -223,20 +298,87 @@ describe("bindEvidence", () => {
   });
 });
 
+/** A one-page text PDF of these lines, read back. */
+async function textPdf(lines: string[], documentId = "d1") {
+  const doc = new mupdf.PDFDocument();
+  const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+  const filler = [
+    "This page continues the agreement between the parties and the site, as set out above in full detail.",
+    "A second ordinary line of words keeps this page well above the threshold for a real text layer.",
+  ];
+  doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, [...lines, ...filler].map((t, i) => at(40, 60 + 20 * i, t)).join("")));
+  const file = join(mkdtempSync(join(tmpdir(), "dct-evidence-")), "page.pdf");
+  writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+  return readTextLayer(file, documentId);
+}
+
+describe("rules as contracts print them", async () => {
+  const LINES = [
+    "Payment is due within 30 days of invoice and disputes within 60 days of payment.",
+    "Signed and effective on 2025-08-22 by both parties.",
+    "Effective as of Aug. 22nd, 2025 for all sites.",
+    "Dated the 22nd day of August, 2025 at the site.",
+    "Valid from 22-Aug-25 until the close of the study.",
+    "Starting 8/22/2025 the new rates apply.",
+    "Effective 22.08.2025 for the sites in Europe.",
+    "Starting 03/04/2025 the old rates end.",
+    "Sponsor will pay for 12 screen failures in total.",
+    "Sponsor will pay for 12 screen failures across 3 sites.",
+    "Institutional overhead of 30% applies to procedures.",
+    "The overhead is set out in the budget, and the site keeps 25% of the stipends.",
+    "The archive fee is $250.00 a year, and $350.00 with overhead.",
+  ];
+  const text = await textPdf(LINES);
+  const quoted = (path: string, value: unknown, line: number) => {
+    const rb = withValue(rulebook(), path, value);
+    const src = { documentId: "d1", page: 1, quote: LINES[line]!.replace(/\.$/, "") };
+    if (path.startsWith("/study")) rb.study.effectiveDate.prov.source = src;
+    if (path.startsWith("/payment")) rb.payment.netDays.prov.source = src;
+    if (path.startsWith("/screenFail")) rb.screenFail!.prov.source = src;
+    if (path.startsWith("/budgetGrids")) rb.budgetGrids[0]!.prov.source = src;
+    return bindEvidence(rb, text).evidence.find((e) => e.path === path)!;
+  };
+
+  it("dates: ISO, month names, day first, two-digit years and numbers are read; a day/month that can swap is asked", () => {
+    for (const line of [1, 2, 3, 4, 5, 6]) expect(quoted("/study/effectiveDate/value", "2025-08-22", line), LINES[line]).toMatchObject({ status: "confirmed" });
+    expect(quoted("/study/effectiveDate/value", "2025-08-23", 2)).toMatchObject({ status: "conflict", printed: "Aug. 22nd, 2025" });
+    for (const v of ["2025-03-04", "2025-04-03"]) expect(quoted("/study/effectiveDate/value", v, 7)).toMatchObject({ status: "ungrounded", note: "the date can be read as month/day or day/month" });
+    // The same reading for a typed date against the printed text: one date that reads one way, and only a real day.
+    expect(["Aug. 22nd, 2025", "22-Aug-25", "8/22/2025", "2025-08-22", "the 22nd day of August, 2025"].map(isoDate)).toEqual(Array(5).fill("2025-08-22"));
+    expect(["03/04/2025", "31 June 2025", "2025-02-30", "August 22, 2025 and 9/1/2025", "45 days"].map(isoDate)).toEqual(Array(5).fill(null));
+  });
+
+  it("a quote with two figures of the value's kind can't say which one is the value", () => {
+    expect(quoted("/payment/netDays/value", 30, 0)).toMatchObject({ status: "ungrounded", note: "printed with another figure of the same kind, so which one it is can't be told" });
+    expect(quoted("/payment/netDays/value", 45, 0)).toMatchObject({ status: "conflict", printed: null });
+  });
+
+  it("a cap is the number stated as a limit, else the only plain number in the quote", () => {
+    expect(quoted("/screenFail/cap/n", 12, 8)).toMatchObject({ status: "confirmed", printed: "12" });
+    expect(quoted("/screenFail/cap/n", 12, 9).status).toBe("ungrounded");
+  });
+
+  it("amounts in a quote (no row found by the label): two by position, else the only one", () => {
+    const fee = (amountCents: number, amountWithOverheadCents: number | null) => {
+      const rb = rulebook();
+      rb.invoiceables = [{ ...rb.invoiceables[0]!, name: "Records retention", amountCents, amountWithOverheadCents, prov: { ...rb.invoiceables[0]!.prov, source: { documentId: "d1", page: 1, quote: LINES[12]! } } }];
+      const s = statuses(bindEvidence(rb, text).evidence);
+      return [s["/invoiceables/0/amountCents"], s["/invoiceables/0/amountWithOverheadCents"]];
+    };
+    expect(fee(25000, 35000)).toEqual(["confirmed", "confirmed"]);
+    expect(fee(35000, 25000)).toEqual(["conflict", "conflict"]);
+    expect(fee(25000, null)).toEqual(["ungrounded", undefined]); // $350.00 is in the quote too: which one it is can't be told
+  });
+
+  it("the grid's overhead % must be printed next to the word overhead", () => {
+    expect(quoted("/budgetGrids/0/statedOverheadPct", 30, 10)).toMatchObject({ status: "confirmed", printed: "30%" });
+    expect(quoted("/budgetGrids/0/statedOverheadPct", 25, 11).status).not.toBe("confirmed");
+  });
+});
+
 describe("an amount at the end of a sentence", () => {
   it("is read with its full stop, not taken from the next line", async () => {
-    const doc = new mupdf.PDFDocument();
-    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
-    const lines = [
-      "The start-up fee is $7,455.00.",
-      "The archiving fee is $1,000.00 per year.",
-      "This page continues the agreement between the parties and the site, as set out above in full detail.",
-      "A second ordinary line of words keeps this page well above the threshold for a real text layer.",
-    ];
-    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, lines.map((t, i) => at(40, 60 + 20 * i, t)).join("")));
-    const file = join(mkdtempSync(join(tmpdir(), "dct-evidence-")), "stop.pdf");
-    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
-    const text = await readTextLayer(file, "d1");
+    const text = await textPdf(["The start-up fee is $7,455.00.", "The archiving fee is $1,000.00 per year."]);
     const rb = rulebook();
     rb.siteFees = [{ ...rb.siteFees[0]!, code: null, name: "Start-up fee", amountCents: 745500, prov: { source: { documentId: "d1", page: 1 }, confidence: 0.9, method: "ai", crossCheck: "not_checked" } }];
     const fee = bindEvidence(rb, text).evidence.find((e) => e.path === "/siteFees/0/amountCents");
@@ -272,6 +414,31 @@ describe("reviewFromEvidence", () => {
     expect(JSON.stringify(items.map((i) => [i.question, i.options]))).not.toMatch(/\bAI\b|anomal|rulebook|extraction/i);
     expect(items.every((i) => i.compare === null && i.outcome === null)).toBe(true);
   });
+
+  it("asks every rule, cap, due date and date it can't confirm, with the input it needs", () => {
+    const rb = rulebook();
+    rb.budgetGrids[0]!.statedOverheadPct = 41;
+    rb.budgetGrids[0]!.label = "Exhibit A at 40%";
+    rb.invoiceables.push({ ...rb.invoiceables[0]!, name: "Re-consent", cap: { kind: "blocks_with_reauth", n: 3, ratio: null } });
+    const { evidence, unaccounted } = bindEvidence(rb, pages.slice(1, 2)); // the grid page only: the terms page's rules aren't there
+    const asked = reviewFromEvidence(evidence, unaccounted, rb).filter((i) => i.kind === "confirm_value" && !/procedures|visits|perPatient|amount/i.test(i.path!));
+    expect(Object.fromEntries(asked.map((i) => [i.path, `${i.input}: ${i.question}`]))).toEqual({
+      "/budgetGrids/0/statedOverheadPct": 'percent: What overhead percentage is printed on the budget grid "Exhibit A at …"?',
+      "/study/effectiveDate/value": "date: What effective date does the contract give?",
+      "/appliesFrom/value": "date: From what date do the new terms apply?",
+      "/overhead/pct/value": "percent: What overhead percentage does the contract state?",
+      "/holdback/pct": "percent: What percentage of each payment is held back?",
+      "/payment/netDays/value": "number: Within how many days must an invoice be paid?",
+      "/deadlines/0/value": "number: Within how many months after the study closes must the last invoices be sent?",
+      "/overpayment/refundDays": "number: Within how many days must an overpayment be paid back?",
+      "/siteFees/0/dueDays": 'number: Within how many days is "Administrative fee" due?',
+      "/invoiceables/0/cap/n": 'money: What is the most that can be billed for "Courier shipment"?',
+      "/invoiceables/1/cap/n": 'number: How many times can "Re-consent" be billed before the sponsor has to approve more?',
+      "/screenFail/cap/n": "number: How many screen failures can be billed at most?",
+      "/screenFail/cap/ratio": "number: How many screen failures can be billed for each randomized subject?",
+    });
+    expect(asked.every((i) => i.blocking && (i.reason === "UNGROUNDED_VALUE" || i.reason === "VALUE_CONFLICT"))).toBe(true);
+  });
 });
 
 describe.runIf(process.env.DCT_ROOT)("COPD signed original (DCT_ROOT)", () => {
@@ -301,6 +468,26 @@ describe.runIf(process.env.DCT_ROOT)("COPD signed original (DCT_ROOT)", () => {
       expect(paths.filter((p) => s[p] === "confirmed")).toEqual([]);
     }
   });
+
+  it("a single-character change of a fee, visit total, rule, cap, due date or date is never confirmed", async () => {
+    const pages = await copd();
+    const rb = read();
+    const cents = (p: string) => /Cents$|\/cents$/.test(p) || (p.endsWith("/cap/n") && valueAt(rb, p.replace(/\/n$/, "/kind")) === "amount");
+    // Every value but grid cells and unit prices (the test above), each bound on its own: round r gives every path its r-th neighbour.
+    const paths = bindEvidence(rb, pages).evidence.map((e) => e.path).filter((p) => !/\/cells\/|unitCents$/.test(p));
+    const near = new Map(paths.map((p) => [p, nearby(valueAt(rb, p) as number | string, cents(p))]));
+    let tried = 0;
+    for (let r = 0; [...near.values()].some((vs) => r < vs.length); r++) {
+      const m = structuredClone(rb);
+      const changed = paths.filter((p) => r < near.get(p)!.length);
+      for (const p of changed) setValue(m, p, near.get(p)![r]);
+      const s = statuses(bindEvidence(m, pages).evidence);
+      tried += changed.length;
+      expect(changed.filter((p) => s[p] === "confirmed")).toEqual([]);
+    }
+    expect(paths.filter((p) => /statedOverheadPct|effectiveDate|dueDays|cap\//.test(p)).length).toBeGreaterThan(10);
+    expect(tried).toBeGreaterThan(5000);
+  }, 60_000);
 
   it("the admin fee cited on page 4 is re-pointed to page 9", async () => {
     const moved = bindEvidence(read(), await copd()).evidence.filter((e) => e.note?.startsWith("page reference corrected"));

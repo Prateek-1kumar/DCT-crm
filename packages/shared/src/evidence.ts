@@ -41,6 +41,11 @@ export const ReviewAnswer = z.object({
   optionId: z.string().optional(),
   cantTell: z.boolean().optional(),
   note: z.string().optional(),
+  /**
+   * Settled a mismatch that the PDF's text couldn't decide (a scan, or a value the check didn't find): it rests on this
+   * person's reading of the page, and the note says where the page prints it. The approver sees these marked.
+   */
+  noPdfText: z.boolean().optional(),
   by: z.string(),
   at: z.string(),
 });
@@ -70,6 +75,8 @@ export const ReviewItem = z.object({
   compare: z.object({ typed: z.unknown(), read: z.unknown(), printed: z.string().nullable() }).nullable(),
   /** The approver reopened this answer with a note; cleared when it's answered again. */
   sentBack: z.object({ by: z.string(), note: z.string(), at: z.string() }).nullable(),
+  /** "This looks wrong": who reported the value and why; kept once it's answered, as the record of why it was asked. */
+  reported: z.object({ by: z.string(), note: z.string(), at: z.string() }).nullable().optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 
@@ -102,7 +109,62 @@ export const AnswerReviewBody = z.object({
   value: z.unknown().optional(),
   optionId: z.string().optional(),
   cantTell: z.boolean().optional(),
-  /** Required when settling a "differs" item with a value other than the PDF's own text (keeping your own reading over it). */
+  /**
+   * Required when settling a "differs" item: with a value other than the PDF's own text (why the text is wrong), or, where
+   * the PDF's text prints nothing to decide it, with either value (where the page prints it).
+   */
   note: z.string().optional(),
   by: z.string().min(1),
 });
+
+// ---- Notes never give a withheld value away ----
+
+const BLANK = "•••";
+const MONTH = "january|february|march|april|may|june|july|august|september|october|november|december|(?:jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\\b\\.?";
+const ORD = "(?:st|nd|rd|th)?";
+const WORD = "zero|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|dozen";
+const JOIN = "[\\s-]+(?:and[\\s-]+)?";
+// "one" is mostly a pronoun ("which one", "no one"): a number only inside a compound, as "one (1)", or before a unit
+const ONE = `one(?:${JOIN}(?:${WORD}|one))+|one(?=\\s*\\(\\s*\\d|\\s+(?:per|days?|weeks?|months?|years?|percent|dollars?|cents?|times|business)\\b)`;
+// Words a number after them only points at a place in the documents or names a row or visit. No withheld value is
+// counted in weeks or visits; day, month and year are left out because days, months and dates are values.
+const PLACE = "pages?|pp?\\.|pg\\.?|sections?|sec\\.|clauses?|articles?|paragraphs?|para\\.|exhibits?|attachments?|appendix|appendices|schedules?|amendments?|annex(?:es)?|addend(?:um|a)|tables?|rows?|lines?|columns?|col\\.|items?|visits?|weeks?|versions?|cpt|codes?";
+// …unless a unit follows, which makes it a quantity again ("page 30 days" is 30 days)
+const UNIT = "%|percent|per\\s*cent|days?\\b|business\\b|weeks?\\b|months?\\b|years?\\b|hours?\\b|dollars?\\b|cents?\\b|usd\\b|times\\b";
+const NOTE_NUMBERS = new RegExp(
+  [
+    `(?<place>(?:\\b(?:${PLACE})|§§?)\\s*(?:no\\.?\\s*|#\\s*)?\\d+(?:\\.\\d+)*(?:\\([a-z\\d]{1,3}\\))*(?:\\s*[-–]\\s*\\d+(?:\\.\\d+)*)?(?!\\d|,\\d|\\.\\d|\\s*(?:${UNIT})))`,
+    `(?<date>\\b\\d{4}-\\d{1,2}-\\d{1,2}\\b|\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b(?:\\d{1,2}${ORD}\\s+(?:of\\s+)?)?(?:${MONTH})(?:\\s+\\d{1,2}${ORD}\\b)?(?:,?\\s+\\d{4})?\\b|\\b(?:q[1-4]\\s+\\d{4}|fy\\s?\\d{2,4})\\b)`,
+    `(?<words>\\b(?:(?:${WORD})(?:${JOIN}(?:${WORD}|one))*|${ONE})\\b)`,
+    `(?<code>\\b[a-z][a-z\\d]*(?:[-_][a-z\\d]+)*)`,
+    `(?<num>\\d+(?:,\\d{3})*(?:\\.\\d+)?)`,
+  ].join("|"),
+  "gi",
+);
+const digits = (s: string) => s.replace(/\d+/g, BLANK);
+
+/**
+ * A note as it may be shown while the value it's about is withheld (blind entry): every number that could be, or
+ * give away, a value is blanked, so "Should be $104, see page 4" reads "Should be $•••, see page 4".
+ * - Blanked: amounts ($, commas, decimals), percentages, counts and durations (45 days, net 45), ordinals, every bare
+ *   number, dates whole (2026-09-01, Sept 1, 2026; a month name on its own too, except "may"), and numbers in words
+ *   ("forty-five", "ten (10)", as contracts print them; "one" only as a number: "twenty-one", "one (1)", "one day").
+ * - Kept: numbers that only say where to look or name something: after page, §, section, clause, exhibit, attachment,
+ *   schedule, amendment, table, row, line, column, item, visit, week, version or code (not when a unit follows); and
+ *   codes that start with letters, in capitals or one or two letters (V2, SC003, NWP-418-02), except Net45 and USD100.
+ * When in doubt, blank: a blanked number costs a look at the page, a shown one can steer a blind answer.
+ */
+export function blankNumbers(text: string): string {
+  return text.replace(NOTE_NUMBERS, (m, place?: string, date?: string, words?: string, code?: string) => {
+    if (place) return m;
+    if (date) return /\d/.test(m) || !/^(?:may|[a-z]{3}\.?)$/i.test(m) ? BLANK : m;
+    if (words) return BLANK;
+    if (code) {
+      if (!/\d/.test(m)) return m;
+      if (/^(?:net|usd|eur|gbp|cad|aud|chf)[-_]?\d/i.test(m)) return digits(m);
+      const head = /^[a-z]+/i.exec(m)![0];
+      return head === head.toUpperCase() || (head.length <= 2 && !/[-_]/.test(m)) ? m : digits(m);
+    }
+    return BLANK;
+  });
+}

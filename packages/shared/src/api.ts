@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
 import { ProofreadMark, ReviewItem, settled, ValueEvidence } from "./evidence";
+import { actionLabel } from "./labels";
 import { DocumentKind, Rulebook } from "./rulebook";
 
 /** HTTP contract between apps/api and apps/web. All routes are under /api/v1. */
@@ -101,7 +102,10 @@ export const JobDto = z.object({
   /** 0–100. */
   progress: z.number(),
   step: z.string(),
+  /** Why it failed, in plain words for people. */
   error: z.string().nullable(),
+  /** The technical reason, for the team ("Details for the team"); null when the plain words say it all. */
+  detail: z.string().nullable().optional(),
 });
 export type JobDto = z.infer<typeof JobDto>;
 
@@ -119,10 +123,44 @@ export const AuditEntryDto = z.object({
   at: z.string(),
   by: z.string(),
   studyId: z.string().nullable(),
+  /** The contract's, for the Contract column; null when the entry isn't about one. */
+  protocol: z.string().nullable(),
+  sponsor: z.string().nullable(),
   action: z.string(),
+  /** Withheld values left out and notes about them blanked (blankNumbers) while their question is open. */
   detail: z.record(z.string(), z.unknown()),
 });
 export type AuditEntryDto = z.infer<typeof AuditEntryDto>;
+
+/**
+ * GET /audit?studyId=&q=&cursor=&limit=: one page of the log, newest first. `q` matches the person, the action (its
+ * code or what it's called, ACTION_LABELS) or any text or number in the details, every word, case-insensitive; never
+ * what's withheld or blanked. `cursor` is opaque.
+ */
+export const AuditListQuery = z.object({
+  studyId: z.string().min(1).optional(),
+  q: z.string().max(200).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type AuditListQuery = Partial<z.infer<typeof AuditListQuery>>;
+
+export const AuditPage = z.object({ items: z.array(AuditEntryDto), nextCursor: z.string().nullable() });
+export type AuditPage = z.infer<typeof AuditPage>;
+
+/** Every text and number in an entry's details, keys left out: what `q` is matched against (the API's SQL reads the same). */
+export function detailText(detail: unknown): string[] {
+  if (typeof detail === "string") return [detail];
+  if (typeof detail === "number") return [String(detail)];
+  if (detail === null || typeof detail !== "object") return [];
+  return Object.values(detail).flatMap(detailText);
+}
+
+/** Whether an entry, as it's shown, matches every word of `q`. */
+export function auditMatches(e: Pick<AuditEntryDto, "by" | "action" | "detail">, q: string): boolean {
+  const hay = [e.by, e.action, actionLabel(e.action), ...detailText(e.detail)].join(" ").toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+}
 
 // ---- Request bodies ----
 

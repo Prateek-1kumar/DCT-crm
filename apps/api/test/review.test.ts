@@ -1,4 +1,4 @@
-import type { AlertPage, AuditEntryDto, DiffEntry, MasterSearch, RulebookVersionDto, StudyDetailDto, StudyPage } from "@dct/shared";
+import type { AlertPage, AuditPage, DiffEntry, MasterSearch, RulebookVersionDto, StudyDetailDto, StudyPage } from "@dct/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
@@ -20,6 +20,7 @@ const get = async <T>(url: string) => (await app.inject({ url: `/api/v1${url}` }
 const post = (url: string, payload: object) => app.inject({ method: "POST", url: `/api/v1${url}`, payload });
 const patch = (url: string, payload: object) => app.inject({ method: "PATCH", url: `/api/v1${url}`, payload });
 const version = (id: string, v = 1) => get<RulebookVersionDto>(`/studies/${id}/versions/${v}`);
+const auditOf = async (id: string, q = "") => (await get<AuditPage>(`/audit?studyId=${id}&limit=100${q && `&q=${encodeURIComponent(q)}`}`)).items;
 const summary = async (id: string) => (await get<StudyPage>("/studies?limit=100")).items.find((s) => s.id === id)!;
 const answer = async (id: string, item: string, body: object, v = 1) => {
   const res = await post(`/studies/${id}/versions/${v}/review/${encodeURIComponent(item)}`, { by: "Sam", ...body });
@@ -43,7 +44,8 @@ describe("reading checks every number against the PDF's own text", () => {
     const { studyId, doc } = await draft();
     expect(doc.text).toBe("text");
     const v = await version(studyId);
-    expect(v.pdfCheck).toEqual({ values: 31, matched: 27 });
+    // 36 values: the amounts, and the effective date, the fee's due days, the screen-fail cap and each grid's overhead %
+    expect(v.pdfCheck).toEqual({ values: 36, matched: 32 });
     expect(v.evidence.filter((e) => e.status !== "confirmed").map((e) => [e.path, e.status])).toEqual([[G2_TOTAL, "conflict"], ...UNGROUNDED.map((p) => [p, "ungrounded"])]);
     expect(v.evidence.find((e) => e.path === "/siteFees/0/amountCents")).toMatchObject({ status: "confirmed", printed: "$12,000.00", where: [{ documentId: doc.id, page: 1 }] });
     expect(v.review.map((i) => [i.reason, i.kind, i.blocking])).toEqual([
@@ -90,8 +92,11 @@ describe("blind entry", () => {
     expect(v.review.every((i) => i.compare === null && i.answer === null)).toBe(true);
     expect(raw).not.toMatch(/truth|secret|"apply"/);
 
-    // Answered: the value is back. A differs answer shows the comparison, to that item only.
+    // Answered: the value is back once nothing about it is open. Here the typed total no longer adds up, so that's asked
+    // first (recheck), and it holds the value back too. A differs answer shows the comparison, to that item only.
     await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 });
+    expect(at((await version(studyId)).rulebook, G2_TOTAL)).toBeNull();
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
     expect(at((await version(studyId)).rulebook, G2_TOTAL)).toBe(848900);
     const differs = await answer(studyId, `confirm:${NET_DAYS}`, { value: 30 });
     expect(differs.compare).toEqual({ typed: 30, read: 45, printed: null });
@@ -117,17 +122,89 @@ describe("blind entry", () => {
     expect((await version(studyId, 2)).review.map((i) => i.path)).toContain(unsched);
     const diff = async () => (await get<DiffEntry[]>(`/studies/${studyId}/versions/2/diff?against=1`)).map((e) => e.path);
     expect(await diff()).not.toContain(unsched);
-    expect(await diff()).toContain("/appliesFrom/value");
+    // the fee the amendment adds is shown; its due days and the new applies-from date are asked (nothing prints them)
+    expect(await diff()).toContain("/siteFees/0");
+    expect(await diff()).not.toContain("/appliesFrom/value");
 
     // Answered, sent back: the earlier answer stays out of the log while the question is open again.
     const item = `confirm:${unsched}`;
     await answer(studyId, item, { value: 80000 }, 2);
-    const logged = async () => (await get<AuditEntryDto[]>(`/audit?studyId=${studyId}`)).find((e) => e.action === "review.answered" && e.detail.path === unsched)!.detail;
+    const logged = async () => (await auditOf(studyId)).find((e) => e.action === "review.answered" && e.detail.path === unsched)!.detail;
     expect(await logged()).toMatchObject({ before: 90000, after: 80000 });
+    expect((await auditOf(studyId, "90000")).map((e) => e.action)).toContain("review.answered");
     expect((await post(`/studies/${studyId}/versions/2/send-back`, { itemIds: [item], note: "look again", by: "Morgan" })).statusCode).toBe(200);
     expect(await logged()).not.toHaveProperty("before");
     expect(await logged()).not.toHaveProperty("after");
+    expect(await auditOf(studyId, "90000")).toEqual([]); // nor found by it
     expect(await diff()).not.toContain(unsched);
+  });
+
+  it("a note never gives a hidden value away, on any route, until its question is settled", async () => {
+    const { studyId } = await draft();
+    await settleAll(built, studyId, 1);
+    const item = `confirm:${G2_TOTAL}`;
+    // what an approver, a reporter and an answerer might write: amounts, a count in words, a duration, a date
+    const sent = "Page 2 prints $6,543.21 here, not what was typed (sixty-five forty); see §4.2";
+    const reported = "Should be 47 days from Sept 9, 2031";
+    const unsure = "Hard to read, maybe 6543.21?";
+    const leaks = /6,?543|sixty|forty|47 days|sept|2031/i;
+    const bodies: [string, string][] = [];
+    const call = async (method: "GET" | "POST", url: string, payload?: object) => {
+      const res = await app.inject({ method, url: `/api/v1${url}`, payload });
+      bodies.push([`${method} ${url}`, res.body]);
+      return res;
+    };
+    const back = await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: [item], note: sent, by: "Morgan" });
+    expect(back.json<RulebookVersionDto>().review.find((i) => i.id === item)!.sentBack).toMatchObject({ by: "Morgan", note: "Page 2 prints $••• here, not what was typed (•••); see §4.2" });
+    expect((await call("POST", `/studies/${studyId}/versions/1/review/${encodeURIComponent(item)}`, { cantTell: true, note: unsure, by: "Sam" })).statusCode).toBe(200);
+    expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(200);
+    // and the errors a curious person could provoke
+    expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(409);
+    expect((await call("POST", `/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(409);
+    expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: ["reported:9"], note: sent, by: "Morgan" })).statusCode).toBe(400);
+    expect((await call("POST", `/studies/${studyId}/versions/1/review/nope`, { value: 1, by: "Sam" })).statusCode).toBe(404);
+
+    const reads = [
+      `/studies/${studyId}/versions/1`,
+      `/studies/${studyId}`,
+      "/studies?limit=100",
+      `/studies/${studyId}/versions/1/search?q=blood`,
+      "/search?q=6543.21",
+      "/alerts?for=Avery&limit=50",
+      `/audit?studyId=${studyId}&limit=100`,
+      "/audit?limit=100",
+      ...["6,543.21", "6543", "sixty", "forty", "47", "sept", "2031"].map((q) => `/audit?q=${encodeURIComponent(q)}`),
+    ];
+    for (const url of reads) expect((await call("GET", url)).statusCode, url).toBe(200);
+    // ids and times can hold any digits; only what people read counts
+    const words = (body: string) => body.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{4}-\d{2}-\d{2}T[\d:.]+Z/gi, "");
+    for (const [req, body] of bodies) expect(words(body), req).not.toMatch(leaks);
+
+    // what's shown: the words, and where to look
+    const v = await version(studyId);
+    expect(v.review.find((i) => i.id === item)).toMatchObject({ outcome: "cant_tell", answer: { note: "Hard to read, maybe •••?" } });
+    // whoever answers the reported question sees why it was reported, its figures blanked
+    expect(v.review.find((i) => i.reason === "reported")).toMatchObject({ path: NET_DAYS, reported: { by: "Avery", note: "Should be ••• days from •••" } });
+    const log = await auditOf(studyId);
+    expect(log.find((e) => e.action === "review.sent_back")!.detail).toMatchObject({ itemIds: [item], note: "Page 2 prints $••• here, not what was typed (•••); see §4.2" });
+    expect(log.find((e) => e.action === "number.reported")!.detail.note).toBe("Should be ••• days from •••");
+    expect(log[0]).toMatchObject({ protocol: "SYN-001", sponsor: "Synthetic Pharma" });
+    expect((await auditOf(studyId, "§4.2")).map((e) => e.action)).toEqual(["review.sent_back"]); // the words are still found
+
+    // Settled: the full notes, and found by their numbers. The alert went to everyone, so it stays blanked.
+    await answer(studyId, item, { value: 848900 });
+    // the typed total doesn't add up, which is asked about that same total: the note stays blanked until that's settled too
+    expect((await auditOf(studyId)).find((e) => e.action === "review.sent_back")!.detail.note).not.toBe(sent);
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
+    await answer(studyId, v.review.find((i) => i.reason === "reported")!.id, { value: 45 });
+    expect((await version(studyId)).review.find((i) => i.reason === "reported")!.reported).toMatchObject({ by: "Avery", note: reported });
+    const settledLog = await auditOf(studyId);
+    expect(settledLog.find((e) => e.action === "review.sent_back")!.detail.note).toBe(sent);
+    expect(settledLog.find((e) => e.action === "number.reported")!.detail.note).toBe(reported);
+    expect((await auditOf(studyId, "543.21")).map((e) => e.action).sort()).toEqual(["review.answered", "review.sent_back"]);
+    expect((await auditOf(studyId, "2031")).map((e) => e.action)).toEqual(["number.reported"]);
+    const alert = (await get<AlertPage>("/alerts?for=Avery&limit=50")).items.find((a) => a.kind === "sent_back")!;
+    expect(alert.note).toBe("Page 2 prints $••• here, not what was typed (•••); see §4.2");
   });
 });
 
@@ -135,9 +212,10 @@ describe("answering", () => {
   it("matches, differs, then settles (a note only to keep your own value over the PDF text); answers can change; options are chosen", async () => {
     const { studyId } = await draft();
     // The PDF prints 8,489.00 where the read has 8,488.00: typing what the page says matches its text.
-    expect(await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 })).toMatchObject({ outcome: "matched", compare: null, answer: { value: 848900, by: "Sam" } });
+    expect(await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 })).toMatchObject({ outcome: "matched", compare: null, answer: { by: "Sam" } });
     let stored = await storedVersion(built, studyId, 1);
     expect(at(stored.rulebook, G2_TOTAL)).toBe(848900);
+    expect(stored.review.find((i) => i.id === `confirm:${G2_TOTAL}`)!.answer).toMatchObject({ value: 848900 });
     expect(stored.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "attested", note: "Typed by Sam" });
 
     // Changing it: checked again, now against the PDF text; keeping your own over it needs a note.
@@ -147,9 +225,20 @@ describe("answering", () => {
     expect(noNote.json().message).toBe("Add a short note saying why the PDF text is wrong here.");
     expect(await answer(studyId, `confirm:${G2_TOTAL}`, { value: 849000, note: "Exhibit prints a correction in ink" })).toMatchObject({ outcome: "chosen", compare: null });
 
-    // Nothing printed to check against: compared with the value read, and settling needs no note.
+    // Nothing printed to check against: compared with the value read; settling with either value needs a note saying
+    // where the page prints it, and the answer is marked for the approver.
     expect(await answer(studyId, `confirm:${NET_DAYS}`, { value: 30 })).toMatchObject({ outcome: "differs", compare: { typed: 30, read: 45, printed: null } });
-    expect(await answer(studyId, `confirm:${NET_DAYS}`, { value: 30 })).toMatchObject({ outcome: "chosen" });
+    for (const value of [30, 45]) {
+      const noNote = await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(`confirm:${NET_DAYS}`)}`, { value, note: " ", by: "Sam" });
+      expect(noNote.statusCode).toBe(400);
+      expect(noNote.json().message).toBe("Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.");
+    }
+    expect(await answer(studyId, `confirm:${NET_DAYS}`, { value: 30, note: "§4.2, page 1, second line" })).toMatchObject({
+      outcome: "chosen",
+      answer: { value: 30, note: "§4.2, page 1, second line", noPdfText: true, by: "Sam" },
+    });
+    // where the PDF text decided it, or nothing differed, the answer isn't marked
+    expect((await version(studyId)).review.find((i) => i.id === `confirm:${G2_TOTAL}`)!.answer).not.toHaveProperty("noPdfText");
     expect(await answer(studyId, "confirm:/overhead/pct/value", { value: 40 })).toMatchObject({ outcome: "matched" });
 
     // Options: picked, and the pick is applied.
@@ -159,7 +248,7 @@ describe("answering", () => {
     stored = await storedVersion(built, studyId, 1);
     expect([stored.rulebook!.governingGridId, at(stored.rulebook, NET_DAYS)]).toEqual(["g2", 30]);
     expect(stored.editors).toEqual(["Sam"]);
-    const log = (await get<AuditEntryDto[]>(`/audit?studyId=${studyId}`)).filter((e) => e.action.startsWith("review."));
+    const log = (await auditOf(studyId)).filter((e) => e.action.startsWith("review."));
     // newest first; settling a "differs" is the first settled answer, not a change
     expect(log.map((e) => [e.action, e.detail.outcome])).toEqual([
       ["review.answered", "cant tell"],
@@ -172,6 +261,36 @@ describe("answering", () => {
       ["review.answered", "matched"],
     ]);
     expect(log[1]!.detail).toMatchObject({ gridId: "g2" });
+  });
+
+  it("a total that stops adding up once the page's numbers are typed is asked, and holds approval until it's settled", async () => {
+    const { studyId } = await draft();
+    // Exhibit A (revised) reads its Week 0 total as 8,488.00, which its parts add up to; the page prints 8,489.00.
+    await settleAll(built, studyId, 1);
+    expect((await version(studyId)).review.map((i) => i.id)).not.toContain(`anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`);
+    await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 });
+    const v = await version(studyId);
+    expect(v.review.find((i) => i.id === `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`)).toMatchObject({ kind: "contract_problem", blocking: true, outcome: null, options: [{ id: "as_printed" }] });
+    expect(await summary(studyId)).toMatchObject({ needsYou: 1 });
+    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).json().message).toBe("1 question still needs an answer before this can be approved.");
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
+    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("a typed date is checked against the date the PDF prints, however it's written", async () => {
+    const { studyId } = await draft();
+    const path = "/study/effectiveDate/value";
+    expect((await version(studyId)).evidence.find((e) => e.path === path)).toMatchObject({ status: "confirmed", printed: "August 22, 2025" });
+    const v = (await post(`/studies/${studyId}/versions/1/report`, { path, note: "check the date", by: "Ben" })).json<RulebookVersionDto>();
+    const id = v.review.at(-1)!.id;
+    expect(v.review.at(-1)!.input).toBe("date");
+    // a day off: the PDF's text says otherwise, so keeping it needs a reason, and it isn't marked as missing from the text
+    expect(await answer(studyId, id, { value: "2025-08-23" })).toMatchObject({ outcome: "differs", compare: { typed: "2025-08-23", read: "2025-08-22", printed: "August 22, 2025" } });
+    expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(id)}`, { value: "2025-08-23", by: "Sam" })).json().message).toBe("Add a short note saying why the PDF text is wrong here.");
+    const settledDate = await answer(studyId, id, { value: "2025-08-22" });
+    expect(settledDate).toMatchObject({ outcome: "chosen" });
+    expect(settledDate.answer).not.toHaveProperty("noPdfText");
+    expect(await answer(studyId, id, { value: "2025-08-22" })).toMatchObject({ outcome: "matched" }); // the PDF's own text, typed
   });
 
   it("refuses what isn't an answer", async () => {
@@ -237,8 +356,8 @@ describe("“This looks wrong”", () => {
     expect(at(v2.rulebook, cell)).toBeNull();
     expect(at((await version(studyId, 1)).rulebook, cell)).toBe(5500); // the live version is never withheld
     expect(await get<StudyDetailDto>(`/studies/${studyId}`)).toMatchObject({ status: "amendment_in_review", liveVersion: 1, needsYou: 1 });
-    const audit = await get<AuditEntryDto[]>(`/audit?studyId=${studyId}`);
-    expect(audit[0]).toMatchObject({ action: "number.reported", by: "Sam", detail: { version: 2, note: "Should be $56" } });
+    // the note names the value being typed blind on v2: its numbers are blanked until that's answered
+    expect((await auditOf(studyId))[0]).toMatchObject({ action: "number.reported", by: "Sam", detail: { version: 2, note: "Should be $•••" } });
     // Only the newest version can be reported on now.
     expect((await post(`/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: "x", by: "Sam" })).json().message).toBe("Version 2 is already in progress. Report it there.");
 
@@ -344,7 +463,8 @@ describe("typing in by hand", () => {
     const days = v.review.find((i) => i.path === NET_DAYS)!;
     expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(days.id)}`, { value: 45, by: "Avery" })).json().message).toBe("Avery typed these values, so someone else has to re-type them.");
     expect(await answer(studyId, days.id, { value: 40 })).toMatchObject({ outcome: "differs", compare: { typed: 40, read: 45, printed: null } });
-    expect(await answer(studyId, days.id, { value: 45 })).toMatchObject({ outcome: "chosen" });
+    expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(days.id)}`, { value: 45, by: "Sam" })).statusCode).toBe(400); // nothing in the PDF's text decides it
+    expect(await answer(studyId, days.id, { value: 45, note: "page 4, §4.2" })).toMatchObject({ outcome: "chosen", answer: { noPdfText: true } });
     await settleAll(built, studyId, 1, "Sam");
     // Re-typing isn't editing: with maker-checker on, the re-typer may approve and the typist may not.
     await patch("/settings", { makerChecker: true, by: "Morgan" });

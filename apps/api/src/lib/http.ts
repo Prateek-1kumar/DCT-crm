@@ -19,3 +19,8 @@ export function parse<S extends z.ZodType>(schema: S, data: unknown): z.infer<S>
 }
 
 export const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+
+/** The words of a search, for matching every one. */
+export const wordsOf = (q = "") => q.trim().split(/\s+/).filter(Boolean);
+/** An ILIKE pattern for `w` anywhere, its wildcards taken literally. */
+export const like = (w: string) => `%${w.replace(/[\\%_]/g, "\\$&")}%`;

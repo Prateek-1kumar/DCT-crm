@@ -1,15 +1,12 @@
-import { readFileSync } from "node:fs";
 import { type DocumentKind, Rulebook } from "@dct/shared";
+// Imported, not read from disk next to this file: a bundle that inlines this package (the API's build) has no fixtures/ beside it.
+import data from "../fixtures/fake-extraction.json" with { type: "json" };
 import type { ExtractionNote, PageInfo } from "./checks";
 import type { ExtractionOutput, InputDoc } from "./extract";
 
 /** EXTRACTION_FAKE=1: a synthetic study (not a real contract) so the API and UI run without AI keys. */
 
-const fixture = JSON.parse(readFileSync(new URL("../fixtures/fake-extraction.json", import.meta.url), "utf8")) as {
-  rulebook: unknown;
-  pages: PageInfo[];
-  notes: ExtractionNote[];
-};
+const fixture = data as unknown as { rulebook: unknown; pages: PageInfo[]; notes: ExtractionNote[] };
 
 /** Fixture uses doc-1 / doc-2; point them at the caller's documents. */
 function remap<T>(v: T, docs: InputDoc[]): T {
@@ -26,7 +23,7 @@ export async function fakeIdentify(docs: InputDoc[]) {
 }
 
 export async function fakeExtract({ documents, onProgress }: { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void }): Promise<ExtractionOutput> {
-  if (!documents.length) throw new Error("extractStudy: no documents");
+  if (!documents.length) throw new Error("There are no documents to read.");
   for (const [pct, step] of [
     [10, "Rendering pages (fake)"],
     [40, "Reading contract terms (fake)"],

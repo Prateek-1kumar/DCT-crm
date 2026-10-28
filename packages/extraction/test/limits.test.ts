@@ -1,12 +1,14 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as mupdf from "mupdf";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONFIG, ExtractionLimitError, extractWith, identifyWith } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { LlmClient } from "../src/llm";
-import { openDocuments, pageCount, RENDER_LIMITS, RenderTimeoutError, renderPng, renderTiles, tileLayout } from "../src/render";
+import { openDocuments, pageCount, RENDER_LIMITS, RenderTimeoutError, renderPng, renderTiles, tileLayout, WORKER_FILE } from "../src/render";
 import { bankRects, readTextLayer } from "../src/textlayer";
 
 function pdfWith(pages: number, size: [number, number] = [612, 792]): string {
@@ -34,7 +36,7 @@ describe("render limits", () => {
 
   it("rejects page numbers outside 1..pageCount and non-integers", async () => {
     for (const p of [0, -1, 3, 1.5, Number.NaN]) await expect(renderPage(pdf, p)).rejects.toThrow(RangeError);
-    await expect(renderPage(pdf, 1, 0)).rejects.toThrow(/invalid dpi/);
+    await expect(renderPage(pdf, 1, 0)).rejects.toThrow(/not a valid DPI/);
   });
 
   it("clamps DPI to maxDpi", async () => {
@@ -47,7 +49,7 @@ describe("render limits", () => {
     const [w, h] = dims(await renderPage(pdf, 1, 600));
     expect(w! * h!).toBeLessThanOrEqual(1_000_000);
     expect(w! * h!).toBeGreaterThan(900_000);
-    await expect(renderPng(pdf, 1, { dpi: 600, clip: [0, 0, 2000, 2000] })).rejects.toThrow(/exceeds/);
+    await expect(renderPng(pdf, 1, { dpi: 600, clip: [0, 0, 2000, 2000] })).rejects.toThrow(/over the 1000000-pixel limit/);
   });
 
   it("a huge page cannot exceed the pixel budget", async () => {
@@ -114,12 +116,38 @@ describe("tile budget", () => {
   it("renderTiles checks the caller's remaining budget against the layout before rendering", async () => {
     const layout = await tileLayout(pdf, 1, { dpi: 400, maxPx: 1000 });
     expect(layout.count).toBeGreaterThan(1);
-    await expect(renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count - 1 })).rejects.toThrow(/left in the budget/);
+    await expect(renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count - 1 })).rejects.toThrow(/left for this read/);
     expect(await renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count })).toHaveLength(layout.count);
   });
 });
 
 describe("the mupdf worker", () => {
+  it("is the package's own script, found the way an app that bundles this package finds it", async () => {
+    expect(WORKER_FILE).toBe(fileURLToPath(new URL("../src/mupdf-worker.mjs", import.meta.url)));
+    // An app that inlines render.ts (the API's tsup build) resolves it from its own dist/, through node_modules.
+    const app = mkdtempSync(join(tmpdir(), "dct-app-"));
+    mkdirSync(join(app, "node_modules", "@dct"), { recursive: true });
+    symlinkSync(fileURLToPath(new URL("..", import.meta.url)), join(app, "node_modules", "@dct", "extraction"), "dir");
+    const fromApp = createRequire(join(app, "dist", "server.js")).resolve("@dct/extraction/mupdf-worker");
+    expect(realpathSync(fromApp)).toBe(realpathSync(WORKER_FILE));
+    expect(existsSync(join(app, "dist", "mupdf-worker.mjs"))).toBe(false); // nothing to copy next to the bundle
+    expect(await pageCount(pdfWith(2))).toBe(2); // and it starts
+  });
+
+  it("a timeout replaces the worker: the next call gets a fresh one", async () => {
+    await pageCount(pdfWith(1));
+    expect(await openDocuments()).toBeGreaterThan(0);
+    const doc = new mupdf.PDFDocument();
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, {}, "0 0 m 612 792 l S\n".repeat(400_000)));
+    const slow = join(mkdtempSync(join(tmpdir(), "dct-limits-")), "slow.pdf");
+    writeFileSync(slow, doc.saveToBuffer("").asUint8Array());
+    RENDER_LIMITS.timeoutMs = 300;
+    await expect(renderPng(slow, 1, { dpi: 400 })).rejects.toThrow(RenderTimeoutError);
+    RENDER_LIMITS.timeoutMs = saved.timeoutMs;
+    expect(await openDocuments()).toBe(0); // a new worker: nothing open yet
+    expect(await pageCount(pdfWith(3))).toBe(3);
+  });
+
   it("stops a page that takes too long to draw, without blocking the event loop; that page then fails at once", async () => {
     // a crafted content stream: hundreds of thousands of full-page strokes
     const doc = new mupdf.PDFDocument();
