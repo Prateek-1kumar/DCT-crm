@@ -12,9 +12,8 @@ import { NeedsPerson } from "@/components/Sidebar";
 import { DEFAULT_ZOOM, SpotView } from "@/components/SpotView";
 import { Badge, Button, btnCls, cx, ErrorNote, LoadError, ProgressBar, Sheet, Spinner } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
-import { api } from "@/lib/api";
 import { formatValue, relativeTime } from "@/lib/format";
-import { proofUnits, SECTION_LABEL, unitStatus, type ProofSection, type ProofUnit, type UnitStatus } from "@/lib/proofread";
+import { asked, proofUnits, reportWrong, SECTION_LABEL, unitStatus, type ProofSection, type ProofUnit, type UnitStatus } from "@/lib/proofread";
 import { useInvalidateStudy, useProofread, useStudy, useVersion } from "@/lib/queries";
 
 export default function ProofreadPage() {
@@ -118,12 +117,13 @@ function Proof({ study, version }: { study: StudyDetailDto; version: RulebookVer
   };
 
   // Each wrong value becomes a blind question in Needs you. On a live version the first report opens a correction
-  // draft; the rest go to that draft. The values not picked are ticked as right.
+  // draft; the rest go to that draft, and so does a try again after a failure (`opened`). The values not picked are
+  // ticked as right, unless an earlier try already sent them.
+  const opened = useRef<RulebookVersionDto | null>(null);
   const wrong = useMutation({
     mutationFn: async ({ u, bad }: { u: ProofUnit; bad: string[] }) => {
-      let v = version.version;
-      for (const path of bad) v = (await api.reportValue(study.id, v, { path, note: "Looked wrong while proofreading", by: by! })).version;
-      const rest = u.cells.map((c) => c.path).filter((p) => !bad.includes(p));
+      const v = await reportWrong(study.id, version, bad, by!, opened);
+      const rest = u.cells.map((c) => c.path).filter((p) => !bad.includes(p) && !(opened.current && asked(opened.current, p)));
       if (rest.length) await proof.mutateAsync({ paths: rest, by: by! });
       return { u, bad, rest, draft: v };
     },

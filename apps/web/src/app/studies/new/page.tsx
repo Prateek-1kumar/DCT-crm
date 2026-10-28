@@ -6,7 +6,7 @@ import { ArrowRight, Check, Info } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
-import { DocList, Dropzone } from "@/components/UploadDocs";
+import { DocList, Dropzone, newDocs } from "@/components/UploadDocs";
 import { Button, cx, ErrorNote, Field, inputCls, PageTitle, pageCls, ProgressBar, Spinner, Stepper } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
@@ -44,15 +44,15 @@ export default function NewStudyPage() {
   const sp = useSearchParams();
   const created = sp.get("study") ? { studyId: sp.get("study")!, jobId: sp.get("job") } : null;
 
-  const usable = docs.filter((d) => !d.duplicateOf);
+  // A file uploaded before (a site's master agreement, shared by its studies) is used as it is: the API hands back the
+  // stored document.
   const create = useMutation({
-    mutationFn: () => api.createStudy(usable.map((d) => d.id), by!),
+    mutationFn: () => api.createStudy(docs.map((d) => d.id), by!),
     onSuccess: (r) => router.replace(`/studies/new?study=${encodeURIComponent(r.studyId)}&job=${encodeURIComponent(r.jobId)}`),
   });
 
   function add(uploaded: DocumentDto[]) {
-    const known = new Set(docs.map((d) => d.id));
-    const fresh = uploaded.filter((d) => !known.has(d.id));
+    const fresh = newDocs(docs, uploaded);
     setNotice(fresh.length < uploaded.length ? "Some files were already in this list and were skipped." : null);
     setDocs((cur) => [...cur, ...fresh]);
   }
@@ -70,12 +70,12 @@ export default function NewStudyPage() {
             <div className="flex flex-col gap-4">
               <Dropzone onUploaded={add} />
               {notice && <p className="text-small text-muted">{notice}</p>}
-              <DocList docs={docs} onChange={(d) => setDocs((cur) => cur.map((x) => (x.id === d.id && !x.duplicateOf ? d : x)))} onRemove={(id) => setDocs((cur) => cur.filter((d) => d.id !== id))} />
+              <DocList docs={docs} onChange={(d) => setDocs((cur) => cur.map((x) => (x.id === d.id ? d : x)))} onRemove={(id) => setDocs((cur) => cur.filter((d) => d.id !== id))} />
               <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
                 {!by && <NeedsPerson />}
                 <ErrorNote error={create.error} />
-                <Button variant="primary" size="lg" disabled={!usable.length || !by || create.isPending} onClick={() => create.mutate()}>
-                  {create.isPending ? "Saving…" : usable.length ? `Continue with ${usable.length} ${usable.length === 1 ? "file" : "files"}` : "Continue"}
+                <Button variant="primary" size="lg" disabled={!docs.length || !by || create.isPending} onClick={() => create.mutate()}>
+                  {create.isPending ? "Saving…" : docs.length ? `Continue with ${docs.length} ${docs.length === 1 ? "file" : "files"}` : "Continue"}
                   <ArrowRight className="size-[18px]" strokeWidth={2} />
                 </Button>
               </div>

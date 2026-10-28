@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLayoutEffect, useRef, useState } from "react";
 import { formatValue } from "@/lib/format";
 import type { ProofUnit } from "@/lib/proofread";
-import { spotQuery } from "./SpotView";
+import { PageMissing, spotQuery } from "./SpotView";
 import { cx } from "./ui";
 
 const LETTER = 11 / 8.5;
@@ -23,6 +23,8 @@ export function RowCompare({ unit, selecting, selected, onToggle }: { unit: Proo
   const [width, setWidth] = useState(0);
   const [ratio, setRatio] = useState(LETTER);
   const src = useQuery(spotQuery(unit.doc, unit.page));
+  const [failed, setFailed] = useState<string | null>(null);
+  const broken = !!src.error || (!!src.data && failed === src.data);
 
   useLayoutEffect(() => {
     const el = frame.current;
@@ -58,20 +60,27 @@ export function RowCompare({ unit, selecting, selected, onToggle }: { unit: Proo
         {contentW > width + 4 && <span className="text-faint">Scroll sideways to see the whole row →</span>}
       </div>
       <div ref={frame} className="overflow-x-auto bg-sunken/50 pb-2">
-        {src.data && width > 0 && boxes.length > 0 ? (
+        {(src.data || broken) && width > 0 && boxes.length > 0 ? (
           <div style={{ width: contentW }} className="flex flex-col gap-0">
             <p className="sticky left-0 w-max px-4 pt-4 pb-2 eyebrow">In the PDF</p>
-            <div className="relative overflow-hidden bg-surface shadow-[inset_0_0_0_1px_var(--color-line)]" style={{ height: stripH }}>
-              {/* eslint-disable-next-line @next/next/no-img-element -- a page image at a computed size */}
-              <img
-                src={src.data}
-                alt={`Page ${unit.page}, ${unit.title}`}
-                draggable={false}
-                className="absolute top-0 left-0 max-w-none select-none"
-                style={{ width: imgW, height: imgH, transform: `translate(${-x0 * imgW}px, ${-y0 * imgH}px)` }}
-                onLoad={(e) => setRatio(e.currentTarget.naturalHeight / e.currentTarget.naturalWidth || LETTER)}
-              />
-            </div>
+            {broken ? (
+              <div className="sticky left-0" style={{ width }}>
+                <PageMissing />
+              </div>
+            ) : (
+              <div className="relative overflow-hidden bg-surface shadow-[inset_0_0_0_1px_var(--color-line)]" style={{ height: stripH }}>
+                {/* eslint-disable-next-line @next/next/no-img-element -- a page image at a computed size */}
+                <img
+                  src={src.data}
+                  alt={`Page ${unit.page}, ${unit.title}`}
+                  draggable={false}
+                  className="absolute top-0 left-0 max-w-none select-none"
+                  style={{ width: imgW, height: imgH, transform: `translate(${-x0 * imgW}px, ${-y0 * imgH}px)` }}
+                  onLoad={(e) => setRatio(e.currentTarget.naturalHeight / e.currentTarget.naturalWidth || LETTER)}
+                  onError={() => setFailed(src.data)}
+                />
+              </div>
+            )}
             <p className="sticky left-0 w-max px-4 pt-4 pb-1 eyebrow">Ours</p>
             <div className="relative h-16">
               {unit.cells.map((c) => {

@@ -1,4 +1,5 @@
-import type { PageBox, ProofreadMark, RulebookVersionDto } from "@dct/shared";
+import { settled, type PageBox, type ProofreadMark, type RulebookVersionDto } from "@dct/shared";
+import { api, ApiError } from "./api";
 import { isMoneyPath, labelFor } from "./format";
 import { getAt } from "./pointer";
 
@@ -68,4 +69,30 @@ export type UnitStatus = "todo" | "done" | "reported";
 export function unitStatus(u: ProofUnit, marks: Map<string, ProofreadMark>, reported: Set<string>): UnitStatus {
   if (u.cells.some((c) => reported.has(c.path))) return "reported";
   return u.cells.every((c) => marks.has(c.path)) ? "done" : "todo";
+}
+
+/** Whether `v` has an open question about `path`. */
+export const asked = (v: Pick<RulebookVersionDto, "review">, path: string) => v.review.some((i) => i.path === path && !settled(i));
+
+/**
+ * Sends each of `paths` to Needs you as looking wrong. On a live version the first report opens a correction draft and
+ * the rest go there. `draft` holds where the reports got to and is updated after each one, so a try after a failure
+ * carries on in that draft and skips what's already asked, instead of starting again on the live version (which
+ * refuses once the draft exists). Resolves to the version the questions are on.
+ */
+export async function reportWrong(studyId: string, from: RulebookVersionDto, paths: string[], by: string, draft: { current: RulebookVersionDto | null }): Promise<number> {
+  for (const path of paths) {
+    const on = draft.current ?? from;
+    if (on.status === "draft" && asked(on, path)) continue;
+    try {
+      draft.current = await api.reportValue(studyId, on.version, { path, note: "Looked wrong while proofreading", by });
+    } catch (e) {
+      // A report whose answer was lost can have gone through all the same: the draft then refuses it as already asked.
+      if (!(e instanceof ApiError && e.status === 409 && on.status === "draft")) throw e;
+      const now = await api.getVersion(studyId, on.version);
+      if (!asked(now, path)) throw e;
+      draft.current = now;
+    }
+  }
+  return (draft.current ?? from).version;
 }

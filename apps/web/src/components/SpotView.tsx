@@ -36,6 +36,9 @@ export function SpotView({ documents, spot, zoom, onZoom }: { documents: Documen
   const [whole, setWhole] = useState(false);
   const doc = documents.find((d) => d.id === spot.documentId);
   const src = useQuery(spotQuery(spot.documentId, spot.page));
+  // A page that can't be drawn says so, as PageViewer does, instead of a broken image to answer from.
+  const [failed, setFailed] = useState<string | null>(null);
+  const broken = !!src.error || (!!src.data && failed === src.data);
 
   useLayoutEffect(() => {
     const el = frame.current;
@@ -86,13 +89,21 @@ export function SpotView({ documents, spot, zoom, onZoom }: { documents: Documen
 
       <div ref={frame} className={cx("relative min-h-0 flex-1 bg-sunken", box ? "overflow-hidden" : "overflow-auto")}>
         {src.data &&
+          !broken &&
           (box ? (
             <div
               className="absolute top-0 left-0 bg-surface transition-transform duration-300 ease-out motion-reduce:transition-none"
               style={{ width: imgW, height: imgH, transform: `translate(${dx}px, ${dy}px)` }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element -- a page image at a computed size, not a layout image */}
-              <img src={src.data} alt={`Page ${spot.page}`} draggable={false} className="absolute inset-0 size-full select-none" onLoad={(e) => setRatio(e.currentTarget.naturalHeight / e.currentTarget.naturalWidth || LETTER)} />
+              <img
+                src={src.data}
+                alt={`Page ${spot.page}`}
+                draggable={false}
+                className="absolute inset-0 size-full select-none"
+                onLoad={(e) => setRatio(e.currentTarget.naturalHeight / e.currentTarget.naturalWidth || LETTER)}
+                onError={() => setFailed(src.data)}
+              />
               <span aria-hidden className="absolute inset-x-0 bg-brand/[0.08]" style={{ top: by * imgH - 4, height: bh * imgH + 8 }} />
               <span
                 aria-hidden
@@ -102,11 +113,11 @@ export function SpotView({ documents, spot, zoom, onZoom }: { documents: Documen
             </div>
           ) : (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={src.data} alt={`Page ${spot.page}`} className="w-full bg-surface" />
+            <img src={src.data} alt={`Page ${spot.page}`} className="w-full bg-surface" onError={() => setFailed(src.data)} />
           ))}
-        {!src.data && <div aria-hidden className="absolute inset-6 animate-pulse rounded-tile bg-ink/[0.04]" />}
+        {broken ? <PageMissing /> : !src.data && <div aria-hidden className="absolute inset-6 animate-pulse rounded-tile bg-ink/[0.04]" />}
 
-        {box && src.data && (
+        {box && src.data && !broken && (
           <button
             type="button"
             onClick={() => setWhole(true)}
@@ -127,5 +138,14 @@ export function SpotView({ documents, spot, zoom, onZoom }: { documents: Documen
         </div>
       </Dialog>
     </div>
+  );
+}
+
+/** In place of a page image that couldn't be drawn. */
+export function PageMissing() {
+  return (
+    <p role="alert" className="grid h-full min-h-24 place-items-center p-6 text-center text-sm text-muted">
+      This page image isn&apos;t available. Reload the page to try again.
+    </p>
   );
 }

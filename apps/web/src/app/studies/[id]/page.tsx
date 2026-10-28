@@ -8,6 +8,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { ByHandForm } from "@/components/ByHandForm";
+import { questionHref, RecheckNote, rechecked } from "@/components/Rechecked";
 import { DiffView } from "@/components/DiffView";
 import { DotLegend, useRulebook } from "@/components/review-context";
 import { RulebookView, type MasterPart } from "@/components/RulebookView";
@@ -64,8 +65,8 @@ export default function ContractPage() {
   if (!study.data || (latest?.status === "draft" && !draft.data)) return <div className="p-6"><Spinner label="Loading the contract" /></div>;
   const s = study.data;
   const stage = versionStage(latest, draft.data);
-  const approved = sp.get("approved");
-  const corrected = sp.get("corrected");
+  // Set by "This looks wrong" on the live version; believed only while that version is the study's current draft.
+  const corrected = latest?.status === "draft" && sp.get("corrected") === String(latest.version) ? latest.version : null;
   const amending = !!s.liveVersion && stage.stage !== "Live";
 
   return (
@@ -106,19 +107,14 @@ export default function ContractPage() {
         {amending && <span className="text-[13px] text-muted">A new version is in progress. Version {s.liveVersion} stays live until it&apos;s approved.</span>}
       </div>
       <Stepper state={stage} className="mb-6" />
-      {approved && (
-        <p role="status" className="mb-5 rounded-[10px] bg-ok-soft px-4 py-2.5 text-[13px] text-ok">
-          ✓ Approved. Version {approved} is now the live invoicing master.
-        </p>
-      )}
-      {corrected && stage.stage !== "Live" && (
+      {corrected && (
         <p role="status" className="mb-5 rounded-[10px] bg-accent-soft px-4 py-2.5 text-[13px] text-accent">
           Thanks. Version {corrected} is open to correct it; version {s.liveVersion} stays live until version {corrected} is approved.
         </p>
       )}
       <StageCard study={s} stage={stage} draft={draft.data} />
 
-      <Master study={s} />
+      <Master study={s} draft={draft.data} />
     </div>
   );
 }
@@ -271,8 +267,11 @@ function ApproveCard({ study, draft }: { study: StudyDetailDto; draft: RulebookV
     </Card>
   );
 }
-/** The invoicing master in tabs, with a search over it, the drawer for any value, and the export. */
-function Master({ study }: { study: StudyDetailDto }) {
+/**
+ * The invoicing master in tabs, with a search over it, the drawer for any value, and the export. `draft`: the newest
+ * version, when it's a draft; on the live version, the values it's re-checking are marked.
+ */
+function Master({ study, draft }: { study: StudyDetailDto; draft: RulebookVersionDto | undefined }) {
   const sp = useSearchParams();
   const router = useRouter();
   const invalidate = useInvalidateStudy();
@@ -312,6 +311,7 @@ function Master({ study }: { study: StudyDetailDto }) {
   const meta = study.versions.find((x) => x.version === v);
   const rb = version.data?.rulebook;
   const typing = !!version.data?.byHand && version.data.status === "draft" && !version.data.review.length;
+  const rechecks = useMemo(() => rechecked(draft, version.data), [draft, version.data]);
   const tabs = typing ? [["overview", "Type it in"] as [Tab, string], ...TABS.slice(4)] : TABS;
   const shown = typing && PART[tab] ? "overview" : tab;
 
@@ -331,7 +331,7 @@ function Master({ study }: { study: StudyDetailDto }) {
     if (v === null) return <p className="text-small text-muted">The invoicing master appears here once the contract has been read.</p>;
     if (!version.data) return version.error ? <ErrorNote error={version.error} retry={() => void version.refetch()} /> : <Spinner label="Loading the invoicing master" />;
     if (typing) return <ByHandForm study={study} version={version.data} />;
-    if (shown === "overview") return <Overview study={study} version={version.data} />;
+    if (shown === "overview") return <Overview study={study} version={version.data} draft={draft} rechecks={rechecks} />;
     return <RulebookView part={PART[shown]!} />;
   };
 
@@ -372,6 +372,8 @@ function Master({ study }: { study: StudyDetailDto }) {
           </div>
         </div>
       )}
+
+      {draft && version.data && <RecheckNote studyId={study.id} draft={draft} shown={version.data} items={rechecks} />}
 
       {text.trim() && found.data && (
         <div className="flex flex-wrap items-center gap-2" aria-live="polite">
@@ -430,8 +432,11 @@ function Master({ study }: { study: StudyDetailDto }) {
   );
 }
 
-/** The terms that decide most of the money, each opening its spot in the contract, and how the numbers were checked. */
-function Overview({ study, version }: { study: StudyDetailDto; version: RulebookVersionDto }) {
+/**
+ * The terms that decide most of the money, each opening its spot in the contract, and how the numbers were checked. A
+ * term the newest draft is re-checking says so, with the way to its question.
+ */
+function Overview({ study, version, draft, rechecks }: { study: StudyDetailDto; version: RulebookVersionDto; draft: RulebookVersionDto | undefined; rechecks: Map<string, ReviewItem> }) {
   const { rulebook: rb, show, masked } = useRulebook();
   const terms = keyTerms(rb, version.evidence);
   const count = (st: string) => version.evidence.filter((e) => e.status === st).length;
@@ -443,6 +448,7 @@ function Overview({ study, version }: { study: StudyDetailDto; version: Rulebook
         {terms.map((t) => {
           const hidden = t.paths.some((p) => masked.has(p));
           const path = t.paths[0];
+          const again = draft && t.paths.map((p) => rechecks.get(p)).find(Boolean);
           const inner = (
             <>
               <span className="text-small text-muted">{t.label}</span>
@@ -451,19 +457,24 @@ function Overview({ study, version }: { study: StudyDetailDto; version: Rulebook
             </>
           );
           return (
-            <li key={t.id}>
+            <li key={t.id} className="flex flex-col gap-1.5">
               {path ? (
                 <button
                   type="button"
                   data-path={path}
                   onClick={() => show(path, null, t.label)}
-                  className="flex h-full w-full flex-col items-start rounded-tile bg-surface p-4 text-left ring-1 ring-line transition hover:shadow-card hover:ring-brand/40"
+                  className="flex w-full flex-1 flex-col items-start rounded-tile bg-surface p-4 text-left ring-1 ring-line transition hover:shadow-card hover:ring-brand/40"
                 >
                   {inner}
                   <span className="mt-auto block pt-2 text-caption text-accent">Show in the contract</span>
                 </button>
               ) : (
-                <div className="h-full rounded-tile bg-sunken/70 p-4 ring-1 ring-line">{inner}</div>
+                <div className="flex-1 rounded-tile bg-sunken/70 p-4 ring-1 ring-line">{inner}</div>
+              )}
+              {again && (
+                <Link href={questionHref(study.id, draft.version, again)} className="px-1 text-caption font-medium text-warn hover:underline">
+                  Being re-checked in version {draft.version}
+                </Link>
               )}
             </li>
           );

@@ -18,7 +18,7 @@ import type {
   StudyPage,
 } from "@dct/shared";
 
-/** Typed client for the HTTP API in docs/PHASE-1.md. Everything goes through `request`. */
+/** Typed client for the HTTP API in docs/phase-1/api.md. Everything goes through `request`. */
 
 export const MOCK = process.env.NEXT_PUBLIC_API_MOCK === "1";
 
@@ -41,14 +41,36 @@ const newKey = () => crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(
 /** Waits before each retry of a write whose answer never arrived. */
 const RETRY_MS = [500, 1500];
 
+/** Writes still waiting for their answer, by what they send. */
+const inflight = new Map<string, Promise<unknown>>();
+const bodyKey = (body: Body) =>
+  body instanceof FormData
+    ? [...body.entries()].map(([k, v]) => `${k}=${typeof v === "string" ? v : `${v.name}:${v.size}:${v.lastModified}`}`).join("&")
+    : JSON.stringify(body ?? null);
+
 /**
- * Every write is one user action with one Idempotency-Key, made here once and sent again on each retry. A write whose
- * answer was lost or that failed on the server's side (no answer: the network dropped; a 5xx: the API was restarting, or
- * the proxy couldn't reach it) is retried with the same key: the API applies it once and hands back its first answer,
- * and a write that failed saved nothing, so running it again is safe.
+ * Every write is one user action with one Idempotency-Key. The same write again while the first is still waiting (a
+ * double click, Enter pressed twice: the button disables only once React re-renders) is that same action: it shares the
+ * first one's request and answer, so it can't apply twice. Once the answer is in, the same write is a new action.
  */
-async function request<T>(method: string, path: string, body?: Body): Promise<T> {
-  const key = method === "GET" ? undefined : newKey();
+function request<T>(method: string, path: string, body?: Body): Promise<T> {
+  if (method === "GET") return send<T>(method, path, body);
+  const same = `${method} ${path} ${bodyKey(body)}`;
+  let p = inflight.get(same) as Promise<T> | undefined;
+  if (!p) {
+    p = send<T>(method, path, body, newKey()).finally(() => inflight.delete(same));
+    inflight.set(same, p);
+  }
+  return p;
+}
+
+/**
+ * The key is made once per action and sent again on each retry. A write whose answer was lost or that failed on the
+ * server's side (no answer: the network dropped; a 5xx: the API was restarting, or the proxy couldn't reach it) is
+ * retried with the same key: the API applies it once and hands back its first answer, and a write that failed saved
+ * nothing, so running it again is safe.
+ */
+async function send<T>(method: string, path: string, body: Body, key?: string): Promise<T> {
   if (MOCK) {
     const { mockRequest } = await import("./mock/server");
     const res = await mockRequest(method, path, body, key);
@@ -167,18 +189,37 @@ export const api = {
   getSettings: () => request<SettingsDto>("GET", "/settings"),
   patchSettings: (body: Partial<SettingsDto>) => request<SettingsDto>("PATCH", "/settings", body),
 
-  /** Downloads the invoicing master as an Excel file (built by the server; by the sample server in mock mode). */
+  /**
+   * Downloads the invoicing master as an Excel file (built by the server; by the sample server in mock mode). Fetched
+   * rather than linked to, so a refusal or a failure throws for the screen to show instead of downloading as a file.
+   * Never retried: each export is logged.
+   */
   exportXlsx: async (id: string, v: number, by: string) => {
-    let href: string, filename: string | undefined;
+    let file: { blob: Blob; filename: string };
     if (MOCK) {
       const { mockExport } = await import("./mock/server");
-      const f = await mockExport(id, v, by);
-      href = URL.createObjectURL(f.blob);
-      filename = f.filename;
-    } else href = `${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`;
-    const a = Object.assign(document.createElement("a"), { href, download: filename ?? "" });
-    a.click();
-    if (MOCK) setTimeout(() => URL.revokeObjectURL(href), 10_000);
+      // The sample server refuses with a plain Error; the screen shows only an ApiError's message.
+      file = await mockExport(id, v, by).catch((e: unknown) => {
+        throw new ApiError(409, e instanceof Error ? e.message : String(e));
+      });
+    } else {
+      let res: Response;
+      try {
+        res = await fetch(`${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`);
+      } catch {
+        throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new ApiError(res.status, errorMessage(text ? safeJson(text) : null, res.status));
+      }
+      if (!/spreadsheetml/.test(res.headers.get("content-type") ?? "")) throw new ApiError(502, "The export didn't come back as a spreadsheet.");
+      const named = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1];
+      file = { blob: await res.blob(), filename: named ?? `invoicing-master-v${v}.xlsx` };
+    }
+    const href = URL.createObjectURL(file.blob);
+    Object.assign(document.createElement("a"), { href, download: file.filename }).click();
+    setTimeout(() => URL.revokeObjectURL(href), 10_000);
   },
 
   /** URL for an <img>. Mock mode renders a synthetic (vector) page in the browser. `dpi`: sharper page for close-ups. */

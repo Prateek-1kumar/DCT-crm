@@ -42,6 +42,9 @@ const nextConfig: NextConfig = {
     // Uploads go through the /api rewrite; the default 10 MB cut real contracts (~12 MB) off mid-stream.
     // Just above the API's 50 MB per-file limit; the UI uploads one file per request.
     proxyClientMaxBodySize: "55mb",
+    // The /api rewrite gives up on an API that's been silent for 30 s by default, while the API allows a request 120 s
+    // (REQUEST_TIMEOUT_MS): a slow upload or a big write would fail here first. Just above, so the API's own answer comes.
+    proxyTimeout: 125_000,
   },
   // @dct/shared ships TypeScript source.
   transpilePackages: ["@dct/shared"],

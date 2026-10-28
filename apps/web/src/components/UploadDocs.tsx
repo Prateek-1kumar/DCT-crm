@@ -2,7 +2,7 @@
 
 import type { DocumentDto, DocumentKind } from "@dct/shared";
 import { useMutation } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, Copy, FileCheck2, FileText, UploadCloud, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, FileCheck2, FileText, UploadCloud, X } from "lucide-react";
 import { useState, type DragEvent } from "react";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
@@ -12,7 +12,16 @@ import { Badge, Button, cx, ErrorNote, errorText } from "./ui";
 /** Same as the API's per-file limit. */
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-/** Drag-and-drop PDF upload, one request per file. Calls onUploaded with what the API stored (incl. duplicates). */
+/**
+ * `uploaded` without the documents `have` already holds, or that came twice. A file uploaded before (to another study,
+ * or a start that was left) comes back as that same stored document (`duplicateOf`), so its id is what tells.
+ */
+export function newDocs(have: DocumentDto[], uploaded: DocumentDto[]): DocumentDto[] {
+  const seen = new Set(have.map((d) => d.id));
+  return uploaded.filter((d) => !seen.has(d.id) && !!seen.add(d.id));
+}
+
+/** Drag-and-drop PDF upload, one request per file. Calls onUploaded with what the API stored (incl. files uploaded before). */
 export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentDto[]) => void; compact?: boolean }) {
   const [over, setOver] = useState(false);
   const [rejected, setRejected] = useState<string[]>([]);
@@ -155,27 +164,24 @@ export function DocList({ docs, onChange, onRemove }: { docs: DocumentDto[]; onC
   return (
     <ul className="flex flex-col gap-2.5">
       {docs.map((d) => {
-        const scan = d.text === "scan" && !d.duplicateOf;
+        const scan = d.text === "scan";
         return (
-          <li key={d.id + (d.duplicateOf ? "-dup" : "")} className={cx("rounded-tile bg-surface ring-1", scan ? "ring-warn/30" : "ring-line")}>
+          <li key={d.id} className={cx("rounded-tile bg-surface ring-1", scan ? "ring-warn/30" : "ring-line")}>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
-              <span className={cx("grid size-10 shrink-0 place-items-center rounded-[12px]", d.duplicateOf ? "bg-ink/[0.05] text-faint" : scan ? "bg-warn-soft text-warn" : "bg-brand-soft text-accent")}>
-                {d.duplicateOf ? <Copy className="size-[18px]" strokeWidth={1.75} /> : d.text === "text" ? <FileCheck2 className="size-[18px]" strokeWidth={1.75} /> : <FileText className="size-[18px]" strokeWidth={1.75} />}
+              <span className={cx("grid size-10 shrink-0 place-items-center rounded-[12px]", scan ? "bg-warn-soft text-warn" : "bg-brand-soft text-accent")}>
+                {d.text === "text" ? <FileCheck2 className="size-[18px]" strokeWidth={1.75} /> : <FileText className="size-[18px]" strokeWidth={1.75} />}
               </span>
               {/* Keeps its width on narrow screens; the kind menu wraps below instead of squeezing the name. */}
               <span className="min-w-0 flex-[1_1_14rem]">
                 <span className="block truncate text-body font-medium">{d.filename}</span>
                 <span className="num flex flex-wrap items-center gap-x-2 text-small text-muted">
                   {d.pageCount} {d.pageCount === 1 ? "page" : "pages"}
-                  {d.text === "text" && !d.duplicateOf && <span className="text-ok">· Text PDF, numbers can be checked</span>}
+                  {d.text === "text" && <span className="text-ok">· Text PDF, numbers can be checked</span>}
                   {scan && <span className="text-warn">· Scan</span>}
                 </span>
               </span>
-              {d.duplicateOf ? (
-                <Badge title="This exact file was added before. It won't be added again.">Already added</Badge>
-              ) : (
-                <KindSelect doc={d} onChanged={onChange} />
-              )}
+              {d.duplicateOf && <Badge title="This exact file was uploaded before, for this or another study. The copy already stored is used, so it isn't stored twice.">Uploaded before · will be used</Badge>}
+              <KindSelect doc={d} onChanged={(n) => onChange({ ...n, duplicateOf: d.duplicateOf })} />
               {onRemove && (
                 <Button size="icon-sm" variant="ghost" onClick={() => onRemove(d.id)} aria-label={`Remove ${d.filename}`}>
                   <X className="size-4" strokeWidth={2} />

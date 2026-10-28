@@ -8,12 +8,74 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useId, useState, type KeyboardEvent } from "react";
 import { Button, Card, Empty, ErrorNote, LoadError, PageTitle, pageCls, Spinner, cx, inputBase } from "@/components/ui";
 import { api } from "@/lib/api";
-import { formatDateTime, formatValue } from "@/lib/format";
+import { DOC_KIND_LABEL, formatDate, formatDateTime, formatValue, labelFor } from "@/lib/format";
 import { keys, useAuditPages, useDebounced } from "@/lib/queries";
 
 const contractName = (s: Pick<StudySummaryDto, "sponsor" | "protocol">) => [s.sponsor ?? "Study", s.protocol].filter(Boolean).join(" ");
-/** Internal references to questions: the question's wording is logged next to them. */
-const UNSHOWN = new Set(["itemId", "itemIds"]);
+
+/**
+ * Ids and internals, meaningless to a reader: the question's wording, the file's name or the value's label is logged
+ * next to them. `by` is the Who column; `path` is shown as the value's label.
+ */
+const UNSHOWN = new Set(["itemId", "itemIds", "documentId", "documentIds", "addedDocumentIds", "jobId", "sha256", "gridId", "grid", "path", "by", "byHand"]);
+/** What each detail is called. One not here reads as its words ("pageCount" → "Page count"). */
+const DETAIL: Record<string, string> = {
+  before: "Before", after: "After", note: "Note", question: "Question", outcome: "Answer", version: "Version", seededFromVersion: "Copied from version",
+  file: "File", filename: "File", pageCount: "Pages", text: "PDF", documents: "Files", documentKinds: "Files", format: "Format", questions: "Questions",
+  anomalies: "Contract problems", pdfCheck: "Checked against the PDF", costUsd: "Reading cost", error: "Problem", typed: "Values typed",
+  "re-type": "To re-type blind", values: "Values", items: "Rows", appliesFrom: "Applies from", carried: "Carried over", skipped: "Not carried over",
+  studyGuess: "Found on the cover pages", sponsor: "Sponsor", protocol: "Protocol", siteName: "Site", site: "Site", investigator: "Principal investigator",
+  makerChecker: "A second person approves", people: "People",
+};
+const OUTCOME: Record<string, string> = { matched: "Matched", differs: "Differs from the reading", "cant tell": "Can't tell", chosen: "Picked" };
+const SKIPPED: Record<string, string> = { amendment_changed: "the amendment changed it", item_moved: "its row moved", path_missing: "no longer in the contract", invalid: "no longer fits", already_equal: "already the same" };
+const nameOf = (k: string) => DETAIL[k] ?? k.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase()).replace(/ ([A-Z])/g, (m) => m.toLowerCase());
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** One detail in words: amounts by the value they're about (`path`), objects as "field: value", never raw data. */
+function plain(v: unknown, path = ""): string {
+  if (v === null || v === undefined || v === "") return path ? formatValue(path, null) : "—";
+  if (Array.isArray(v)) return v.length ? v.map((x) => plain(x, path)).join(isObj(v[0]) ? "; " : ", ") : "None";
+  if (isObj(v)) {
+    // A carried or skipped correction: which value, and what it became (left out while its question is open).
+    if (typeof v.path === "string")
+      return [labelFor(v.path, null), "after" in v ? `: ${plain(v.before, v.path)} → ${plain(v.after, v.path)}` : "", typeof v.reason === "string" ? ` (${SKIPPED[v.reason] ?? v.reason})` : ""].join("");
+    return Object.entries(v).filter(([k, x]) => !UNSHOWN.has(k) && x !== null && x !== undefined).map(([k, x]) => `${nameOf(k)}: ${plain(x)}`).join(" · ");
+  }
+  if (path) return formatValue(path, v);
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (typeof v === "number") return v.toLocaleString("en-US");
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? formatDate(String(v)) : String(v);
+}
+
+/** An entry's details as [what, words], and the value it's about by its label. */
+function details(action: string, d: Record<string, unknown>): { about: string | null; rows: [string, string][] } {
+  const path = typeof d.path === "string" ? d.path : "";
+  // value.typed and *.reported log the value's label (with its row's name) as `value`; an answer's question names it.
+  const about = !path || typeof d.question === "string" ? null : typeof d.value === "string" ? d.value : labelFor(path, null);
+  const kind = (v: unknown) => (typeof v === "string" && v in DOC_KIND_LABEL ? DOC_KIND_LABEL[v as keyof typeof DOC_KIND_LABEL] : plain(v));
+  const rows: [string, string][] = [];
+  for (const [k, v] of Object.entries(d)) {
+    if (UNSHOWN.has(k) || (k === "value" && path) || ((k === "note" || k === "appliesFrom") && (v === null || v === ""))) continue;
+    if (k === "items" && Array.isArray(v)) continue; // the rows an answer passed through, by their ids
+    if ((k === "before" || k === "after") && isObj(d.before) && isObj(d.after)) {
+      // Details or settings changed: each field that changed, once.
+      if (k === "after") continue;
+      const [b, a] = [d.before, d.after];
+      for (const f of new Set([...Object.keys(b), ...Object.keys(a)]))
+        if (!UNSHOWN.has(f) && JSON.stringify(b[f] ?? null) !== JSON.stringify(a[f] ?? null)) rows.push([nameOf(f), `${plain(b[f])} → ${plain(a[f])}`]);
+    } else if (k === "before" || k === "after" || k === "from" || k === "to")
+      rows.push([typeof v === "number" && !path ? `${nameOf(k)} version` : nameOf(k), path ? plain(v, path) : action.startsWith("document.") ? kind(v) : plain(v)]);
+    else if (k === "outcome" && typeof v === "string") rows.push([nameOf(k), OUTCOME[v] ?? v]);
+    else if (k === "documentKinds" && isObj(v)) rows.push([nameOf(k), Object.values(v).map(kind).join(", ")]);
+    else if (k === "pdfCheck" && isObj(v)) rows.push([nameOf(k), `${plain(v.matched)} of ${plain(v.values)} numbers matched`]);
+    else if (k === "costUsd" && typeof v === "number") rows.push([nameOf(k), `$${v.toFixed(2)}`]);
+    else if (k === "format") rows.push([nameOf(k), v === "xlsx" ? "Excel" : plain(v)]);
+    else if (k === "text") rows.push([nameOf(k), v === "text" ? "Text PDF" : v === "scan" ? "Scan" : plain(v)]);
+    else rows.push([nameOf(k), plain(v)]);
+  }
+  return { about, rows };
+}
 
 export default function AuditPage() {
   const sp = useSearchParams();
@@ -74,6 +136,7 @@ export default function AuditPage() {
 }
 
 function Row({ e }: { e: AuditEntryDto }) {
+  const { about, rows } = details(e.action, e.detail);
   return (
     <tr className="border-t border-line align-top">
       <td className="px-4 py-2.5 whitespace-nowrap text-muted">{formatDateTime(e.at)}</td>
@@ -89,15 +152,14 @@ function Row({ e }: { e: AuditEntryDto }) {
       </td>
       <td className="px-4 py-2.5 whitespace-nowrap">{actionLabel(e.action)}</td>
       <td className="px-4 py-2.5">
+        {about && <p className="mb-0.5 text-xs font-medium">{about}</p>}
         <dl className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
-          {Object.entries(e.detail)
-            .filter(([k]) => !UNSHOWN.has(k))
-            .map(([k, v]) => (
-              <div key={k} className="flex gap-1">
-                <dt className="text-muted">{k}:</dt>
-                <dd className={k === "note" ? "italic" : "num"}>{formatValue(k === "before" || k === "after" ? String(e.detail.path ?? "") : k, v)}</dd>
-              </div>
-            ))}
+          {rows.map(([k, v], i) => (
+            <div key={i} className="flex gap-1">
+              <dt className="text-muted">{k}:</dt>
+              <dd className={k === "Note" ? "italic" : "num"}>{v}</dd>
+            </div>
+          ))}
         </dl>
       </td>
     </tr>
