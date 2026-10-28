@@ -7,8 +7,9 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { askForPerson, askForPersonOnce, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
 import { MOCK } from "@/lib/api";
-import { useSettings, useStudies } from "@/lib/queries";
-import { summaryStage, VIEWS, type ViewId } from "@/lib/review";
+import { useSettings, useStudyCounts } from "@/lib/queries";
+import { VIEWS, type ViewId } from "@/lib/review";
+import { AlertBell, AlertWatcher } from "./Alerts";
 import { CommandPalette } from "./CommandPalette";
 import { HowItWorks } from "./HowItWorks";
 import { Button, cx, Dialog } from "./ui";
@@ -65,10 +66,9 @@ function NavButton({ label, icon: Icon, onClick, hint }: { label: string; icon: 
 function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
   const path = usePathname();
   const view = useSearchParams().get("view");
-  const { data } = useStudies();
+  const { data } = useStudyCounts();
   const [open, setOpen] = useState(true);
-  const stages = (data ?? []).map((s) => summaryStage(s));
-  const count = (id: ViewId) => stages.filter(VIEWS.find((v) => v.id === id)!.test).length;
+  const count = (id: ViewId) => data?.views[id] ?? 0;
   const waiting = count("needs-you") + count("approval") + count("failed");
   const onContracts = path === "/" || path.startsWith("/studies");
 
@@ -225,15 +225,18 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={onSearch}
-        className="flex h-9 items-center gap-2.5 rounded-[10px] bg-surface/70 px-2.5 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
-      >
-        <Search className="size-[17px]" strokeWidth={1.75} />
-        Search
-        <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">⌘K</kbd>
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onSearch}
+          className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-[10px] bg-surface/70 px-2.5 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
+        >
+          <Search className="size-[17px]" strokeWidth={1.75} />
+          Search
+          <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">⌘K</kbd>
+        </button>
+        <AlertBell />
+      </div>
 
       <nav aria-label="Main" className="flex flex-col gap-1">
         <ContractsNav onNavigate={onNavigate} />
@@ -264,6 +267,7 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
  * `bare` (focus mode): only those three, no navigation, so the page gets the whole window.
  */
 export function Sidebar({ bare }: { bare?: boolean }) {
+  const me = useActingAs();
   const [search, setSearch] = useState(false);
   const [guide, setGuide] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -285,6 +289,7 @@ export function Sidebar({ bare }: { bare?: boolean }) {
       <CommandPalette open={search} onClose={() => setSearch(false)} onGuide={() => setGuide(true)} />
       <HowItWorks open={guide} onClose={() => setGuide(false)} />
       <PersonPicker />
+      <AlertWatcher key={me ?? ""} />
     </>
   );
   if (bare) return dialogs;
@@ -297,6 +302,7 @@ export function Sidebar({ bare }: { bare?: boolean }) {
         <Link href="/" className="mr-auto">
           <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={132} height={25} />
         </Link>
+        <AlertBell />
         <Button variant="ghost" size="icon" aria-label="Search" onClick={() => setSearch(true)}>
           <Search className="size-5" strokeWidth={1.75} />
         </Button>

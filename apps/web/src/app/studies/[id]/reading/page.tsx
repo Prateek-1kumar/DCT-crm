@@ -82,11 +82,11 @@ export default function ReadingPage() {
     const name = s.protocol ?? "Your contract";
     if (state === "failed") {
       alerted.current = true;
-      notify(`${name} couldn't be read`, "Open it to read it again or type it in by hand.", `/studies/${id}/reading?job=${jobId}&v=${v}`);
+      notify(`${name} couldn't be read`, "Open it to read it again or type it in by hand.", `/studies/${id}/reading?job=${jobId}&v=${v}`, `study-${id}`);
     } else if (done && version.data) {
       alerted.current = true;
       const n = needsYou(version.data.review).length;
-      notify(`${name} is read and checked`, n ? `${n} ${n === 1 ? "thing needs" : "things need"} you · about ${minutesFor(n)} min` : "Nothing needs you. Ready for approval.", `/studies/${id}`);
+      notify(`${name} is read and checked`, n ? `${n} ${n === 1 ? "thing needs" : "things need"} you · about ${minutesFor(n)} min` : "Nothing needs you. Ready for approval.", `/studies/${id}`, `study-${id}`);
     }
   }, [state, done, version.data, s, id, jobId, v]);
 

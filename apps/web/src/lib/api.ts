@@ -1,13 +1,19 @@
 import type {
+  AlertListQuery,
+  AlertPage,
   AuditEntryDto,
   DiffEntry,
   DocumentDto,
   DocumentKind,
   JobDto,
+  MasterSearch,
   RulebookVersionDto,
+  SearchResults,
   SettingsDto,
+  StudyCounts,
   StudyDetailDto,
-  StudySummaryDto,
+  StudyListQuery,
+  StudyPage,
 } from "@dct/shared";
 
 /** Typed client for the HTTP API in docs/PHASE-1.md. Everything goes through `request`. */
@@ -69,9 +75,22 @@ export function errorMessage(json: unknown, status: number): string {
 }
 
 const q = encodeURIComponent;
+/** `?a=1&b=2` from the set values, or "". */
+const qs = (o: Record<string, string | number | undefined | null>) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v));
+  const t = p.toString();
+  return t ? `?${t}` : "";
+};
 
 export const api = {
-  listStudies: () => request<StudySummaryDto[]>("GET", "/studies"),
+  /** One page of the contract list; the server filters, orders and pages. Pass `nextCursor` back for the next page. */
+  listStudies: (query: StudyListQuery) => request<StudyPage>("GET", `/studies${qs(query)}`),
+  studyCounts: (site?: string) => request<StudyCounts>("GET", `/studies/counts${qs({ site })}`),
+  /** ⌘K: contracts and rates in live contracts. */
+  search: (text: string, limit = 8) => request<SearchResults>("GET", `/search${qs({ q: text, limit })}`),
+  /** What in one invoicing master matches. */
+  searchMaster: (id: string, v: number, text: string) => request<MasterSearch>("GET", `/studies/${q(id)}/versions/${v}/search${qs({ q: text })}`),
   getStudy: (id: string) => request<StudyDetailDto>("GET", `/studies/${q(id)}`),
   getVersion: (id: string, v: number) => request<RulebookVersionDto>("GET", `/studies/${q(id)}/versions/${v}`),
   getDiff: (id: string, v: number, against: number) =>
@@ -114,9 +133,28 @@ export const api = {
   signOff: (id: string, v: number, body: { by: string; note?: string }) =>
     request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/sign-off`, body),
 
+  /** Alerts for one person (everyone sees every alert; read state is theirs), newest first. */
+  alerts: (query: AlertListQuery) => request<AlertPage>("GET", `/alerts${qs(query)}`),
+  /** Marks `ids`, or every alert, read for `by`. */
+  readAlerts: (body: { by: string; ids?: string[] }) => request<{ unread: number }>("POST", "/alerts/read", body),
+
   audit: (studyId?: string) => request<AuditEntryDto[]>("GET", `/audit${studyId ? `?studyId=${q(studyId)}` : ""}`),
   getSettings: () => request<SettingsDto>("GET", "/settings"),
   patchSettings: (body: Partial<SettingsDto>) => request<SettingsDto>("PATCH", "/settings", body),
+
+  /** Downloads the invoicing master as an Excel file (built by the server; by the sample server in mock mode). */
+  exportXlsx: async (id: string, v: number, by: string) => {
+    let href: string, filename: string | undefined;
+    if (MOCK) {
+      const { mockExport } = await import("./mock/server");
+      const f = await mockExport(id, v, by);
+      href = URL.createObjectURL(f.blob);
+      filename = f.filename;
+    } else href = `/api/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`;
+    const a = Object.assign(document.createElement("a"), { href, download: filename ?? "" });
+    a.click();
+    if (MOCK) setTimeout(() => URL.revokeObjectURL(href), 10_000);
+  },
 
   /** URL for an <img>. Mock mode renders a synthetic (vector) page in the browser. `dpi`: sharper page for close-ups. */
   pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => {

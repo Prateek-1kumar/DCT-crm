@@ -1,4 +1,5 @@
 import {
+  type AlertKind,
   type ContractAnomaly,
   type DocumentDto,
   type DocumentKind,
@@ -13,7 +14,7 @@ import {
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Tx } from "./db/index.js";
-import { auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
+import { alerts, auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
 import type { CheckOptions, ExtractionPort } from "./extraction/port.js";
 import { itemIds } from "./lib/diff.js";
 import { HttpError, notFound } from "./lib/http.js";
@@ -63,9 +64,8 @@ export const versionDto = (v: VersionRow): RulebookVersionDto => ({
   proofread: [],
 });
 
-/** `versions` newest first. */
-export function studySummaryDto(s: StudyRow, versions: VersionRow[]): StudySummaryDto {
-  const latest = versions[0];
+/** From the study row alone (needs_you is kept by refreshStudyStatus), so lists never load a rulebook. */
+export function studySummaryDto(s: StudyRow, liveVersion: number | null): StudySummaryDto {
   return {
     id: s.id,
     sponsor: s.sponsor,
@@ -73,20 +73,29 @@ export function studySummaryDto(s: StudyRow, versions: VersionRow[]): StudySumma
     siteName: s.siteName,
     investigator: s.investigator,
     status: s.status as StudyStatus,
-    liveVersion: versions.find((v) => v.status === "signed")?.version ?? null,
-    openAnomalies: latest?.status === "draft" ? latest.anomalies.filter((a) => !a.resolution).length : 0,
-    // Until review items are wired (ADR-001 step 5), open anomalies are what needs a person.
-    needsYou: latest?.status === "draft" ? latest.anomalies.filter((a) => !a.resolution).length : 0,
+    liveVersion,
+    // ponytail: until review items are wired (ADR-001 step 5) the two are the same count; give openAnomalies its own column then.
+    openAnomalies: s.needsYou,
+    needsYou: s.needsYou,
     updatedAt: s.updatedAt.toISOString(),
   };
+}
+
+/** Status changes raise theirs in refreshStudyStatus; sent_back is raised by the send-back write. */
+export function raiseAlert(tx: Tx, a: typeof alerts.$inferInsert) {
+  return tx.insert(alerts).values(a);
 }
 
 /**
  * Study status is derived from its versions, so it can't drift:
  * none → setting_up; latest extracting/failed/draft → extracting/extraction_failed/needs_review,
  * or amendment_in_review while an earlier version is live; latest signed → live.
+ * Also stores needs_you (the list's `stage` is generated from both). Every write that changes a version calls this.
+ * A stage change into needs you, waiting for approval (after reading or answering) or couldn't read raises an alert,
+ * `by` whoever caused it.
  */
-export async function refreshStudyStatus(tx: Tx, studyId: string): Promise<StudyStatus> {
+export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system"): Promise<StudyStatus> {
+  const [before] = await tx.select({ stage: studies.stage }).from(studies).where(eq(studies.id, studyId)).for("no key update");
   const versions = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version));
   const latest = versions[0];
   const hasLive = versions.some((v) => v.status === "signed");
@@ -95,7 +104,17 @@ export async function refreshStudyStatus(tx: Tx, studyId: string): Promise<Study
   else if (latest.status === "signed") status = "live";
   else if (hasLive) status = "amendment_in_review";
   else status = ({ extracting: "extracting", failed: "extraction_failed", draft: "needs_review" } as const)[latest.status as "extracting" | "failed" | "draft"] ?? "needs_review";
-  await tx.update(studies).set({ status, updatedAt: new Date() }).where(eq(studies.id, studyId));
+  // Until review items are wired (ADR-001 step 5), open anomalies on the latest draft are what needs a person.
+  const needsYou = latest?.status === "draft" ? latest.anomalies.filter((a) => !a.resolution).length : 0;
+  const [after] = await tx.update(studies).set({ status, needsYou, updatedAt: new Date() }).where(eq(studies.id, studyId)).returning({ stage: studies.stage });
+  const from = before?.stage;
+  const kind: AlertKind | null =
+    !after || after.stage === from ? null
+    : after.stage === 0 ? "questions_ready"
+    : after.stage === 3 ? "ready_for_approval"
+    : after.stage === 1 ? "couldnt_read"
+    : null;
+  if (kind && latest) await raiseAlert(tx, { kind, studyId, version: latest.version, by, count: kind === "questions_ready" ? needsYou : null });
   return status;
 }
 

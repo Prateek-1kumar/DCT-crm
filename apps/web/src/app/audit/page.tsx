@@ -7,7 +7,7 @@ import { useMemo, useState } from "react";
 import { Card, Empty, ErrorNote, PageTitle, pageCls, Spinner, cx, inputBase, inputCls } from "@/components/ui";
 import { api } from "@/lib/api";
 import { formatDateTime, formatValue } from "@/lib/format";
-import { keys, useStudies } from "@/lib/queries";
+import { keys } from "@/lib/queries";
 
 const ACTION: Record<string, string> = {
   "study.created": "Contract added",
@@ -36,7 +36,8 @@ export default function AuditPage() {
   const sp = useSearchParams();
   const router = useRouter();
   const studyId = sp.get("studyId") ?? undefined;
-  const studies = useStudies();
+  // ponytail: the picker lists the first 100 contracts; make it a search box once there are more.
+  const studies = useQuery({ queryKey: [...keys.studies, "top", 100], queryFn: () => api.listStudies({ limit: 100 }), select: (p) => p.items });
   const audit = useQuery({ queryKey: keys.audit(studyId), queryFn: () => api.audit(studyId) });
   const [q, setQ] = useState("");
   const name = useMemo(() => new Map((studies.data ?? []).map((s) => [s.id, `${s.sponsor ?? "Study"} ${s.protocol ?? ""}`])), [studies.data]);

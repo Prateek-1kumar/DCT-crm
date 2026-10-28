@@ -1,36 +1,59 @@
 "use client";
 
-import { settled, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { settled, type PageBox, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Check, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
-import { getAt } from "@/lib/pointer";
+import { formatDate, formatValue, labelFor } from "@/lib/format";
+import { findProv, getAt } from "@/lib/pointer";
 import { keys, useInvalidateStudy } from "@/lib/queries";
 import { NeedsPerson } from "./Sidebar";
-import { PageViewer, type ViewerTarget } from "./PageViewer";
-import { RulebookContext, type RulebookCtx } from "./review-context";
-import { Button, Dialog, ErrorNote, Field, inputCls } from "./ui";
+import { DEFAULT_ZOOM, SpotView } from "./SpotView";
+import { Dot, EVIDENCE, RulebookContext, type RulebookCtx } from "./review-context";
+import { Button, cx, Dialog, ErrorNote, Field, inputCls } from "./ui";
 
 const isLeaf = (v: unknown) => v !== undefined && (v === null || typeof v !== "object" || (Array.isArray(v) && v.every((x) => typeof x !== "object")));
 
 /**
- * Split view: contract page on the left, the invoicing master on the right.
- * Provides the RulebookContext (jump to the page, evidence, blind-entry masks) to everything inside.
- * `report`: a clicked value can be reported with "This looks wrong" (live versions and drafts).
+ * The invoicing master with the contract one click away: clicking a value opens a drawer with the spot on the page,
+ * what backs the value, and "This looks wrong". Provides the RulebookContext (evidence, blind-entry masks, proofread
+ * marks, search hits) to everything inside. `focus`: a value to open (⌘K, a search hit); a new `n` opens it again.
+ * `report`: a value can be reported (live versions and drafts).
  */
-export function Workspace({ study, version, children, report }: { study: StudyDetailDto; version: RulebookVersionDto; children: ReactNode; report?: boolean }) {
-  const [target, setTarget] = useState<ViewerTarget | null>(null);
+export function Workspace({ study, version, children, report, hits, focus }: {
+  study: StudyDetailDto;
+  version: RulebookVersionDto;
+  children: ReactNode;
+  report?: boolean;
+  hits?: Set<string>;
+  focus?: { path: string; n: number } | null;
+}) {
   const [focused, setFocused] = useState<{ path: string; label: string } | null>(null);
-  const [open, setOpen] = useState(false);
-  const [sent, setSent] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const evidence = useMemo(() => new Map(version.evidence.map((e) => [e.path, e.status])), [version.evidence]);
   const masked = useMemo(
     () => new Set(version.status === "draft" ? version.review.filter((i) => i.path && !settled(i)).map((i) => i.path!) : []),
     [version.review, version.status],
   );
   const proofread = useMemo(() => new Map((version.proofread ?? []).map((m) => [m.path, m])), [version.proofread]);
+  const noHits = useMemo(() => new Set<string>(), []);
+
+  // A value asked for from outside (⌘K, a search hit): open it and bring it into view.
+  const [opened, setOpened] = useState<typeof focus>(null);
+  if (focus && focus !== opened && version.rulebook) {
+    setOpened(focus);
+    setFocused({ path: focus.path, label: labelFor(focus.path, version.rulebook).split(" › ").slice(-2).join(" · ") });
+  }
+  useEffect(() => {
+    if (!focus) return;
+    // After the tab with the value has rendered.
+    const t = setTimeout(() => document.querySelector(`[data-path="${CSS.escape(focus.path)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+    return () => clearTimeout(t);
+  }, [focus]);
+
   if (!version.rulebook) return null;
   const ctx: RulebookCtx = {
     rulebook: version.rulebook,
@@ -38,55 +61,104 @@ export function Workspace({ study, version, children, report }: { study: StudyDe
     evidence,
     masked,
     proofread,
-    show: (path, prov, label) => {
-      setFocused({ path, label });
-      setSent(null);
-      if (prov?.source) setTarget((t) => ({ source: prov.source!, label, nonce: (t?.nonce ?? 0) + 1 }));
-    },
+    hits: hits ?? noHits,
+    show: (path, _prov, label) => setFocused({ path, label }),
   };
-  const reportable =
-    report && (version.status === "signed" || (version.status === "draft" && !version.byHand)) && focused && isLeaf(getAt(version.rulebook, focused.path)) && !masked.has(focused.path);
   return (
     <RulebookContext.Provider value={ctx}>
-      <div className="grid min-h-0 flex-1 overflow-hidden rounded-card border border-line bg-surface shadow-card lg:grid-cols-[minmax(360px,5fr)_7fr]">
-        <aside aria-label="Contract pages" className="border-line max-lg:h-[60vh] lg:sticky lg:top-14 lg:h-[calc(100vh-3.5rem)] lg:self-start lg:border-r">
-          <PageViewer documents={study.documents} target={target} />
-        </aside>
-        <div className="min-w-0 px-5 pt-4">
-          {children}
-          <div className="sticky bottom-0 -mx-5 mt-4 flex min-h-14 items-center gap-3 border-t border-line bg-surface/95 px-5 py-2.5 text-[13px] backdrop-blur">
-            {sent ? (
-              <span role="status" className="text-ok">
-                {sent}
-              </span>
-            ) : reportable ? (
-              <>
-                <span className="min-w-0 flex-1 truncate">
-                  <span className="text-muted">Selected: </span>
-                  {focused.label}
-                </span>
-                <Button size="sm" onClick={() => setOpen(true)}>
-                  This looks wrong
-                </Button>
-              </>
-            ) : (
-              <span className="text-muted">{report ? "Click a value to see it in the contract, and to report it if it looks wrong." : "Click a value to see it in the contract."}</span>
-            )}
-          </div>
-        </div>
-      </div>
-      {reportable && (
-        <ReportDialog
-          open={open}
-          onClose={() => setOpen(false)}
-          study={study}
-          version={version}
-          path={focused.path}
-          label={focused.label}
-          onSent={(m) => (setOpen(false), setFocused(null), setSent(m))}
-        />
+      {/* Room for the drawer, so it never covers what was clicked. */}
+      <div className={cx("transition-[padding] duration-200 motion-reduce:transition-none", focused && "lg:pr-[456px]")}>{children}</div>
+      {focused && (
+        <ValueDrawer key={focused.path} study={study} version={version} path={focused.path} label={focused.label} report={!!report} zoom={zoom} onZoom={setZoom} onClose={() => setFocused(null)} />
       )}
     </RulebookContext.Provider>
+  );
+}
+
+/** The value, the spot in the contract that backs it, and how it was checked. Not modal: the master stays clickable. */
+function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClose }: {
+  study: StudyDetailDto; version: RulebookVersionDto; path: string; label: string; report: boolean; zoom: number; onZoom: (z: number) => void; onClose: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+  const rb = version.rulebook!;
+  const masked = version.status === "draft" && version.review.some((i) => i.path === path && !settled(i));
+  const ev = version.evidence.find((e) => e.path === path);
+  const prov = findProv(rb, path);
+  const mark = version.proofread?.find((m) => m.path === path);
+  const spot: PageBox | null = ev?.where[0] ?? (prov?.source ? { documentId: prov.source.documentId, page: prov.source.page, box: null } : null);
+  const value = getAt(rb, path);
+  const reportable = report && (version.status === "signed" || (version.status === "draft" && !version.byHand)) && isLeaf(value) && !masked;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !document.querySelector("dialog[open]") && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <aside
+      aria-label={`In the contract: ${label}`}
+      className="fixed inset-x-2 bottom-2 z-40 flex h-[78vh] flex-col overflow-hidden rounded-card bg-surface shadow-raised ring-1 ring-ink/[0.08] lg:inset-x-auto lg:top-3 lg:right-3 lg:bottom-3 lg:h-auto lg:w-[480px]"
+    >
+      <header className="flex items-start gap-3 border-b border-line px-5 pt-4 pb-3.5">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-small text-muted">{label}</p>
+          <p className="num truncate text-heading font-semibold tracking-tight">{masked ? <span className="text-warn">Needs you</span> : value === undefined ? "—" : formatValue(path, value)}</p>
+        </div>
+        <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={onClose}>
+          <X className="size-4" strokeWidth={2} />
+        </Button>
+      </header>
+
+      <div className="flex flex-col gap-2 px-5 py-3 text-small">
+        {masked ? (
+          <p className="text-warn">Someone types what the contract says here before it&apos;s shown. Answer it in Needs you.</p>
+        ) : ev ? (
+          <p className="flex items-start gap-2">
+            <span className="mt-1.5">
+              <Dot status={ev.status} />
+            </span>
+            <span>
+              <span className="font-medium">{EVIDENCE[ev.status].label}.</span>{" "}
+              {ev.status === "confirmed" && ev.printed && <span className="text-muted">The page prints “{ev.printed}” here.</span>}
+              {ev.status === "attested" && <span className="text-muted">A person typed or chose it from the contract.</span>}
+              {ev.status === "conflict" && <span className="text-muted">The page prints {ev.printed ? `“${ev.printed}”` : "something else"} here.</span>}
+              {ev.status === "ungrounded" && <span className="text-muted">It couldn&apos;t be found on the page.</span>}
+              {ev.note && <span className="block text-faint">{ev.note}</span>}
+            </span>
+          </p>
+        ) : (
+          <p className="text-muted">Wording, not a number: read it on the page below.</p>
+        )}
+        {mark && (
+          <p className="flex items-center gap-2 text-ok">
+            <Check aria-hidden className="size-3.5" strokeWidth={3} /> Proofread by {mark.by} · {formatDate(mark.at)}
+          </p>
+        )}
+        {prov?.source?.quote && <blockquote className="border-l-2 border-line-strong pl-3 text-muted italic">“{prov.source.quote}”</blockquote>}
+      </div>
+
+      <div className="min-h-0 flex-1 px-3">
+        {spot ? <SpotView documents={study.documents} spot={spot} zoom={zoom} onZoom={onZoom} /> : <p className="px-2 py-8 text-center text-small text-muted">No page reference for this value.</p>}
+      </div>
+
+      <footer className="flex min-h-16 items-center gap-3 px-5 py-3 text-small">
+        {sent ? (
+          <span role="status" className="text-ok">
+            {sent}
+          </span>
+        ) : reportable ? (
+          <>
+            <span className="flex-1 text-muted">Doesn&apos;t match the contract?</span>
+            <Button size="sm" onClick={() => setOpen(true)}>
+              This looks wrong
+            </Button>
+          </>
+        ) : null}
+      </footer>
+      {reportable && <ReportDialog open={open} onClose={() => setOpen(false)} study={study} version={version} path={path} label={label} onSent={(m) => (setOpen(false), setSent(m))} />}
+    </aside>
   );
 }
 
@@ -120,7 +192,7 @@ function ReportDialog({ open, onClose, onSent, study, version, path, label }: {
         }}
       >
         <p className="font-medium">{label}</p>
-        <p className="text-[13px] text-muted">
+        <p className="text-small text-muted">
           Someone will type what the contract says here without seeing the value we have, and it&apos;s settled before approval.
           {live && ` Version ${version.version} stays live until a corrected version ${version.version + 1} is approved.`}
         </p>

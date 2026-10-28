@@ -1,10 +1,11 @@
-import type { ContractAnomaly, Rulebook } from "@dct/shared";
+import type { AlertKind, ContractAnomaly, Rulebook } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import {
   bigserial,
   boolean,
   check,
   doublePrecision,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -18,16 +19,34 @@ import type { ExtractionNote, ExtractionOutput } from "../extraction/port.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true }).notNull().defaultNow();
 
-export const studies = pgTable("studies", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  sponsor: text("sponsor"),
-  protocol: text("protocol"),
-  siteName: text("site_name"),
-  investigator: text("investigator"),
-  status: text("status").notNull().default("setting_up"),
-  createdAt: ts("created_at"),
-  updatedAt: ts("updated_at"),
-});
+/**
+ * Contract-list order as one ascending key: needs you oldest first, every other stage newest first, to the microsecond.
+ * `extract` from an interval is immutable, so it can be indexed; queries must use this exact expression to hit the index.
+ */
+export const listKey = sql`(CASE WHEN stage = 0 THEN 1 ELSE -1 END * extract(epoch FROM updated_at - timestamptz 'epoch'))`;
+
+export const studies = pgTable(
+  "studies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sponsor: text("sponsor"),
+    protocol: text("protocol"),
+    siteName: text("site_name"),
+    investigator: text("investigator"),
+    status: text("status").notNull().default("setting_up"),
+    /** What needs a person on the latest draft; kept by refreshStudyStatus. */
+    needsYou: integer("needs_you").notNull().default(0),
+    /** Contract-list urgency: 0 needs you · 1 couldn't read · 2 setting up · 3 waiting for approval · 4 extracting · 5 live. */
+    stage: integer("stage")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`CASE WHEN status IN ('needs_review', 'amendment_in_review') THEN (CASE WHEN needs_you > 0 THEN 0 ELSE 3 END) WHEN status = 'extraction_failed' THEN 1 WHEN status = 'setting_up' THEN 2 WHEN status = 'extracting' THEN 4 ELSE 5 END`,
+      ),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [index("studies_list_idx").on(t.stage, listKey, t.id), index("studies_site_idx").on(t.siteName)],
+);
 
 export const documents = pgTable("documents", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -102,6 +121,33 @@ export const auditLog = pgTable("audit_log", {
   action: text("action").notNull(),
   detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
 });
+
+/** A contract reached a step where someone is needed (see AlertDto); raised by refreshStudyStatus. Everyone sees every alert. */
+export const alerts = pgTable(
+  "alerts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: text("kind").$type<AlertKind>().notNull(),
+    studyId: uuid("study_id").notNull().references(() => studies.id),
+    version: integer("version").notNull(),
+    by: text("by").notNull(),
+    count: integer("count"),
+    note: text("note"),
+    createdAt: ts("created_at"),
+  },
+  // NULLS FIRST, as ORDER BY … DESC means: with drizzle-kit's default NULLS LAST the planner won't use it for that order
+  (t) => [index("alerts_list_idx").on(t.createdAt.desc().nullsFirst(), t.id.desc().nullsFirst())],
+);
+
+/** Read state per person (the name they picked). An alert is also read for whoever caused it, without a row. */
+export const alertReads = pgTable(
+  "alert_reads",
+  {
+    alertId: uuid("alert_id").notNull().references(() => alerts.id),
+    person: text("person").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.alertId, t.person] })],
+);
 
 /** Single row (id = 1), seeded by migration. */
 export const settings = pgTable(

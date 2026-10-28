@@ -1,13 +1,14 @@
-import { ChooseGridBody, CorrectValueBody, ResolveAnomalyBody, Rulebook, SignOffBody } from "@dct/shared";
+import { ChooseGridBody, CorrectValueBody, type MasterSearch, ResolveAnomalyBody, Rulebook, SignOffBody, searchMaster } from "@dct/shared";
+import { buildWorkbook } from "@dct/shared/xlsx";
 import { and, eq } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
-import { rulebookVersions, settings } from "../db/schema.js";
+import { rulebookVersions, settings, studies } from "../db/schema.js";
 import { appliesFromOf, assertDraft, audit, loadVersion, recheck, refreshStudyStatus, versionDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
 import { diffRulebooks, itemIds } from "../lib/diff.js";
-import { HttpError, parse } from "../lib/http.js";
+import { HttpError, notFound, parse } from "../lib/http.js";
 import { getAt, markManual, parsePointer, setAt } from "../lib/pointer.js";
 
 type P = { Params: { id: string; v: string } };
@@ -20,6 +21,43 @@ export const versionRoutes =
   ({ db }: Ctx): FastifyPluginAsync =>
   async (app) => {
     app.get<P>("/studies/:id/versions/:v", async (req) => versionDto(await loadVersion(db, req.params.id, versionNo(req.params.v))));
+
+    async function withRulebook(id: string, v: string) {
+      const row = await loadVersion(db, id, versionNo(v));
+      if (!row.rulebook) throw notFound(`Invoicing master of version ${row.version}`);
+      return row as typeof row & { rulebook: Rulebook };
+    }
+
+    /** One document, so searched in the app with the same matcher the in-browser sample server uses. */
+    app.get<P & { Querystring: { q?: string } }>("/studies/:id/versions/:v/search", async (req): Promise<MasterSearch> => {
+      const row = await withRulebook(req.params.id, req.params.v);
+      const q = req.query.q ?? "";
+      return { q, hits: searchMaster(row.rulebook, q) };
+    });
+
+    app.get<P & { Querystring: { by?: string } }>("/studies/:id/versions/:v/export.xlsx", async (req, reply) => {
+      const row = await withRulebook(req.params.id, req.params.v);
+      // Billing works only from approved terms; a draft also still hides values someone has to type blind.
+      if (row.status !== "signed" && row.status !== "superseded") throw new HttpError(409, "Only an approved version can be exported.");
+      const [s] = await db.select().from(studies).where(eq(studies.id, row.studyId));
+      const xlsx = await buildWorkbook(row.rulebook, {
+        protocol: s!.protocol,
+        sponsor: s!.sponsor,
+        site: s!.siteName,
+        investigator: s!.investigator,
+        version: row.version,
+        status: row.status,
+        approvedBy: row.signedBy,
+        approvedAt: row.signedAt?.toISOString() ?? null,
+      });
+      await audit(db, req.query.by || "system", row.studyId, "version.exported", { version: row.version, format: "xlsx" });
+      const protocol = (s!.protocol ?? "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "contract";
+      const name = `${protocol}-v${row.version}-invoicing-master.xlsx`;
+      return reply
+        .header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        .header("content-disposition", `attachment; filename="${name}"`)
+        .send(Buffer.from(xlsx));
+    });
 
     app.get<P & { Querystring: { against?: string } }>("/studies/:id/versions/:v/diff", async (req) => {
       const against = req.query.against;
@@ -50,7 +88,7 @@ export const versionRoutes =
           .set({ rulebook: checked.data, anomalies, editors, appliesFrom: appliesFromOf(checked.data), updatedAt: new Date() })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
-        await refreshStudyStatus(tx, row.studyId);
+        await refreshStudyStatus(tx, row.studyId, body.by);
         await audit(tx, body.by, row.studyId, "value.corrected", { version: row.version, path: body.path, before, after: body.value, note: body.note, items: itemIds(row.rulebook, tokens) });
         return versionDto(updated!);
       });
@@ -66,7 +104,7 @@ export const versionRoutes =
         const resolution = { ...body, at: new Date().toISOString() };
         const anomalies = row.anomalies.map((a) => (a.id === target.id ? { ...a, resolution } : a));
         const [updated] = await tx.update(rulebookVersions).set({ anomalies, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
-        await refreshStudyStatus(tx, row.studyId);
+        await refreshStudyStatus(tx, row.studyId, body.by);
         await audit(tx, body.by, row.studyId, "anomaly.resolved", { version: row.version, anomalyId: target.id, code: target.code, kind: body.kind, note: body.note });
         return versionDto(updated!);
       });
@@ -85,7 +123,7 @@ export const versionRoutes =
           a.code === "GRID_CONFLICT" && !a.resolution ? { ...a, resolution: { kind: "chosen" as const, note: body.note, by: body.by, at } } : a,
         );
         const [updated] = await tx.update(rulebookVersions).set({ rulebook: rb, anomalies, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
-        await refreshStudyStatus(tx, row.studyId);
+        await refreshStudyStatus(tx, row.studyId, body.by);
         await audit(tx, body.by, row.studyId, "grid.chosen", { version: row.version, gridId: body.gridId, from: row.rulebook.governingGridId, note: body.note });
         return versionDto(updated!);
       });
@@ -112,7 +150,7 @@ export const versionRoutes =
           .set({ status: "signed", signedBy: body.by, signedAt: new Date(), signNote: body.note ?? null, updatedAt: new Date() })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
-        await refreshStudyStatus(tx, row.studyId);
+        await refreshStudyStatus(tx, row.studyId, body.by);
         await audit(tx, body.by, row.studyId, "version.signed", { version: row.version, note: body.note ?? null, appliesFrom: row.appliesFrom });
         return versionDto(updated!);
       });

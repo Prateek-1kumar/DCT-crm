@@ -382,7 +382,7 @@ const UNACCOUNTED_OPTIONS = [
  * one item per line or sentence of the contract with money terms the master doesn't hold.
  */
 export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[], rulebook: Rulebook): ReviewItem[] {
-  const base = { answer: null, outcome: null, compare: null, blocking: true } as const;
+  const base = { answer: null, outcome: null, compare: null, blocking: true, sentBack: null } as const;
   const confirm: ReviewItem[] = evidence
     .filter((e) => e.status === "conflict" || e.status === "ungrounded")
     .map((e) => ({ ...base, id: `confirm:${e.path}`, kind: "confirm_value", reason: e.status === "conflict" ? "VALUE_CONFLICT" : "UNGROUNDED_VALUE", path: e.path, ...ask(rulebook, e.path), options: [], where: e.where }));

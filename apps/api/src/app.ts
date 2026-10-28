@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { createDb, type Db } from "./db/index.js";
 import { startBoss } from "./jobs.js";
 import { HttpError } from "./lib/http.js";
+import { alertRoutes } from "./routes/alerts.js";
 import { documentRoutes } from "./routes/documents.js";
 import { miscRoutes } from "./routes/misc.js";
 import { studyRoutes } from "./routes/studies.js";
@@ -43,6 +44,7 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
       await api.register(studyRoutes(ctx));
       await api.register(versionRoutes(ctx));
       await api.register(miscRoutes(ctx));
+      await api.register(alertRoutes(ctx));
     },
     { prefix: "/api" },
   );

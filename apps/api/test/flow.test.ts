@@ -1,4 +1,4 @@
-import type { AuditEntryDto, DiffEntry, DocumentDto, RulebookVersionDto, StudyDetailDto, StudySummaryDto } from "@dct/shared";
+import type { AuditEntryDto, DiffEntry, DocumentDto, RulebookVersionDto, StudyDetailDto, StudyPage } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
@@ -71,7 +71,7 @@ describe("bring a study on board", () => {
     const ids = docs.map((d) => d.id);
     const [r1, r2] = await Promise.all([post("/api/studies", { documentIds: ids }), post("/api/studies", { documentIds: [...ids].reverse() })]);
     expect(r1.json()).toEqual(r2.json());
-    expect(await get<StudySummaryDto[]>("/api/studies")).toHaveLength(1);
+    expect((await get<StudyPage>("/api/studies")).total).toBe(1);
     // a different file set is a different study
     expect((await post("/api/studies", { documentIds: [ids[0]] })).json().studyId).not.toBe(r1.json().studyId);
   });
@@ -94,7 +94,7 @@ describe("extraction", () => {
     expect(ver.rulebook?.study.sponsor.value).toBe("Synthetic Pharma");
     expect(ver.anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "GRID_CONFLICT", "MISSING_REFERENCED_DOC", "VISIT_TOTAL_MISMATCH"]);
     expect(ver.cost).toEqual({ usd: expect.closeTo(0.07, 6), inputTokens: 1800, outputTokens: 350 });
-    const [summary] = await get<StudySummaryDto[]>("/api/studies");
+    const [summary] = (await get<StudyPage>("/api/studies")).items;
     expect(summary).toMatchObject({ status: "needs_review", openAnomalies: 4, liveVersion: null });
     // a draft is under review: no second extraction on top of it
     expect((await post(`/api/studies/${studyId}/extract`, {})).statusCode).toBe(409);
@@ -176,7 +176,7 @@ describe("review", () => {
     });
     expect((await resolve(studyId, 1, "NOPE")).statusCode).toBe(404);
     expect((await post(`/api/studies/${studyId}/versions/1/anomalies/x/resolve`, { kind: "fixed", note: "", by: "A" })).statusCode).toBe(400);
-    expect((await get<StudySummaryDto[]>("/api/studies"))[0]!.openAnomalies).toBe(3);
+    expect((await get<StudyPage>("/api/studies")).items[0]!.openAnomalies).toBe(3);
   });
 
   it("chooses the governing grid, which settles GRID_CONFLICT", async () => {

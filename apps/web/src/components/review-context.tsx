@@ -17,7 +17,12 @@ export type RulebookCtx = {
   masked: Set<string>;
   /** Values someone proofread and found right. */
   proofread: Map<string, ProofreadMark>;
+  /** Items matching the search on this contract (pointers of rows or terms). */
+  hits: Set<string>;
 };
+
+/** Whether `path` is a search hit or inside one. */
+export const isHit = (hits: Set<string>, path: string) => hits.has(path) || [...hits].some((h) => path.startsWith(`${h}/`));
 
 export const RulebookContext = createContext<RulebookCtx | null>(null);
 

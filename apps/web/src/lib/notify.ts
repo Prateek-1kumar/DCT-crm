@@ -8,9 +8,10 @@ import { useState, useSyncExternalStore } from "react";
  */
 const supported = () => typeof Notification !== "undefined";
 
-export function notify(title: string, body: string, href?: string) {
+/** `tag`: a later notification with the same tag replaces this one instead of stacking (one per contract). */
+export function notify(title: string, body: string, href?: string, tag?: string) {
   if (!supported() || Notification.permission !== "granted" || !document.hidden) return;
-  const n = new Notification(title, { body, icon: "/dct-mark.png" });
+  const n = new Notification(title, { body, icon: "/dct-mark.png", tag });
   n.onclick = () => {
     window.focus();
     if (href) window.location.assign(href);

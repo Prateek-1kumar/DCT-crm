@@ -1,4 +1,4 @@
-import type { DocumentKind } from "@dct/shared";
+import { ENUM_LABELS, type DocumentKind } from "@dct/shared";
 import { formatCents } from "./money";
 import { segments } from "./pointer";
 
@@ -11,39 +11,8 @@ export const DOC_KIND_LABEL: Record<DocumentKind, string> = {
   other: "Other",
 };
 
-/** Options for enum-valued fields, keyed by the field name in the rulebook. */
-export const ENUM_OPTIONS: Record<string, Record<string, string>> = {
-  visitPayment: { auto_edc: "Automatic (from EDC)", invoice: "By invoice", mixed: "Mixed", unspecified: "Not stated" },
-  frequency: { monthly: "Monthly", quarterly: "Quarterly", other: "Other", unspecified: "Not stated" },
-  appliesTo: {
-    procedures_only: "Procedures only",
-    procedures_and_staff: "Procedures and staff",
-    all_per_patient_lines: "All per-patient lines",
-    none: "None",
-    unspecified: "Not stated",
-  },
-  rounding: { printed_amounts: "Use printed amounts", cents: "Round to cents", unspecified: "Not stated" },
-  basis: { fixed: "Fixed", actual_cost: "Actual cost", per_procedure: "Per procedure", per_hour: "Per hour", per_mile: "Per mile" },
-  paidVia: { auto_edc: "Automatic (from EDC)", invoice: "By invoice" },
-  trigger: {
-    agreement_execution: "On agreement execution",
-    study_initiation: "On study initiation",
-    regulatory_package: "On regulatory package",
-    closeout: "At closeout",
-    annual: "Annually",
-    per_event: "Per event",
-    one_time: "One time",
-    actual_cost: "At actual cost",
-  },
-  kind: {
-    invoice_days_from_expense: "Invoice within N days of expense",
-    invoice_months_after_study_close: "Invoice within N months of study close",
-    final_invoice_days_after_closeout: "Final invoice within N days of closeout",
-    query_resolution_days: "Resolve queries within N days",
-    dispute_days_after_final_payment: "Dispute within N days of final payment",
-    edc_entry_business_days: "EDC entry within N business days",
-  },
-};
+/** Options for enum-valued fields, keyed by the field name in the rulebook (shared with the server-built exports). */
+export const ENUM_OPTIONS = ENUM_LABELS;
 
 export type ValueKind = "money" | "cell" | "int" | "number" | "text" | "date" | "list" | "bool" | "enum";
 

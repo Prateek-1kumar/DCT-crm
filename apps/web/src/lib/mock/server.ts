@@ -5,6 +5,14 @@ import {
   ProofreadBody,
   ReportValueBody,
   SendBackBody,
+  StudyListQuery,
+  AlertListQuery,
+  ReadAlertsBody,
+  type AlertDto,
+  searchMaster,
+  amountOf,
+  type RateHit,
+  type StudyView,
   Rulebook as RulebookSchema,
   settled,
   type AuditEntryDto,
@@ -25,7 +33,7 @@ import { blankRulebook } from "../byhand";
 import { labelFor } from "../format";
 import { layoutPage } from "./layout";
 import { getAt, segments, setAt } from "../pointer";
-import { needsYou } from "../review";
+import { needsYou, summaryStage, VIEWS } from "../review";
 import {
   amendmentSpecs,
   amendRulebook,
@@ -54,9 +62,15 @@ import {
 type Study = { id: string; sponsor: string | null; protocol: string | null; siteName: string | null; investigator: string | null; status: StudyStatus; updatedAt: string; documentIds: string[] };
 type Job = { id: string; kind: "identify" | "extract"; studyId: string; version: number | null; startedAt: number; durationMs: number; fail: boolean; applied: boolean };
 /** `secrets` is the "server side": right answers keyed `studyId/version/itemId`, never in a response. */
-type Db = { studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number };
+type Alert = Omit<AlertDto, "read" | "protocol" | "sponsor">;
+type Db = {
+  studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number;
+  alerts: Alert[];
+  /** person → ids of the alerts they've read */
+  alertReads: Record<string, string[]>;
+};
 
-const KEY = "dct.mockdb.v4";
+const KEY = "dct.mockdb.v5";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -95,7 +109,7 @@ export function mockReset() {
 const textOf = (filename: string): DocumentDto["text"] => (/scan/i.test(filename) ? "scan" : "text");
 
 function seed(): Db {
-  const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: false, people: [...PEOPLE] }, secrets: {}, seq: 100 };
+  const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: false, people: [...PEOPLE] }, secrets: {}, seq: 100, alerts: [], alertReads: {} };
   const kinds: Record<string, DocumentKind> = { "doc-hal-am1": "amendment", "doc-sl-wo": "work_order" };
 
   for (const sd of Object.values(SEEDS)) {
@@ -173,6 +187,16 @@ function seed(): Db {
     version(st, 1, null, daysAgo(1), "failed");
     d.jobs.push({ id: "job-solace-1", kind: "extract", studyId: st.id, version: 1, startedAt: Date.now() - 86_400_000, durationMs: 1000, fail: true, applied: true });
     log(d, "system", st.id, "extraction.failed", { version: 1, error: "Pages 3–7 couldn't be read: the scan is too faint." }, daysAgo(1));
+  }
+
+  // The alerts that got each contract where it is now.
+  for (const st of d.studies) {
+    const stage = stageOf(d, st);
+    const answered = d.audit.filter((e) => e.studyId === st.id && e.action === "review.answered").at(-1)?.by ?? "system";
+    const base = { studyId: st.id, version: latestVersion(d, st.id), count: null, note: null, at: st.updatedAt };
+    if (stage === "needs") raiseAlert(d, { ...base, kind: "questions_ready", by: "system", count: summary(d, st).needsYou });
+    if (stage === "approve") raiseAlert(d, { ...base, kind: "ready_for_approval", by: answered });
+    if (stage === "failed") raiseAlert(d, { ...base, kind: "couldnt_read", by: "system" });
   }
   return d;
 }
@@ -303,6 +327,147 @@ function summary(d: Db, s: Study): StudySummaryDto {
   };
 }
 
+// ---------------------------------------------------------------- alerts: raised when a contract reaches a step that needs someone
+
+type Stage = "needs" | "approve" | "reading" | "failed" | "other";
+const stageOf = (d: Db, s: Study): Stage => {
+  const st = summaryStage(summary(d, s));
+  return st.failed ? "failed" : st.stage === "Needs you" ? "needs" : st.stage === "Approve" ? "approve" : st.stage === "Reading" ? "reading" : "other";
+};
+const stages = (d: Db) => new Map(d.studies.map((s) => [s.id, stageOf(d, s)]));
+const latestVersion = (d: Db, studyId: string) => Math.max(0, ...d.versions.filter((v) => v.studyId === studyId).map((v) => v.version));
+
+function raiseAlert(d: Db, a: Omit<Alert, "id" | "at"> & { at?: string }) {
+  d.alerts.push({ ...a, id: `al-${d.seq++}`, at: a.at ?? now() });
+}
+
+/** Same rule as the real API: into Needs you → questions ready; into approval → ready; into couldn't read. */
+function raiseAlerts(d: Db, before: Map<string, Stage>, by: string, since = d.alerts.length) {
+  const raised = new Set(d.alerts.slice(since).map((a) => a.studyId)); // e.g. sent back, raised by its own route
+  for (const s of d.studies) {
+    const was = before.get(s.id);
+    const is = stageOf(d, s);
+    if (!was || was === is || raised.has(s.id)) continue;
+    const base = { studyId: s.id, version: latestVersion(d, s.id), by, count: null, note: null };
+    if (is === "needs") raiseAlert(d, { ...base, kind: "questions_ready", count: summary(d, s).needsYou });
+    else if (is === "approve") raiseAlert(d, { ...base, kind: "ready_for_approval" });
+    else if (is === "failed") raiseAlert(d, { ...base, kind: "couldnt_read" });
+  }
+}
+
+/** GET /alerts?for=: newest first; everyone sees every alert, read state is per person. */
+function listAlerts(d: Db, query: URLSearchParams): Res {
+  const parsed = AlertListQuery.safeParse(Object.fromEntries(query));
+  if (!parsed.success) return err(400, "Say whose alerts to show.");
+  const { for: person, cursor, limit } = parsed.data;
+  const read = new Set(d.alertReads[person] ?? []);
+  const isRead = (a: Alert) => read.has(a.id) || a.by === person;
+  const all = [...d.alerts].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+  // ponytail: an offset cursor in the sample server; the real API pages by key.
+  const start = cursor ? Number(atob(cursor)) || 0 : 0;
+  const items = all.slice(start, start + limit).map((a) => {
+    const st = d.studies.find((x) => x.id === a.studyId);
+    return { ...a, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, read: isRead(a) };
+  });
+  return ok({ items, unread: all.filter((a) => !isRead(a)).length, nextCursor: start + limit < all.length ? btoa(String(start + limit)) : null });
+}
+
+/** POST /alerts/read: the given alerts, or all of them, are read for `by`. */
+function readAlerts(d: Db, raw: unknown): Res {
+  const parsed = ReadAlertsBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Say who read which alerts.");
+  const { by, ids } = parsed.data;
+  const read = new Set([...(d.alertReads[by] ?? []), ...(ids ?? d.alerts.map((a) => a.id)).filter((id) => d.alerts.some((a) => a.id === id))]);
+  d.alertReads[by] = [...read];
+  return ok({ unread: d.alerts.filter((a) => !read.has(a.id) && a.by !== by).length });
+}
+
+// ---------------------------------------------------------------- listing and searching, done by the "server" as the real API does
+
+const viewOf = (s: StudySummaryDto): StudyView | null => VIEWS.find((v) => v.test(summaryStage(s)))?.id ?? null;
+/** Most urgent first: needs you, couldn't read, details to confirm, approval, reading, live. */
+const urgency = (s: StudySummaryDto) => {
+  const st = summaryStage(s);
+  return st.failed ? 1 : { "Needs you": 0, Upload: 2, Approve: 3, Reading: 4, Checking: 4, Live: 5 }[st.stage];
+};
+const matchesQ = (s: StudySummaryDto, q?: string) =>
+  !q?.trim() || q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => [s.protocol, s.sponsor, s.siteName, s.investigator].some((x) => x?.toLowerCase().includes(w)));
+
+/** GET /studies: one page, most urgent first (needs you oldest first; the rest newest first). */
+function listStudies(d: Db, query: URLSearchParams): Res {
+  const parsed = StudyListQuery.safeParse(Object.fromEntries(query));
+  if (!parsed.success) return err(400, "That list filter isn't valid.");
+  const { view, site, q, cursor, limit } = parsed.data;
+  const all = d.studies
+    .map((s) => summary(d, s))
+    .filter((s) => (!view || viewOf(s) === view) && (!site || s.siteName === site) && matchesQ(s, q))
+    .sort((a, b) => urgency(a) - urgency(b) || (urgency(a) === 0 ? a.updatedAt.localeCompare(b.updatedAt) : b.updatedAt.localeCompare(a.updatedAt)) || a.id.localeCompare(b.id));
+  // ponytail: an offset cursor in the sample server; the real API pages by key.
+  const start = cursor ? Number(atob(cursor)) || 0 : 0;
+  return ok({ items: all.slice(start, start + limit), nextCursor: start + limit < all.length ? btoa(String(start + limit)) : null, total: all.length });
+}
+
+/** GET /studies/counts: contracts per view and the sites there are. */
+function countStudies(d: Db, query: URLSearchParams): Res {
+  const site = query.get("site") || undefined;
+  const all = d.studies.map((s) => summary(d, s));
+  const here = all.filter((s) => !site || s.siteName === site);
+  const views: Record<StudyView, number> = { "needs-you": 0, approval: 0, live: 0, failed: 0 };
+  for (const s of here) {
+    const v = viewOf(s);
+    if (v) views[v]++;
+  }
+  const bySite = new Map<string, number>();
+  for (const s of all) if (s.siteName) bySite.set(s.siteName, (bySite.get(s.siteName) ?? 0) + 1);
+  return ok({ all: here.length, views, sites: [...bySite].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => ({ name, count })) });
+}
+
+/** GET /search: ⌘K. Contracts, and rates in each contract's live version. */
+function searchAll(d: Db, query: URLSearchParams): Res {
+  const q = (query.get("q") ?? "").trim();
+  const limit = Math.min(20, Number(query.get("limit")) || 8);
+  if (!q) return ok({ contracts: [], rates: [] });
+  const contracts = d.studies.map((s) => summary(d, s)).filter((s) => matchesQ(s, q)).slice(0, limit);
+  const rates: RateHit[] = [];
+  for (const s of d.studies) {
+    const v = latestSigned(d, s.id);
+    if (!v?.rulebook) continue;
+    const rb = v.rulebook;
+    const base = { studyId: s.id, protocol: s.protocol, sponsor: s.sponsor, version: v.version };
+    for (const h of searchMaster(rb, q)) {
+      let m: RegExpExecArray | null;
+      if ((m = /^\/budgetGrids\/(\d+)\/procedures\/(\d+)$/.exec(h.path))) {
+        const g = rb.budgetGrids[Number(m[1])]!;
+        const p = g.procedures[Number(m[2])]!;
+        rates.push({ ...base, path: h.path, kind: "procedure", name: p.name, code: p.code, cents: p.unitCents, detail: g.label });
+      } else if ((m = /^\/siteFees\/(\d+)$/.exec(h.path))) {
+        const f = rb.siteFees[Number(m[1])]!;
+        rates.push({ ...base, path: h.path, kind: "fee", name: f.name, code: f.code, cents: f.amountCents, detail: f.trigger.replace(/_/g, " ") });
+      } else if ((m = /^\/invoiceables\/(\d+)$/.exec(h.path))) {
+        const x = rb.invoiceables[Number(m[1])]!;
+        rates.push({ ...base, path: h.path, kind: "invoiceable", name: x.name, code: x.code, cents: x.amountCents, detail: x.frequency });
+      }
+    }
+  }
+  return ok({ contracts, rates: rates.slice(0, limit) });
+}
+
+/** The invoicing master as an .xlsx, built in the browser by the same code the real server uses. */
+export async function mockExport(studyId: string, version: number, by: string): Promise<{ blob: Blob; filename: string }> {
+  const d = load();
+  const st = d.studies.find((s) => s.id === studyId);
+  const ver = d.versions.find((v) => v.studyId === studyId && v.version === version);
+  if (!st || !ver?.rulebook) throw new Error("There's no invoicing master to export yet.");
+  if (ver.status !== "signed" && ver.status !== "superseded") throw new Error("Only an approved version can be exported.");
+  const { buildWorkbook } = await import("@dct/shared/xlsx");
+  const bytes = await buildWorkbook(ver.rulebook, {
+    protocol: st.protocol, sponsor: st.sponsor, site: st.siteName, investigator: st.investigator, version, status: ver.status, approvedBy: ver.signedBy, approvedAt: ver.signedAt,
+  });
+  log(d, by, st.id, "master.exported", { version, format: "xlsx" });
+  save();
+  return { blob: new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename: `${(st.protocol ?? "contract").replace(/[^\w.-]+/g, "_")}-v${version}-invoicing-master.xlsx` };
+}
+
 function detail(d: Db, s: Study): StudyDetailDto {
   return {
     ...summary(d, s),
@@ -414,6 +579,7 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
   }
   st.updatedAt = at;
   log(d, by, st.id, "review.sent_back", { version: ver.version, questions: items.length, note }, at);
+  raiseAlert(d, { kind: "sent_back", studyId: st.id, version: ver.version, by, count: items.length, note, at });
   return ok(ver);
 }
 
@@ -591,8 +757,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function mockRequest(method: string, fullPath: string, body: unknown): Promise<Res> {
   await sleep(120 + Math.random() * 180);
   const d = load();
+  const by = typeof (body as { by?: unknown } | undefined)?.by === "string" ? (body as { by: string }).by : "system";
+  let before = stages(d);
   tick(d);
+  raiseAlerts(d, before, "system");
+  before = stages(d);
+  const mark = d.alerts.length;
   const res = await route(d, method, fullPath, body);
+  if (res.status < 400) raiseAlerts(d, before, by, mark);
   save();
   // Like the wire: a fresh copy, so cached responses never share objects with the mock's state.
   return { status: res.status, json: JSON.parse(JSON.stringify(res.json ?? null)) };
@@ -606,7 +778,11 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   const by = typeof b.by === "string" ? b.by : "unknown";
   let r: RegExpExecArray | null;
 
-  if (method === "GET" && path === "/studies") return ok(d.studies.map((s) => summary(d, s)));
+  if (method === "GET" && path === "/studies") return listStudies(d, query);
+  if (method === "GET" && path === "/studies/counts") return countStudies(d, query);
+  if (method === "GET" && path === "/search") return searchAll(d, query);
+  if (method === "GET" && path === "/alerts") return listAlerts(d, query);
+  if (method === "POST" && path === "/alerts/read") return readAlerts(d, body);
   if (method === "GET" && path === "/settings") return ok(d.settings);
   if (method === "PATCH" && path === "/settings") {
     d.settings = { ...d.settings, ...(b as Partial<SettingsDto>) };
@@ -697,6 +873,15 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   const vrest = vm[2] ?? "";
 
   if (vrest === "" && method === "GET") return ok(ver);
+  if (vrest === "/search" && method === "GET") {
+    const q = query.get("q") ?? "";
+    // On a draft, a value still hidden for someone to type blind must not be findable: amounts match values, and a
+    // term's words include its values. Names and codes of grid rows and fees don't, so those still match.
+    const hidden = ver.status === "draft" ? ver.review.filter((i) => i.path && !settled(i)).map((i) => i.path!) : [];
+    const byValue = (h: { path: string; section: string }) => amountOf(q) !== null || h.section === "terms";
+    const hits = ver.rulebook ? searchMaster(ver.rulebook, q).filter((h) => !(byValue(h) && hidden.some((p) => p === h.path || p.startsWith(`${h.path}/`)))) : [];
+    return ok({ q, hits });
+  }
   if (vrest === "/diff" && method === "GET") {
     const other = d.versions.find((v) => v.studyId === st.id && v.version === Number(query.get("against")));
     if (!other) return err(404, "Version to compare against not found");

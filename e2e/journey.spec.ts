@@ -69,7 +69,7 @@ test("bring on board → review → sign off → amend → sign v2 → audit →
   await test.step("identify and confirm", async () => {
     await page.getByRole("button", { name: /Identify 2 documents/ }).dblclick();
     await expect(page.getByLabel("Sponsor")).toHaveValue(/\S/, { timeout: 30_000 });
-    expect(await (await request.get("/api/studies")).json()).toHaveLength(1); // the double-click made one study
+    expect((await (await request.get("/api/studies")).json()).total).toBe(1); // the double-click made one study
     await page.reload(); // refresh on the confirm step resumes it
     await expect(page.getByLabel("Sponsor")).toHaveValue(/\S/);
     await expect(page.getByLabel("Principal investigator")).not.toHaveValue("");

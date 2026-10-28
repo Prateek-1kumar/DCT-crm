@@ -3,7 +3,7 @@
 import type { BudgetGrid } from "@dct/shared";
 import type { ReactNode } from "react";
 import { formatCents } from "@/lib/money";
-import { useRulebook, Val } from "./review-context";
+import { isHit, useRulebook, Val } from "./review-context";
 import { Badge, cx } from "./ui";
 
 const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCents" | "totalCents"; label: string }[] = [
@@ -15,7 +15,7 @@ const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCen
 
 /** Procedure × visit grid: sticky headers and first column, horizontal scroll, invoiceable cells marked. */
 export function GridTable({ index }: { index: number }) {
-  const { rulebook, show, focused, masked } = useRulebook();
+  const { rulebook, show, focused, masked, hits } = useRulebook();
   const grid = rulebook.budgetGrids[index]!;
   const base = `/budgetGrids/${index}`;
   const visits = [...grid.visits].sort((a, b) => a.order - b.order);
@@ -24,6 +24,7 @@ export function GridTable({ index }: { index: number }) {
   const cell = (path: string, label: string, prov: BudgetGrid["prov"], text: ReactNode) => (
     <button
       type="button"
+      data-path={path}
       className={cx("num flex w-full justify-end px-2 py-1.5 hover:bg-accent-soft focus-visible:relative", focused === path && "bg-highlight")}
       onClick={() => show(path, prov, label)}
     >
@@ -57,7 +58,11 @@ export function GridTable({ index }: { index: number }) {
                 Unit
               </th>
               {visits.map((v) => (
-                <th key={v.code} scope="col" className="sticky top-0 z-10 min-w-24 border-b border-line bg-sunken px-2 py-2 text-right font-medium">
+                <th
+                  key={v.code}
+                  scope="col"
+                  className={cx("sticky top-0 z-10 min-w-24 border-b border-line px-2 py-2 text-right font-medium", isHit(hits, `${base}/visits/${grid.visits.indexOf(v)}`) ? "bg-brand-soft" : "bg-sunken")}
+                >
                   <span className="block">{v.code}</span>
                   <span className="block font-normal text-muted">{v.name}</span>
                   {!v.autopay && <span className="block font-normal text-warn">invoice</span>}
@@ -67,8 +72,14 @@ export function GridTable({ index }: { index: number }) {
           </thead>
           <tbody>
             {grid.procedures.map((p, pi) => (
-              <tr key={pi} className="group">
-                <th scope="row" className="sticky left-0 z-10 border-b border-line bg-surface px-2 py-1.5 text-left font-normal group-hover:bg-sunken">
+              <tr key={pi} className={cx("group", isHit(hits, `${base}/procedures/${pi}`) && "bg-brand-soft")}>
+                <th
+                  scope="row"
+                  className={cx(
+                    "sticky left-0 z-10 border-b border-line px-2 py-1.5 text-left font-normal group-hover:bg-sunken",
+                    isHit(hits, `${base}/procedures/${pi}`) ? "bg-brand-soft" : "bg-surface",
+                  )}
+                >
                   <span className="block truncate font-medium">{p.name}</span>
                   <span className="text-muted">
                     {p.code ?? "—"} · {p.category === "procedure" ? "procedure" : "non-procedure"}

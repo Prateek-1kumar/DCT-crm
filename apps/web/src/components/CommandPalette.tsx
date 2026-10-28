@@ -1,21 +1,28 @@
 "use client";
 
-import { BookOpen, CornerDownLeft, FileText, History, ListFilter, Plus, Search, Settings, type LucideIcon } from "lucide-react";
+import type { StudySummaryDto } from "@dct/shared";
+import { useQuery } from "@tanstack/react-query";
+import { BookOpen, CornerDownLeft, FileText, History, ListFilter, Plus, Receipt, Search, Settings, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { useStudies } from "@/lib/queries";
+import { api } from "@/lib/api";
+import { formatCents } from "@/lib/money";
+import { keys, useSearch } from "@/lib/queries";
 import { summaryStage, VIEWS } from "@/lib/review";
 import { cx, StagePill } from "./ui";
 
 type Entry = { id: string; group: string; label: string; sub?: string; icon: LucideIcon; right?: ReactNode; words: string; run: () => void };
 
-/** ⌘K: jump to a contract (protocol, sponsor, site, investigator), a page, or an action. */
+/** ⌘K: jump to a contract or a rate in a live contract (both searched by the server), a page, or an action. */
 export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onClose: () => void; onGuide: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   const list = useRef<HTMLUListElement>(null);
   const router = useRouter();
-  const { data } = useStudies();
   const [q, setQ] = useState("");
+  const typed = q.trim();
+  const found = useSearch(q);
+  // Nothing typed: the top of the list, which the server orders most urgent first.
+  const top = useQuery({ queryKey: [...keys.studies, "top", 5], queryFn: () => api.listStudies({ limit: 5 }), enabled: open && !typed });
   const [at, setAt] = useState(0);
 
   useEffect(() => {
@@ -34,21 +41,15 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
       onClose();
       router.push(href);
     };
-    // Waiting on someone is listed first when nothing is typed.
-    const waiting = new Set<string>();
-    const contracts: Entry[] = (data ?? []).map((s) => {
-      const st = summaryStage(s);
-      if (st.stage === "Needs you" || st.stage === "Approve" || st.failed) waiting.add(`c-${s.id}`);
-      return {
-        id: `c-${s.id}`,
-        group: "Contracts",
-        label: s.protocol ?? "New contract",
-        sub: [s.sponsor, s.siteName].filter(Boolean).join(" · "),
-        icon: FileText,
-        right: <StagePill state={st} />,
-        words: [s.protocol, s.sponsor, s.siteName, s.investigator].join(" "),
-        run: go(`/studies/${s.id}`),
-      };
+    const contract = (s: StudySummaryDto, group: string): Entry => ({
+      id: `c-${s.id}`,
+      group,
+      label: s.protocol ?? "New contract",
+      sub: [s.sponsor, s.siteName].filter(Boolean).join(" · "),
+      icon: FileText,
+      right: <StagePill state={summaryStage(s)} />,
+      words: "",
+      run: go(`/studies/${s.id}`),
     });
     const pages: Entry[] = [
       { id: "p-all", group: "Go to", label: "All contracts", icon: FileText, words: "contracts list home", run: go("/") },
@@ -70,14 +71,27 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
     ];
     const actions: Entry[] = [{ id: "a-add", group: "Actions", label: "Add a contract", sub: "Upload a signed PDF", icon: Plus, words: "add upload new contract pdf", run: go("/studies/new") }];
 
-    const t = q.trim().toLowerCase();
-    if (!t) {
-      const first = contracts.filter((c) => waiting.has(c.id)).slice(0, 5).map((c) => ({ ...c, group: "Waiting on someone" }));
-      return [...first, ...pages, ...actions];
+    if (!typed) {
+      const waiting = (top.data?.items ?? []).filter((s) => {
+        const st = summaryStage(s);
+        return st.stage === "Needs you" || st.stage === "Approve" || st.failed;
+      });
+      return [...waiting.map((s) => contract(s, "Waiting on someone")), ...pages, ...actions];
     }
+    const rates: Entry[] = (found.data?.rates ?? []).map((r) => ({
+      id: `r-${r.studyId}-${r.path}`,
+      group: "Rates in live contracts",
+      label: `${r.name}${r.code ? ` (${r.code})` : ""}`,
+      sub: [r.protocol, r.detail].filter(Boolean).join(" · "),
+      icon: Receipt,
+      right: <span className="num shrink-0 text-body font-medium">{r.cents === null ? "Not stated" : formatCents(r.cents)}</span>,
+      words: "",
+      run: go(`/studies/${r.studyId}?v=${r.version}&focus=${encodeURIComponent(r.path)}`),
+    }));
+    const t = typed.toLowerCase();
     const hit = (e: Entry) => t.split(/\s+/).every((w) => `${e.label} ${e.sub ?? ""} ${e.words}`.toLowerCase().includes(w));
-    return [...contracts, ...pages, ...actions].filter(hit);
-  }, [data, q, onClose, onGuide, router]);
+    return [...(found.data?.contracts ?? []).map((s) => contract(s, "Contracts")), ...rates, ...[...pages, ...actions].filter(hit)];
+  }, [typed, top.data, found.data, onClose, onGuide, router]);
 
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(`[data-i="${at}"]`)?.scrollIntoView({ block: "nearest" });
@@ -116,7 +130,7 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
                 setAt(0);
               }}
               onKeyDown={onKey}
-              placeholder="Search contracts by protocol, sponsor or site…"
+              placeholder="Search contracts, procedures, fees or amounts…"
               aria-label="Search"
               className="h-16 flex-1 bg-transparent text-lead outline-none placeholder:text-faint/80"
             />
@@ -126,7 +140,7 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
           <ul ref={list} role="listbox" aria-label="Results" className="flex-1 overflow-y-auto p-2">
             {entries.length === 0 && (
               <li className="px-4 py-10 text-center text-body text-muted">
-                Nothing matches “{q}”. Try a protocol number like NWP-418, or a sponsor name.
+                {found.isFetching ? "Searching…" : <>Nothing matches “{q}”. Try a protocol number, a sponsor, a procedure like “ECG”, or an amount like 98.00.</>}
               </li>
             )}
             {entries.map((e, i) => {

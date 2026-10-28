@@ -1,12 +1,13 @@
 "use client";
 
 import type { StudySummaryDto } from "@dct/shared";
-import { ArrowRight, ChevronDown, MapPin, Plus } from "lucide-react";
+import { ArrowRight, ChevronDown, MapPin, Plus, Search } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { btnCls, cx, Empty, ErrorNote, PageTitle, pageCls, Spinner, StepTrack } from "@/components/ui";
+import { useEffect, useState } from "react";
+import { Button, btnCls, cx, Empty, ErrorNote, PageTitle, pageCls, Spinner, StepTrack } from "@/components/ui";
 import { formatDateTime, relativeTime } from "@/lib/format";
-import { useStudies } from "@/lib/queries";
+import { useDebounced, useStudyCounts, useStudyPages } from "@/lib/queries";
 import { minutesFor, summaryStage, VIEWS, type StageState, type ViewId } from "@/lib/review";
 
 const VIEW_HINT: Record<ViewId, string> = {
@@ -15,9 +16,6 @@ const VIEW_HINT: Record<ViewId, string> = {
   live: "Approved invoicing masters that billing uses now.",
   failed: "These couldn't be read. Read them again, or type them in by hand.",
 };
-
-/** Most urgent first: questions, couldn't read, details to confirm, approval, reading, live. */
-const rank = (s: StageState) => (s.failed ? 1 : { "Needs you": 0, Upload: 2, Approve: 3, Reading: 4, Checking: 4, Live: 5 }[s.stage]);
 
 const COLS = "md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.1fr)_minmax(0,1fr)_7.5rem]";
 
@@ -92,30 +90,39 @@ function Row({ s }: { s: StudySummaryDto }) {
 }
 
 export default function ContractsPage() {
-  const { data, error, isPending } = useStudies();
   const router = useRouter();
   const params = useSearchParams();
   const view = VIEWS.find((v) => v.id === params.get("view"));
   const site = params.get("site");
+  const q = params.get("q") ?? "";
 
-  const href = (v: ViewId | null, s: string | null) => {
-    const q = new URLSearchParams();
-    if (v) q.set("view", v);
-    if (s) q.set("site", s);
-    return q.size ? `/?${q}` : "/";
+  const href = (v: ViewId | null, s: string | null, text = q) => {
+    const p = new URLSearchParams();
+    if (v) p.set("view", v);
+    if (s) p.set("site", s);
+    if (text.trim()) p.set("q", text.trim());
+    return p.size ? `/?${p}` : "/";
   };
 
-  const all = data ?? [];
-  const sites = [...new Set(all.map((s) => s.siteName).filter((x): x is string => !!x))].sort();
-  const atSite = all.filter((s) => !site || s.siteName === site);
-  const count = (id: ViewId) => atSite.filter((s) => VIEWS.find((v) => v.id === id)!.test(summaryStage(s))).length;
-  const rows = atSite
-    .filter((s) => !view || view.test(summaryStage(s)))
-    .map((s) => ({ s, st: summaryStage(s) }))
-    .sort((a, b) => rank(a.st) - rank(b.st) || (a.st.stage === "Needs you" ? a.s.updatedAt.localeCompare(b.s.updatedAt) : b.s.updatedAt.localeCompare(a.s.updatedAt)))
-    .map((r) => r.s);
+  // The search box updates the URL once typing pauses; the server does the filtering.
+  const [text, setText] = useState(q);
+  const typed = useDebounced(text, 250);
+  useEffect(() => {
+    if (typed.trim() !== q) router.replace(href(view?.id ?? null, site, typed));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the typed text settles
+  }, [typed]);
 
-  const tabs: { id: ViewId | null; label: string; n: number }[] = [{ id: null, label: "All", n: atSite.length }, ...VIEWS.map((v) => ({ id: v.id, label: v.label, n: count(v.id) }))];
+  const counts = useStudyCounts(site ?? undefined);
+  const list = useStudyPages({ view: view?.id, site: site ?? undefined, q: q || undefined });
+  const rows = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const total = list.data?.pages[0]?.total ?? 0;
+  const none = counts.data?.all === 0 && !site;
+
+  const tabs: { id: ViewId | null; label: string; n: number | undefined }[] = [
+    { id: null, label: "All", n: counts.data?.all },
+    ...VIEWS.map((v) => ({ id: v.id, label: v.label, n: counts.data?.views[v.id] })),
+  ];
+  const sites = counts.data?.sites ?? [];
 
   return (
     <div className={pageCls}>
@@ -129,16 +136,16 @@ export default function ContractsPage() {
         }
       />
 
-      {isPending && <Spinner />}
-      <ErrorNote error={error} />
+      {(counts.isPending || list.isPending) && <Spinner />}
+      <ErrorNote error={counts.error ?? list.error} />
 
-      {data && all.length === 0 && (
+      {none && (
         <Empty title="No contracts yet" action={<Link href="/studies/new" className={btnCls("primary")}>Add your first contract</Link>}>
           Upload a signed sponsor contract. It&apos;s read and checked against the PDF, and you only answer what needs a person.
         </Empty>
       )}
 
-      {all.length > 0 && (
+      {counts.data && !none && (
         <>
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             {/* One line; scrolls sideways on narrow screens instead of wrapping. */}
@@ -162,35 +169,55 @@ export default function ContractsPage() {
               })}
             </nav>
 
-            {sites.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2">
               <label className="relative">
-                <span className="sr-only">Site</span>
-                <MapPin aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted" strokeWidth={1.75} />
-                <select
-                  value={site ?? ""}
-                  onChange={(e) => router.replace(href(view?.id ?? null, e.target.value || null))}
-                  className="h-10 cursor-pointer appearance-none rounded-full bg-surface pr-10 pl-9 text-small font-medium text-ink shadow-button ring-1 ring-line-strong transition hover:ring-ink/20 focus:ring-4 focus:ring-brand/20 focus:outline-none"
-                >
-                  <option value="">All sites</option>
-                  {sites.map((x) => (
-                    <option key={x} value={x}>
-                      {x}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown aria-hidden className="pointer-events-none absolute top-1/2 right-3.5 size-4 -translate-y-1/2 text-muted" strokeWidth={2} />
+                <span className="sr-only">Search contracts</span>
+                <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted" strokeWidth={1.75} />
+                <input
+                  type="search"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Protocol, sponsor, site, doctor"
+                  className="h-10 w-64 max-w-full rounded-full bg-surface pr-4 pl-9 text-small text-ink shadow-button ring-1 ring-line-strong transition placeholder:text-faint hover:ring-ink/20 focus:ring-4 focus:ring-brand/20 focus:outline-none"
+                />
               </label>
-            )}
+              {sites.length > 1 && (
+                <label className="relative">
+                  <span className="sr-only">Site</span>
+                  <MapPin aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted" strokeWidth={1.75} />
+                  <select
+                    value={site ?? ""}
+                    onChange={(e) => router.replace(href(view?.id ?? null, e.target.value || null))}
+                    className="h-10 cursor-pointer appearance-none rounded-full bg-surface pr-10 pl-9 text-small font-medium text-ink shadow-button ring-1 ring-line-strong transition hover:ring-ink/20 focus:ring-4 focus:ring-brand/20 focus:outline-none"
+                  >
+                    <option value="">All sites</option>
+                    {sites.map((x) => (
+                      <option key={x.name} value={x.name}>
+                        {x.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown aria-hidden className="pointer-events-none absolute top-1/2 right-3.5 size-4 -translate-y-1/2 text-muted" strokeWidth={2} />
+                </label>
+              )}
+            </div>
           </div>
 
-          {view && <p className="mb-4 text-body text-muted">{VIEW_HINT[view.id]}</p>}
+      {view && <p className="mb-4 text-body text-muted">{VIEW_HINT[view.id]}</p>}
 
-          {rows.length === 0 ? (
-            <Empty title={`Nothing in “${view?.label ?? "this site"}”`} action={<Link href={href(null, null)} className={btnCls()}>See all contracts</Link>}>
-              No contract is here right now.
+          {list.data && rows.length === 0 ? (
+            <Empty
+              title={q ? `Nothing matches “${q}”` : `Nothing in “${view?.label ?? "this site"}”`}
+              action={
+                <Link href={href(null, null, "")} onClick={() => setText("")} className={btnCls()}>
+                  See all contracts
+                </Link>
+              }
+            >
+              {q ? "Try the protocol number, the sponsor or the site." : "No contract is here right now."}
             </Empty>
-          ) : (
-            <div className="overflow-hidden rounded-card ring-1 ring-line">
+          ) : rows.length > 0 && (
+            <div className={cx("overflow-hidden rounded-card ring-1 ring-line transition-opacity", list.isPlaceholderData && "opacity-60")}>
               <div aria-hidden className={cx("hidden gap-6 bg-sunken px-6 py-3 text-small font-medium text-muted md:grid", COLS)}>
                 <span>Contract</span>
                 <span>Where it is</span>
@@ -202,6 +229,16 @@ export default function ContractsPage() {
                   <Row key={s.id} s={s} />
                 ))}
               </ul>
+              <div className="flex items-center justify-between gap-3 border-t border-line bg-sunken/60 px-6 py-3 text-small text-muted">
+                <span className="num">
+                  Showing {rows.length} of {total}
+                </span>
+                {list.hasNextPage && (
+                  <Button variant="secondary" size="sm" disabled={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>
+                    {list.isFetchingNextPage ? "Loading…" : "Show more"}
+                  </Button>
+                )}
+              </div>
             </div>
           )}
         </>

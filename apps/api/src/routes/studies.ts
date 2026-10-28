@@ -1,9 +1,23 @@
-import { ConfirmStudyBody, CreateStudyBody, ExtractBody, type JobDto, type StudyDetailDto } from "@dct/shared";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  amountOf,
+  ConfirmStudyBody,
+  CreateStudyBody,
+  ENUM_LABELS,
+  ExtractBody,
+  type JobDto,
+  type RateHit,
+  type SearchResults,
+  type StudyCounts,
+  type StudyDetailDto,
+  StudyListQuery,
+  type StudyPage,
+  type StudyView,
+} from "@dct/shared";
+import { and, count, desc, eq, getTableColumns, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
-import { documents, jobs, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
+import { documents, jobs, listKey, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
 import { appliesFromOf, audit, documentDto, manualRulebook, refreshStudyStatus, studySummaryDto, versionSummaryDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
 import { createJob, sendJob } from "../jobs.js";
@@ -11,6 +25,36 @@ import { HttpError, notFound, parse } from "../lib/http.js";
 
 /** POST /studies/:id/versions: manual entry when extraction failed. Not in @dct/shared yet (proposed). */
 const CreateVersionBody = z.object({ manual: z.literal(true), by: z.string().min(1) });
+const SearchQuery = z.object({ q: z.string().default(""), limit: z.coerce.number().int().min(1).max(50).default(8) });
+
+/** Each list view is one `stage` (see the column). */
+const VIEW_STAGE = { "needs-you": 0, failed: 1, approval: 3, live: 5 } as const satisfies Record<StudyView, number>;
+
+const wordsOf = (q = "") => q.trim().split(/\s+/).filter(Boolean);
+const like = (w: string) => `%${w.replace(/[\\%_]/g, "\\$&")}%`;
+/** Every word of `q` in protocol, sponsor, site or investigator. */
+const matchesQ = (q?: string) =>
+  and(...wordsOf(q).map((w) => or(...[studies.protocol, studies.sponsor, studies.siteName, studies.investigator].map((c) => ilike(c, like(w))))));
+
+/** A study row plus what a summary and the cursor need; never the rulebook. */
+const summaryCols = {
+  ...getTableColumns(studies),
+  // drizzle renders ${studies.id} unqualified here, which would bind to v.id
+  liveVersion: sql<number | null>`(SELECT max(v.version) FROM rulebook_versions v WHERE v.study_id = studies.id AND v.status = 'signed')`,
+  key: sql<string>`${listKey}::text`,
+};
+const listOrder = [studies.stage, listKey, studies.id];
+
+/** Keyset cursor: the last row's (stage, listKey, id), base64url JSON. */
+const Cursor = z.tuple([z.number().int(), z.string().regex(/^-?\d+(\.\d+)?$/), z.uuid()]);
+const encodeCursor = (r: { stage: number; key: string; id: string }) => Buffer.from(JSON.stringify([r.stage, r.key, r.id])).toString("base64url");
+function decodeCursor(c: string) {
+  try {
+    return Cursor.parse(JSON.parse(Buffer.from(c, "base64url").toString()));
+  } catch {
+    throw new HttpError(400, "Invalid cursor");
+  }
+}
 
 export const studyRoutes =
   ({ db, boss }: Ctx): FastifyPluginAsync =>
@@ -51,10 +95,71 @@ export const studyRoutes =
       return reply.status(201).send({ studyId, jobId });
     });
 
-    app.get("/studies", async () => {
-      const all = await db.select().from(studies).orderBy(asc(studies.createdAt));
-      const versions = await db.select().from(rulebookVersions).orderBy(desc(rulebookVersions.version));
-      return all.map((s) => studySummaryDto(s, versions.filter((v) => v.studyId === s.id)));
+    app.get("/studies", async (req): Promise<StudyPage> => {
+      const { view, site, q, cursor, limit } = parse(StudyListQuery, req.query);
+      const where = and(view && eq(studies.stage, VIEW_STAGE[view]), site ? eq(studies.siteName, site) : undefined, matchesQ(q));
+      const after = cursor ? decodeCursor(cursor) : null;
+      const rows = await db
+        .select(summaryCols)
+        .from(studies)
+        .where(and(where, after ? sql`(${studies.stage}, ${listKey}, ${studies.id}) > (${after[0]}, ${after[1]}::numeric, ${after[2]}::uuid)` : undefined))
+        .orderBy(...listOrder)
+        .limit(limit + 1);
+      const [{ total }] = (await db.select({ total: count() }).from(studies).where(where)) as [{ total: number }];
+      const page = rows.slice(0, limit);
+      return { items: page.map((r) => studySummaryDto(r, r.liveVersion)), nextCursor: rows.length > limit ? encodeCursor(page.at(-1)!) : null, total };
+    });
+
+    /** Per view and per site, for tabs and the sidebar. `site` narrows the view counts, never the site list. */
+    app.get<{ Querystring: { site?: string } }>("/studies/counts", async (req): Promise<StudyCounts> => {
+      const site = req.query.site || undefined;
+      const byStage = await db.select({ stage: studies.stage, n: count() }).from(studies).where(site ? eq(studies.siteName, site) : undefined).groupBy(studies.stage);
+      // <> '' also drops NULL
+      const sites = await db.select({ name: studies.siteName, count: count() }).from(studies).where(ne(studies.siteName, "")).groupBy(studies.siteName).orderBy(studies.siteName);
+      const n = (stage: number) => byStage.find((r) => r.stage === stage)?.n ?? 0;
+      return {
+        all: byStage.reduce((sum, r) => sum + r.n, 0),
+        views: Object.fromEntries(Object.entries(VIEW_STAGE).map(([v, stage]) => [v, n(stage)])) as StudyCounts["views"],
+        sites: sites.map((r) => ({ name: r.name!, count: r.count })),
+      };
+    });
+
+    /** ⌘K: contracts as the list matches them, and rates in each study's live version. */
+    app.get("/search", async (req): Promise<SearchResults> => {
+      const { q, limit } = parse(SearchQuery, req.query);
+      const words = wordsOf(q);
+      if (!words.length) return { contracts: [], rates: [] };
+      const contracts = await db.select(summaryCols).from(studies).where(matchesQ(q)).orderBy(...listOrder).limit(limit);
+      const cents = amountOf(q);
+      const hit = cents !== null ? sql`cents = ${cents}` : sql.join(words.map((w) => sql`(name ILIKE ${like(w)} OR code ILIKE ${like(w)})`), sql` AND `);
+      // ponytail: expands every live rulebook's JSONB per search, fine for hundreds of contracts. If it gets slow, keep rates in a
+      // table (filled at sign-off) with a pg_trgm GIN index on name and code.
+      // cents as float8 so node-pg hands back a number (exact below 2^53).
+      const { rows: rates } = await db.execute<RateHit>(sql`
+        WITH live AS (
+          SELECT DISTINCT ON (v.study_id) v.study_id, v.version, v.rulebook AS rb, s.protocol, s.sponsor
+          FROM rulebook_versions v JOIN studies s ON s.id = v.study_id
+          WHERE v.status = 'signed' AND v.rulebook IS NOT NULL
+          ORDER BY v.study_id, v.version DESC
+        ), rates AS (
+          SELECT l.study_id, l.protocol, l.sponsor, l.version, 'procedure' AS kind, ARRAY[0, g.i, p.i] AS ord,
+            format('/budgetGrids/%s/procedures/%s', g.i - 1, p.i - 1) AS path,
+            p.x->>'name' AS name, p.x->>'code' AS code, (p.x->>'unitCents')::float8 AS cents, coalesce(g.x->>'label', '') AS detail
+          FROM live l, jsonb_array_elements(l.rb->'budgetGrids') WITH ORDINALITY g(x, i), jsonb_array_elements(g.x->'procedures') WITH ORDINALITY p(x, i)
+          UNION ALL
+          SELECT l.study_id, l.protocol, l.sponsor, l.version, 'fee', ARRAY[1, f.i, 0], format('/siteFees/%s', f.i - 1),
+            f.x->>'name', f.x->>'code', (f.x->>'amountCents')::float8, coalesce(${JSON.stringify(ENUM_LABELS.trigger)}::jsonb->>(f.x->>'trigger'), f.x->>'trigger', '')
+          FROM live l, jsonb_array_elements(l.rb->'siteFees') WITH ORDINALITY f(x, i)
+          UNION ALL
+          SELECT l.study_id, l.protocol, l.sponsor, l.version, 'invoiceable', ARRAY[2, n.i, 0], format('/invoiceables/%s', n.i - 1),
+            n.x->>'name', n.x->>'code', (n.x->>'amountCents')::float8, coalesce(n.x->>'frequency', '')
+          FROM live l, jsonb_array_elements(l.rb->'invoiceables') WITH ORDINALITY n(x, i)
+        )
+        SELECT study_id AS "studyId", protocol, sponsor, version, path, kind, name, code, cents, detail
+        FROM rates WHERE ${hit}
+        ORDER BY protocol NULLS LAST, study_id, ord
+        LIMIT ${limit}`);
+      return { contracts: contracts.map((r) => studySummaryDto(r, r.liveVersion)), rates };
     });
 
     async function detail(id: string): Promise<StudyDetailDto> {
@@ -67,7 +172,8 @@ export const studyRoutes =
         .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
         .where(eq(studyDocuments.studyId, id))
         .orderBy(studyDocuments.addedAt, documents.filename);
-      return { ...studySummaryDto(s, versions), documents: docs.map((r) => documentDto(r.d)), versions: versions.map(versionSummaryDto) };
+      const live = versions.find((v) => v.status === "signed")?.version ?? null;
+      return { ...studySummaryDto(s, live), documents: docs.map((r) => documentDto(r.d)), versions: versions.map(versionSummaryDto) };
     }
 
     app.get<{ Params: { id: string } }>("/studies/:id", async (req) => detail(req.params.id));
@@ -116,7 +222,7 @@ export const studyRoutes =
           version = (latest?.version ?? 0) + 1;
           await tx.insert(rulebookVersions).values({ studyId, version, status: "extracting" });
         }
-        await refreshStudyStatus(tx, studyId);
+        await refreshStudyStatus(tx, studyId, body.by);
         const jobId = await createJob(tx, "extract", studyId, version);
         await audit(tx, body.by ?? "system", studyId, "extraction.queued", { version, jobId, addedDocumentIds: newDocs });
         return { jobId, version };
@@ -160,7 +266,7 @@ export const studyRoutes =
           v = (latest?.version ?? 0) + 1;
           await tx.insert(rulebookVersions).values({ studyId, version: v, ...fields });
         }
-        await refreshStudyStatus(tx, studyId);
+        await refreshStudyStatus(tx, studyId, by);
         await audit(tx, by, studyId, "version.manual_created", { version: v, seededFrom: live ? "live version" : "blank", seededFromVersion: live ? liveRow!.version : null });
         return v;
       });
