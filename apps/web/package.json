@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NEXT_PUBLIC_API_MOCK=1 next dev -p 3100",
-    "dev:api": "next dev -p 3100",
+    "dev": "NEXT_PUBLIC_API_MOCK=1 next dev -H 127.0.0.1 -p 3100",
+    "dev:api": "next dev -H 127.0.0.1 -p 3100",
     "build": "next build",
-    "start": "next start -p 3100",
+    "start": "next start -H 127.0.0.1 -p 3100",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run"

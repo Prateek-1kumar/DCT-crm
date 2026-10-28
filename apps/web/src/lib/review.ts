@@ -27,9 +27,14 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
     case "conflict":
       return "This number didn't match the PDF's own text, so a person needs to read it.";
     case "ungrounded":
+    case "UNGROUNDED_VALUE":
       return "We couldn't find this number where the contract should print it.";
     case "SCAN_VALUE":
       return "This contract is a scan, so this number can't be checked against its text.";
+    case "SCAN_PAGE":
+      return "This page is a scan, so it can't be searched for money terms. Only a person can say what's on it.";
+    case "HIDDEN_TEXT":
+      return "This page has words nobody can see. They're never used as evidence, but someone should check they don't change the money.";
   }
   switch (i.kind) {
     case "unaccounted":

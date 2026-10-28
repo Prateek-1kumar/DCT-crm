@@ -28,6 +28,14 @@ const ACTION: Record<string, string> = {
   "number.reported": "Reported a number",
   "value.reported": "Reported a value",
   "version.signed": "Approved",
+  "extraction.completed": "Read and checked",
+  "document.kind_set": "File kind changed",
+  "version.exported": "Exported",
+  "master.exported": "Exported",
+  "values.proofread": "Proofread",
+  "review.changed": "Answer changed",
+  "review.sent_back": "Answers sent back",
+  "version.correction_opened": "Correction started",
   "settings.updated": "Settings changed",
 };
 const humanAction = (a: string) => ACTION[a] ?? a.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase());
