@@ -4,8 +4,10 @@ import {
   type DocumentDto,
   type DocumentKind,
   governingGrids,
+  itemIds,
   Rulebook,
   type RulebookVersionDto,
+  shownAppliesFrom,
   type StudyStatus,
   type StudySummaryDto,
   type VersionStatus,
@@ -16,8 +18,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Tx } from "./db/index.js";
 import { alerts, auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
-import { itemIds } from "./lib/diff.js";
-import { HttpError, notFound } from "./lib/http.js";
+import { notFound } from "./lib/http.js";
 import { getAt, markManual, parsePointer, setAt } from "./lib/pointer.js";
 import { blindReview, hiddenPaths, mask, needsYouOf } from "./review.js";
 
@@ -40,14 +41,13 @@ export const documentDto = (d: DocumentRow, duplicateOf: string | null = null): 
   duplicateOf,
 });
 
-/** `appliesFrom` is the start date, or the effective date it falls back to: withheld while either is asked blind. */
 export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
   version: v.version,
   status: v.status as VersionStatus,
   createdAt: v.createdAt.toISOString(),
   signedBy: v.signedBy,
   signedAt: v.signedAt?.toISOString() ?? null,
-  appliesFrom: hiddenPaths(v).some((p) => p === "/appliesFrom/value" || p === "/study/effectiveDate/value") ? null : v.appliesFrom,
+  appliesFrom: shownAppliesFrom(v),
 });
 
 /**
@@ -153,15 +153,8 @@ export async function loadVersion(tx: Tx, studyId: string, version: number, forU
   return { ...row, rulebook: row.rulebook && upgradeRulebook(row.rulebook) };
 }
 
-/** Only drafts can change. Signed versions are immutable. */
-export function assertDraft(v: VersionRow): asserts v is VersionRow & { rulebook: Rulebook } {
-  if (v.status === "signed" || v.status === "superseded")
-    throw new HttpError(409, `Version ${v.version} is ${v.status} and immutable; changes need a new version (amendment)`);
-  if (v.status !== "draft" || !v.rulebook) throw new HttpError(409, `Version ${v.version} is ${v.status}; only draft versions can be changed`);
-}
-
-/** Date the version's terms apply from: amendment date, else the contract's effective date. */
-export const appliesFromOf = (rb: Rulebook) => rb.appliesFrom.value ?? rb.study.effectiveDate.value;
+// the date a version's terms apply from lives in @dct/shared, so the sample server keeps it the same way
+export { appliesFromOf } from "@dct/shared";
 
 const MANUAL = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } as const;
 

@@ -101,9 +101,24 @@ export type ReviewItem = z.infer<typeof ReviewItem>;
 
 export const settled = (i: ReviewItem) => i.outcome === "matched" || i.outcome === "chosen";
 
+/**
+ * Still needs a person: unanswered, answered differently, or a blocking "can't tell" (apps/web/src/lib/review.ts needsYou).
+ * A "can't tell" on a question not needed to approve waits for the approver, who still has to settle it: approval takes
+ * every question settled (ADR-001 §6).
+ */
+export const openItems = (items: ReviewItem[]) => items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));
+
 /** "Looks right" from someone proofreading. Kept next to the version and never changes its numbers, so a live version takes them too. */
 export const ProofreadMark = z.object({ path: z.string(), by: z.string(), at: z.string() });
 export type ProofreadMark = z.infer<typeof ProofreadMark>;
+
+/** The marks once `by` has proofread `paths`: one per value, the latest. null when `by` marked them all already, so a repeat changes nothing. */
+export function proofreadMarks(marks: ProofreadMark[], paths: string[], by: string, at: string): ProofreadMark[] | null {
+  if (paths.every((p) => marks.some((m) => m.path === p && m.by === by))) return null;
+  const out = new Map(marks.map((m) => [m.path, m]));
+  for (const path of paths) out.set(path, { path, by, at });
+  return [...out.values()];
+}
 
 /** POST /studies/:id/versions/:v/proofread: these values looked right to `by`. */
 export const ProofreadBody = z.object({ paths: z.array(z.string()).min(1).max(5000), by: Person });

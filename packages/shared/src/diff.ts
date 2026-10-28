@@ -1,6 +1,18 @@
-import { type DiffEntry, ENUM_LABELS } from "@dct/shared";
-import { isDeepStrictEqual } from "node:util";
-import { isObj } from "./http.js";
+import type { DiffEntry } from "./api";
+import { ENUM_LABELS } from "./labels";
+
+/** The labelled diff of two rulebooks and the labels that name a value, the same in the API and the sample server. */
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+
+/** Deep equality of JSON-like values, as Node's isDeepStrictEqual compares them: key order ignored, types strict. */
+export function deepEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
+  const [x, y] = [a as Record<string, unknown>, b as Record<string, unknown>];
+  const keys = Object.keys(x);
+  return keys.length === Object.keys(y).length && keys.every((k) => Object.hasOwn(y, k) && deepEqual(x[k], y[k]));
+}
 
 /** Rulebook arrays whose items are matched by identity (not index). */
 const COLLECTIONS = new Set(["budgetGrids", "visits", "procedures", "perPatientTotals", "invoiceables", "siteFees", "deadlines", "documents", "referencedDocuments", "unclassified"]);
@@ -90,7 +102,7 @@ export function diffRulebooks(before: unknown, after: unknown): DiffEntry[] {
 }
 
 function walk(a: unknown, b: unknown, path: string, label: string[], out: DiffEntry[], key?: string): void {
-  if (isDeepStrictEqual(a, b)) return;
+  if (deepEqual(a, b)) return;
   if (isObj(a) && isObj(b)) {
     for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
       if (k === "prov") continue;

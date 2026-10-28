@@ -1,4 +1,4 @@
-import { sampleMisses, sampleMissWords, samePerson, settled, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
+import { signOffRefusal, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
 import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
@@ -157,29 +157,17 @@ export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
 }
 
 /**
- * Mirrors the API's approval rules so the button can explain itself before the 409: every question settled (one not
- * needed to approve too), typing by hand marked done, every number backed by the PDF or a person, after a random spot
- * check missed every value of its kind proofread, and maker-checker (names compared as the API compares them). The API
- * stays the source of truth.
+ * The API's approval gate (signOffRefusal), so the button explains itself in the words the API would refuse with, plus
+ * what only the page knows: a name not picked yet. The API stays the source of truth.
  */
 export function approveState(
-  version: Pick<RulebookVersionDto, "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence" | "proofread">,
+  version: Pick<RulebookVersionDto, "version" | "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence" | "proofread" | "updatedAt">,
   settings: Pick<SettingsDto, "makerChecker"> | undefined,
   by: string | null,
 ): { allowed: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  if (version.status !== "draft") reasons.push("Only a draft can be approved.");
-  if (!version.rulebook) reasons.push("There is no invoicing master to approve yet.");
-  if (version.byHand && !version.review.length) reasons.push("Typing isn't marked done yet, so nobody has re-typed the values.");
-  const open = version.review.filter((i) => !settled(i)).length;
-  if (open) reasons.push(`${open} ${open === 1 ? "question needs" : "questions need"} an answer first.`);
-  const unconfirmed = version.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
-  // a number that's unconfirmed because its question is open is counted once, as that question
-  if (unconfirmed && !open) reasons.push(`${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
-  for (const m of sampleMisses(version)) if (m.left.length) reasons.push(sampleMissWords(m));
-  if (!by) reasons.push("Choose your name first (bottom of the sidebar).");
-  else if ((settings?.makerChecker ?? true) && version.editors.some((e) => samePerson(e, by)))
-    reasons.push(`Maker-checker is on, and ${by} answered questions on this contract, so someone else has to approve it.`);
+  // as shown: the page approves the version it shows (asOf), so a change since is the API's to refuse
+  const refusal = signOffRefusal(version, { asOf: version.updatedAt, by: by ?? "", makerChecker: settings?.makerChecker ?? true });
+  const reasons = [...(refusal ? [refusal] : []), ...(by ? [] : ["Choose your name first (bottom of the sidebar)."])];
   return { allowed: reasons.length === 0, reasons };
 }
 

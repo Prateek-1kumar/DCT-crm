@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { bindEvidence, isoDate, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
+import { diffRulebooks, isoDate as sharedIsoDate, labelFor, type Rulebook } from "@dct/shared";
 import { manualRulebook } from "../src/domain.js";
 import { failure } from "../src/jobs.js";
-import { diffRulebooks, labelFor } from "../src/lib/diff.js";
 import { getAt, markManual, parsePointer, setAt } from "../src/lib/pointer.js";
-import type { Rulebook } from "@dct/shared";
 import { answer, askAbout, mask, recheck, reviewDraft } from "../src/review.js";
 
 const prov = (method = "ai") => ({ source: null, confidence: 1, method, crossCheck: "agree" });
@@ -70,6 +69,13 @@ describe("diffRulebooks", () => {
 
   it("is empty for identical rulebooks", () => {
     expect(diffRulebooks({ a: [1, 2] }, { a: [1, 2] })).toEqual([]);
+  });
+});
+
+describe("printed dates", () => {
+  it("the sample server reads them as the binder does (@dct/shared's copy of the binder's reader, until the binder uses it)", () => {
+    const printed = ["2025-08-22", "August 22, 2025.", "Aug. 22nd 2025", "22 August 2025", "22-Aug-25", "the 22nd day of August, 2025", "8/22/2025", "22.08.2025", "8/9/2025", "31 June 2025", "June 2025", ""];
+    expect(printed.map(sharedIsoDate)).toEqual(printed.map(isoDate));
   });
 });
 

@@ -1,6 +1,9 @@
 import type { ContractAnomaly } from "./anomaly";
+import { leaf } from "./blind";
+import { labelFor } from "./diff";
 import { blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
+import { at, parsePointer } from "./pointer";
 import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
 
 /**
@@ -153,6 +156,66 @@ export function capFollowUps(
   });
 }
 
+// ---------- a question about one value ----------
+
+/** Nothing there to compare with or to re-type: no value, an empty text, an empty list. */
+export const empty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length);
+
+/** Field name a pointer ends at: "/payment/netDays/value" → "netDays", "/deadlines/0/value" → "value". */
+export const fieldKey = (path: string) => {
+  const t = path.split("/");
+  const [last, prev] = [t.at(-1) ?? "", t.at(-2)];
+  return last === "value" && prev && !/^\d+$/.test(prev) ? prev : last;
+};
+/** A cap's limit is cents when its kind says it caps an amount; every other value's unit is in its own name. */
+const amountCap = (rb: Rulebook, path: string) => /\/cap\/n$/.test(path) && at(rb, path.replace(/n$/, "kind")) === "amount";
+const inputFor = (rb: Rulebook, path: string, value: unknown): NonNullable<ReviewItem["input"]> => {
+  const key = fieldKey(path);
+  if (/date|appliesFrom/i.test(key)) return "date";
+  if (/cents$/i.test(key) || path.includes("/cells/") || amountCap(rb, path)) return "money";
+  if (/pct$/i.test(key)) return "percent";
+  if (typeof value === "number" || (value === null && /days|value$|^n$|count|ratio/i.test(key))) return "number";
+  return "text";
+};
+
+/** A value's label with any amount or % in its names blanked: they would give the answer away (as the binder's questions do). */
+export const blindLabel = (rb: unknown, path: string) => labelFor(rb, path).replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…");
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+/** Provenance of the nearest item on the path that carries one ("/payment/netDays/value" → payment.netDays.prov). */
+export function provOf(rb: Rulebook, path: string): Provenance | null {
+  let node: unknown = rb;
+  let found: Provenance | null = null;
+  for (const t of parsePointer(path)) {
+    node = Array.isArray(node) ? node[Number(t)] : isObj(node) ? node[t] : undefined;
+    if (isObj(node) && isObj(node.prov)) found = node.prov as Provenance;
+  }
+  return found;
+}
+
+/**
+ * A blind question about one value: "This looks wrong" (reason "reported"), the re-type sample of hand-typed values
+ * ("spot_check") and of a read's confirmed values (SAMPLE), a required value the read didn't find. Yes/no and fixed-list
+ * values are picked; the rest typed.
+ */
+export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): ReviewItem {
+  const value = at(rb, path);
+  const label = blindLabel(rb, path);
+  const list = typeof value === "string" ? ENUM_LABELS[fieldKey(path)] : undefined;
+  const options =
+    typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }]
+    : list && (value as string) in list ? Object.entries(list).map(([k, l]) => ({ id: k, label: l }))
+    : [];
+  const input = options.length ? null : inputFor(rb, path, value);
+  const ev = evidence.find((e) => e.path === path)?.where[0];
+  const src = provOf(rb, path)?.source;
+  return {
+    ...BLANK, id, kind: "confirm_value", reason, path, blocking: true, input, options,
+    question: `What ${input === "money" ? "amount" : input === "date" ? "date" : "value"} is printed for ${label}?`,
+    where: ev ? [ev] : src ? [pageOf(src)] : [],
+  };
+}
+
 // ---------- the blind sample ----------
 
 /** Kinds of value, as ADR-001 §10 measures accuracy: a miss in one has all of that kind checked. */
@@ -195,6 +258,16 @@ export function pickSample(evidence: ValueEvidence[], skip: ReadonlySet<string>,
   const out: string[] = [];
   while (out.length < n && queues.some((q) => q.length)) for (const q of queues) if (q.length && out.length < n) out.push(q.shift()!);
   return out;
+}
+
+/**
+ * When typing by hand is marked done: the values a person typed (`typed`), and the `n` of them (all if fewer) someone else
+ * re-types blind (`sample`), drawn like the read's sample. Every kind of typed value can be drawn: amounts, text, yes/no,
+ * fixed-list and list values (re-picked or re-typed).
+ */
+export function pickRetype(rb: Rulebook, evidence: ValueEvidence[], random: () => number = cryptoRandom, n = SAMPLE_SIZE): { typed: string[]; sample: string[] } {
+  const typed = evidence.filter((e) => e.status === "attested" && leaf(at(rb, e.path)) && !empty(at(rb, e.path))).map((e) => e.path);
+  return { typed, sample: shuffle(typed, random).slice(0, n) };
 }
 
 export type SampleMiss = { family: Family; label: string; total: number; left: string[] };

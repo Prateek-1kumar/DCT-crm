@@ -1,14 +1,14 @@
 import {
-  alsoWithheld,
-  amendmentDate,
-  AnswerReviewBody,
+  answerQuestion,
+  appliesFromOf,
   blindDetail,
-  capFollowUps,
-  familyOf,
-  PROSPECTIVE,
-  SAMPLE,
-  sampleMisses,
-  sampleMissWords,
+  diffRulebooks,
+  followUps,
+  isoDate,
+  pickRetype,
+  proofreadMarks,
+  shownAppliesFrom,
+  signOffRefusal,
   blindReview,
   ByHandBody,
   leaf,
@@ -38,7 +38,6 @@ import {
   Rulebook as RulebookSchema,
   settled,
   type AuditEntryDto,
-  type DiffEntry,
   type DocumentDto,
   type DocumentKind,
   type JobDto,
@@ -47,7 +46,6 @@ import {
   type RulebookVersionDto,
   type SettingsDto,
   type StudyDetailDto,
-  type Unclassified,
   type StudyStatus,
   type StudySummaryDto,
   type ValueEvidence,
@@ -56,7 +54,7 @@ import { blankRulebook } from "../byhand";
 import { labelFor } from "../format";
 import { layoutPage } from "./layout";
 import { getAt, segments, setAt } from "../pointer";
-import { needsYou, parseAnswer, summaryStage, VIEWS } from "../review";
+import { needsYou, summaryStage, VIEWS } from "../review";
 import {
   amendmentSpecs,
   amendRulebook,
@@ -66,6 +64,8 @@ import {
   halcyonV1Specs,
   makeRulebook,
   meridianSpecs,
+  mockChecks,
+  mockSampling,
   newContractSpecs,
   northwindSpecs,
   PEOPLE,
@@ -95,7 +95,8 @@ type Db = {
   alertReads: Record<string, string[]>;
 };
 
-const KEY = "dct.mockdb.v7";
+// v8: drafts keep their read's checks (recheck) and the date their terms apply from
+const KEY = "dct.mockdb.v8";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -156,7 +157,7 @@ function seed(): Db {
     return ver;
   };
   const sign = (st: Study, ver: RulebookVersionDto, by: string, at: string) => {
-    Object.assign(ver, { status: "signed", signedBy: by, signedAt: at, appliesFrom: ver.rulebook?.appliesFrom.value ?? null });
+    Object.assign(ver, { status: "signed", signedBy: by, signedAt: at });
     log(d, by, st.id, "version.signed", { version: ver.version }, at);
   };
   const say = (st: Study, ver: RulebookVersionDto, id: string, body: Record<string, unknown>, at: string) => answer(d, st, ver, id, body, at);
@@ -245,7 +246,8 @@ function newVersion(studyId: string, version: number, status: RulebookVersionDto
 }
 
 function setDraft(d: Db, ver: RulebookVersionDto, dr: Draft) {
-  Object.assign(ver, { rulebook: dr.rulebook, review: dr.review, evidence: dr.evidence, pdfCheck: dr.pdfCheck, updatedAt: now() });
+  // as the API's read: the checks' findings, and the date the terms apply from (kept current by every answer)
+  Object.assign(ver, { rulebook: dr.rulebook, review: dr.review, evidence: dr.evidence, pdfCheck: dr.pdfCheck, anomalies: dr.anomalies, appliesFrom: appliesFromOf(dr.rulebook), updatedAt: now() });
   for (const [id, sec] of Object.entries(dr.secrets)) d.secrets[`${ver.studyId}/${ver.version}/${id}`] = sec;
 }
 
@@ -323,7 +325,7 @@ function tick(d: Db) {
       clampPages(rb, docs);
       const scan = docs.some((x) => /scan/i.test(x.filename));
       setDraft(d, ver, buildDraft(rb, scan ? [] : newContractSpecs({ doc: terms.id, pages: terms.pageCount, gridPage, hasMaster }), { scan, unclear: UNCLEAR_OVERHEAD }));
-      Object.assign(ver, { status: "draft", appliesFrom: null });
+      ver.status = "draft";
       st.status = "needs_review";
     }
     st.updatedAt = now();
@@ -511,7 +513,7 @@ function detail(d: Db, s: Study): StudyDetailDto {
   return {
     ...summary(d, s),
     documents: d.documents.filter((x) => s.documentIds.includes(x.id)),
-    versions: versionsOf(d, s.id).map(({ version, status, createdAt, signedBy, signedAt, appliesFrom }) => ({ version, status, createdAt, signedBy, signedAt, appliesFrom })),
+    versions: versionsOf(d, s.id).map((v) => ({ version: v.version, status: v.status, createdAt: v.createdAt, signedBy: v.signedBy, signedAt: v.signedAt, appliesFrom: shownAppliesFrom(v) })),
   };
 }
 
@@ -531,208 +533,32 @@ async function sha256Hex(file: File): Promise<string> {
   return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// ---------------------------------------------------------------- diff
-
-export function diffRulebooks(before: Rulebook | null, after: Rulebook | null): DiffEntry[] {
-  const out: DiffEntry[] = [];
-  const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object";
-  const walk = (a: unknown, b: unknown, path: string) => {
-    if (JSON.stringify(a) === JSON.stringify(b)) return;
-    if (a === undefined) return out.push({ path, change: "added", before: null, after: b, label: labelFor(path, after) });
-    if (b === undefined) return out.push({ path, change: "removed", before: a, after: null, label: labelFor(path, before) });
-    if (isObj(a) && isObj(b) && Array.isArray(a) === Array.isArray(b) && !(Array.isArray(a) && typeof a[0] !== "object")) {
-      for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (k !== "prov") walk(a[k], b[k], `${path}/${k}`);
-      return;
-    }
-    out.push({ path, change: "changed", before: a, after: b, label: labelFor(path, after) });
-  };
-  walk(before, after, "");
-  return out;
-}
-
 // ---------------------------------------------------------------- answering questions
 
-const norm = (x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : x);
-/** As the real API: text ignores case and edge spaces; a list ignores the order of its items too. */
-const same = (a: unknown, b: unknown) =>
-  Array.isArray(a) && Array.isArray(b) ? JSON.stringify(a.map(norm).sort()) === JSON.stringify(b.map(norm).sort()) : JSON.stringify(norm(a)) === JSON.stringify(norm(b));
-const empty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length);
-const WHY = "Add a short note saying why the PDF text is wrong here.";
-const WHERE = "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.";
-const ARITHMETIC = new Set(["VISIT_TOTAL_MISMATCH", "PER_PATIENT_TOTAL_MISMATCH"]);
-/** Answers that list a term to bill by hand on the master's unclassified list (ADR-001 §7). */
-const BILL_BY_HAND = new Set(["UNACCOUNTED_TERM", "SCAN_PAGE", "PICTURE_PAGE"]);
-
-/** As the real API's sumAt: what a printed total should be from its parts, which "the sum governs" writes. */
-function sumAt(rb: Rulebook, path: string): number | undefined {
-  const m = /^\/budgetGrids\/(\d+)\/(?:visits\/(\d+)\/(totalCents|procedureSubtotalCents|nonProcedureCents)|perPatientTotals\/\d+\/cents)$/.exec(path);
-  const g = m ? rb.budgetGrids[Number(m[1])] : undefined;
-  if (!g || !m) return undefined;
-  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
-  if (!m[2]) return sum(g.visits.map((v) => v.totalCents));
-  const v = g.visits[Number(m[2])];
-  if (!v) return undefined;
-  const cells = (cat?: "non_procedure") => sum(g.procedures.filter((p) => !cat || p.category === cat).map((p) => p.cells[v.code]).filter((c): c is number => typeof c === "number"));
-  const out =
-    m[3] === "totalCents" ? (v.procedureSubtotalCents === null || v.overheadCents === null ? undefined : v.procedureSubtotalCents + v.overheadCents + (v.nonProcedureCents ?? 0))
-    : m[3] === "procedureSubtotalCents" ? cells() - (v.nonProcedureCents ?? 0)
-    : cells("non_procedure");
-  return out !== undefined && out >= 0 ? out : undefined;
-}
-
-/** What picking an option writes, as the real API: the arm's grid (the other arms' picks stay), the sum, or the value. */
-function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: unknown, secret: Secret | undefined): { path: string; value: unknown } | undefined {
-  if (item.reason === "GRID_CONFLICT") {
-    const arm = new Set(item.options.map((o) => o.id));
-    return { path: "/governingGridIds", value: [...(rb.governingGridIds ?? []).filter((id) => !arm.has(id)), optionId] };
-  }
-  if (ARITHMETIC.has(item.reason)) {
-    const value = optionId === "sum" && item.path ? sumAt(rb, item.path) : undefined;
-    return value === undefined ? undefined : { path: item.path!, value };
-  }
-  if (secret?.apply?.[optionId]) return secret.apply[optionId];
-  // "prospective only": the amendment's own date, as its label shows it
-  if (optionId === PROSPECTIVE && item.path === "/appliesFrom/value") {
-    const d = amendmentDate(rb);
-    return d ? { path: item.path, value: d } : undefined;
-  }
-  if (!item.path || (item.kind !== "confirm_value" && item.kind !== "interpretation") || current === undefined || !leaf(current)) return undefined;
-  return { path: item.path, value: typeof current === "boolean" ? optionId === "true" : optionId };
-}
-
-const shortLabel = (quote: string) => {
-  const t = quote.replace(/\s+/g, " ").trim();
-  return t.length <= 60 ? t : `${t.slice(0, 60).replace(/\s+\S*$/, "")}…`;
-};
-/** As the real API: what "bill by hand" lists, the term's own words or the page to read. */
-function unclassifiedOf(rb: Rulebook, item: ReviewItem, note: string | undefined): Unclassified {
-  const w = item.where[0]!;
-  const title = rb.documents.find((x) => x.id === w.documentId)?.title ?? "the contract";
-  const t = item.term;
-  return {
-    label: t ? shortLabel(t.quote) : `Page ${w.page} of “${title}”`,
-    quote: t?.quote ?? "", page: w.page, amounts: t?.amounts ?? [],
-    ...(t?.pct !== undefined ? { pct: t.pct } : {}), ...(t?.days !== undefined ? { days: t.days } : {}),
-    note: note ?? "", prov: { source: { documentId: w.documentId, page: w.page }, confidence: 1, method: "manual", crossCheck: "not_checked" }, itemId: item.id,
-  };
-}
-
 /**
- * POST .../review/:itemId, as the real API. A typed value is compared with the PDF's own text at its spot, or, where it
- * prints nothing parseable, with the value we hold: matched, or differs (then picking a value settles it as chosen).
- * Settling a differs needs a note: keeping your own value over the PDF text says why the text is wrong; with no PDF
- * text, either value says where the page prints it, and the answer is marked `noPdfText`. Options are chosen; one with a
- * `note` needs one. An interpretation's pick is checked against the read's value; a question with options and an input
- * takes either. Can't tell is left for the approver and clears nothing. "Bill by hand" lists the term on the master, any
- * other answer takes it off. The same settling answer again from the same person changes nothing. A random spot check
- * kept different from what the PDF check confirmed has missed: logged as an incident, alerted, and approval waits for
- * its kind of value to be proofread. A cap's limit is asked once its kind is.
+ * POST .../review/:itemId, by the API's own rules (answerQuestion, @dct/shared): checked, written and logged the same,
+ * then followed up the same: a grid's held-back totals asked on the typed numbers (the sample server's own checks), a
+ * cap's limit once its kind is known. A sample miss is logged as an incident and alerted.
  */
 function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: unknown, at = now()): Res {
   if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only a draft takes answers.`);
-  const item = ver.review.find((i) => i.id === itemId);
-  if (!item) return err(404, "Question not found");
-  const parsed = AnswerReviewBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Say who is answering.");
-  const b = parsed.data;
-  // The blind re-type of hand-typed values must be done by someone who didn't type them, nor change any value since.
-  const retype = ver.byHand && item.reason === "spot_check";
-  if (retype && ver.editors.some((e) => samePerson(e, b.by))) {
-    const typist = ver.evidence.some((e) => e.note?.startsWith("Typed by hand by ") && samePerson(e.note.slice("Typed by hand by ".length), b.by));
-    return err(409, typist ? `${b.by} typed these values, so someone else has to re-type them.` : `${b.by} changed a value on this contract, so someone else has to re-type the rest.`);
-  }
-  const secret = d.secrets[`${st.id}/${ver.version}/${item.id}`];
-  const current = item.path ? getAt(ver.rulebook, item.path) : undefined;
-  let value = b.value;
-  if (Array.isArray(current) && typeof value === "string") value = value.split(",").map((x) => x.trim()).filter(Boolean);
-  const ev = item.path ? ver.evidence.find((e) => e.path === item.path) : undefined;
-  const note = b.note?.trim();
-  const a = item.answer;
-  if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (b.optionId !== undefined || same(a.value, value)))
-    return ok(view(ver));
-  // a pick, unless the question also takes a typed value and none was picked
-  const pick = item.options.length > 0 && (b.optionId !== undefined || !item.input);
-  let outcome: NonNullable<ReviewItem["outcome"]>;
-  let set: { path: string; value: unknown } | undefined;
-  let noPdfText = false;
-  if (b.cantTell) outcome = "cant_tell";
-  else if (pick) {
-    const option = item.options.find((o) => o.id === b.optionId);
-    if (!option) return err(400, "Pick one of the options.");
-    if (option.note && !note) return err(400, `Add a short note for this answer: ${option.note.replace(/^./, (c) => c.toLowerCase())}`);
-    set = optionValue(ver.rulebook, item, option.id, current, secret);
-    const checkable = set && (item.kind === "confirm_value" || item.kind === "interpretation") && item.reason !== "REQUIRED_MISSING" && !empty(current) && current !== "unspecified" && item.outcome !== "differs";
-    if (item.outcome === "differs" && !note) return err(400, WHERE);
-    noPdfText = item.outcome === "differs";
-    outcome = checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
-    if (outcome === "differs") set = undefined;
-  } else {
-    if (value === undefined || value === null || value === "") return err(400, "Type a value, or say you can't tell.");
-    if (item.path && !RulebookSchema.safeParse(setAt(ver.rulebook, item.path, value)).success) return err(400, "That value can't go in this field. Check what you typed.");
-    // the sentence's full stop or comma after the number isn't part of it
-    const text = ev?.printed ? parseAnswer(item.input ?? "text", ev.printed.trim().replace(/[.,;:]+$/, "")) : null;
-    const printed = text && "value" in text ? text.value : undefined;
-    const truth = printed ?? (empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current);
-    if (item.outcome === "differs") {
-      if (printed === undefined && !note) return err(400, WHERE);
-      if (printed !== undefined && !same(value, printed) && !note) return err(400, WHY);
-      noPdfText = printed === undefined;
-      outcome = "chosen";
-    } else if (truth === undefined) outcome = "chosen";
-    else outcome = same(value, truth) ? "matched" : "differs";
-    if (outcome !== "differs" && item.path) set = { path: item.path, value };
-  }
-  const changed = settled(item);
-  const picked = pick && !b.cantTell ? optionValue(ver.rulebook, item, b.optionId!, current, secret)?.value : undefined;
-  item.compare = outcome === "differs" ? { typed: picked ?? value, read: current ?? null, printed: ev?.printed ?? null } : null;
-  const typed = !b.cantTell && !pick;
-  item.answer = { value: typed ? value : undefined, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at };
-  item.sentBack = null;
-  item.outcome = outcome;
-  const before = set ? getAt(ver.rulebook, set.path) : undefined;
-  let rb = upgradeRulebook(ver.rulebook);
-  if (set) rb = setAt(rb, set.path, set.value);
-  // as the real API: no limit, so a cap's figures go with its kind
-  if (set && /\/cap\/kind$/.test(set.path) && set.value === "none")
-    for (const p of alsoWithheld(set.path)) {
-      rb = setAt(rb, p, null);
-      ver.evidence = ver.evidence.filter((e) => e.path !== p);
-    }
-  if (item.reason === "GRID_CONFLICT" && set && item.options.some((o) => o.id === rb.governingGridId)) rb = { ...rb, governingGridId: null };
-  let listed: { billByHand: string } | { offBillByHand: string } | Record<string, never> = {};
-  if (BILL_BY_HAND.has(item.reason)) {
-    const was = rb.unclassified.find((u) => u.itemId === item.id);
-    rb = { ...rb, unclassified: [...rb.unclassified.filter((u) => u.itemId !== item.id), ...(outcome === "chosen" && b.optionId === "bill_by_hand" ? [unclassifiedOf(rb, item, note)] : [])] };
-    const is = rb.unclassified.find((u) => u.itemId === item.id);
-    listed = is && !was ? { billByHand: is.label } : was && !is ? { offBillByHand: was.label } : {};
-  }
-  ver.rulebook = rb;
-  if (item.path && settled(item)) {
-    if (ev) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
-    else if (set?.path === item.path) ver.evidence.push({ path: item.path, status: "attested", where: item.where, printed: null, note: `Typed by ${b.by}` });
-  }
-  // maker-checker: whoever decides is an editor; a re-typer (hand-typed values, the read's sample) only when their answer changes a value
-  const wrote = !!set && !same(before ?? null, set.value);
-  if (outcome !== "cant_tell" && (!(retype || item.reason === SAMPLE) || wrote) && !ver.editors.some((e) => samePerson(e, b.by))) ver.editors.push(b.by);
-  // the sample missed: once missed, it stays missed
-  const missed = item.reason === SAMPLE && !item.missed && outcome === "chosen" && wrote;
-  if (missed) item.missed = true;
-  // a cap's limit, once its kind is known (as the real API)
+  const draft = { ...ver, rulebook: upgradeRulebook(ver.rulebook) };
+  const r = answerQuestion(draft, itemId, raw, { isoDate, now: at });
+  if ("refusal" in r) return err(r.refusal.status, r.refusal.message);
+  if (r.unchanged) return ok(view(ver));
+  // a question asked next keeps its right answer on the "server side", as every sample question does
   const ask = (p: string, id: string, reason: string) => {
-    const x = askAbout(ver.rulebook!, ver.evidence, p, id, reason);
+    const x = askAbout(draft.rulebook, draft.evidence, p, id, reason);
     d.secrets[`${st.id}/${ver.version}/${id}`] = toSecret(x);
     return toItem(x);
   };
-  ver.review.push(...capFollowUps({ ...ver, rulebook: ver.rulebook! }, item, !!set && JSON.stringify(before ?? null) !== JSON.stringify(set.value), ask));
-  ver.updatedAt = at;
+  followUps(draft, r, mockChecks, ask);
+  Object.assign(ver, { rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: at });
   st.updatedAt = at;
-  const logged = !set || !wrote ? {} : set.path === "/governingGridIds" ? { gridId: b.optionId } : { path: set.path, before: before ?? null, after: set.value };
-  log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...logged, ...listed }, at);
-  if (missed) {
-    // an incident (ADR-001 §6): logged, told to everyone, and approval waits for its kind of value to be checked
-    const miss = sampleMisses(ver).find((m) => m.family === familyOf(item.path!))!;
-    log(d, b.by, st.id, "sample.missed", { version: ver.version, itemId: item.id, path: item.path, question: item.question, values: miss.label, "to check": miss.left.length }, at);
-    raiseAlert(d, { kind: "sample_missed", studyId: st.id, version: ver.version, by: b.by, count: miss.left.length, note: null, at });
+  log(d, r.log.by, st.id, r.log.action, r.log.detail, at);
+  if (r.incident) {
+    log(d, r.log.by, st.id, "sample.missed", r.incident.detail, at);
+    raiseAlert(d, { kind: "sample_missed", studyId: st.id, version: ver.version, by: r.log.by, count: r.incident.count, note: null, at });
   }
   return ok(view(ver));
 }
@@ -748,6 +574,7 @@ function view(ver: RulebookVersionDto): RulebookVersionDto {
   if (!hidden.length) return { ...ver, rulebook };
   return {
     ...ver,
+    appliesFrom: shownAppliesFrom(ver),
     rulebook: rulebook && mask(rulebook, hidden, ver),
     anomalies: [],
     evidence: ver.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
@@ -813,9 +640,10 @@ function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at =
   if (!ver.rulebook || ver.status === "superseded") return err(409, `Version ${ver.version} can't be proofread.`);
   const { paths, by } = parsed.data;
   if (paths.some((p) => getAt(ver.rulebook, p) === undefined)) return err(400, "One of those values isn't in the invoicing master.");
-  const marks = new Map((ver.proofread ?? []).map((m) => [m.path, m]));
-  for (const path of paths) marks.set(path, { path, by, at });
-  ver.proofread = [...marks.values()];
+  const marks = proofreadMarks(ver.proofread ?? [], paths, by, at);
+  // marked by them already: nothing changes, nothing is logged (as the API)
+  if (!marks) return ok(view(ver));
+  ver.proofread = marks;
   ver.updatedAt = at;
   log(d, by, st.id, "values.proofread", { version: ver.version, values: paths.length }, at);
   return ok(view(ver));
@@ -870,7 +698,8 @@ function startByHand(d: Db, st: Study, raw: unknown): Res {
   if (newest && (newest.status === "draft" || newest.status === "extracting")) return err(409, `Version ${newest.version} is already in progress.`);
   const docs = d.documents.filter((x) => st.documentIds.includes(x.id)).map((x) => ({ id: x.id, kind: x.kind, title: x.filename.replace(/\.pdf$/i, ""), date: null }));
   const ver = newVersion(st.id, (newest?.version ?? 0) + (newest?.status === "failed" ? 0 : 1), "draft");
-  Object.assign(ver, { byHand: true, cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, rulebook: blankRulebook(docs, { sponsor: st.sponsor ?? "", protocol: st.protocol ?? "", site: st.siteName ?? "", pi: st.investigator ?? "" }) });
+  const rulebook = blankRulebook(docs, { sponsor: st.sponsor ?? "", protocol: st.protocol ?? "", site: st.siteName ?? "", pi: st.investigator ?? "" });
+  Object.assign(ver, { byHand: true, cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, rulebook, appliesFrom: appliesFromOf(rulebook) });
   // replaces the failed attempt, as the real API: same version number, never a gap
   d.versions = [...d.versions.filter((v) => !(v.studyId === st.id && v.version === ver.version)), ver];
   st.status = latestSigned(d, st.id) ? "amendment_in_review" : "needs_review";
@@ -909,6 +738,7 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
     ev.push({ path, status: "attested", where: [], printed: null, note: `Typed by hand by ${by}` });
   ver.rulebook = rb;
   ver.evidence = ev.filter((e) => getAt(rb, e.path) !== undefined);
+  ver.appliesFrom = appliesFromOf(rb);
   ver.updatedAt = now();
   if (!ver.editors.some((e) => samePerson(e, by))) ver.editors.push(by);
   st.updatedAt = now();
@@ -930,19 +760,18 @@ function placeholders(rb: Rulebook, evidence: ValueEvidence[]): string[] {
   return out;
 }
 
-/** POST .../by-hand/done: someone else re-types 10 randomly chosen typed values (all of them if fewer), blind. */
+/** POST .../by-hand/done: someone else re-types up to 10 typed values drawn at random (all of them if fewer), blind (pickRetype, as the API). */
 function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   const parsed = ByHandBody.safeParse(raw);
   if (!parsed.success) return err(400, "Say who is typing.");
   if (ver.status !== "draft" || !ver.byHand) return err(409, "Only a contract typed by hand can be marked done.");
   if (ver.review.length) return err(409, "Typing is already marked done.");
-  const typed = ver.evidence.filter((e) => e.status === "attested" && ["number", "string"].includes(typeof getAt(ver.rulebook, e.path)));
+  const { typed, sample } = pickRetype(ver.rulebook!, ver.evidence, mockSampling.random);
   if (!typed.length) return err(400, "Type at least one value first.");
-  // ponytail: Math.random shuffle; a seeded pick if the sample ever needs to be reproducible.
-  const sample = typed.map((e) => [Math.random(), e] as const).sort((a, b) => a[0] - b[0]).slice(0, 10).map(([, e]) => e);
-  for (const e of sample) addQuestion(d, ver, askAbout(ver.rulebook!, ver.evidence, e.path, `t${++d.seq}`, "spot_check"));
+  for (const p of sample) addQuestion(d, ver, askAbout(ver.rulebook!, ver.evidence, p, `t${++d.seq}`, "spot_check"));
   // As the real API: a number nobody typed holds the blank form's placeholder (a visit's total 0), never seen by a
-  // person, so it's asked as missing. (The sample server has no contract checks to run on what was typed.)
+  // person, so it's asked as missing. (The sample server doesn't run its checks here: recheck runs them once a grid's
+  // typed numbers are answered.)
   for (const p of placeholders(ver.rulebook!, ver.evidence)) addQuestion(d, ver, { ...askAbout(ver.rulebook!, ver.evidence, p, `missing:${p}`, "REQUIRED_MISSING"), truth: undefined, lines: [] });
   ver.updatedAt = now();
   st.updatedAt = now();
@@ -1004,12 +833,15 @@ const pretty = (e: { issues: { message: string; path: PropertyKey[] }[] }) => e.
 const ok = (json: unknown): Res => ({ status: 200, json });
 const err = (status: number, message: string): Res => ({ status, json: { statusCode: status, error: status === 409 ? "Conflict" : "Error", message } });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Test seam: the sample server's network delay, least and most ms. None under vitest, where it was most of the web suite's time. */
+export const mockLatency: { ms: [number, number] } = { ms: process.env.NODE_ENV === "test" ? [0, 0] : [120, 300] };
 
 /** Idempotency-Key → the request it came with and the response it got, as the API keeps them (in memory here). */
 const replays = new Map<string, { request: string; res: Res }>();
 
 export async function mockRequest(method: string, fullPath: string, body: unknown, key?: string): Promise<Res> {
-  await sleep(120 + Math.random() * 180);
+  const [least, most] = mockLatency.ms;
+  if (most) await sleep(least + Math.random() * (most - least));
   // the same key again: the first response, nothing applied twice; with a different request, refused (as the API does)
   const request = `${method} ${fullPath} ${body instanceof FormData ? [...body.entries()].map(([k, v]) => `${k}=${typeof v === "string" ? v : v.name}`).join("&") : JSON.stringify(body ?? null)}`;
   const saved = key ? replays.get(key) : undefined;
@@ -1178,6 +1010,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     const hidden = [...new Set([...withheldPaths(other), ...withheldPaths(ver)])];
     const where = { evidence: [...other.evidence, ...ver.evidence], review: [...other.review, ...ver.review] };
     const shown = (rb: Rulebook | null) => rb && (hidden.length ? mask(upgradeRulebook(rb), hidden, where) : upgradeRulebook(rb));
+    // the API's diff (@dct/shared): array items matched by identity
     return ok(diffRulebooks(shown(other.rulebook), shown(ver.rulebook)).filter((e) => !hidden.includes(e.path)));
   }
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
@@ -1187,27 +1020,18 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (vrest === "/values" && method === "PATCH") return typeValue(d, st, ver, body);
   if (vrest === "/by-hand/done" && method === "POST") return finishByHand(d, st, ver, body);
   if (vrest === "/sign-off" && method === "POST") {
-    // as the real API: as seen (asOf), every question settled, typing re-typed, every number backed, a missed sample's kind
-    // of value proofread, then maker-checker
+    // the API's gate (signOffRefusal): as seen (asOf), typing re-typed, every question settled, every number backed, a
+    // missed sample's kind of value proofread, then maker-checker
     const parsed = SignOffBody.safeParse(body);
     if (!parsed.success) return err(400, pretty(parsed.error));
     const { by, asOf } = parsed.data;
-    if (ver.status === "signed" || ver.status === "superseded") return err(409, `Version ${ver.version} is ${ver.status} and immutable; changes need a new version (amendment)`);
-    if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only draft versions can be changed`);
-    if (ver.updatedAt !== asOf) return err(409, "This contract changed since you opened it. Check it again.");
-    if (ver.byHand && !ver.review.length) return err(409, "Typing isn't marked done yet, so nobody has re-typed the values.");
-    const open = ver.review.filter((i) => !settled(i)).length;
-    if (open) return err(409, `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`);
-    const unconfirmed = ver.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
-    if (unconfirmed) return err(409, `${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
-    const miss = sampleMisses(ver).find((m) => m.left.length);
-    if (miss) return err(409, sampleMissWords(miss));
-    if (d.settings.makerChecker && ver.editors.some((e) => samePerson(e, by))) return err(409, `Maker-checker is on: ${by} answered questions on this contract, so someone else has to approve it.`);
+    const refusal = signOffRefusal(ver, { asOf, by, makerChecker: d.settings.makerChecker });
+    if (refusal) return err(409, refusal);
     for (const v of versionsOf(d, st.id)) if (v.status === "signed") v.status = "superseded";
-    Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), updatedAt: now(), appliesFrom: ver.rulebook?.appliesFrom.value ?? null });
+    Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), updatedAt: now() });
     st.status = "live";
     st.updatedAt = now();
-    log(d, by, st.id, "version.signed", { version: ver.version, ...(b.note ? { note: b.note } : {}) });
+    log(d, by, st.id, "version.signed", { version: ver.version, ...(b.note ? { note: b.note } : {}), appliesFrom: ver.appliesFrom });
     return ok(view(ver));
   }
   return err(404, `No mock route for ${method} ${path}`);

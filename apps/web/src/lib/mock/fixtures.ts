@@ -1,5 +1,6 @@
-import { alsoWithheld, type BudgetGrid, cryptoRandom, type DocumentKind, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
+import { alsoWithheld, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
 import { ENUM_OPTIONS, fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
+import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
 import { boxOn, layoutPage, numberPaths, type Span } from "./layout";
 
@@ -316,8 +317,8 @@ export const SEEDS: Record<"halcyon" | "northwind" | "cobalt" | "meridian" | "so
 
 // ---------------------------------------------------------------- review questions and evidence
 
-/** Kept by the mock "server", never sent: the right answer, what the page prints there, what each option changes. */
-export type Secret = { truth?: unknown; lines: string[]; apply?: Record<string, { path: string; value: unknown }> };
+/** Kept by the mock "server", never sent: the right answer, and what the page prints there. */
+export type Secret = { truth?: unknown; lines: string[] };
 
 /** A review question plus its secret. */
 export type Spec = Pick<ReviewItem, "id" | "kind" | "reason" | "path" | "question" | "where" | "blocking"> & {
@@ -329,10 +330,9 @@ export type Spec = Pick<ReviewItem, "id" | "kind" | "reason" | "path" | "questio
   read?: unknown;
   /** What the page prints, one line per `where`. */
   lines: string[];
-  apply?: Secret["apply"];
 };
 
-export type Draft = Pick<RulebookVersionDto, "review" | "evidence" | "pdfCheck"> & { rulebook: Rulebook; secrets: Record<string, Secret> };
+export type Draft = Pick<RulebookVersionDto, "review" | "evidence" | "pdfCheck" | "anomalies"> & { rulebook: Rulebook; secrets: Record<string, Secret> };
 
 export const pb = (documentId: string, page: number, box: PageBox["box"] = null): PageBox => ({ documentId, page, box });
 /** Box for the n-th question on a page: full-width lines in the lower half, so they never overlap. */
@@ -351,7 +351,7 @@ export const toItem = (x: Spec): ReviewItem => ({
   id: x.id, kind: x.kind, reason: x.reason, path: x.path, question: x.question, input: x.input ?? null, options: x.options ?? [],
   where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null, sentBack: null, ...(x.term ? { term: x.term } : {}),
 });
-export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines, apply: x.apply });
+export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines });
 
 /**
  * A blind question about one value: "This looks wrong" (reason "reported") and the re-type sample of hand-typed values
@@ -371,7 +371,6 @@ export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, 
     where: src ? [pb(src.documentId, src.page)] : [],
     truth: value,
     lines: [`${label}: ${formatValue(path, value)}`],
-    apply: options && Object.fromEntries(options.map((o) => [o.id, { path, value: typeof value === "boolean" ? o.id === "true" : o.id }])),
   };
 }
 
@@ -397,8 +396,27 @@ const asPrinted = (rb: Rulebook, i: ReviewItem): Spec => {
   const quote = findProv(rb, i.path!)?.source?.quote;
   return { ...i, input: i.input, options: i.options, lines: i.where.map(() => `${labelFor(i.path!, rb)}: ${quote ?? formatValue(i.path!, getAt(rb, i.path!))}`) };
 };
-/** Test seam, as the real API's `sampling`: the randomness the blind sample is drawn with. */
+/** Test seam, as the real API's `sampling`: the randomness the blind sample and the by-hand re-type are drawn with. */
 export const mockSampling: { random: () => number } = { random: cryptoRandom };
+
+/**
+ * The sample server's contract checks, kept with a read and run again on typed numbers (recheck, @dct/shared): a visit
+ * total that isn't its parts added up, worded as the real check words it.
+ * ponytail: that one check; the real ones (packages/extraction/src/checks.ts) don't run in the browser. Add one here when
+ * a sample contract needs it.
+ */
+export function mockChecks(rb: Rulebook): ContractAnomaly[] {
+  return rb.budgetGrids.flatMap((g, gi) =>
+    g.visits.flatMap((v, vi): ContractAnomaly[] => {
+      if (v.procedureSubtotalCents === null || v.overheadCents === null) return [];
+      const parts = v.procedureSubtotalCents + v.overheadCents + (v.nonProcedureCents ?? 0);
+      const path = `/budgetGrids/${gi}/visits/${vi}/totalCents`;
+      if (parts === v.totalCents) return [];
+      const message = `${g.label} ${v.name}: printed total ${formatCents(v.totalCents)} ≠ subtotal + overhead + non-procedure ${formatCents(parts)}`;
+      return [{ id: `VISIT_TOTAL_MISMATCH:${path}`, code: "VISIT_TOTAL_MISMATCH", severity: "warning", message, path, refs: v.prov.source ? [v.prov.source] : [], detail: { expected: parts, actual: v.totalCents }, resolution: null }];
+    }),
+  );
+}
 
 /** As the real API: a cap's limit and ratio wait for its kind's answer (their questions would name the kind). */
 const capWaits = (path: string | null, asking: Set<string>) => !!path && /\/cap\/(?:n|ratio)$/.test(path) && asking.has(path.replace(/(?:n|ratio)$/, "kind"));
@@ -449,6 +467,7 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   return {
     rulebook: rb,
     evidence,
+    anomalies: mockChecks(rb),
     review: placed.map(toItem),
     pdfCheck: opts.scan ? null : { values: evidence.length, matched: evidence.filter((e) => e.status === "confirmed").length },
     secrets: Object.fromEntries(all.map((x) => [x.id, toSecret(x)])),

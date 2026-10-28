@@ -66,6 +66,10 @@ export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
 export const withheldPaths = (v: { status: string; review: ReviewItem[] }): string[] =>
   v.status === "draft" ? [...new Set(v.review.flatMap((i) => (i.path && !settled(i) ? [i.path, ...alsoWithheld(i.path)] : [])))] : [];
 
+/** `appliesFrom` as a response shows it: the start date, or the effective date it falls back to, withheld while either is asked blind. */
+export const shownAppliesFrom = (v: { status: string; review: ReviewItem[]; appliesFrom: string | null }) =>
+  withheldPaths(v).some((p) => p === "/appliesFrom/value" || p === "/study/effectiveDate/value") ? null : v.appliesFrom;
+
 const pointer = (path: PropertyKey[]) => path.map((k) => `/${String(k).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
 
 export const RulebookVersionDto = VersionSummaryDto.extend({

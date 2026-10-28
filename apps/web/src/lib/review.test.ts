@@ -43,7 +43,7 @@ describe("stages", () => {
 });
 
 describe("approveState", () => {
-  const draft = { status: "draft" as const, rulebook, editors: ["Avery"], byHand: false, evidence: [], review: [q("1", true, "matched"), q("2", false, "chosen")], proofread: [] };
+  const draft = { version: 1, status: "draft" as const, rulebook, editors: ["Avery"], byHand: false, evidence: [], review: [q("1", true, "matched"), q("2", false, "chosen")], proofread: [], updatedAt: "2026-10-29T09:00:00.000Z" };
 
   it("allows a draft whose questions are all settled", () => {
     expect(approveState(draft, { makerChecker: false }, "Avery")).toEqual({ allowed: true, reasons: [] });
@@ -51,7 +51,7 @@ describe("approveState", () => {
   it("blocks while any question is unsettled, one not needed to approve too, and says how many", () => {
     const s = approveState({ ...draft, review: [q("1", true), q("2", true, "cant_tell"), q("3", false), q("4", false, "cant_tell")] }, { makerChecker: false }, "Avery");
     expect(s.allowed).toBe(false);
-    expect(s.reasons.join(" ")).toContain("4 questions need an answer first");
+    expect(s.reasons).toEqual(["4 questions still need an answer before this can be approved."]); // the API's words
   });
   it("as the API: typing by hand marked done, and every number backed", () => {
     expect(approveState({ ...draft, byHand: true, review: [] }, { makerChecker: false }, "Avery").reasons.join(" ")).toMatch(/Typing isn't marked done yet/);
@@ -75,7 +75,7 @@ describe("approveState", () => {
     expect(approveState(draft, { makerChecker: true }, "Sam").allowed).toBe(true);
   });
   it("refuses non-drafts", () => {
-    expect(approveState({ ...draft, status: "signed" }, { makerChecker: false }, "Sam").allowed).toBe(false);
+    expect(approveState({ ...draft, status: "signed" }, { makerChecker: false }, "Sam").reasons).toEqual(["Version 1 is signed and immutable; changes need a new version (amendment)"]);
   });
 });
 

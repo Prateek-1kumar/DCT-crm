@@ -1,21 +1,22 @@
 import {
   amountOf,
+  appliesFromOf,
   ByHandBody,
-  capFollowUps,
   CorrectValueBody,
-  familyOf,
+  diffRulebooks,
+  followUps,
+  labelFor,
   type MasterSearch,
+  pickRetype,
   ProofreadBody,
+  proofreadMarks,
   ReportValueBody,
   type ReviewItem,
   Rulebook,
-  sampleMisses,
-  sampleMissWords,
-  samePerson,
   SendBackBody,
   SignOffBody,
   searchMaster,
-  settled,
+  signOffRefusal,
   type ValueEvidence,
 } from "@dct/shared";
 import { buildWorkbook } from "@dct/shared/xlsx";
@@ -24,13 +25,12 @@ import type { FastifyPluginAsync } from "fastify";
 import { isDeepStrictEqual } from "node:util";
 import type { Ctx } from "../app.js";
 import { rulebookVersions, settings } from "../db/schema.js";
-import { appliesFromOf, assertDraft, audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, versionDto } from "../domain.js";
-import { diffRulebooks, itemIds, labelFor } from "../lib/diff.js";
+import { audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, versionDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
-import { answer, askAbout, at, byHandQuestions, empty, hiddenPaths, leaf, mask, recheck } from "../review.js";
+import { answer, askAbout, at, byHandQuestions, empty, hiddenPaths, leaf, mask, sampling } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
 const versionNo = (v: unknown) => {
@@ -168,14 +168,11 @@ export const versionRoutes =
         if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Only a contract typed by hand can be marked done.");
         if (row.review.length) throw new HttpError(409, "Typing is already marked done.");
         const rb = row.rulebook;
-        // Every kind of typed value can be sampled: amounts, text, yes/no, fixed-list and list values (re-picked or re-typed).
-        const typed = row.evidence.filter((e) => e.status === "attested" && leaf(at(rb, e.path)) && !empty(at(rb, e.path)));
+        const { typed, sample } = pickRetype(rb, row.evidence, sampling.random);
         if (!typed.length) throw new HttpError(400, "Type at least one value first.");
-        // ponytail: Math.random shuffle; a seeded pick if the sample ever needs to be reproducible.
-        const sample = typed.map((e) => [Math.random(), e] as const).sort((a, b) => a[0] - b[0]).slice(0, 10).map(([, e]) => e);
-        const spots = sample.map((e) => askAbout(rb, row.evidence, e.path, `spot:${e.path}`, "spot_check"));
+        const spots = sample.map((p) => askAbout(rb, row.evidence, p, `spot:${p}`, "spot_check"));
         const anomalies = port.runContractChecks(rb);
-        const review = [...spots, ...byHandQuestions(rb, row.evidence, anomalies, new Set(sample.map((e) => e.path)))];
+        const review = [...spots, ...byHandQuestions(rb, row.evidence, anomalies, new Set(sample))];
         const [updated] = await tx.update(rulebookVersions).set({ review, anomalies, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
         await refreshStudyStatus(tx, row.studyId, body.data.by);
         await audit(tx, body.data.by, row.studyId, "byhand.done", { version: row.version, typed: typed.length, "re-type": sample.length, questions: review.length - spots.length });
@@ -189,36 +186,26 @@ export const versionRoutes =
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.rulebook) throw new HttpError(409, `Version ${row.version} is ${row.status}; only a draft takes answers.`);
-        const draft = { version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors] };
-        const { item, outcome, changed, set, listed, missed, unchanged } = answer(draft, req.params.itemId, req.body, port.isoDate);
+        const draft = {
+          version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors],
+          proofread: row.proofread, anomalies: row.anomalies,
+        };
+        const answered = answer(draft, req.params.itemId, req.body, port.isoDate);
         // a repeat that changes nothing writes nothing and logs nothing
-        if (unchanged) return versionDto(row);
-        const { by, note } = item.answer!;
-        // the grid's held-back totals, checked on the typed numbers once its last one is answered
-        if (set) draft.review.push(...recheck((rb) => port.runContractChecks(rb), { ...draft, anomalies: row.anomalies }, set.path));
-        // a cap's limit, once its kind is known
-        draft.review.push(...capFollowUps(draft, item, !!set && !isDeepStrictEqual(set.before, set.after), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason)));
+        if (answered.unchanged) return versionDto(row);
+        const { by, action, detail } = answered.log;
+        followUps(draft, answered, (rb) => port.runContractChecks(rb), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason));
         const [updated] = await tx
           .update(rulebookVersions)
           .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: new Date() })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
-        // A value written to the master is logged like a correction, so an amendment's read carries it forward (correctionsOf).
-        // The governing grids are carried by their labels instead (carryGrid), and the bill-by-hand list by asking again:
-        // an amendment's read finds the same terms unaccounted.
-        const wrote =
-          !set || isDeepStrictEqual(set.before, set.after) ? {}
-          : set.path === "/governingGridIds" ? { gridId: item.answer!.optionId }
-          : { path: set.path, before: set.before, after: set.after, items: itemIds(row.rulebook, parsePointer(set.path)) };
-        const billByHand = listed?.added ? { billByHand: listed.added } : listed?.removed ? { offBillByHand: listed.removed } : {};
-        await audit(tx, by, row.studyId, changed ? "review.changed" : "review.answered", { version: row.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote, ...billByHand });
-        if (missed) {
-          // An incident (ADR-001 §6): a value the PDF check confirmed is wrong by a person's blind reading. How silent
-          // errors are measured, so it's in the log and told to everyone; approval waits for its kind of value to be checked.
-          const miss = sampleMisses({ ...draft, proofread: row.proofread }).find((m) => m.family === familyOf(item.path!))!;
-          await audit(tx, by, row.studyId, "sample.missed", { version: row.version, itemId: item.id, path: item.path, question: item.question, values: miss.label, "to check": miss.left.length });
-          await raiseAlert(tx, { kind: "sample_missed", studyId: row.studyId, version: row.version, by, count: miss.left.length });
+        await audit(tx, by, row.studyId, action, detail);
+        // a sample miss, an incident: in the log and told to everyone
+        if (answered.incident) {
+          await audit(tx, by, row.studyId, "sample.missed", answered.incident.detail);
+          await raiseAlert(tx, { kind: "sample_missed", studyId: row.studyId, version: row.version, by, count: answered.incident.count });
         }
         return versionDto(updated!);
       });
@@ -275,12 +262,10 @@ export const versionRoutes =
         if (!row.rulebook || row.status === "superseded") throw new HttpError(409, `Version ${row.version} can't be proofread.`);
         const rb = row.rulebook;
         if (paths.some((p) => at(rb, p) === undefined)) throw new HttpError(400, "One of those values isn't in the invoicing master.");
+        const proofread = proofreadMarks(row.proofread, paths, by, new Date().toISOString());
         // marked by them already: nothing changes, nothing is logged
-        if (paths.every((p) => row.proofread.some((m) => m.path === p && m.by === by))) return versionDto(row);
-        const now = new Date().toISOString();
-        const marks = new Map(row.proofread.map((m) => [m.path, m]));
-        for (const path of paths) marks.set(path, { path, by, at: now });
-        const [updated] = await tx.update(rulebookVersions).set({ proofread: [...marks.values()], updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
+        if (!proofread) return versionDto(row);
+        const [updated] = await tx.update(rulebookVersions).set({ proofread, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
         await audit(tx, by, row.studyId, "values.proofread", { version: row.version, values: paths.length });
         return versionDto(updated!);
       });
@@ -319,30 +304,14 @@ export const versionRoutes =
       });
     });
 
-    /**
-     * Approval (ADR-001 I1–I6): the version as the approver saw it (`asOf`), every question settled by a typed value, a
-     * pick or a reason (a blocker by a value or a pick only: answer() enforces how each clears, ADR-001 §6), so nothing is
-     * withheld any more; every number confirmed by the PDF's text or a person; typing by hand re-typed blind; after a
-     * random spot check missed, every value of its kind proofread or typed; and with maker-checker on, not by anyone who
-     * answered (names compared as people type them, ignoring case and edge spaces).
-     */
+    /** Approval (ADR-001 I1–I6): refused, with what to do, by the gate the approve page explains (signOffRefusal). */
     app.post<P>("/studies/:id/versions/:v/sign-off", async (req, reply) => {
       const body = parse(SignOffBody, req.body);
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
-        assertDraft(row);
-        if (row.updatedAt.toISOString() !== body.asOf) throw new HttpError(409, "This contract changed since you opened it. Check it again.");
-        if (row.byHand && !row.review.length) throw new HttpError(409, "Typing isn't marked done yet, so nobody has re-typed the values.");
-        const open = row.review.filter((i) => !settled(i)).length;
-        if (open) throw new HttpError(409, `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`);
-        const unconfirmed = row.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
-        if (unconfirmed) throw new HttpError(409, `${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
-        // a random spot check that missed: every value of its kind proofread or typed by a person first (ADR-001 §6)
-        const miss = sampleMisses(row).find((m) => m.left.length);
-        if (miss) throw new HttpError(409, sampleMissWords(miss));
         const [cfg] = await tx.select().from(settings).where(eq(settings.id, 1));
-        if ((cfg?.makerChecker ?? true) && row.editors.some((e) => samePerson(e, body.by)))
-          throw new HttpError(409, `Maker-checker is on: ${body.by} answered questions on this contract, so someone else has to approve it.`);
+        const refusal = signOffRefusal({ ...row, updatedAt: row.updatedAt.toISOString() }, { asOf: body.asOf, by: body.by, makerChecker: cfg?.makerChecker ?? true });
+        if (refusal) throw new HttpError(409, refusal);
         // the previous live version stays live until this moment
         await tx
           .update(rulebookVersions)

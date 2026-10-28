@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { AlertPage, AuditPage, DiffEntry, MasterSearch, type ReviewItem, RulebookVersionDto, SAMPLE, SearchResults, StudyCounts, StudyDetailDto, StudyPage } from "@dct/shared";
 import { blankInvoiceable } from "../byhand";
 import { getAt } from "../pointer";
@@ -473,6 +473,98 @@ describe("mock API: in step with the real API's rules", () => {
     const res = await mockRequest("PATCH", "/documents/doc-hal-cta", { kind: "master_agreement", by: "Sam Rivera" });
     expect(res.status).toBe(200);
     expect(AuditPage.parse(await get("/audit?studyId=st-halcyon&limit=5")).items[0]).toMatchObject({ action: "document.kind_set", detail: { documentId: "doc-hal-cta", to: "master_agreement" } });
+  });
+});
+
+describe("mock API: the API's own rules (@dct/shared), where its copies used to drift", () => {
+  beforeEach(() => mockReset());
+
+  /**
+   * The sample server as a reload finds it, after `edit` changes what it saved: how a test plants a state no sample route
+   * makes (a correction an amendment lost, a date the PDF prints in words).
+   */
+  async function reloadWith(edit: (saved: { versions: RulebookVersionDto[] }) => void) {
+    await get("/settings"); // saved after every request
+    const saved = JSON.parse(localStorage.getItem("dct.mockdb.v8")!) as { versions: RulebookVersionDto[] };
+    edit(saved);
+    localStorage.setItem("dct.mockdb.v8", JSON.stringify(saved));
+    vi.resetModules();
+    const { mockRequest: request } = await import("./server");
+    return request;
+  }
+  const versionIn = (saved: { versions: RulebookVersionDto[] }, studyId: string, v: number) => saved.versions.find((x) => x.studyId === studyId && x.version === v)!;
+
+  it("lists a correction the amendment lost to bill by hand (CORRECTION_LOST), as the API does", async () => {
+    const lost: ReviewItem = {
+      id: "lost:/siteFees/0/amountCents", kind: "unaccounted", reason: "CORRECTION_LOST", path: null, blocking: true, input: null,
+      question: "Avery Chen corrected Site fee › Study start-up fee › Amount on version 1, but the amendment's reading doesn't have it any more. Is it still in the contract?",
+      options: [{ id: "removed", label: "No, the amendment removed it" }, { id: "bill_by_hand", label: "Yes: list it to bill by hand", note: "What is billed by hand? Name the term and its amount." }],
+      where: [{ documentId: "doc-hal-cta", page: 7, box: null }], answer: null, outcome: null, compare: null, sentBack: null,
+    };
+    const request = await reloadWith((s) => versionIn(s, "st-halcyon", 2).review.push(lost));
+    const res = await request("POST", `/studies/st-halcyon/versions/2/review/${encodeURIComponent(lost.id)}`, { optionId: "bill_by_hand", note: "Start-up fee, once", by: "Taylor Brooks" });
+    expect(RulebookVersionDto.parse(res.json).rulebook!.unclassified).toContainEqual(expect.objectContaining({ itemId: lost.id, label: "Page 7 of “Clinical Trial Agreement HAL-2207”", note: "Start-up fee, once" }));
+  });
+
+  it("reads a date the PDF prints in words as the binder does (isoDate), not ISO only", async () => {
+    const reported = RulebookVersionDto.parse((await post("/studies/st-northwind/versions/1/report", { path: "/study/effectiveDate/value", note: "Check the date", by: "Avery Chen" })).json).review.at(-1)!;
+    expect(reported.input).toBe("date");
+    // the read says July 1; the page prints July 2
+    const request = await reloadWith((s) => versionIn(s, "st-northwind", 1).evidence.push({ path: "/study/effectiveDate/value", status: "confirmed", where: [], printed: "July 2, 2025", note: null }));
+    const res = await request("POST", `/studies/st-northwind/versions/1/review/${encodeURIComponent(reported.id)}`, { value: "2025-07-02", by: "Sam Rivera" });
+    expect(RulebookVersionDto.parse(res.json).review.find((i) => i.id === reported.id)!.outcome).toBe("matched");
+  });
+
+  it("keeps the date a version's terms apply from: the effective date it falls back to, withheld while asked", async () => {
+    const shown = async (study: string, v: number) => [RulebookVersionDto.parse(await get(`/studies/${study}/versions/${v}`)).appliesFrom, StudyDetailDto.parse(await get(`/studies/${study}`)).versions.find((x) => x.version === v)!.appliesFrom];
+    expect(await shown("st-northwind", 1)).toEqual(["2025-07-01", "2025-07-01"]); // a draft, from the contract's effective date
+    expect(await shown("st-meridian", 1)).toEqual(["2024-11-18", "2024-11-18"]); // approved with it
+    expect(await shown("st-halcyon", 2)).toEqual(["2026-09-01", "2026-09-01"]); // the amendment's start date, answered
+    await post("/studies/st-halcyon/versions/2/send-back", { itemIds: ["interpret:/appliesFrom/value"], note: "Check §1", by: "Morgan Lee" });
+    expect(await shown("st-halcyon", 2)).toEqual([null, null]); // asked again, blind
+    await answer("st-halcyon", "interpret:/appliesFrom/value", { optionId: "prospective", by: "Taylor Brooks" }, 2);
+    expect(await shown("st-halcyon", 2)).toEqual(["2026-09-30", "2026-09-30"]);
+  });
+
+  it("proofreading the same values again changes nothing and logs nothing", async () => {
+    const mark = async () => RulebookVersionDto.parse((await post("/studies/st-meridian/versions/1/proofread", { paths: ["/siteFees/0/amountCents"], by: "Avery Chen" })).json);
+    const first = await mark();
+    const logged = AuditPage.parse(await get("/audit?studyId=st-meridian&limit=100")).items.length;
+    expect((await mark()).updatedAt).toBe(first.updatedAt);
+    expect(AuditPage.parse(await get("/audit?studyId=st-meridian&limit=100")).items).toHaveLength(logged);
+  });
+
+  it("re-types yes/no and list values typed by hand too", async () => {
+    await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
+    const typed = { "/budgetGrids/0/visits/0/autopay": false, "/payment/requiredReferences/value": ["protocol number"], "/payment/netDays/value": 45 };
+    for (const [path, value] of Object.entries(typed)) expect((await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path, value, note: "x", by: "Avery Chen" })).status, path).toBe(200);
+    const v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
+    expect(v.review.filter((i) => i.reason === "spot_check").map((i) => i.path).sort()).toEqual(Object.keys(typed).sort());
+    expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/autopay")!.options.map((o) => o.id)).toEqual(["true", "false"]);
+  });
+
+  it("asks a total that doesn't add up once its grid's typed numbers are re-typed (recheck)", async () => {
+    await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
+    const v0 = "/budgetGrids/0/visits/0";
+    // subtotal 100 + overhead 40 ≠ total 150
+    for (const [path, value] of [[`${v0}/procedureSubtotalCents`, 10000], [`${v0}/overheadCents`, 4000], [`${v0}/totalCents`, 15000]] as const)
+      await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path, value, note: "x", by: "Avery Chen" });
+    let v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
+    expect(v.review.map((i) => i.reason)).toEqual(["spot_check", "spot_check", "spot_check"]);
+    const typedAt = { [`${v0}/procedureSubtotalCents`]: 10000, [`${v0}/overheadCents`]: 4000, [`${v0}/totalCents`]: 15000 } as Record<string, number>;
+    for (const i of v.review) v = await answer("st-solace", i.id, { value: typedAt[i.path!] });
+    expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")).toMatchObject({ id: `anomaly:VISIT_TOTAL_MISMATCH:${v0}/totalCents`, kind: "contract_problem", outcome: null });
+  });
+
+  it("diffs array items by identity and escapes a key in the path, as the API", async () => {
+    const request = await reloadWith((s) => {
+      const rb = versionIn(s, "st-halcyon", 2).rulebook!;
+      rb.invoiceables.unshift(rb.invoiceables.pop()!); // the amendment's new fee, listed first
+      rb.budgetGrids[0]!.procedures[0]!.cells["W/4"] = 18500; // a visit code with a slash in it
+    });
+    const diff = DiffEntry.array().parse((await request("GET", "/studies/st-halcyon/versions/2/diff?against=1", undefined)).json);
+    expect(diff.filter((e) => e.path.startsWith("/invoiceables/")).map((e) => [e.change, e.path])).toEqual([["added", "/invoiceables/0"]]);
+    expect(diff.find((e) => e.path.endsWith("/cells/W~14"))).toMatchObject({ change: "added", after: 18500, label: expect.stringMatching(/ › W\/4$/) });
   });
 });
 

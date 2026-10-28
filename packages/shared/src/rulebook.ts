@@ -254,6 +254,9 @@ export const upgradeRulebook = (rb: Rulebook): Rulebook => {
   return old.governingGridIds && old.unclassified ? rb : { ...old, governingGridIds: old.governingGridIds ?? [], unclassified: old.unclassified ?? [] };
 };
 
+/** Date a version's terms apply from: the amendment's start date, else the contract's effective date. */
+export const appliesFromOf = (rb: Pick<Rulebook, "appliesFrom" | "study">) => rb.appliesFrom.value ?? rb.study.effectiveDate.value;
+
 /** Grids priced for the same arm, grouped as the contract checks group them (GRID_CONFLICT). */
 export const armKey = (g: Pick<BudgetGrid, "arm">) => (g.arm ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
