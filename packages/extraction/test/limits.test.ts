@@ -220,6 +220,9 @@ describe("bank details (ADR-001 §9)", () => {
       at(40, 130, "Wire to account:"),
       at(40, 144, "987654321012"),
       at(300, 144, "Wire fee $25.00 per payment"),
+      at(40, 170, "Remit to account:"),
+      at(40, 184, "4417 9876 5432"),
+      at(300, 184, "Courier fee $40.00 per shipment"),
       at(40, 300, "Protocol NCT01234567 is the study this agreement covers."),
       at(40, 320, "The study budget is $12,500.00 for each subject, paid within 30 days."),
       at(40, 700, filler),
@@ -230,10 +233,14 @@ describe("bank details (ADR-001 §9)", () => {
     writeFileSync(file, doc.saveToBuffer("").asUint8Array());
     const [page] = await readTextLayer(file, "d1");
     const rects = bankRects(page!);
-    expect(page!.words.filter((w) => rects.includes(w.rect)).map((w) => w.text)).toEqual(["4417", "1234", "5678", "021000021", "987654321012"]);
+    expect(page!.words.filter((w) => rects.includes(w.rect)).map((w) => w.text)).toEqual(["4417", "1234", "5678", "021000021", "987654321012", "4417", "9876", "5432"]);
     // Never stored either: not a span, nor in the text of the line around one.
     const spans = inventory([page!]);
     expect(spans.some((x) => x.words.some((w) => w.text === "$25.00"))).toBe(true);
     expect(JSON.stringify(spans.map((x) => [x.text, x.words.map((w) => w.text)]))).not.toMatch(/987654321012|021000021/);
+    // an account in short groups under its label, on a line that also prints a fee: the fee is a span, the groups "…"
+    const fee = spans.find((x) => x.words.some((w) => w.text === "$40.00"))!;
+    expect(fee.text).toContain("Courier fee");
+    expect(fee.text).not.toMatch(/4417|9876|5432/);
   });
 });

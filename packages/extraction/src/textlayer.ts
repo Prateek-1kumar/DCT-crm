@@ -214,14 +214,15 @@ export function inventory(pages: TextPage[]): Span[] {
     const add = (kind: SpanKind, ws: Word[], ctx: Word[]) => {
       if (!ws.length || ws.some((w) => taken.has(w))) return;
       ws.forEach((w) => taken.add(w));
-      out.push({ kind, where: boxOf(p, ws), words: ws, text: ctx.map((w) => (secret.has(w) ? "…" : w.text)).join(" ").slice(0, 240) });
+      out.push({ kind, where: boxOf(p, ws), words: ws, text: ctx.map((w) => (bank.has(w) ? "…" : w.text)).join(" ").slice(0, 240) });
     };
     const sents = sentences(p);
     for (const s of sents) if (bankSentence(s)) s.forEach((w) => taken.add(w));
-    // Bank numbers found by their label line too, never stored, even as the line around another span. A short run
-    // (3–5 digits) under a line that only mentions an account may be a price or a count, so it stays in the sweep:
-    // masked from the model, it's then asked, never dropped.
-    const secret = new Set(bankWords(p).filter((w) => taken.has(w) || digits(w) >= 6 || /^[A-Z]{2}\d{2}/.test(w.text)));
+    // Bank numbers found by their label line too, never stored, even as the line around another span: every bank word
+    // is "…" in a span's text. A short run (3–5 digits) under a line that only mentions an account may be a price or a
+    // count, so it stays in the sweep: masked from the model and in its text, it's then asked, never dropped.
+    const bank = new Set(bankWords(p));
+    const secret = new Set([...bank].filter((w) => taken.has(w) || digits(w) >= 6 || /^[A-Z]{2}\d{2}/.test(w.text)));
     secret.forEach((w) => taken.add(w));
     const lines = visualLines(p.words.filter((w) => !w.hidden));
     for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l);
