@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
-import { stageLabel, stepsFor, type StageState } from "@/lib/review";
+import { stageLabel, stageWords, stepsFor, type StageState } from "@/lib/review";
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
 
@@ -103,6 +103,42 @@ export function Stepper({ state, className }: { state: StageState; className?: s
   );
 }
 
+/** The current step's dot, halo and label color: needs you amber, approval blue, live green, couldn't read red. */
+const stepTone = (s: StageState): [string, string] =>
+  s.failed
+    ? ["bg-danger ring-danger/15", "text-danger"]
+    : s.stage === "Live"
+      ? ["bg-ok ring-ok/15", "text-ok"]
+      : s.stage === "Needs you"
+        ? ["bg-warn ring-warn/15", "text-warn"]
+        : s.stage === "Approve"
+          ? ["bg-primary ring-primary/15", "text-accent"]
+          : ["bg-brand ring-brand/20", "text-ink-2"];
+
+/** Six dots (done · current · to do) and the step in words: "Needs you · step 4 of 6". */
+export function StepTrack({ state }: { state: StageState }) {
+  const steps = stepsFor(state);
+  const { label, step, of } = stageWords(state);
+  const live = state.stage === "Live";
+  const [dot, text] = stepTone(state);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span aria-hidden className="flex items-center gap-1.5">
+        {steps.map((x, i) => (
+          <span
+            key={x.stage}
+            className={cx("rounded-full", !live && i === step - 1 ? cx("size-2.5 ring-4", dot) : cx("size-2", live ? "bg-ok" : i < step - 1 ? "bg-ink/45" : "bg-ink/12"))}
+          />
+        ))}
+      </span>
+      <span className="text-small">
+        <span className={cx("font-medium", text)}>{label}</span>
+        <span className="text-faint">{live ? " · all steps done" : ` · step ${step} of ${of}`}</span>
+      </span>
+    </div>
+  );
+}
+
 export function Spinner({ label = "Loading" }: { label?: string }) {
   return (
     <span role="status" className="inline-flex items-center gap-2.5 text-body text-muted">
@@ -133,7 +169,7 @@ export function Empty({ title, children, action }: { title: string; children?: R
 }
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={cx("rounded-card bg-surface shadow-card", className)}>{children}</section>;
+  return <section className={cx("rounded-card bg-surface shadow-card ring-1 ring-ink/[0.05]", className)}>{children}</section>;
 }
 
 /** Use inputBase when setting your own width; inputCls is full-width. */

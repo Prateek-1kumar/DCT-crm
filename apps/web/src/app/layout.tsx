@@ -24,8 +24,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Suspense fallback={<aside />}>
               <Sidebar />
             </Suspense>
-            <div className="flex min-w-0 flex-col">
-              <main className="flex flex-1 flex-col">
+            {/* The work area is a white sheet resting on the off-white frame the sidebar uses. */}
+            <div className="flex min-w-0 flex-col lg:py-2 lg:pr-2">
+              <main className="flex flex-1 flex-col bg-surface lg:min-h-[calc(100vh-1rem)] lg:rounded-[20px] lg:shadow-sheet lg:ring-1 lg:ring-ink/[0.05]">
                 <Suspense
                   fallback={
                     <div className="p-8">

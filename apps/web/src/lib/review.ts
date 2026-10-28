@@ -67,6 +67,24 @@ export function versionStage(latest: Pick<VersionSummaryDto, "status"> | undefin
 export const stepsFor = (s: StageState): { stage: Stage; label: string }[] =>
   STAGES.filter((x) => !(s.byHand && x === "Checking")).map((x) => ({ stage: x, label: s.byHand && x === "Reading" ? "Typed by hand" : x }));
 
+/** Plain words for where a contract is, and which step that is (1-based) out of how many. */
+export function stageWords(s: StageState): { label: string; step: number; of: number } {
+  const steps = stepsFor(s);
+  const step = s.stage === "Live" ? steps.length : steps.findIndex((x) => x.stage === s.stage) + 1;
+  const label = s.failed
+    ? "Couldn't read"
+    : s.stage === "Upload"
+      ? "Details to confirm"
+      : s.stage === "Reading"
+        ? s.byHand
+          ? "Typing by hand"
+          : "Reading the contract"
+        : s.stage === "Approve"
+          ? "Waiting for approval"
+          : s.stage;
+  return { label, step, of: steps.length };
+}
+
 export const stageLabel = (s: StageState) =>
   s.failed ? "Couldn't read" : s.byHand && s.stage === "Reading" ? "Typing by hand" : s.stage === "Needs you" && s.needs ? `Needs you (${s.needs})` : s.stage;
 

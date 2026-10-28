@@ -112,13 +112,15 @@ export function formatDateTime(iso: string | null | undefined): string {
 
 export function relativeTime(iso: string, now = Date.now()): string {
   const s = Math.round((now - new Date(iso).getTime()) / 1000);
+  const ago = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
   if (s < 60) return "just now";
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return ago(m, "minute");
   const h = Math.round(m / 60);
-  if (h < 24) return `${h} h ago`;
+  if (h < 24) return ago(h, "hour");
   const d = Math.round(h / 24);
-  return d < 30 ? `${d} d ago` : formatDate(iso);
+  if (d === 1) return "yesterday";
+  return d < 30 ? ago(d, "day") : formatDate(iso);
 }
 
 const TOP: Record<string, string> = {
