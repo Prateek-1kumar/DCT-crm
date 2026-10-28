@@ -63,7 +63,7 @@ function NextStep({ s, st }: { s: StudySummaryDto; st: StageState }) {
 function Row({ s }: { s: StudySummaryDto }) {
   const st = summaryStage(s);
   return (
-    <li className={cx("group relative grid gap-4 px-6 py-5 transition-colors hover:bg-sunken/70 md:items-center md:gap-6", COLS)}>
+    <li className={cx("group relative grid gap-4 px-6 py-4 transition-colors hover:bg-sunken/70 md:items-center md:gap-6", COLS)}>
       <div className="min-w-0">
         {/* The link covers the whole row; the next-step button sits above it. */}
         <Link href={`/studies/${s.id}`} className="text-body font-semibold tracking-tight after:absolute after:inset-0 group-hover:text-accent">
@@ -151,7 +151,7 @@ export default function ContractsPage() {
                     href={href(t.id, site)}
                     aria-current={active ? "page" : undefined}
                     className={cx(
-                      "flex h-9 shrink-0 items-center gap-2 rounded-full px-4 text-small font-medium whitespace-nowrap transition-[background-color,color,box-shadow]",
+                      "flex h-8 shrink-0 items-center gap-2 rounded-full px-3.5 text-small font-medium whitespace-nowrap transition-[background-color,color,box-shadow]",
                       active ? "bg-surface text-ink shadow-button ring-1 ring-ink/[0.06]" : "text-muted hover:text-ink",
                     )}
                   >
@@ -169,7 +169,7 @@ export default function ContractsPage() {
                 <select
                   value={site ?? ""}
                   onChange={(e) => router.replace(href(view?.id ?? null, e.target.value || null))}
-                  className="h-11 cursor-pointer appearance-none rounded-full bg-surface pr-10 pl-9 text-small font-medium text-ink shadow-button ring-1 ring-line-strong transition hover:ring-ink/20 focus:ring-4 focus:ring-brand/20 focus:outline-none"
+                  className="h-10 cursor-pointer appearance-none rounded-full bg-surface pr-10 pl-9 text-small font-medium text-ink shadow-button ring-1 ring-line-strong transition hover:ring-ink/20 focus:ring-4 focus:ring-brand/20 focus:outline-none"
                 >
                   <option value="">All sites</option>
                   {sites.map((x) => (

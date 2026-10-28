@@ -39,7 +39,7 @@ describe("mock API", () => {
     expect(raw).not.toMatch(/truth|secret|apply/);
   });
 
-  it("matches, differs, then settles with a note; options are chosen", async () => {
+  it("matches, differs, then settles (a note only to keep your own value over the PDF text); answers can change; options are chosen", async () => {
     // q1: the tool read $93.00, the page prints $98.00.
     let v = await answer("st-northwind", "q1", { value: 9800 });
     expect(v.review.find((i) => i.id === "q1")).toMatchObject({ outcome: "matched", compare: null });
@@ -48,13 +48,19 @@ describe("mock API", () => {
 
     v = await answer("st-northwind", "q5", { value: 2600 });
     expect(v.review.find((i) => i.id === "q5")).toMatchObject({ outcome: "differs", compare: { typed: 2600, read: 2500, printed: "$25.00" } });
-    expect((await post("/studies/st-northwind/versions/1/review/q5", { value: 2500, by: "Sam Rivera" })).status).toBe(400);
-    v = await answer("st-northwind", "q5", { value: 2500, note: "Misread my own screen" });
-    expect(v.review.find((i) => i.id === "q5")!.outcome).toBe("chosen");
+    expect((await post("/studies/st-northwind/versions/1/review/q5", { value: 2600, by: "Sam Rivera" })).status).toBe(400);
+    v = await answer("st-northwind", "q5", { value: 2500 });
+    expect(v.review.find((i) => i.id === "q5")).toMatchObject({ outcome: "chosen", compare: null });
+
+    // Changing an earlier answer while the version is a draft: it is checked again.
+    v = await answer("st-northwind", "q1", { value: 9900 });
+    expect(v.review.find((i) => i.id === "q1")!.outcome).toBe("differs");
+    v = await answer("st-northwind", "q1", { value: 9800 });
+    expect(v.review.find((i) => i.id === "q1")!.outcome).toBe("chosen");
 
     v = await answer("st-northwind", "q2", { optionId: "g-nw-b" });
     expect(v.rulebook!.governingGridId).toBe("g-nw-b");
-    expect((await post("/studies/st-northwind/versions/1/review/q2", { optionId: "nope", by: "Sam" })).status).toBe(409);
+    expect((await post("/studies/st-northwind/versions/1/review/q2", { optionId: "nope", by: "Sam" })).status).toBe(400);
     v = await answer("st-northwind", "q7", { cantTell: true });
     expect(v.review.find((i) => i.id === "q7")!.outcome).toBe("cant_tell");
     expect(v.editors).toEqual(["Sam Rivera"]);

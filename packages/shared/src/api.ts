@@ -20,6 +20,8 @@ export const DocumentDto = z.object({
   uploadedAt: z.string(),
   /** Set when the same file was already uploaded. */
   duplicateOf: z.string().nullable(),
+  /** "text": born-digital, its numbers can be checked against its own text · "scan": images only · null: not known yet. */
+  text: z.enum(["text", "scan"]).nullable(),
 });
 export type DocumentDto = z.infer<typeof DocumentDto>;
 

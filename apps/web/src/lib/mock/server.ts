@@ -53,7 +53,7 @@ type Job = { id: string; kind: "identify" | "extract"; studyId: string; version:
 /** `secrets` is the "server side": right answers keyed `studyId/version/itemId`, never in a response. */
 type Db = { studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number };
 
-const KEY = "dct.mockdb.v2";
+const KEY = "dct.mockdb.v3";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -88,6 +88,9 @@ export function mockReset() {
 
 // ---------------------------------------------------------------- seed
 
+/** Sample data has no real PDFs: a file named like a scan is treated as one (the same rule the sample reading uses). */
+const textOf = (filename: string): DocumentDto["text"] => (/scan/i.test(filename) ? "scan" : "text");
+
 function seed(): Db {
   const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: false, people: [...PEOPLE] }, secrets: {}, seq: 100 };
   const kinds: Record<string, DocumentKind> = { "doc-hal-am1": "amendment", "doc-sl-wo": "work_order" };
@@ -95,7 +98,7 @@ function seed(): Db {
   for (const sd of Object.values(SEEDS)) {
     for (const [id, [filename, pageCount]] of Object.entries(sd.files)) {
       const kind = kinds[id] ?? sd.cfg?.docs.find((x) => x.id === id)?.kind ?? "other";
-      d.documents.push({ id, filename, sha256: fakeSha(id), kind, pageCount, uploadedAt: daysAgo(30), duplicateOf: null });
+      d.documents.push({ id, filename, sha256: fakeSha(id), kind, pageCount, uploadedAt: daysAgo(30), duplicateOf: null, text: textOf(filename) });
     }
   }
   const study = (id: string, c: { sponsor: string; protocol: string; site: string; pi: string }, status: StudyStatus, docs: string[], updatedAt: string): Study => {
@@ -346,8 +349,9 @@ const same = (a: unknown, b: unknown) =>
   typeof a === "string" && typeof b === "string" ? a.trim().toLowerCase() === b.trim().toLowerCase() : JSON.stringify(a) === JSON.stringify(b);
 
 /**
- * POST .../review/:itemId. A typed value is compared with the hidden right answer: matched, or differs (then a final
- * value plus a note settles it as chosen). Options are chosen. Can't tell is left for the approver.
+ * POST .../review/:itemId. A typed value is compared with the hidden right answer: matched, or differs (then picking a
+ * value settles it as chosen; keeping your own over the PDF text needs a note). Options are chosen. Can't tell is left
+ * for the approver. Answering again changes the answer while the version is a draft.
  */
 function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: unknown, at = now()): Res {
   if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only a draft takes answers.`);
@@ -356,7 +360,6 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   const parsed = AnswerReviewBody.safeParse(raw);
   if (!parsed.success) return err(400, "Say who is answering.");
   const b = parsed.data;
-  if (settled(item)) return err(409, "This question is already settled.");
   // The blind re-type of hand-typed values must be done by someone who didn't type them.
   const retype = ver.byHand && item.reason === "spot_check";
   if (retype && ver.editors.includes(b.by)) return err(409, `${b.by} typed these values, so someone else has to re-type them.`);
@@ -373,21 +376,22 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   } else {
     if (b.value === undefined || b.value === null || b.value === "") return err(400, "Type a value, or say you can't tell.");
     if (item.outcome === "differs") {
-      if (!b.note?.trim()) return err(400, "Add a short note saying why this is the right value.");
+      if (secret?.truth !== undefined && !same(b.value, secret.truth) && !b.note?.trim()) return err(400, "Add a short note saying why the PDF text is wrong here.");
       outcome = "chosen";
     } else if (secret?.truth === undefined) outcome = "chosen";
     else outcome = same(b.value, secret.truth) ? "matched" : "differs";
     if (outcome !== "differs" && item.path) set = { path: item.path, value: b.value };
   }
   const ev = item.path ? ver.evidence.find((e) => e.path === item.path) : undefined;
-  if (outcome === "differs") item.compare = { typed: b.value, read: current ?? null, printed: ev?.printed ?? null };
+  const changed = settled(item);
+  item.compare = outcome === "differs" ? { typed: b.value, read: current ?? null, printed: ev?.printed ?? null } : null;
   item.answer = { value: b.value, optionId: b.optionId, cantTell: b.cantTell, note: b.note?.trim() || undefined, by: b.by, at };
   item.outcome = outcome;
   if (set) ver.rulebook = setAt(ver.rulebook, set.path, set.value);
   if (ev && (outcome === "matched" || outcome === "chosen")) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
   if (outcome !== "cant_tell" && !retype && !ver.editors.includes(b.by)) ver.editors.push(b.by);
   st.updatedAt = at;
-  log(d, b.by, st.id, "review.answered", { version: ver.version, question: item.question, outcome: outcome.replace("_", " "), ...(b.note ? { note: b.note } : {}) }, at);
+  log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, question: item.question, outcome: outcome.replace("_", " "), ...(b.note ? { note: b.note } : {}) }, at);
   return ok(ver);
 }
 
@@ -616,7 +620,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
         out.push({ ...existing, duplicateOf: existing.id });
         continue;
       }
-      const doc: DocumentDto = { id: `doc-${++d.seq}`, filename: f.name, sha256: sha, kind: guessKind(f.name), pageCount: 4 + (parseInt(sha.slice(0, 2), 16) % 12), uploadedAt: now(), duplicateOf: null };
+      const doc: DocumentDto = { id: `doc-${++d.seq}`, filename: f.name, sha256: sha, kind: guessKind(f.name), pageCount: 4 + (parseInt(sha.slice(0, 2), 16) % 12), uploadedAt: now(), duplicateOf: null, text: textOf(f.name) };
       d.documents.push(doc);
       out.push(doc);
       log(d, uploader, null, "document.uploaded", { file: doc.filename });

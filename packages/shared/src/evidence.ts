@@ -85,12 +85,12 @@ export const ReportValueBody = z.object({ path: z.string(), note: z.string().min
  */
 export const ByHandBody = z.object({ by: z.string().min(1) });
 
-/** POST /studies/:id/versions/:v/review/:itemId */
+/** POST /studies/:id/versions/:v/review/:itemId. Also changes an earlier answer while the version is a draft. */
 export const AnswerReviewBody = z.object({
   value: z.unknown().optional(),
   optionId: z.string().optional(),
   cantTell: z.boolean().optional(),
-  /** Required when re-answering an item whose outcome is "differs". */
+  /** Required when settling a "differs" item with a value other than the PDF's own text (keeping your own reading over it). */
   note: z.string().optional(),
   by: z.string().min(1),
 });

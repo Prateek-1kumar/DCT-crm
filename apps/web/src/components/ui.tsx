@@ -1,5 +1,6 @@
 "use client";
 
+import { AlertTriangle, Check } from "lucide-react";
 import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { stageLabel, stageWords, stepsFor, type StageState } from "@/lib/review";
 
@@ -17,9 +18,9 @@ const VARIANT: Record<Variant, string> = {
 type Size = "sm" | "md" | "lg" | "icon" | "icon-sm";
 const SIZE: Record<Size, string> = {
   sm: "h-8 px-3.5 text-small",
-  md: "h-10 px-5 text-body",
-  lg: "h-12 px-6 text-body",
-  icon: "size-10",
+  md: "h-9 px-4 text-body",
+  lg: "h-11 px-5 text-body",
+  icon: "size-9",
   "icon-sm": "size-8",
 };
 
@@ -49,8 +50,8 @@ const TONE: Record<Tone, string> = {
 
 export function Badge({ tone = "neutral", children, className, title, dot }: { tone?: Tone; children: ReactNode; className?: string; title?: string; dot?: boolean }) {
   return (
-    <span title={title} className={cx("inline-flex h-7 items-center gap-2 rounded-full px-3 text-small font-medium whitespace-nowrap", TONE[tone], className)}>
-      {dot && <span aria-hidden className="size-2 rounded-full bg-current" />}
+    <span title={title} className={cx("inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-small font-medium whitespace-nowrap", TONE[tone], className)}>
+      {dot && <span aria-hidden className="size-1.5 rounded-full bg-current" />}
       {children}
     </span>
   );
@@ -65,41 +66,64 @@ export function StagePill({ state }: { state: StageState }) {
   );
 }
 
-/** Upload → Reading → Checking → Needs you (n) → Approve → Live; "Typed by hand" replaces Reading and Checking. */
-export function Stepper({ state, className }: { state: StageState; className?: string }) {
+/** What the current step says under its name. */
+const NOW: Record<StageState["stage"], string> = {
+  Upload: "Add the files",
+  Reading: "In progress",
+  Checking: "In progress",
+  "Needs you": "Your turn",
+  Approve: "Ready to approve",
+  Live: "In use",
+};
+
+/**
+ * Upload → Reading → Checking → Needs you → Approve → Live ("Typed by hand" replaces Reading and Checking).
+ * Done steps get a check, the current one is filled; narrow screens get the compact dot track.
+ */
+export function Stepper({ state, className, now }: { state: StageState; className?: string; now?: string }) {
   const steps = stepsFor(state);
-  const at = steps.findIndex((x) => x.stage === state.stage);
+  const live = state.stage === "Live";
+  const at = live ? steps.length - 1 : steps.findIndex((x) => x.stage === state.stage);
   return (
-    <ol aria-label="Where this contract is" className={cx("flex flex-wrap items-center gap-x-1 gap-y-2", className)}>
-      {steps.map(({ stage: s, label: name }, i) => {
-        const done = i < at || (s === "Live" && at === i);
-        const current = i === at && !done;
-        const label = s === "Needs you" && state.needs && current ? `Needs you (${state.needs})` : name;
-        return (
-          <li key={s} aria-current={current ? "step" : undefined} className="flex items-center gap-1">
-            <span
-              className={cx(
-                "flex items-center gap-2 rounded-full py-1 pr-3 pl-1 text-[13px]",
-                current ? (state.failed ? "bg-danger-soft text-danger" : "bg-ink text-surface") : done ? "text-ink" : "text-faint",
-              )}
-            >
-              <span
-                aria-hidden
-                className={cx(
-                  "grid size-5 place-items-center rounded-full text-[11px]",
-                  current ? "bg-surface/20" : done ? "bg-ok-soft text-ok" : "border border-line-strong",
-                )}
-              >
-                {done ? "✓" : current && state.failed ? "!" : i + 1}
-              </span>
-              {state.failed && current ? "Couldn't read" : label}
-              <span className="sr-only">{done ? " (done)" : current ? " (now)" : ""}</span>
-            </span>
-            {i < steps.length - 1 && <span aria-hidden className={cx("h-px w-4", i < at ? "bg-ok" : "bg-line-strong")} />}
-          </li>
-        );
-      })}
-    </ol>
+    <div className={className}>
+      <div className="sm:hidden">
+        <StepTrack state={state} label={now} />
+      </div>
+      <ol aria-label="Where this contract is" className="hidden sm:flex">
+        {steps.map(({ stage: s, label }, i) => {
+          const done = i < at || live;
+          const current = i === at && !live;
+          const failed = current && state.failed;
+          const sub = failed ? "Couldn't read" : current ? (s === "Needs you" && state.needs ? `${state.needs} to answer` : NOW[s]) : done ? "Done" : "";
+          return (
+            <li key={s} aria-current={current ? "step" : undefined} className="flex min-w-0 flex-1 flex-col gap-2.5 last:flex-none">
+              <div className="flex items-center">
+                <span
+                  className={cx(
+                    "grid size-7 shrink-0 place-items-center rounded-full text-small font-semibold transition-colors",
+                    failed
+                      ? "bg-danger text-on-primary ring-4 ring-danger/15"
+                      : current
+                        ? "bg-primary text-on-primary ring-4 ring-primary/15"
+                        : done
+                          ? "bg-ok-soft text-ok"
+                          : "bg-surface text-faint ring-1 ring-line-strong",
+                  )}
+                >
+                  {failed ? <AlertTriangle className="size-3.5" strokeWidth={2.25} /> : done ? <Check className="size-3.5" strokeWidth={2.5} /> : i + 1}
+                </span>
+                {i < steps.length - 1 && <span aria-hidden className={cx("mx-2.5 h-0.5 flex-1 rounded-full", i < at || live ? "bg-ok/40" : "bg-line-strong")} />}
+              </div>
+              <div className="min-w-0 pr-3">
+                <p className={cx("truncate text-small font-medium", current ? "text-ink" : done ? "text-ink-2" : "text-faint")}>{label}</p>
+                {sub && <p className={cx("truncate text-caption", failed ? "text-danger" : current ? "text-accent" : "text-faint")}>{sub}</p>}
+                <span className="sr-only">{done ? " (done)" : current ? " (now)" : " (to do)"}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -116,9 +140,12 @@ const stepTone = (s: StageState): [string, string] =>
           : ["bg-brand ring-brand/20", "text-ink-2"];
 
 /** Six dots (done · current · to do) and the step in words: "Needs you · step 4 of 6". */
-export function StepTrack({ state }: { state: StageState }) {
+/** `label` overrides the step's words, e.g. "Add the files" while uploading. */
+export function StepTrack({ state, label: override }: { state: StageState; label?: string }) {
   const steps = stepsFor(state);
-  const { label, step, of } = stageWords(state);
+  const words = stageWords(state);
+  const { step, of } = words;
+  const label = override ?? words.label;
   const live = state.stage === "Live";
   const [dot, text] = stepTone(state);
   return (
@@ -172,9 +199,13 @@ export function Card({ children, className }: { children: ReactNode; className?:
   return <section className={cx("rounded-card bg-surface shadow-card ring-1 ring-ink/[0.05]", className)}>{children}</section>;
 }
 
-/** Use inputBase when setting your own width; inputCls is full-width. */
-export const inputBase =
-  "h-11 rounded-field border border-line-strong bg-surface px-3.5 text-body text-ink shadow-button transition-[border-color,box-shadow] placeholder:text-faint/70 focus:border-brand focus:ring-4 focus:ring-brand/20 focus:outline-none aria-invalid:border-danger aria-invalid:ring-danger/15";
+/**
+ * fieldCls: the field look with no height, font size or width, for textareas and large inputs (two classes setting the
+ * same property can't be ordered reliably). inputBase adds the standard height and size; inputCls is full-width.
+ */
+export const fieldCls =
+  "rounded-field border border-line-strong bg-surface px-3.5 text-ink shadow-button transition-[border-color,box-shadow] placeholder:text-faint/70 focus:border-brand focus:ring-4 focus:ring-brand/20 focus:outline-none aria-invalid:border-danger aria-invalid:ring-danger/15";
+export const inputBase = `h-10 text-body ${fieldCls}`;
 export const inputCls = `w-full ${inputBase}`;
 
 export function Field({ label, hint, children, htmlFor }: { label: string; hint?: ReactNode; children: ReactNode; htmlFor?: string }) {
@@ -253,4 +284,4 @@ export function PageTitle({ eyebrow, title, sub, actions }: { eyebrow?: string; 
 }
 
 /** Content column used by every page. */
-export const pageCls = "mx-auto w-full max-w-[1320px] px-6 py-9 lg:px-10";
+export const pageCls = "mx-auto w-full max-w-[1280px] px-6 py-8 lg:px-10";

@@ -16,6 +16,39 @@ export const KIND_LABEL: Record<ReviewItem["kind"], string> = {
   unclassified: "Bill by hand",
 };
 
+/** Why a question is here, in one line, without giving away the tool's reading. */
+export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
+  switch (i.reason) {
+    case "spot_check":
+      return "A random spot check. We pick a few numbers at random and ask a person to type them; it proves the checks are working.";
+    case "reported":
+      return "Someone reported this as looking wrong.";
+    case "VALUE_CONFLICT":
+    case "conflict":
+      return "This number didn't match the PDF's own text, so a person needs to read it.";
+    case "ungrounded":
+      return "We couldn't find this number where the contract should print it.";
+    case "SCAN_VALUE":
+      return "This contract is a scan, so this number can't be checked against its text.";
+  }
+  switch (i.kind) {
+    case "unaccounted":
+      return "This is in the contract, but not in the invoicing master yet.";
+    case "unclassified":
+      return "The invoicing master has no place for this kind of term yet, so it's billed by hand.";
+    case "contract_problem":
+      return "The contract itself doesn't line up here, so someone has to decide.";
+    case "interpretation":
+      return "The wording can be read more than one way. Pick what the contract means.";
+    default:
+      return "We couldn't confirm this automatically, so a person needs to read it.";
+  }
+}
+
+/** For the question list: to do · done · differs (pick one) · can't tell. */
+export const itemStatus = (i: ReviewItem): "todo" | "done" | "differs" | "cant_tell" =>
+  i.outcome === "matched" || i.outcome === "chosen" ? "done" : i.outcome === "differs" ? "differs" : i.outcome === "cant_tell" ? "cant_tell" : "todo";
+
 /** Still needs a person: unanswered, answered differently, or a blocking "Can't tell". */
 export const needsYou = (items: ReviewItem[]) =>
   items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));

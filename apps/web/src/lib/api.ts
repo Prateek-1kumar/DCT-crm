@@ -114,9 +114,9 @@ export const api = {
   getSettings: () => request<SettingsDto>("GET", "/settings"),
   patchSettings: (body: Partial<SettingsDto>) => request<SettingsDto>("PATCH", "/settings", body),
 
-  /** URL for an <img>. Mock mode renders a synthetic page in the browser. */
-  pageSrc: async (docId: string, page: number): Promise<string> => {
+  /** URL for an <img>. Mock mode renders a synthetic (vector) page in the browser. `dpi`: sharper page for close-ups. */
+  pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => {
     if (MOCK) return (await import("./mock/server")).mockPageSrc(docId, page);
-    return `/api/documents/${q(docId)}/pages/${page}.png`;
+    return `/api/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`;
   },
 };

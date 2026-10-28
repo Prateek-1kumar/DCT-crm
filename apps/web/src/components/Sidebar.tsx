@@ -35,11 +35,11 @@ function Count({ n, cls }: { n: number; cls: string }) {
 
 const itemCls = (active: boolean) =>
   cx(
-    "group flex h-10 w-full items-center gap-3 rounded-[12px] px-3 text-body transition-[background-color,box-shadow,color] duration-150",
+    "group flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-body transition-[background-color,box-shadow,color] duration-150",
     active ? "bg-surface font-medium text-ink shadow-card" : "text-ink-2 hover:bg-ink/[0.045] hover:text-ink",
   );
 
-const iconCls = (active: boolean) => cx("size-[18px] shrink-0 transition-colors", active ? "text-brand" : "text-muted group-hover:text-ink-2");
+const iconCls = (active: boolean) => cx("size-[17px] shrink-0 transition-colors", active ? "text-brand" : "text-muted group-hover:text-ink-2");
 
 function NavLink({ href, label, icon: Icon, active, badge, onNavigate }: { href: string; label: string; icon: LucideIcon; active: boolean; badge?: ReactNode; onNavigate?: () => void }) {
   return (
@@ -93,8 +93,8 @@ function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <div className={cx("grid transition-[grid-template-rows,opacity] duration-300 ease-out", open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
         <div className="relative min-h-0 overflow-hidden">
-          <span aria-hidden className="absolute top-1 bottom-1 left-[21px] w-px bg-line-strong" />
-          <ul className="flex flex-col gap-0.5 py-1 pl-9">
+          <span aria-hidden className="absolute top-1 bottom-1 left-[18px] w-px bg-line-strong" />
+          <ul className="flex flex-col gap-0.5 py-1 pl-8">
             {VIEWS.map((v) => {
               const active = path === "/" && view === v.id;
               return (
@@ -104,7 +104,7 @@ function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
                     aria-current={active ? "page" : undefined}
                     onClick={onNavigate}
                     className={cx(
-                      "flex h-9 items-center gap-2 rounded-[10px] px-3 text-small transition-colors",
+                      "flex h-8 items-center gap-2 rounded-[9px] px-2.5 text-small transition-colors",
                       active ? "bg-surface font-medium text-ink shadow-card" : "text-muted hover:bg-ink/[0.045] hover:text-ink",
                     )}
                   >
@@ -228,9 +228,9 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
       <button
         type="button"
         onClick={onSearch}
-        className="flex h-10 items-center gap-2.5 rounded-[12px] bg-surface/70 px-3 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
+        className="flex h-9 items-center gap-2.5 rounded-[10px] bg-surface/70 px-2.5 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
       >
-        <Search className="size-[18px]" strokeWidth={1.75} />
+        <Search className="size-[17px]" strokeWidth={1.75} />
         Search
         <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">⌘K</kbd>
       </button>
@@ -259,8 +259,11 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
   );
 }
 
-/** Left column on desktop; a top bar with a slide-in menu on small screens. Owns ⌘K search and the guide. */
-export function Sidebar() {
+/**
+ * Left column on desktop; a top bar with a slide-in menu on small screens. Owns ⌘K search, the guide and the name picker.
+ * `bare` (focus mode): only those three, no navigation, so the page gets the whole window.
+ */
+export function Sidebar({ bare }: { bare?: boolean }) {
   const [search, setSearch] = useState(false);
   const [guide, setGuide] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -277,6 +280,14 @@ export function Sidebar() {
   }, []);
 
   const body = (drawer?: () => void) => <SidebarBody onSearch={() => setSearch(true)} onGuide={() => setGuide(true)} onNavigate={drawer} onClose={drawer} />;
+  const dialogs = (
+    <>
+      <CommandPalette open={search} onClose={() => setSearch(false)} onGuide={() => setGuide(true)} />
+      <HowItWorks open={guide} onClose={() => setGuide(false)} />
+      <PersonPicker />
+    </>
+  );
+  if (bare) return dialogs;
 
   return (
     <>
@@ -302,9 +313,7 @@ export function Sidebar() {
         </div>
       )}
 
-      <CommandPalette open={search} onClose={() => setSearch(false)} onGuide={() => setGuide(true)} />
-      <HowItWorks open={guide} onClose={() => setGuide(false)} />
-      <PersonPicker />
+      {dialogs}
     </>
   );
 }

@@ -33,6 +33,8 @@ export const documentDto = (d: DocumentRow, duplicateOf: string | null = null): 
   sha256: d.sha256,
   kind: d.kind as DocumentKind,
   pageCount: d.pageCount,
+  // ponytail: not detected at upload yet; needs a documents column filled by readTextLayer (ADR-001 step 5).
+  text: null,
   uploadedAt: d.uploadedAt.toISOString(),
   duplicateOf,
 });

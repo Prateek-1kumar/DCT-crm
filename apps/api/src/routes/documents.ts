@@ -79,15 +79,17 @@ export const documentRoutes =
       });
     });
 
-    app.get<{ Params: { id: string; n: string } }>("/documents/:id/pages/:n(^\\d+).png", async (req, reply) => {
+    // ?dpi= (72–400, default 150): the review close-up asks for a sharper page so tiny budget print stays readable.
+    app.get<{ Params: { id: string; n: string }; Querystring: { dpi?: string } }>("/documents/:id/pages/:n(^\\d+).png", async (req, reply) => {
       const [doc] = await db.select().from(documents).where(eq(documents.id, req.params.id));
       if (!doc) throw notFound("Document");
       const n = Number(req.params.n);
       if (n < 1 || n > doc.pageCount) throw notFound(`Page ${n}`);
-      const file = path.join(config.uploadDir, "pages", `${doc.sha256}-${n}.png`);
+      const dpi = Math.round(Math.min(400, Math.max(72, Number(req.query.dpi) || 150)));
+      const file = path.join(config.uploadDir, "pages", `${doc.sha256}-${n}${dpi === 150 ? "" : `@${dpi}`}.png`);
       reply.type("image/png").header("cache-control", "private, max-age=31536000, immutable");
       if (existsSync(file)) return reply.send(createReadStream(file));
-      const png = await (await getExtraction()).renderPage(doc.storagePath, n);
+      const png = await (await getExtraction()).renderPage(doc.storagePath, n, dpi);
       await writeAtomic(file, png);
       return reply.send(png);
     });
