@@ -5,7 +5,7 @@ import { ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { describe, expect, it } from "vitest";
 import { bindEvidence, isoDate, reviewFromEvidence } from "../src/binder";
-import { inventory, readTextLayer } from "../src/textlayer";
+import { amounts, inventory, readTextLayer } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
 /** Text at (x, y from the top) on a letter page; `up` draws it reading bottom→top (a sideways grid). */
@@ -384,6 +384,226 @@ describe("an amount at the end of a sentence", () => {
     const fee = bindEvidence(rb, text).evidence.find((e) => e.path === "/siteFees/0/amountCents");
     expect(fee).toMatchObject({ status: "confirmed", printed: "$7,455.00." });
     expect(inventory(text).filter((x) => x.kind === "amount").map((x) => x.words.map((w) => w.text).join(" "))).toEqual(["$7,455.00.", "$1,000.00"]);
+  });
+});
+
+/** A PDF of these pages (content streams; /Im1 is a small grey image), read back. */
+async function contentPdf(contents: string[]) {
+  const doc = new mupdf.PDFDocument();
+  const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 20, 20], false);
+  pix.clear(120);
+  const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) }, XObject: { Im1: doc.addImage(new mupdf.Image(pix)) } };
+  for (const c of contents) doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, c));
+  const file = join(mkdtempSync(join(tmpdir(), "dct-evidence-")), "pages.pdf");
+  writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+  return readTextLayer(file, "d1");
+}
+/** Ordinary text at the foot of a page, enough for a real text layer. */
+const FOOT = [700, 712, 724, 736].map((y) => at(40, y, "This page continues the agreement between the parties and the site, as set out above in full detail.")).join("");
+/** The image drawn at x, y (from the top), w × h points. */
+const picture = (x: number, y: number, w: number, h: number) => `q ${w} 0 0 ${h} ${x} ${792 - y - h} cm /Im1 Do Q\n`;
+const onPage1 = (quote?: string) => ({ source: { documentId: "d1", page: 1, ...(quote && { quote }) }, confidence: 0.9, method: "ai" as const, crossCheck: "not_checked" as const });
+
+describe("an amount on a line that prints other amounts too", async () => {
+  const text = await textPdf([
+    "Each screen failure is paid at $500.00, up to a maximum of $5,000.00 per study.",
+    "Re-consent visit $100.00 $130.00 per occurrence",
+    "Start-up fee of $3,000.00, of which $1,500.00 is payable on execution.",
+    "Archiving fee $250.00 per year",
+  ]);
+  const bind = (rb: Rulebook) => {
+    rb.screenFail!.prov = onPage1();
+    const { evidence, unaccounted } = bindEvidence(rb, text);
+    return { s: statuses(evidence), notes: Object.fromEntries(evidence.map((e) => [e.path, e.note])), left: unaccounted.map((x) => x.words.map((w) => w.text).join(" ")) };
+  };
+  const fees = (amountCents: number, amountWithOverheadCents: number | null, startUp: number) => {
+    const rb = rulebook();
+    rb.invoiceables = [{ ...rb.invoiceables[0]!, name: "Re-consent visit", amountCents, amountWithOverheadCents, cap: { kind: "none", n: null, ratio: null }, prov: onPage1() }];
+    rb.siteFees = [
+      { ...rb.siteFees[0]!, code: null, name: "Start-up fee", amountCents: startUp, dueDays: null, prov: onPage1() },
+      { ...rb.siteFees[0]!, code: null, name: "Archiving fee", amountCents: 25000, dueDays: null, prov: onPage1() },
+    ];
+    return bind(rb);
+  };
+
+  it("is asked, never confirmed, whichever of them the read took; the others stay unaccounted", () => {
+    for (const cents of [50000, 500000]) {
+      const rb = rulebook();
+      rb.screenFail = { ...rb.screenFail!, amountCents: cents, cap: { kind: "none", n: null, ratio: null } };
+      const { s, notes } = bind(rb);
+      expect([cents, s["/screenFail/amountCents"]]).toEqual([cents, "ungrounded"]);
+      expect(notes["/screenFail/amountCents"]).toBe("printed with another amount on the same line, so which one it is can't be told");
+    }
+    const { s, left } = fees(13000, null, 150000);
+    expect([s["/invoiceables/0/amountCents"], s["/siteFees/0/amountCents"], s["/siteFees/1/amountCents"]]).toEqual(["ungrounded", "ungrounded", "confirmed"]);
+    expect(left).toEqual(expect.arrayContaining(["$100.00", "$3,000.00,"]));
+  });
+
+  it("two prices read as two still bind by position; a misread is still a conflict", () => {
+    expect(fees(10000, 13000, 300000).s).toMatchObject({ "/invoiceables/0/amountCents": "confirmed", "/invoiceables/0/amountWithOverheadCents": "confirmed", "/siteFees/0/amountCents": "ungrounded" });
+    const rb = rulebook();
+    rb.screenFail = { ...rb.screenFail!, amountCents: 60000, cap: { kind: "none", n: null, ratio: null } };
+    expect(bind(rb).s["/screenFail/amountCents"]).toBe("conflict");
+  });
+
+  it("a page reference isn't re-pointed to a line where another amount could be the value", () => {
+    const rb = rulebook();
+    rb.invoiceables[0] = { ...rb.invoiceables[0]!, amountCents: 7000, amountWithOverheadCents: null }; // the with-overhead price, cited on page 2
+    rb.invoiceables[0].prov.source!.page = 2;
+    expect(statuses(bindEvidence(rb, pages).evidence)["/invoiceables/0/amountCents"]).toBe("ungrounded");
+  });
+});
+
+describe("a rule quoted from another clause", async () => {
+  const text = await textPdf([
+    "Sponsor shall pay each invoice within forty-five (45) days of receipt.",
+    "Site shall refund any overpayment within 30 days of notice.",
+    "Sponsor will reimburse up to ten (10) unscheduled visits per subject.",
+  ]);
+  const NOTE = "the quote isn't from a sentence about this term";
+
+  it("is asked, and the clause's own figure stays unaccounted", () => {
+    const rb = rulebook();
+    rb.payment.netDays = { value: 30, prov: onPage1("within 30 days") };
+    const { evidence, unaccounted } = bindEvidence(rb, text);
+    expect(evidence.find((e) => e.path === "/payment/netDays/value")).toMatchObject({ status: "ungrounded", note: NOTE, where: [{ documentId: "d1", page: 1, box: null }] });
+    expect(unaccounted.map((x) => x.words.map((w) => w.text).join(" "))).toContain("30 days");
+    rb.payment.netDays = { value: 45, prov: onPage1("within forty-five (45) days of receipt") };
+    expect(statuses(bindEvidence(rb, text).evidence)["/payment/netDays/value"]).toBe("confirmed");
+    // A screen-fail cap quoted from another item's limit.
+    rb.screenFail = { ...rb.screenFail!, cap: { kind: "count", n: 10, ratio: null }, prov: onPage1("up to ten (10) unscheduled visits") };
+    expect(bindEvidence(rb, text).evidence.find((e) => e.path === "/screenFail/cap/n")).toMatchObject({ status: "ungrounded", note: NOTE });
+  });
+
+  it("for every rule with words of its own: payment, refund, holdback, overhead, deadlines, due days", () => {
+    // Each value is printed on the terms page, but in a sentence about another term.
+    const rb = rulebook();
+    rb.payment.netDays.prov = onPage1("refunded within thirty (30) days");
+    rb.payment.netDays.value = 30;
+    rb.overpayment = { ...rb.overpayment!, refundDays: 45, prov: onPage1("within forty-five (45) days of receipt") };
+    rb.holdback = { ...rb.holdback!, pct: 1.5, prov: onPage1("Interest of 1.5% per month") };
+    rb.overhead.pct = { value: 2, prov: onPage1("Lidocaine 2% cream") };
+    rb.deadlines = [{ kind: "query_resolution_days", value: 30, consequence: "", prov: onPage1("refunded within thirty (30) days") }];
+    rb.siteFees[0] = { ...rb.siteFees[0]!, dueDays: 30, prov: { ...rb.siteFees[0]!.prov, source: { documentId: "d1", page: 1, quote: "Overpayments will be refunded within thirty (30) days" } } };
+    const ev = new Map(bindEvidence(rb, pages).evidence.map((e) => [e.path, [e.status, e.note]]));
+    const paths = ["/payment/netDays/value", "/overpayment/refundDays", "/holdback/pct", "/overhead/pct/value", "/deadlines/0/value", "/siteFees/0/dueDays"];
+    expect(paths.map((p) => [p, ev.get(p)])).toEqual(paths.map((p) => [p, ["ungrounded", NOTE]]));
+  });
+});
+
+describe("two grids on one page with the same rows", async () => {
+  const ROWS = (price: string, total: string) => [
+    ["Code", "Procedure", "Unit", "V1", "V2"],
+    ["36415", "Blood draw", price, price, price],
+    ["93000", "ECG", "120.00", "120.00", "120.00"],
+    ["", "Total per patient", "", total, ""],
+  ];
+  const table = (top: number, title: string, price: string, total: string, up: boolean) =>
+    [["", title], ...ROWS(price, total)]
+      .flatMap((r, i) => r.map((s, c) => (s ? (up ? at(top - 16 + 14 * i, 100 + COLS[c]!, s, { up }) : at(COLS[c]!, top - 16 + 14 * i, s)) : "")))
+      .join("");
+  const both = (up: boolean) => contentPdf([table(80, "Arm A budget", "55.00", "$350.00", up) + table(200, "Arm B budget", "60.00", "$360.00", up) + FOOT]);
+  const [[flat], [sideways]] = [await both(false), await both(true)];
+  const prov = onPage1();
+  const visit = (code: string, order: number) => ({ code, name: code, order, procedureSubtotalCents: null, overheadCents: null, nonProcedureCents: null, totalCents: 0, autopay: true, prov });
+  const arm = (id: string, blood: number, total: number) => ({
+    id, label: `Arm ${id} budget`, arm: id, statedOverheadPct: null, prov, header: { investigator: null, siteName: null }, visits: [visit("V1", 1), visit("V2", 2)],
+    perPatientTotals: [{ label: "Total per patient", cents: total, prov }],
+    procedures: [
+      { code: "36415", name: "Blood draw", unitCents: blood, overheadApplied: false, category: "procedure" as const, cells: { V1: blood, V2: blood }, prov },
+      { code: "93000", name: "ECG", unitCents: 12000, overheadApplied: false, category: "procedure" as const, cells: { V1: 12000, V2: 12000 }, prov },
+    ],
+  });
+
+  it("checks each grid's cells against its own table only, upright or sideways", () => {
+    for (const page of [flat!, sideways!]) {
+      const rb = rulebook();
+      // Arm A read right; arm B read with arm A's blood draw price and per-patient total (it prints 60.00 and $360.00).
+      rb.budgetGrids = [arm("A", 5500, 35000), arm("B", 5500, 35000)];
+      const ev = bindEvidence(rb, [page]).evidence.filter((e) => /procedures|perPatient/.test(e.path));
+      expect(ev.filter((e) => e.path.startsWith("/budgetGrids/0/")).every((e) => e.status === "confirmed")).toBe(true);
+      const b = Object.fromEntries(ev.filter((e) => e.path.startsWith("/budgetGrids/1/")).map((e) => [e.path.slice(15), [e.status, e.printed]]));
+      expect(b).toEqual({
+        "procedures/0/cells/V1": ["conflict", "60.00"],
+        "procedures/0/cells/V2": ["conflict", "60.00"],
+        "procedures/0/unitCents": ["conflict", "60.00"],
+        "procedures/1/cells/V1": ["confirmed", "120.00"],
+        "procedures/1/cells/V2": ["confirmed", "120.00"],
+        "procedures/1/unitCents": ["confirmed", "120.00"],
+        "perPatientTotals/0/cents": ["conflict", "$360.00"],
+      });
+    }
+  });
+
+  it("a grid continuing onto the page where the other starts keeps its own rows", async () => {
+    // Arm A: its blood draw on page 1, its ECG at the top of page 2; arm B starts under it, with its own header.
+    const rows = (top: number, rs: string[][]) => rs.flatMap((r, i) => r.map((s, c) => (s ? at(COLS[c]!, top + 14 * i, s) : ""))).join("");
+    const doc = await contentPdf([
+      rows(64, [["", "Arm A budget"], ...ROWS("55.00", "").slice(0, 2)]) + FOOT,
+      rows(80, [["93000", "ECG", "120.00", "120.00", "120.00"]]) + rows(184, [["", "Arm B budget"], ROWS("", "")[0]!, ["36415", "Blood draw", "60.00", "60.00", "60.00"], ["93000", "ECG", "130.00", "130.00", "130.00"]]) + FOOT,
+    ]);
+    const rb = rulebook();
+    const [a, b] = [arm("A", 5500, 0), arm("B", 6000, 0)];
+    a.procedures[1]!.prov = { ...prov, source: { documentId: "d1", page: 2 } };
+    b.procedures.forEach((p) => (p.prov = { ...prov, source: { documentId: "d1", page: 2 } }));
+    b.procedures[1]!.cells = { V1: 12000, V2: 12000 }; // arm A's ECG price; arm B prints 130.00
+    rb.budgetGrids = [a, b].map((g) => ({ ...g, perPatientTotals: [] }));
+    const s = statuses(bindEvidence(rb, doc).evidence);
+    expect(["/budgetGrids/0/procedures/1/cells/V1", "/budgetGrids/1/procedures/0/cells/V1", "/budgetGrids/1/procedures/1/cells/V1"].map((p) => s[p])).toEqual(["confirmed", "confirmed", "conflict"]);
+  });
+});
+
+describe("an amount in brackets", async () => {
+  const w = (text: string) => ({ text, rect: [0, 0, 30, 8] as [number, number, number, number], dir: 0 as const, block: 0, line: 0, hidden: false });
+  const cents = (...ws: string[]) => amounts(ws.map(w)).map((a) => a.cents);
+
+  it("is a credit, unless it restates the amount in words before it", () => {
+    expect(cents("(1,500.00)")).toEqual([-150000]);
+    expect(cents("Total", "($", "1,500.00)")).toEqual([-150000]);
+    expect(cents("Three", "Thousand", "Dollars", "($3,000.00)")).toEqual([300000]);
+    expect(cents("Five", "Hundred", "and", "00/100", "($500.00).")).toEqual([50000]);
+    expect(cents("forty-five", "(45)", "days", "(10%)", "$(", "($500.00")).toEqual([50000]);
+  });
+
+  it("never confirms a positive value; a restatement across a line break still does", async () => {
+    const text = await textPdf(["Sponsor credit (1,500.00) on the final invoice", "The start-up fee is Three Thousand Dollars", "($3,000.00), payable on execution."]);
+    const rb = rulebook();
+    rb.siteFees = [
+      { ...rb.siteFees[0]!, code: null, name: "Sponsor credit", amountCents: 150000, dueDays: null, prov: onPage1() },
+      { ...rb.siteFees[0]!, code: null, name: "Start-up fee", amountCents: 300000, dueDays: null, prov: onPage1() },
+    ];
+    const s = statuses(bindEvidence(rb, text).evidence);
+    expect([s["/siteFees/0/amountCents"], s["/siteFees/1/amountCents"]]).toEqual(["conflict", "confirmed"]);
+    rb.siteFees[0]!.amountCents = -150000;
+    expect(statuses(bindEvidence(rb, text).evidence)["/siteFees/0/amountCents"]).toBe("confirmed");
+  });
+});
+
+describe("a picture on a text page (largePicture)", async () => {
+  // Dense text over a picture: a background, not a picture of terms.
+  const over = Array.from({ length: 30 }, (_, i) => at(40, 112 + 12 * i, "Text drawn over a background image is the page's own text, and it is read and swept like any other.")).join("");
+  const read = await contentPdf([
+    FOOT + picture(40, 200, 500, 200), // a pasted table: 21% of the page
+    FOOT + picture(60, 500, 150, 55) + picture(330, 500, 150, 55) + picture(60, 570, 40, 30) + picture(40, 20, 100, 40), // two signatures, initials, a logo
+    FOOT + picture(0, 0, 612, 72), // a letterhead banner across the top: 9%, in the top tenth
+    FOOT + picture(40, 100, 532, 380) + over, // a background under the page's own text
+    FOOT + [0, 1, 2, 3, 4].map((i) => picture(40, 300 + 20 * i, 500, 20)).join(""), // one picture saved in 5 strips
+    FOOT + picture(40, 300, 200, 90), // under 5% of the page
+  ]);
+
+  it("is flagged for a pasted table or screenshot, not for signatures, logos, letterheads or backgrounds", () => {
+    expect(read.map((p) => [p.source, p.largePicture])).toEqual([
+      ["text", true],
+      ["text", false],
+      ["text", false],
+      ["text", false],
+      ["text", true],
+      ["text", false],
+    ]);
+  });
+
+  it("is never set on scans and OCR layers: they're attested whole", () => {
+    expect(pages.map((p) => [p.source, p.largePicture])).toEqual([...Array(4).fill(["text", false]), ["image_only", false], ["ocr_layer", false]]);
   });
 });
 

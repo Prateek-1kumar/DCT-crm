@@ -9,7 +9,7 @@ import { CONFIG, ExtractionLimitError, extractWith, identifyWith } from "../src/
 import { renderPage } from "../src/index";
 import type { LlmClient } from "../src/llm";
 import { openDocuments, pageCount, RENDER_LIMITS, RenderTimeoutError, renderPng, renderTiles, tileLayout, WORKER_FILE } from "../src/render";
-import { bankRects, readTextLayer } from "../src/textlayer";
+import { bankRects, inventory, readTextLayer } from "../src/textlayer";
 
 function pdfWith(pages: number, size: [number, number] = [612, 792]): string {
   const doc = new mupdf.PDFDocument();
@@ -204,5 +204,36 @@ describe("bank details (ADR-001 §9)", () => {
     };
     expect((await pixels()).some((v) => v > 200)).toBe(true); // black text on white
     expect((await pixels(rects)).every((v) => v < 10)).toBe(true); // all black
+  });
+
+  it("are found by their label in a table cell beside them or on the line above, not elsewhere on the page", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const at = (x: number, y: number, t: string) => `BT /F1 9 Tf ${x} ${792 - y} Td (${t}) Tj ET\n`;
+    const filler = "This page continues the agreement between the parties and the site, as set out above in full detail.";
+    const content = [
+      at(40, 60, "Payment instructions"),
+      at(40, 80, "Bank account number"),
+      at(300, 80, "4417 1234 5678"),
+      at(40, 96, "ABA routing number"),
+      at(300, 96, "021000021"),
+      at(40, 130, "Wire to account:"),
+      at(40, 144, "987654321012"),
+      at(300, 144, "Wire fee $25.00 per payment"),
+      at(40, 300, "Protocol NCT01234567 is the study this agreement covers."),
+      at(40, 320, "The study budget is $12,500.00 for each subject, paid within 30 days."),
+      at(40, 700, filler),
+      at(40, 720, filler),
+    ].join("");
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, content));
+    const file = join(mkdtempSync(join(tmpdir(), "dct-limits-")), "bank-table.pdf");
+    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+    const [page] = await readTextLayer(file, "d1");
+    const rects = bankRects(page!);
+    expect(page!.words.filter((w) => rects.includes(w.rect)).map((w) => w.text)).toEqual(["4417", "1234", "5678", "021000021", "987654321012"]);
+    // Never stored either: not a span, nor in the text of the line around one.
+    const spans = inventory([page!]);
+    expect(spans.some((x) => x.words.some((w) => w.text === "$25.00"))).toBe(true);
+    expect(JSON.stringify(spans.map((x) => [x.text, x.words.map((w) => w.text)]))).not.toMatch(/987654321012|021000021/);
   });
 });

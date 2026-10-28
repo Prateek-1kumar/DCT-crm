@@ -65,7 +65,7 @@ function budget(cap: number, what: string) {
   let used = 0;
   return {
     take(n: number) {
-      if (used + n > cap) throw new ExtractionLimitError(`This read needs more than ${cap} ${what}, the limit for one contract. Split the upload into smaller PDFs.`);
+      if (used + n > cap) throw new ExtractionLimitError(`This read needs more than ${cap} ${what}, the limit for one read. Split the upload into smaller PDFs.`);
       used += n;
     },
   };
@@ -162,7 +162,7 @@ export async function extractWith(
     ...c,
     async call<T>(req: LlmRequest<T>): Promise<T> {
       if (spent() >= CONFIG.maxUsd)
-        throw new ExtractionLimitError(`This read has spent $${spent().toFixed(2)}, the $${CONFIG.maxUsd.toFixed(2)} limit per contract, so it was stopped before the next AI call.`);
+        throw new ExtractionLimitError(`This read has spent $${spent().toFixed(2)}, the $${CONFIG.maxUsd.toFixed(2)} limit for one read, so it was stopped before the next AI call.`);
       return c.call(req);
     },
   });

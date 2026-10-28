@@ -20,7 +20,24 @@ const STYLE = `<style>
 const PROSE =
   "This work order sets out the payments the Sponsor, Synthetic Pharma, makes to the Institution for the clinical study named in the agreement. The Institution invoices the Sponsor for the items below, naming the protocol, with the supporting documents the Sponsor asks for.";
 
-/** The fake reading's fees on page 1 and its revised grid on page 2. Rules (days, %, dates) aren't printed: the fake gives no quote for them, so they're asked. */
+/**
+ * One titled budget table per grid the fake reading has, as a contract prints an exhibit and its revision: one printed
+ * row backs one grid's cells at most. Both print Week 0 at $8,488.00; the reading has 8,489.00 for "Exhibit A", the
+ * mismatch answered below.
+ */
+const GRID = (title: string) => `
+  <h2>${title}</h2>
+  <table>
+    <tr><th>Procedure</th><th>Code</th><th class="n">Unit</th><th class="n">Screening</th><th class="n">Week 0</th></tr>
+    <tr><td>Blood draw</td><td>36415</td><td class="n">$55.00</td><td class="n">$55.00</td><td class="n">$55.00</td></tr>
+    <tr><td>Procedure subtotal</td><td></td><td></td><td class="n">$3,801.00</td><td class="n">$4,047.00</td></tr>
+    <tr><td>Overhead</td><td></td><td></td><td class="n">$2,130.00</td><td class="n">$2,425.00</td></tr>
+    <tr><td>Non-procedure</td><td></td><td></td><td class="n">$1,524.00</td><td class="n">$2,016.00</td></tr>
+    <tr><td>Visit total</td><td></td><td></td><td class="n">$7,455.00</td><td class="n">$8,488.00</td></tr>
+  </table>
+  <p>Total $15,943.00</p>`;
+
+/** The fake reading's fees on page 1 and its grids on page 2. Rules (days, %, dates) aren't printed: the fake gives no quote for them, so they're asked. */
 const WORK_ORDER = `${STYLE}
 <div class="page">
   <h1>Work Order</h1><p>${PROSE}</p>
@@ -35,15 +52,7 @@ const WORK_ORDER = `${STYLE}
 <div class="page">
   <h1>Exhibit A: Budget</h1>
   <p>The per patient payments below include institutional overhead (40%) on each procedure. Visits are paid automatically from the electronic data capture system once the case report forms for the visit are accepted by the Sponsor.</p>
-  <table>
-    <tr><th>Procedure</th><th>Code</th><th class="n">Unit</th><th class="n">Screening</th><th class="n">Week 0</th></tr>
-    <tr><td>Blood draw</td><td>36415</td><td class="n">$55.00</td><td class="n">$55.00</td><td class="n">$55.00</td></tr>
-    <tr><td>Procedure subtotal</td><td></td><td></td><td class="n">$3,801.00</td><td class="n">$4,047.00</td></tr>
-    <tr><td>Overhead</td><td></td><td></td><td class="n">$2,130.00</td><td class="n">$2,425.00</td></tr>
-    <tr><td>Non-procedure</td><td></td><td></td><td class="n">$1,524.00</td><td class="n">$2,016.00</td></tr>
-    <tr><td>Visit total</td><td></td><td></td><td class="n">$7,455.00</td><td class="n">$8,488.00</td></tr>
-  </table>
-  <p>Total $15,943.00</p>
+  ${["Exhibit A", "Exhibit A (revised)"].map((title) => GRID(title)).join("")}
 </div>`;
 
 const AMENDMENT = `${STYLE}

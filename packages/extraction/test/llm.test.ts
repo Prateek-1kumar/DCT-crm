@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -45,5 +47,18 @@ describe("model replies (the only way model output gets in)", () => {
     await expect(ask(llm)).rejects.toThrow(/declined to read "terms"/);
     replies.push({ text: '{"n": 1}', stop: "max_tokens" });
     await expect(ask(llm)).rejects.toThrow(/cut off at its length limit/);
+  });
+});
+
+// ADR-001 §9: contracts reach a model only through this package, so no other code may import a model SDK.
+describe("model SDKs", () => {
+  it("are imported nowhere outside packages/extraction", () => {
+    const repo = join(import.meta.dirname, "../../..");
+    const files = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : /\.[cm]?[jt]sx?$/.test(e.name) ? [join(dir, e.name)] : []));
+    const roots = [...readdirSync(join(repo, "apps")).map((a) => join(repo, "apps", a, "src")), join(repo, "packages/shared/src")];
+    expect(roots.length).toBeGreaterThan(2);
+    const sdk = /(?:from|import|require)\s*\(?\s*["'](?:@anthropic-ai\/sdk|openai)(?:\/[^"']*)?["']/;
+    expect(roots.flatMap(files).filter((f) => sdk.test(readFileSync(f, "utf8"))).map((f) => f.slice(repo.length + 1))).toEqual([]);
   });
 });

@@ -122,7 +122,7 @@ describe("scan pages", () => {
     ];
     g.perPatientTotals = [{ label: "Total", cents: 28100, prov }];
     rb.siteFees = [{ code: null, name: "Start-up", amountCents: 500000, trigger: "one_time", dueDays: null, prov }];
-    const pages: TextPage[] = [{ documentId: "d", page: 1, width: 612, height: 792, source: "image_only", words: [], hidden: 0 }];
+    const pages: TextPage[] = [{ documentId: "d", page: 1, width: 612, height: 792, source: "image_only", words: [], hidden: 0, largePicture: false }];
     const { evidence, review, pdfCheck } = reviewDraft({ bindEvidence, reviewFromEvidence }, rb, [], pages, [{ id: "d", filename: "scan.pdf" }]);
     expect(evidence.filter((e) => e.status === "confirmed").map((e) => e.path)).toEqual([
       "/budgetGrids/0/procedures/0/cells/V1",

@@ -37,7 +37,9 @@ if (!scoreOnly) {
     console.log("Fill in the key(s) and re-run, or score saved outputs with: pnpm --filter @dct/extraction score");
     process.exit(0);
   }
-  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) console.log("Note: OPENAI_API_KEY/OPENAI_MODEL not set; cross-read skipped.");
+  // The cross-read is Haiku unless CROSS_READ says otherwise (llm.ts clientsFromEnv); only the OpenAI one needs its own key.
+  if ((process.env.CROSS_READ || "haiku").toLowerCase() === "openai" && (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL))
+    console.log("Note: CROSS_READ=openai but OPENAI_API_KEY/OPENAI_MODEL not set; cross-read skipped.");
   mkdirSync(outDir, { recursive: true });
   for (const g of goldens) {
     const path = join(root, "data/contracts", g.file);

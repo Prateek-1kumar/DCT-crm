@@ -1,5 +1,5 @@
 import type { BudgetGrid, PageBox, Provenance, ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
-import { amounts, bare, boxOf, frame, inventory, NUMBER, type Span, type TextPage, visualLines, type Word } from "./textlayer";
+import { amounts, bare, boxOf, centsOf, frame, inventory, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
 /**
  * Binder (ADR-001 §5), no AI: each money value in a rulebook is looked up at its own position in the PDF's text, and
@@ -7,14 +7,15 @@ import { amounts, bare, boxOf, frame, inventory, NUMBER, type Span, type TextPag
  */
 
 type Line = { words: Word[]; dir: Word["dir"]; v: number; h: number };
-type Page = { p: TextPage; lines: Line[]; orders: Word[][] };
-type Cols = { dir: Word["dir"]; at: Map<string, [number, number]>; unit: [number, number] | null; left: number; pitch: number };
+/** `before`: the word printed ahead of one, in the text's own order. `sentence`: the text of the sentence a word is in. */
+type Page = { p: TextPage; lines: Line[]; orders: Word[][]; before: (w: Word) => Word | undefined; sentence: (w: Word) => string };
+type Cols = { dir: Word["dir"]; at: Map<string, [number, number]>; unit: [number, number] | null; left: number; pitch: number; line: Line };
 
 const norm = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
 const ptr = (s: string) => s.replace(/~/g, "~0").replace(/\//g, "~1");
 const cents = (s: string | null) => {
   const t = bare((s ?? "").replace(/\s/g, ""));
-  return NUMBER.test(t) && !t.endsWith("%") ? Math.round(Number(t.replace(/[^\d.]/g, "")) * 100) : null;
+  return NUMBER.test(t) && !t.endsWith("%") ? centsOf(t) : null;
 };
 const txt = (ws: Word[]) => ws.map((w) => w.text).join(" ");
 const mid = (w: Word) => (frame(w)[1] + frame(w)[3]) / 2;
@@ -25,7 +26,9 @@ function pageData(p: TextPage): Page {
   if (hit) return hit;
   const seen = p.words.filter((w) => !w.hidden);
   const lines = visualLines(seen).map((ws) => ({ words: ws, dir: ws[0]!.dir, v: mid(ws[0]!), h: Math.max(...ws.map((w) => frame(w)[3] - frame(w)[1])) }));
-  const out = { p, lines, orders: [seen, lines.flatMap((l) => l.words)] };
+  const prev = new Map(seen.slice(1).map((w, i) => [w, seen[i]!]));
+  const sentence = new Map(sentences(p).flatMap((s) => s.map((w) => [w, txt(s)] as const)));
+  const out = { p, lines, orders: [seen, lines.flatMap((l) => l.words)], before: (w: Word) => prev.get(w), sentence: (w: Word) => sentence.get(w) ?? "" };
   cache.set(p, out);
   return out;
 }
@@ -106,19 +109,27 @@ function runs(l: Line, targets: string[]): Word[][] {
 
 const span = (ws: Word[]): [number, number] => [Math.min(...ws.map((w) => frame(w)[0])), Math.max(...ws.map((w) => frame(w)[2]))];
 
-/** Visit columns from the header line that names the most visits (code or name), in the text's own direction. */
-function headerColumns(pg: Page, visits: BudgetGrid["visits"]): Cols | null {
+/**
+ * Visit columns from the header line that names the most visits (code or name), in the text's own direction. `taken`:
+ * header lines other grids on this page already use; a grid whose visits head another table just as well takes that one.
+ */
+function headerColumns(pg: Page, visits: BudgetGrid["visits"], taken: Line[] = []): Cols | null {
   const hits = visits.map((v) => pg.lines.flatMap((l) => runs(l, [v.code, v.name]).map((ws) => ({ l, ws }))));
   const near = (a: Line, b: Line) => a.dir === b.dir && Math.abs(a.v - b.v) <= 3 * Math.max(a.h, b.h);
-  let header: Line | null = null;
-  let most = 0;
-  for (const l of pg.lines) {
-    const n = hits.filter((h) => h.some((x) => near(x.l, l))).length;
-    if (n > most) [header, most] = [l, n];
-  }
+  const best = (ls: Line[]) =>
+    ls.reduce<[Line | null, number]>((b, l) => {
+      const n = hits.filter((h) => h.some((x) => near(x.l, l))).length;
+      return n > b[1] ? [l, n] : b;
+    }, [null, 0]);
+  const [top, most] = best(pg.lines);
   // ponytail: one header line per page, visit labels on one line each. Upgrade: join stacked header cells per column.
-  if (!header || most < Math.max(2, visits.length / 2)) return null;
-  const h = header;
+  if (!top || most < Math.max(2, visits.length / 2)) return null;
+  // Another grid's header, and the lines naming visits around it, are busy: an equally good header elsewhere is this grid's.
+  const lit = [...new Set(hits.flat().map((x) => x.l))];
+  const block = lit.filter((x) => taken.some((t) => near(t, x)));
+  const busy = (l: Line) => taken.some((t) => near(t, l)) || block.some((b) => near(b, l));
+  const [free, n] = best(lit.filter((l) => !busy(l)));
+  const h = busy(top) && free && n === most ? free : top;
   const at = new Map<string, [number, number]>();
   visits.forEach((v, i) => {
     const pick = hits[i]!.filter((x) => near(x.l, h)).sort((a, b) => Math.abs(a.l.v - h.v) - Math.abs(b.l.v - h.v))[0];
@@ -128,7 +139,7 @@ function headerColumns(pg: Page, visits: BudgetGrid["visits"]): Cols | null {
   const centres = [...at.values()].map((c) => (c[0] + c[1]) / 2).sort((a, b) => a - b);
   const gaps = centres.slice(1).map((c, i) => c - centres[i]!).sort((a, b) => a - b);
   const unitWord = pg.lines.filter((l) => near(l, h)).flatMap((l) => l.words.filter((w) => UNIT.test(w.text) && frame(w)[2] <= left)).sort((a, b) => frame(b)[0] - frame(a)[0])[0];
-  return { dir: h.dir, at, unit: unitWord ? span([unitWord]) : null, left, pitch: gaps[Math.floor(gaps.length / 2)] ?? Infinity };
+  return { dir: h.dir, at, unit: unitWord ? span([unitWord]) : null, left, pitch: gaps[Math.floor(gaps.length / 2)] ?? Infinity, line: h };
 }
 
 /** Column of a cell word: most overlap with a header, else (among the visits) the nearest header within half a column. */
@@ -260,10 +271,10 @@ export function isoDate(text: string): string | null {
 }
 
 /** The figures of one kind in some words of a page. A cap is the number stated as a limit ("up to 10"), else the only plain number. */
-function figures(p: TextPage, ws: Word[], unit: Unit): Figure[] {
-  const fig = (words: Word[], values: (number | string)[], printed: string): Figure => ({ words, values, printed, at: boxOf(p, words) });
+function figures(pg: Page, ws: Word[], unit: Unit): Figure[] {
+  const fig = (words: Word[], values: (number | string)[], printed: string): Figure => ({ words, values, printed, at: boxOf(pg.p, words) });
   if (unit === "date") return dates(ws).map((d) => fig(d.words, d.values, d.printed));
-  const money = amounts(ws);
+  const money = amounts(ws, false, pg.before);
   if (unit === "cents") return money.filter((a) => limited(ws, ws.indexOf(a.words[0]!), ws.indexOf(a.words.at(-1)!))).map((a) => fig(a.words, [a.cents], txt(a.words)));
   const taken = new Set([...money, ...dates(ws)].flatMap((x) => x.words));
   const nums = scan(ws).filter((x) => !x.words.some((w) => taken.has(w)));
@@ -288,6 +299,29 @@ function figures(p: TextPage, ws: Word[], unit: Unit): Figure[] {
 }
 
 // ---------- binding ----------
+
+/**
+ * The words a rule's sentence must have, as the 4 contracts word each term (their quotes and the COPD original) and the
+ * prompt names it. Prefixes: "pay" covers payment and payable, "overpa" overpaid, "submi" submitted.
+ * ponytail: dates and invoiceable caps have no word of their own here (an amendment says "effective" of the agreement it
+ * amends too), so they bind on the quote alone. Upgrade: words measured on the held-out set.
+ */
+const ABOUT = {
+  netDays: /\b(?:pay|paid|invoic|net\b)/i,
+  due: /\b(?:pay|paid|due\b|invoic)/i,
+  refund: /\b(?:refund|overpa|over-pa)/i,
+  holdback: /\b(?:hold|held\b|withh|retain|retention|final\b)/i,
+  overhead: OVERHEAD,
+  screenFail: /\bscreen/i,
+  deadline: {
+    invoice_days_from_expense: /\b(?:invoic|submi)/i,
+    invoice_months_after_study_close: /\b(?:invoic|submi)/i,
+    final_invoice_days_after_closeout: /\b(?:invoic|submi)/i,
+    query_resolution_days: /\bquer/i,
+    dispute_days_after_final_payment: /\bdisput/i,
+    edc_entry_business_days: /\b(?:edc|e?crfs?|data|entry|enter)/i,
+  } satisfies Record<Rulebook["deadlines"][number]["kind"], RegExp>,
+};
 
 export type Bound = { evidence: ValueEvidence[]; unaccounted: Span[] };
 
@@ -314,8 +348,13 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     put(path, figs.length ? "conflict" : "ungrounded", fallback, null);
   };
 
-  rulebook.budgetGrids.forEach((g, gi) => {
-    const gp = `/budgetGrids/${gi}`;
+  // Each grid's columns on each of its pages. Grids that share a page and head their tables with the same visits take
+  // distinct header lines, in the order the read lists them; a grid's rows are then the lines under its own header.
+  // ponytail: two such tables read in the opposite order swap bands (their cells conflict unless both read the same
+  // numbers). Upgrade: match each grid's printed title above its header.
+  const headersOn = new Map<string, Line[]>();
+  const claimed: { row: Line; header: Line; visits: Set<string> }[] = [];
+  const layout = rulebook.budgetGrids.map((g) => {
     const pagesOf = [...new Set([...g.procedures, ...g.visits].flatMap((x) => (x.prov.source ? [`${x.prov.source.documentId}#${x.prov.source.page}`] : [])))].sort((a, b) => Number(a.split("#")[1]) - Number(b.split("#")[1]));
     // A continuation page without its own header uses the columns of the grid page before it.
     // ponytail: assumes continuation pages keep the layout; a changed layout gives conflicts, not confirmations.
@@ -323,15 +362,29 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     let last: Cols | null = null;
     for (const k of pagesOf) {
       const pg = data.get(k);
-      last = (pg && headerColumns(pg, g.visits)) || last;
+      const own = pg && headerColumns(pg, g.visits, headersOn.get(k));
+      if (own) headersOn.set(k, [...(headersOn.get(k) ?? []), own.line]);
+      last = own || last;
       colsOn.set(k, pg ? last : null);
     }
+    return { pagesOf, colsOn };
+  });
+
+  rulebook.budgetGrids.forEach((g, gi) => {
+    const gp = `/budgetGrids/${gi}`;
+    const { pagesOf, colsOn } = layout[gi]!;
     const ctx = (src: Provenance["source"]) => {
       const pg = pageAt(src);
-      const cols = src ? colsOn.get(`${src.documentId}#${src.page}`) : null;
+      const k = src ? `${src.documentId}#${src.page}` : "";
+      const cols = colsOn.get(k);
       if (!pg || !cols) return null;
-      const cands = pg.lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(bare(w.text)) || /invoic/i.test(w.text)) && columnOf(cols, w)));
-      return { pg, cols, cands };
+      // With another grid's header on the page, this grid's rows run from its own header down to the next one.
+      const others = pg.lines.includes(cols.line) ? (headersOn.get(k) ?? []).filter((h) => h !== cols.line && h.dir === cols.dir) : [];
+      const end = Math.min(...others.filter((h) => h.v > cols.line.v).map((h) => h.v));
+      const band = (l: Line) => !others.length || (l.dir === cols.dir && l.v > cols.line.v && l.v < end);
+      const lines = pg.lines.filter(band);
+      const cands = lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(bare(w.text)) || /invoic/i.test(w.text)) && columnOf(cols, w)));
+      return { pg, cols, lines, band, cands };
     };
     const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = []) => {
       const ws = cellWords(c.cols, row, key);
@@ -343,11 +396,16 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     // Grid cells, by the row's label and the visit's column. One printed row per item: best label matches claim rows first.
     const options = g.procedures.flatMap((p, pi) => {
       const c = ctx(p.prov.source);
-      return c ? rowsFor(c.pg.lines, c.cands, p.code, p.name, c.cols.left).map((o) => ({ ...o, pi })) : [];
+      return c ? rowsFor(c.lines, c.cands, p.code, p.name, c.cols.left).map((o) => ({ ...o, pi, header: c.cols.line })) : [];
     });
     const rowOf = new Map<number, Option>();
     const procRows = new Set<Line>();
-    for (const o of options.sort((a, b) => b.score - a.score)) if (!rowOf.has(o.pi) && !procRows.has(o.row)) (rowOf.set(o.pi, o), procRows.add(o.row));
+    // Under a header another grid with the same visits uses too (it continues onto the page where this one starts), a
+    // row that grid holds isn't this grid's: each printed cell confirms one grid's value at most.
+    const visits = new Set(g.visits.map((v) => v.code));
+    const theirs = (o: (typeof options)[number]) => claimed.some((c) => c.row === o.row && c.header === o.header && [...c.visits].some((v) => visits.has(v)));
+    for (const o of options.sort((a, b) => b.score - a.score)) if (!rowOf.has(o.pi) && !procRows.has(o.row) && !theirs(o)) (rowOf.set(o.pi, o), procRows.add(o.row));
+    for (const o of options) if (rowOf.get(o.pi) === o) claimed.push({ row: o.row, header: o.header, visits });
     g.procedures.forEach((p, pi) => {
       const pp = `${gp}/procedures/${pi}`;
       const c = ctx(p.prov.source);
@@ -381,7 +439,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         else put(path, "ungrounded", nowhere(v.prov.source), null, rows.length > 1 ? "several rows carry this label" : null);
       }
     });
-    g.perPatientTotals.forEach((t, ti) => item(`${gp}/perPatientTotals/${ti}`, null, t.label, t.prov, [["cents", t.cents]]));
+    g.perPatientTotals.forEach((t, ti) => item(`${gp}/perPatientTotals/${ti}`, null, t.label, t.prov, [["cents", t.cents]], ctx(t.prov.source)?.band));
 
     // The overhead % the grid states: a % within 3 words of "overhead" on a line of the grid's pages ("Overhead (30%)",
     // "30% overhead", "Indirect costs @ 30%"), so another % on the same line can't back it.
@@ -391,34 +449,42 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         const [a, b] = [l.words.indexOf(f.words[0]!), l.words.indexOf(f.words.at(-1)!)];
         return OVERHEAD.test(txt(l.words.slice(Math.max(0, a - 3), b + 4)));
       };
-      const figs = own.flatMap((pg) => pg.lines.flatMap((l) => figures(pg.p, l.words, "pct").filter((f) => near(l, f))));
+      const figs = own.flatMap((pg) => pg.lines.flatMap((l) => figures(pg, l.words, "pct").filter((f) => near(l, f))));
       settle(`${gp}/statedOverheadPct`, g.statedOverheadPct, figs, nowhere(g.prov.source ?? g.visits[0]?.prov.source ?? null));
     }
   });
 
-  /** Label + amount on one row of the cited page, or the amount inside the quote; else a wrong page reference. */
-  function item(base: string, code: string | null, name: string, prov: Provenance, fields: [string, number | null][]) {
+  /**
+   * Label + amount on one row of the cited page, or the amount inside the quote; else a wrong page reference. `within`:
+   * the lines the row may be on (a grid's band, when another grid shares the page).
+   */
+  function item(base: string, code: string | null, name: string, prov: Provenance, fields: [string, number | null][], within: (l: Line) => boolean = () => true) {
     const src = prov.source;
     const pg = pageAt(src);
-    const lineAmounts = (pg: Page) => pg.lines.filter((l) => amounts(l.words).length);
-    const found = pg ? rowsFor(pg.lines, lineAmounts(pg), code, name)[0] : undefined;
+    const lineAmounts = (pg: Page) => pg.lines.filter((l) => within(l) && amounts(l.words).length);
+    const found = pg ? rowsFor(pg.lines.filter(within), lineAmounts(pg), code, name)[0] : undefined;
     // Numbers on the item's row other than amounts and figures with a unit (code, count) belong to it; "30 days" or "10%" is a term of its own.
     const rowNumbers = (l: Line) => {
       const units = new Set(scan(l.words).flatMap((x) => (x.unit ? x.words : [])));
       return l.words.filter((w) => NUMBER.test(bare(w.text)) && !units.has(w) && !amounts(l.words).some((a) => a.words.includes(w)));
     };
-    const onRow = found ? amounts(found.row.words) : [];
+    const onRow = found ? amounts(found.row.words, false, pg!.before) : [];
     if (found) rowNumbers(found.row).forEach((w) => bound.add(w));
     const quote = pg ? findQuote(pg, src?.quote) : null;
-    const inQuote = quote ? amounts(quote) : [];
+    const inQuote = quote ? amounts(quote, false, pg!.before) : [];
     const want = fields.filter((f): f is [string, number] => f[1] !== null);
     // Two prices and two amounts on the row (or in the quote): by position, base price then price with overhead, as tables print them.
     // ponytail: a table printing them the other way round gives conflicts. Upgrade: read the order from the column headers.
     const positional = want.length === 2 && onRow.length >= 2;
+    // One amount wanted, a row printing others too ("$500.00, up to $5,000.00"; "$100.00 $130.00" with one of them read):
+    // which one is this value can't be told, so as settle() does, it's asked, and the others stay unaccounted.
+    const alone = (as: { cents: number }[], value: number, i: number) => (want.length === 2 && as.length >= 2 ? as[i]!.cents === value : as.every((a) => a.cents === value));
     want.forEach(([field, value], i) => {
       const path = `${base}/${field}`;
       const spot = positional ? onRow[i] : onRow.find((a) => a.cents === value);
       const used = found?.code ? [found.code] : [];
+      if (spot?.cents === value && !alone(onRow, value, i))
+        return put(path, "ungrounded", [boxOf(pg!.p, found!.row.words)], null, "printed with another amount on the same line, so which one it is can't be told", [...onRow.filter((a) => a.cents === value).flatMap((a) => a.words), ...used]);
       if (spot?.cents === value) return put(path, "confirmed", [boxOf(pg!.p, spot.words)], txt(spot.words), null, [...spot.words, ...used]);
       if (onRow.length) {
         const shown = positional ? [onRow[i]!] : onRow.filter((a) => !want.some(([, c]) => c === a.cents));
@@ -431,12 +497,15 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       // Wrong page reference: label and this amount on one line of exactly one other page of the same document.
       const elsewhere = [...data.values()].flatMap((o) => {
         if (!src || o.p.documentId !== src.documentId || o.p.page === src.page) return [];
-        const lines = o.lines.filter((l) => rowsFor([l], [l], code, name).length && amounts(l.words).some((a) => a.cents === value));
+        const lines = o.lines.filter((l) => {
+          const as = amounts(l.words, false, o.before);
+          return rowsFor([l], [l], code, name).length && as.some((a) => a.cents === value) && alone(as, value, i);
+        });
         return lines.length ? [{ o, l: lines[0]! }] : [];
       });
       if (elsewhere.length === 1) {
         const { o, l } = elsewhere[0]!;
-        const a = amounts(l.words).find((x) => x.cents === value)!;
+        const a = amounts(l.words, false, o.before).find((x) => x.cents === value)!;
         return put(path, "confirmed", [boxOf(o.p, a.words)], txt(a.words), `page reference corrected from ${src!.page} to ${o.p.page}`, [...a.words, ...rowNumbers(l)]);
       }
       put(path, "ungrounded", nowhere(src), null);
@@ -449,30 +518,35 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
 
   /**
    * Rules (%, days, caps, dates): the value must be the figure of its kind inside a quote that matches the cited page word
-   * for word. A quote that isn't on that page, or holds no figure of the kind, leaves the value to be typed.
+   * for word, in a sentence about the term (`about`): "within 30 days" quoted from the refund clause can't back the
+   * payment term. A quote that isn't on that page, or holds no such figure, leaves the value to be typed.
    * ponytail: a rule given without a quote is asked, not looked up by its wording. Upgrade: a label line, as fees have.
    */
-  const rule = (path: string, value: number | string | null | undefined, prov: Provenance | undefined, unit: Unit) => {
+  const rule = (path: string, value: number | string | null | undefined, prov: Provenance | undefined, unit: Unit, about?: RegExp) => {
     if (value === null || value === undefined || !prov) return;
     const pg = pageAt(prov.source);
     const quote = pg ? findQuote(pg, prov.source?.quote) : null;
     if (!pg || !quote) return put(path, "ungrounded", nowhere(prov.source), null);
-    settle(path, value, figures(pg.p, quote, unit), [boxOf(pg.p, quote)]);
+    const all = figures(pg, quote, unit);
+    const figs = about ? all.filter((f) => about.test(pg.sentence(f.words[0]!))) : all;
+    // Not boxed: the quoted clause is the wrong one to show the person typing the value.
+    if (all.length && !figs.length) return put(path, "ungrounded", nowhere(prov.source), null, "the quote isn't from a sentence about this term");
+    settle(path, value, figs, [boxOf(pg.p, quote)]);
   };
-  const cap = (base: string, c: Rulebook["invoiceables"][number]["cap"], prov: Provenance) => {
-    rule(`${base}/cap/n`, c.n, prov, c.kind === "amount" ? "cents" : "count");
-    rule(`${base}/cap/ratio`, c.ratio, prov, "ratio");
+  const cap = (base: string, c: Rulebook["invoiceables"][number]["cap"], prov: Provenance, about?: RegExp) => {
+    rule(`${base}/cap/n`, c.n, prov, c.kind === "amount" ? "cents" : "count", about);
+    rule(`${base}/cap/ratio`, c.ratio, prov, "ratio", about);
   };
   rule("/study/effectiveDate/value", rulebook.study.effectiveDate.value, rulebook.study.effectiveDate.prov, "date");
   rule("/appliesFrom/value", rulebook.appliesFrom.value, rulebook.appliesFrom.prov, "date");
-  rule("/overhead/pct/value", rulebook.overhead.pct.value, rulebook.overhead.pct.prov, "pct");
-  rule("/holdback/pct", rulebook.holdback?.pct, rulebook.holdback?.prov, "pct");
-  rule("/payment/netDays/value", rulebook.payment.netDays.value, rulebook.payment.netDays.prov, "days");
-  rulebook.deadlines.forEach((d, i) => rule(`/deadlines/${i}/value`, d.value, d.prov, d.kind.includes("months") ? "months" : "days"));
-  rule("/overpayment/refundDays", rulebook.overpayment?.refundDays, rulebook.overpayment?.prov, "days");
-  rulebook.siteFees.forEach((x, i) => rule(`/siteFees/${i}/dueDays`, x.dueDays, x.prov, "days"));
+  rule("/overhead/pct/value", rulebook.overhead.pct.value, rulebook.overhead.pct.prov, "pct", ABOUT.overhead);
+  rule("/holdback/pct", rulebook.holdback?.pct, rulebook.holdback?.prov, "pct", ABOUT.holdback);
+  rule("/payment/netDays/value", rulebook.payment.netDays.value, rulebook.payment.netDays.prov, "days", ABOUT.netDays);
+  rulebook.deadlines.forEach((d, i) => rule(`/deadlines/${i}/value`, d.value, d.prov, d.kind.includes("months") ? "months" : "days", ABOUT.deadline[d.kind]));
+  rule("/overpayment/refundDays", rulebook.overpayment?.refundDays, rulebook.overpayment?.prov, "days", ABOUT.refund);
+  rulebook.siteFees.forEach((x, i) => rule(`/siteFees/${i}/dueDays`, x.dueDays, x.prov, "days", ABOUT.due));
   rulebook.invoiceables.forEach((x, i) => cap(`/invoiceables/${i}`, x.cap, x.prov));
-  if (rulebook.screenFail) cap("/screenFail", rulebook.screenFail.cap, rulebook.screenFail.prov);
+  if (rulebook.screenFail) cap("/screenFail", rulebook.screenFail.cap, rulebook.screenFail.prov, ABOUT.screenFail);
 
   const unaccounted = inventory(pages).filter((s) => !s.words.some((w) => bound.has(w)));
   return { evidence, unaccounted };

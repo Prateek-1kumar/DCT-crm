@@ -212,7 +212,7 @@ describe("cost cap ($20 per contract, on real spend)", () => {
     const saved = CONFIG.maxUsd;
     CONFIG.maxUsd = 0.02; // the mock spends $0.01 a call
     try {
-      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/has spent \$0.02, the \$0.02 limit per contract/);
+      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/has spent \$0.02, the \$0.02 limit for one read/);
     } finally {
       CONFIG.maxUsd = saved;
     }

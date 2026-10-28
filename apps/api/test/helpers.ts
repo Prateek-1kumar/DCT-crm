@@ -35,8 +35,9 @@ export async function makePdf(seed: string, pages = 2): Promise<Buffer> {
 /**
  * A born-digital work order printing what the fake read says (src/extraction/fake.ts), so the PDF checks run for real:
  * terms on page 1 (the fee's due days, the effective date and the screen-fail cap in the sentences the read quotes), the
- * budget grid on page 2 (its overhead % in the row label). Printed once, the grid backs both fake grids; "Exhibit A
- * (revised)" reads its Week 0 total as 8,488.00, which the page doesn't print. Parking at $12.00 is a money term the read
+ * budget grids on page 2 (each overhead % in its row label). Each fake grid has its own titled table, as a contract
+ * prints two grids: one printed row confirms one grid's cells at most. Both print the same numbers; "Exhibit A
+ * (revised)" reads its Week 0 total as 8,488.00, which its table doesn't print. Parking at $12.00 is a money term the read
  * doesn't hold. Overhead %, net days and the deadline have no quote, so nothing on the page backs them.
  */
 export async function makeTextPdf(seed: string): Promise<Buffer> {
@@ -68,7 +69,13 @@ export async function makeTextPdf(seed: string): Promise<Buffer> {
   ];
   const cols = [40, 90, 220, 280, 340];
   // the per-patient total sits outside the visit columns, so it isn't read as a visit row
-  page([...rows.flatMap((r, i) => r.flatMap((text, c) => (text ? [[cols[c]!, 80 + 14 * i, text] as [number, number, string]] : []))), [90, 164, "Total"], [480, 164, "$15,943.00"]]);
+  const table = (title: string, top: number): [number, number, string][] => [
+    [40, top - 16, title],
+    ...rows.flatMap((r, i) => r.flatMap((text, c) => (text ? [[cols[c]!, top + 14 * i, text] as [number, number, string]] : []))),
+    [90, top + 84, "Total"],
+    [480, top + 84, "$15,943.00"],
+  ];
+  page([...table("Exhibit A", 80), ...table("Exhibit A (revised)", 240)]);
   return Buffer.from(await doc.save());
 }
 
