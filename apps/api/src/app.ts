@@ -112,7 +112,7 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
     return reply.status(ready ? 200 : 503).send({ status: ready ? "ready" : "not ready", database, jobs: stopped ? "stopped" : jobs, schema });
   });
 
-  await app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 50 } });
+  await app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 50, fields: 10, parts: 60 } });
   await app.register(
     async (api) => {
       // Every :id is a uuid and every :v a version number, checked once before any route runs (never a database error).

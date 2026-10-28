@@ -62,6 +62,8 @@ function needs(env: Record<string, string>): string[] {
       out.push('OPENAI_PRICE_PER_MTOK must be "input,output" dollars per million tokens, e.g. "2.5,10"');
   }
   if (!env.UPLOAD_DIR && !REPO_ROOT) out.push("UPLOAD_DIR is needed when the API runs outside the repo");
+  // outside the repo the dev default would point a deployed API at a developer's database
+  if (!env.DATABASE_URL && !REPO_ROOT) out.push("DATABASE_URL is needed when the API runs outside the repo");
   return out;
 }
 

@@ -30,7 +30,7 @@ start() {
   else
     container run -d --name "$NAME" \
       -e POSTGRES_USER=dct -e POSTGRES_PASSWORD=dct -e POSTGRES_DB=dct_finance \
-      -p "$PORT:5432" postgres:16 >/dev/null
+      -p "127.0.0.1:$PORT:5432" postgres:16 >/dev/null
   fi
   wait_ready
 }
