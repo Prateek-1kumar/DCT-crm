@@ -22,6 +22,25 @@ describe("key terms", () => {
     expect(terms.find((t) => t.id === "holdback")).toMatchObject({ value: "None", where: null });
   });
 
+  it("a withheld value shows as hidden, never as missing; a withheld per-patient total isn't replaced by the visits added up", async () => {
+    const nw = await version("st-northwind");
+    const rb = nw.rulebook!;
+    const paths = ["/screenFail/amountCents", "/budgetGrids/0/perPatientTotals/0/cents"];
+    const terms = keyTerms(rb, nw.evidence, new Set(paths));
+    expect(terms.find((t) => t.id === "screen-fail")).toMatchObject({ value: "Hidden until answered", quote: null });
+    expect(terms.find((t) => t.id === "patient-0")).toMatchObject({ value: "Hidden until answered" });
+    // no printed total and a visit withheld: hidden too
+    const noTotal = { ...rb, budgetGrids: [{ ...rb.budgetGrids[0]!, perPatientTotals: [] }] };
+    expect(keyTerms(noTotal, nw.evidence, new Set(["/budgetGrids/0/visits/2/totalCents"])).find((t) => t.id === "patient-0")!.value).toBe("Hidden until answered");
+  });
+
+  it("each arm's chosen grid is billed: one per-patient total per arm", async () => {
+    const v = await version("st-cobalt"); // Arm A and Arm B
+    const rb = v.rulebook!;
+    const twice = { ...rb, budgetGrids: [...rb.budgetGrids, { ...rb.budgetGrids[0]!, id: "g-cb-a2", label: "Arm A budget" }], governingGridIds: ["g-cb-a2"] };
+    expect(keyTerms(twice, v.evidence).filter((t) => t.label === "Per patient").map((t) => t.detail)).toEqual([expect.stringContaining("Exhibit A – Arm B"), expect.stringContaining("Arm A budget")]);
+  });
+
   it("keeps the value's path when it's empty, so a withheld value isn't shown as missing", async () => {
     const v = await version("st-meridian");
     const rb = v.rulebook!;

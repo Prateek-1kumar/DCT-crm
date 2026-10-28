@@ -84,7 +84,7 @@ export const documentRoutes =
         await mkdir(config.uploadDir, { recursive: true });
         for await (const part of req.parts()) {
           if (part.type === "field") {
-            if (part.fieldname === "by" && typeof part.value === "string" && part.value) by = part.value;
+            if (part.fieldname === "by" && typeof part.value === "string" && part.value.trim()) by = part.value.trim();
             continue;
           }
           const buf = await part.toBuffer(); // throws 413 past the 50 MB limit
@@ -109,8 +109,10 @@ export const documentRoutes =
           reply,
           async (tx) => {
             const out: DocumentDto[] = [];
+            // Every file's lock first, in sha256 order: two uploads sharing files then take them in the same order and
+            // queue up, where taking them in upload order ([A, B] against [B, A]) deadlocked.
+            for (const sha of [...new Set(files.map((f) => f.sha256))].sort()) await tx.execute(sql`SELECT pg_advisory_xact_lock(${FILE_LOCKS}, hashtext(${sha}))`);
             for (const f of files) {
-              await tx.execute(sql`SELECT pg_advisory_xact_lock(${FILE_LOCKS}, hashtext(${f.sha256}))`);
               const [existing] = await tx.select().from(documents).where(eq(documents.sha256, f.sha256));
               if (existing) {
                 out.push(documentDto(existing, existing.id));
@@ -158,8 +160,10 @@ export const documentRoutes =
         // the same kind again changes nothing, so it logs nothing
         if (doc.kind === body.kind) return documentDto(doc);
         const [row] = await tx.update(documents).set({ kind: body.kind }).where(eq(documents.id, doc.id)).returning();
-        const [link] = await tx.select().from(studyDocuments).where(eq(studyDocuments.documentId, doc.id)).limit(1);
-        await audit(tx, body.by, link?.studyId ?? null, "document.kind_set", { documentId: doc.id, from: doc.kind, to: body.kind });
+        // A file can be shared (one master agreement for several studies): every study that uses it logs the change, so
+        // each contract's Activity shows it. Approved versions keep the kind they were read with (their rulebook's documents).
+        const links = await tx.select({ studyId: studyDocuments.studyId }).from(studyDocuments).where(eq(studyDocuments.documentId, doc.id)).orderBy(studyDocuments.studyId);
+        for (const studyId of links.length ? links.map((l) => l.studyId) : [null]) await audit(tx, body.by, studyId, "document.kind_set", { documentId: doc.id, from: doc.kind, to: body.kind });
         return documentDto(row!);
       });
     });

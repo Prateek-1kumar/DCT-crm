@@ -7,6 +7,7 @@ import {
   ReportValueBody,
   type ReviewItem,
   Rulebook,
+  samePerson,
   SendBackBody,
   SignOffBody,
   searchMaster,
@@ -25,7 +26,7 @@ import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
-import { answer, askAbout, at, empty, hiddenPaths, leaf, mask, recheck } from "../review.js";
+import { answer, askAbout, at, byHandQuestions, empty, hiddenPaths, leaf, mask, recheck } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
 const versionNo = (v: unknown) => {
@@ -88,10 +89,11 @@ export const versionRoutes =
       const after = await loadVersion(db, req.params.id, v);
       const before = await loadVersion(db, req.params.id, a);
       if (!after.rulebook || !before.rulebook) throw new HttpError(409, "Both versions need an extracted rulebook to diff");
-      // Blind entry: a withheld value isn't shown as changed either.
-      const hidden = new Set([...hiddenPaths(before), ...hiddenPaths(after)]);
-      const view = (r: typeof after) => (r.rulebook && hiddenPaths(r).length ? mask(r.rulebook, hiddenPaths(r)) : r.rulebook);
-      return diffRulebooks(view(before), view(after)).filter((e) => !hidden.has(e.path));
+      // Blind entry: a withheld value isn't shown as changed either. Both sides are masked alike, so the words blanked
+      // around it on one side don't show up as changed against the other.
+      const hidden = [...new Set([...hiddenPaths(before), ...hiddenPaths(after)])];
+      const view = (rb: Rulebook) => (hidden.length ? mask(rb, hidden) : rb);
+      return diffRulebooks(view(before.rulebook), view(after.rulebook)).filter((e) => !hidden.includes(e.path));
     });
 
     /**
@@ -145,10 +147,15 @@ export const versionRoutes =
       }),
     );
 
-    /** Typing is done: someone else re-types up to 10 randomly chosen typed values (all of them if fewer), blind. */
+    /**
+     * Typing is done: someone else re-types up to 10 randomly chosen typed values (all of them if fewer), blind. The
+     * contract's checks run on what was typed, as after a read, and every number nobody typed (a placeholder of the blank
+     * form) is asked as a missing value.
+     */
     app.post<P>("/studies/:id/versions/:v/by-hand/done", async (req, reply) => {
       const body = ByHandBody.safeParse(req.body);
       if (!body.success) throw new HttpError(400, "Say who is typing.");
+      const port = await getExtraction();
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Only a contract typed by hand can be marked done.");
@@ -159,10 +166,12 @@ export const versionRoutes =
         if (!typed.length) throw new HttpError(400, "Type at least one value first.");
         // ponytail: Math.random shuffle; a seeded pick if the sample ever needs to be reproducible.
         const sample = typed.map((e) => [Math.random(), e] as const).sort((a, b) => a[0] - b[0]).slice(0, 10).map(([, e]) => e);
-        const review = sample.map((e) => askAbout(rb, row.evidence, e.path, `spot:${e.path}`, "spot_check"));
-        const [updated] = await tx.update(rulebookVersions).set({ review, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
+        const spots = sample.map((e) => askAbout(rb, row.evidence, e.path, `spot:${e.path}`, "spot_check"));
+        const anomalies = port.runContractChecks(rb);
+        const review = [...spots, ...byHandQuestions(rb, row.evidence, anomalies, new Set(sample.map((e) => e.path)))];
+        const [updated] = await tx.update(rulebookVersions).set({ review, anomalies, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
         await refreshStudyStatus(tx, row.studyId, body.data.by);
-        await audit(tx, body.data.by, row.studyId, "byhand.done", { version: row.version, typed: typed.length, "re-type": sample.length });
+        await audit(tx, body.data.by, row.studyId, "byhand.done", { version: row.version, typed: typed.length, "re-type": sample.length, questions: review.length - spots.length });
         return versionDto(updated!);
       });
     });
@@ -174,7 +183,9 @@ export const versionRoutes =
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.rulebook) throw new HttpError(409, `Version ${row.version} is ${row.status}; only a draft takes answers.`);
         const draft = { version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors] };
-        const { item, outcome, changed, set } = answer(draft, req.params.itemId, req.body, port.isoDate);
+        const { item, outcome, changed, set, listed, unchanged } = answer(draft, req.params.itemId, req.body, port.isoDate);
+        // a repeat that changes nothing writes nothing and logs nothing
+        if (unchanged) return versionDto(row);
         const { by, note } = item.answer!;
         // the grid's held-back totals, checked on the typed numbers once its last one is answered
         if (set) draft.review.push(...recheck((rb) => port.runContractChecks(rb), { ...draft, anomalies: row.anomalies }, set.path));
@@ -185,12 +196,14 @@ export const versionRoutes =
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
         // A value written to the master is logged like a correction, so an amendment's read carries it forward (correctionsOf).
-        // The governing grid is carried by its label instead (carryGrid).
+        // The governing grids are carried by their labels instead (carryGrid), and the bill-by-hand list by asking again:
+        // an amendment's read finds the same terms unaccounted.
         const wrote =
           !set || isDeepStrictEqual(set.before, set.after) ? {}
-          : set.path === "/governingGridId" ? { gridId: set.after }
+          : set.path === "/governingGridIds" ? { gridId: item.answer!.optionId }
           : { path: set.path, before: set.before, after: set.after, items: itemIds(row.rulebook, parsePointer(set.path)) };
-        await audit(tx, by, row.studyId, changed ? "review.changed" : "review.answered", { version: row.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote });
+        const billByHand = listed?.added ? { billByHand: listed.added } : listed?.removed ? { offBillByHand: listed.removed } : {};
+        await audit(tx, by, row.studyId, changed ? "review.changed" : "review.answered", { version: row.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote, ...billByHand });
         return versionDto(updated!);
       });
     });
@@ -210,7 +223,12 @@ export const versionRoutes =
         if (value === undefined || !leaf(value)) throw new HttpError(400, "Pick a single value to report.");
         let draft = row;
         if (row.status === "signed") {
-          const [newest] = await tx.select({ version: rulebookVersions.version }).from(rulebookVersions).where(eq(rulebookVersions.studyId, row.studyId)).orderBy(desc(rulebookVersions.version)).limit(1);
+          const [newest] = await tx.select({ version: rulebookVersions.version, status: rulebookVersions.status }).from(rulebookVersions).where(eq(rulebookVersions.studyId, row.studyId)).orderBy(desc(rulebookVersions.version)).limit(1);
+          // A newer version holds the amendment: report it there once it's a draft. One that couldn't be read is read again
+          // first (POST /extract reuses its version), never replaced by a correction: the amendment's terms would be lost.
+          if (newest!.status === "failed")
+            throw new HttpError(409, `The amendment in version ${newest!.version} couldn't be read. Read it again, or type it in by hand, then report this on that version.`);
+          if (newest!.status === "extracting") throw new HttpError(409, `Version ${newest!.version} is being read right now. When it's ready, report this there.`);
           if (newest!.version !== row.version) throw new HttpError(409, `Version ${newest!.version} is already in progress. Report it there.`);
           draft = (
             await tx
@@ -271,7 +289,10 @@ export const versionRoutes =
           const ev = i.path ? evidence.find((e) => e.path === i.path) : undefined;
           if (ev?.status === "attested") Object.assign(ev, { status: "conflict", note: `Sent back by ${by}` });
         }
-        const [updated] = await tx.update(rulebookVersions).set({ review, evidence, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
+        // a term listed to bill by hand comes off the list while its answer is reopened
+        const reopened = new Set(items.map((i) => i!.id));
+        const rulebook = row.rulebook && { ...row.rulebook, unclassified: row.rulebook.unclassified.filter((u) => !u.itemId || !reopened.has(u.itemId)) };
+        const [updated] = await tx.update(rulebookVersions).set({ review, evidence, rulebook, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
         // Its own alert, with the note; no "questions ready" on top.
         await refreshStudyStatus(tx, row.studyId, by, { alert: false });
         await raiseAlert(tx, { kind: "sent_back", studyId: row.studyId, version: row.version, by, count: items.length, note });
@@ -282,21 +303,24 @@ export const versionRoutes =
     });
 
     /**
-     * Approval (ADR-001 I1–I6): every blocking question settled by a typed value or a pick, every number confirmed by
-     * the PDF's text or a person, typing by hand re-typed blind, and with maker-checker on, not by anyone who answered.
+     * Approval (ADR-001 I1–I6): the version as the approver saw it (`asOf`), every question settled by a typed value, a
+     * pick or a reason (a blocker by a value or a pick only: answer() enforces how each clears, ADR-001 §6), so nothing is
+     * withheld any more; every number confirmed by the PDF's text or a person; typing by hand re-typed blind; and with
+     * maker-checker on, not by anyone who answered (names compared as people type them, ignoring case and edge spaces).
      */
     app.post<P>("/studies/:id/versions/:v/sign-off", async (req, reply) => {
       const body = parse(SignOffBody, req.body);
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         assertDraft(row);
+        if (row.updatedAt.toISOString() !== body.asOf) throw new HttpError(409, "This contract changed since you opened it. Check it again.");
         if (row.byHand && !row.review.length) throw new HttpError(409, "Typing isn't marked done yet, so nobody has re-typed the values.");
-        const open = row.review.filter((i) => i.blocking && !settled(i)).length;
+        const open = row.review.filter((i) => !settled(i)).length;
         if (open) throw new HttpError(409, `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`);
         const unconfirmed = row.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
         if (unconfirmed) throw new HttpError(409, `${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
         const [cfg] = await tx.select().from(settings).where(eq(settings.id, 1));
-        if (cfg?.makerChecker && row.editors.includes(body.by))
+        if ((cfg?.makerChecker ?? true) && row.editors.some((e) => samePerson(e, body.by)))
           throw new HttpError(409, `Maker-checker is on: ${body.by} answered questions on this contract, so someone else has to approve it.`);
         // the previous live version stays live until this moment
         await tx

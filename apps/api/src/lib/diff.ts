@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { isObj } from "./http.js";
 
 /** Rulebook arrays whose items are matched by identity (not index). */
-const COLLECTIONS = new Set(["budgetGrids", "visits", "procedures", "perPatientTotals", "invoiceables", "siteFees", "deadlines", "documents", "referencedDocuments"]);
+const COLLECTIONS = new Set(["budgetGrids", "visits", "procedures", "perPatientTotals", "invoiceables", "siteFees", "deadlines", "documents", "referencedDocuments", "unclassified"]);
 
 /** Section names for top-level rulebook keys: the first part of every label (the UI groups by it). */
 const SECTIONS: Record<string, string> = {
@@ -22,6 +22,8 @@ const SECTIONS: Record<string, string> = {
   documents: "Document",
   referencedDocuments: "Referenced document",
   governingGridId: "Governing grid",
+  governingGridIds: "Governing grid",
+  unclassified: "Bill by hand",
 };
 
 const pick = (x: Record<string, unknown>, keys: string[]) => keys.map((k) => x[k]).find((v) => typeof v === "string") as string | undefined;

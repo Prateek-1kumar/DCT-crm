@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
-import { ProofreadMark, ReviewItem, settled, ValueEvidence } from "./evidence";
+import { Person, ProofreadMark, ReviewItem, settled, ValueEvidence } from "./evidence";
 import { actionLabel } from "./labels";
 import { DocumentKind, Rulebook } from "./rulebook";
 
@@ -86,6 +86,10 @@ export const RulebookVersionDto = VersionSummaryDto.extend({
   byHand: z.boolean(),
   /** Values someone proofread and found right (one mark per value, the latest). */
   proofread: z.array(ProofreadMark),
+  /** When anything in it last changed: approval sends it back (SignOffBody.asOf), so nobody approves what they didn't see. */
+  updatedAt: z.string(),
+  /** What made the reading weaker than usual (a budget grid read only once, say), in plain words; empty when nothing did. */
+  warnings: z.array(z.string()),
 }).superRefine((v, ctx) => {
   if (!v.rulebook) return;
   const r = Rulebook.safeParse(v.rulebook);
@@ -164,25 +168,30 @@ export function auditMatches(e: Pick<AuditEntryDto, "by" | "action" | "detail">,
 
 // ---- Request bodies ----
 
-export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1).max(50), by: z.string().min(1).optional() });
+export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1).max(50), by: Person.optional() });
 /** POST /studies/:id/extract — documentIds adds documents (amendment journey). */
-export const ExtractBody = z.object({ documentIds: z.array(z.string()).max(50).optional(), by: z.string().min(1).optional() });
+export const ExtractBody = z.object({ documentIds: z.array(z.string()).max(50).optional(), by: Person.optional() });
 export const ConfirmStudyBody = z.object({
   sponsor: z.string(),
   protocol: z.string(),
   siteName: z.string(),
   investigator: z.string(),
-  by: z.string(),
+  by: z.string().trim(),
 });
-export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: z.string() });
-export const CorrectValueBody = z.object({ path: z.string(), value: z.unknown(), note: z.string().min(1), by: z.string().min(1) });
-export const SignOffBody = z.object({ by: z.string().min(1), note: z.string().optional() });
+export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: z.string().trim() });
+export const CorrectValueBody = z.object({ path: z.string(), value: z.unknown(), note: z.string().min(1), by: Person });
+/**
+ * `asOf`: the version's `updatedAt` as the approver saw it. If anything changed since (an answer in another tab), approval
+ * is refused, so nobody approves values they didn't see.
+ */
+export const SignOffBody = z.object({ by: Person, note: z.string().optional(), asOf: z.string().min(1) });
+export type SignOffBody = z.infer<typeof SignOffBody>;
 export const SettingsDto = z.object({
-  /** When on, a person who corrected values in a version cannot sign it off. Off by default. */
+  /** When on, nobody who answered questions or typed values on a version can approve it. On by default (ADR-001 §10). */
   makerChecker: z.boolean(),
   people: z.array(z.string()),
 });
 export type SettingsDto = z.infer<typeof SettingsDto>;
 
 /** PATCH /settings — any subset of SettingsDto. */
-export const PatchSettingsBody = SettingsDto.partial().extend({ by: z.string().min(1).optional() });
+export const PatchSettingsBody = SettingsDto.partial().extend({ by: Person.optional() });

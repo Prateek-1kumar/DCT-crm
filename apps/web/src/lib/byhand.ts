@@ -43,6 +43,7 @@ export function blankRulebook(
       { id: "g-hand", label: "Budget", arm: null, statedOverheadPct: null, visits: [blankVisit("V1", 1)], procedures: [blankProcedure()], perPatientTotals: [], header: { investigator: null, siteName: null }, prov: MANUAL },
     ],
     governingGridId: null,
+    governingGridIds: [],
     invoiceables: [],
     screenFail: null,
     siteFees: [],
@@ -51,5 +52,6 @@ export function blankRulebook(
     overpayment: null,
     rounding: m("unspecified" as const),
     appliesFrom: m(null),
+    unclassified: [],
   };
 }

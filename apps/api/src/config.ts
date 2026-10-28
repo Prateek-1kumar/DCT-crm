@@ -49,10 +49,12 @@ const Env = z.object({
   CROSS_READ_GRIDS: flag.optional(),
 });
 
-/** What one setting needs from another; checked on the raw values, so they're reported along with any others. */
+/**
+ * What one setting needs from another; checked on the raw values, so they're reported along with any others. The AI key
+ * isn't one of them: migrations and scripts load these settings and never read a contract (readingProblem).
+ */
 function needs(env: Record<string, string>): string[] {
   const out: string[] = [];
-  if (env.EXTRACTION_FAKE !== "1" && !env.ANTHROPIC_API_KEY) out.push("ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)");
   if (env.CROSS_READ?.toLowerCase() === "openai") {
     if (!env.OPENAI_API_KEY) out.push("OPENAI_API_KEY is needed when CROSS_READ=openai");
     if (!env.OPENAI_MODEL) out.push("OPENAI_MODEL is needed when CROSS_READ=openai");
@@ -61,6 +63,13 @@ function needs(env: Record<string, string>): string[] {
   }
   if (!env.UPLOAD_DIR && !REPO_ROOT) out.push("UPLOAD_DIR is needed when the API runs outside the repo");
   return out;
+}
+
+/** Why this server can't read contracts, or null: only a server that runs the reading needs the AI key (server.ts). */
+export function readingProblem(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.EXTRACTION_FAKE !== "1" && !env.ANTHROPIC_API_KEY
+    ? "The API's settings aren't valid (check .env or the environment):\n  - ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)"
+    : null;
 }
 
 export class ConfigError extends Error {}

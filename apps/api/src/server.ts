@@ -1,6 +1,12 @@
 import { buildApp } from "./app.js";
-import { config } from "./config.js";
+import { config, readingProblem } from "./config.js";
 
+// This server runs the reading (its job workers), so it needs the AI key: fail fast, before anything listens.
+const problem = readingProblem();
+if (problem) {
+  console.error(problem);
+  process.exit(1);
+}
 const { app } = await buildApp({ logger: true });
 await app.listen({ port: config.port, host: config.listenHost });
 

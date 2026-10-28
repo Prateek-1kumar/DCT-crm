@@ -1,4 +1,4 @@
-import { settled, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
+import { samePerson, settled, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
 import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
@@ -33,6 +33,15 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
       return "This contract is a scan, so this number can't be checked against its text.";
     case "SCAN_PAGE":
       return "This page is a scan, so it can't be searched for money terms. Only a person can say what's on it.";
+    case "PICTURE_PAGE":
+      return "Part of this page is a picture, and a picture can't be searched for money terms. Only a person can say what's in it.";
+    case "UNACCOUNTED_TERM":
+      return "This is in the contract, but not in the invoicing master. If it's a payment term, it goes on the list to bill by hand.";
+    case "VISIT_TOTAL_MISMATCH":
+    case "PER_PATIENT_TOTAL_MISMATCH":
+      return "The contract's own numbers don't add up, so the contract itself is wrong here. Decide which number to bill, and note what to ask the sponsor.";
+    case "REQUIRED_MISSING":
+      return "The invoicing master has nothing typed here yet, so it would be approved empty. Type what the contract says.";
     case "HIDDEN_TEXT":
       return "This page has words nobody can see. They're never used as evidence, but someone should check they don't change the money.";
   }
@@ -134,21 +143,26 @@ export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
 }
 
 /**
- * Mirrors the API's approval rules so the button can explain itself before the 409.
- * The API stays the source of truth.
+ * Mirrors the API's approval rules so the button can explain itself before the 409: every question settled (one not
+ * needed to approve too), typing by hand marked done, every number backed by the PDF or a person, and maker-checker
+ * (names compared as the API compares them). The API stays the source of truth.
  */
 export function approveState(
-  version: Pick<RulebookVersionDto, "status" | "review" | "editors" | "rulebook">,
+  version: Pick<RulebookVersionDto, "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence">,
   settings: Pick<SettingsDto, "makerChecker"> | undefined,
   by: string | null,
 ): { allowed: boolean; reasons: string[] } {
   const reasons: string[] = [];
   if (version.status !== "draft") reasons.push("Only a draft can be approved.");
   if (!version.rulebook) reasons.push("There is no invoicing master to approve yet.");
-  const open = version.review.filter((i) => i.blocking && !settled(i)).length;
+  if (version.byHand && !version.review.length) reasons.push("Typing isn't marked done yet, so nobody has re-typed the values.");
+  const open = version.review.filter((i) => !settled(i)).length;
   if (open) reasons.push(`${open} ${open === 1 ? "question needs" : "questions need"} an answer first.`);
+  const unconfirmed = version.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
+  // a number that's unconfirmed because its question is open is counted once, as that question
+  if (unconfirmed && !open) reasons.push(`${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
   if (!by) reasons.push("Choose your name first (bottom of the sidebar).");
-  else if (settings?.makerChecker && version.editors.includes(by))
+  else if ((settings?.makerChecker ?? true) && version.editors.some((e) => samePerson(e, by)))
     reasons.push(`Maker-checker is on, and ${by} answered questions on this contract, so someone else has to approve it.`);
   return { allowed: reasons.length === 0, reasons };
 }

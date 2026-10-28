@@ -1,16 +1,25 @@
 import {
   AnswerReviewBody,
+  blindReview,
   ByHandBody,
+  leaf,
+  ConfirmStudyBody,
   CorrectValueBody,
+  mask,
+  PatchSettingsBody,
   ProofreadBody,
   ReportValueBody,
+  samePerson,
+  SetDocumentKindBody,
   SendBackBody,
+  SignOffBody,
   StudyListQuery,
   AlertListQuery,
   AuditListQuery,
   auditMatches,
   blankNumbers,
   ReadAlertsBody,
+  upgradeRulebook,
   withheldPaths,
   type AlertDto,
   searchMaster,
@@ -29,6 +38,7 @@ import {
   type RulebookVersionDto,
   type SettingsDto,
   type StudyDetailDto,
+  type Unclassified,
   type StudyStatus,
   type StudySummaryDto,
   type ValueEvidence,
@@ -59,7 +69,7 @@ import {
 } from "./fixtures";
 
 /**
- * In-browser implementation of the PHASE-1.md HTTP API (NEXT_PUBLIC_API_MOCK=1).
+ * In-browser implementation of the HTTP API in docs/phase-1/api.md (NEXT_PUBLIC_API_MOCK=1).
  * State lives in memory and is mirrored to localStorage so reloads keep the demo going.
  */
 
@@ -75,7 +85,7 @@ type Db = {
   alertReads: Record<string, string[]>;
 };
 
-const KEY = "dct.mockdb.v5";
+const KEY = "dct.mockdb.v6";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -114,7 +124,8 @@ export function mockReset() {
 const textOf = (filename: string): DocumentDto["text"] => (/scan/i.test(filename) ? "scan" : "text");
 
 function seed(): Db {
-  const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: false, people: [...PEOPLE] }, secrets: {}, seq: 100, alerts: [], alertReads: {} };
+  // maker-checker is on unless someone turns it off (ADR-001 §10)
+  const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: true, people: [...PEOPLE] }, secrets: {}, seq: 100, alerts: [], alertReads: {} };
   const kinds: Record<string, DocumentKind> = { "doc-hal-am1": "amendment", "doc-sl-wo": "work_order" };
 
   for (const sd of Object.values(SEEDS)) {
@@ -150,13 +161,13 @@ function seed(): Db {
     say(st, v1, "h2", { optionId: "invoiceable", by: "Avery Chen" }, daysAgo(41));
     sign(st, v1, "Avery Chen", daysAgo(40));
     const am = amendRulebook(v1.rulebook!, { id: "doc-hal-am1", kind: "amendment", title: "Amendment 1 to CTA HAL-2207", date: "2026-09-30" });
-    const v2 = version(st, 2, buildDraft(am, amendmentSpecs("doc-hal-am1", am.invoiceables.length - 1)), daysAgo(2));
+    const v2 = version(st, 2, buildDraft(am, amendmentSpecs("doc-hal-am1", am.invoiceables.length - 1, am.budgetGrids[0]!.visits[5]!.totalCents)), daysAgo(2));
     log(d, "Taylor Brooks", st.id, "amendment.uploaded", { file: "HAL-2207_Amendment-1.pdf", version: 2 }, daysAgo(2));
     say(st, v2, "a1", { value: "2026-09-01", by: "Taylor Brooks" }, daysAgo(1));
     say(st, v2, "a2", { value: 42000, by: "Taylor Brooks" }, daysAgo(1));
     say(st, v2, "a3", { value: 11200, by: "Taylor Brooks" }, daysAgo(1));
-    say(st, v2, "a4", { optionId: "ok", by: "Taylor Brooks" }, daysAgo(1));
-    say(st, v2, "a5", { cantTell: true, by: "Taylor Brooks" }, daysAgo(1));
+    say(st, v2, "a4", { optionId: "bill_by_hand", by: "Taylor Brooks" }, daysAgo(1));
+    say(st, v2, "a5", { optionId: "printed", note: "Asked Crestline why Week 52 prints $5.00 under its lines", by: "Taylor Brooks" }, daysAgo(1));
   }
 
   // Northwind: a text PDF in "Needs you".
@@ -210,11 +221,12 @@ function newVersion(studyId: string, version: number, status: RulebookVersionDto
   return {
     studyId, version, status, createdAt, signedBy: null, signedAt: null, appliesFrom: null, rulebook: null, anomalies: [], editors: [],
     cost: { usd: 3.12, inputTokens: 201_300, outputTokens: 24_800 }, evidence: [], review: [], pdfCheck: null, byHand: false, proofread: [],
+    updatedAt: createdAt, warnings: [],
   };
 }
 
 function setDraft(d: Db, ver: RulebookVersionDto, dr: Draft) {
-  Object.assign(ver, { rulebook: dr.rulebook, review: dr.review, evidence: dr.evidence, pdfCheck: dr.pdfCheck });
+  Object.assign(ver, { rulebook: dr.rulebook, review: dr.review, evidence: dr.evidence, pdfCheck: dr.pdfCheck, updatedAt: now() });
   for (const [id, sec] of Object.entries(dr.secrets)) d.secrets[`${ver.studyId}/${ver.version}/${id}`] = sec;
 }
 
@@ -264,8 +276,9 @@ function tick(d: Db) {
     const ver = d.versions.find((x) => x.studyId === st.id && x.version === j.version)!;
     const live = latestSigned(d, st.id);
     if (v.state === "failed") {
-      ver.status = "failed";
-      st.status = live ? "live" : "extraction_failed";
+      // an amendment that couldn't be read shows as such, live version or not (as the real API)
+      Object.assign(ver, { status: "failed", updatedAt: now() });
+      st.status = "extraction_failed";
       st.updatedAt = now();
       log(d, "system", st.id, "extraction.failed", { version: ver.version, error: v.error });
       continue;
@@ -273,7 +286,7 @@ function tick(d: Db) {
     if (live?.rulebook) {
       const am = docs.find((x) => x.kind === "amendment" && !live.rulebook!.documents.some((r) => r.id === x.id)) ?? docs[docs.length - 1]!;
       const rb = amendRulebook(live.rulebook, { id: am.id, kind: am.kind, title: am.filename.replace(/\.pdf$/i, ""), date: now().slice(0, 10) });
-      setDraft(d, ver, buildDraft(rb, amendmentSpecs(am.id, rb.invoiceables.length - 1)));
+      setDraft(d, ver, buildDraft(rb, amendmentSpecs(am.id, rb.invoiceables.length - 1, rb.budgetGrids[0]!.visits[5]!.totalCents)));
       ver.status = "draft";
       st.status = "amendment_in_review";
     } else {
@@ -520,18 +533,73 @@ export function diffRulebooks(before: Rulebook | null, after: Rulebook | null): 
 
 // ---------------------------------------------------------------- answering questions
 
+const norm = (x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : x);
+/** As the real API: text ignores case and edge spaces; a list ignores the order of its items too. */
 const same = (a: unknown, b: unknown) =>
-  typeof a === "string" && typeof b === "string" ? a.trim().toLowerCase() === b.trim().toLowerCase() : JSON.stringify(a) === JSON.stringify(b);
+  Array.isArray(a) && Array.isArray(b) ? JSON.stringify(a.map(norm).sort()) === JSON.stringify(b.map(norm).sort()) : JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 const empty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length);
 const WHY = "Add a short note saying why the PDF text is wrong here.";
 const WHERE = "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.";
+const ARITHMETIC = new Set(["VISIT_TOTAL_MISMATCH", "PER_PATIENT_TOTAL_MISMATCH"]);
+/** Answers that list a term to bill by hand on the master's unclassified list (ADR-001 §7). */
+const BILL_BY_HAND = new Set(["UNACCOUNTED_TERM", "SCAN_PAGE", "PICTURE_PAGE"]);
+
+/** As the real API's sumAt: what a printed total should be from its parts, which "the sum governs" writes. */
+function sumAt(rb: Rulebook, path: string): number | undefined {
+  const m = /^\/budgetGrids\/(\d+)\/(?:visits\/(\d+)\/(totalCents|procedureSubtotalCents|nonProcedureCents)|perPatientTotals\/\d+\/cents)$/.exec(path);
+  const g = m ? rb.budgetGrids[Number(m[1])] : undefined;
+  if (!g || !m) return undefined;
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+  if (!m[2]) return sum(g.visits.map((v) => v.totalCents));
+  const v = g.visits[Number(m[2])];
+  if (!v) return undefined;
+  const cells = (cat?: "non_procedure") => sum(g.procedures.filter((p) => !cat || p.category === cat).map((p) => p.cells[v.code]).filter((c): c is number => typeof c === "number"));
+  const out =
+    m[3] === "totalCents" ? (v.procedureSubtotalCents === null || v.overheadCents === null ? undefined : v.procedureSubtotalCents + v.overheadCents + (v.nonProcedureCents ?? 0))
+    : m[3] === "procedureSubtotalCents" ? cells() - (v.nonProcedureCents ?? 0)
+    : cells("non_procedure");
+  return out !== undefined && out >= 0 ? out : undefined;
+}
+
+/** What picking an option writes, as the real API: the arm's grid (the other arms' picks stay), the sum, or the value. */
+function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: unknown, secret: Secret | undefined): { path: string; value: unknown } | undefined {
+  if (item.reason === "GRID_CONFLICT") {
+    const arm = new Set(item.options.map((o) => o.id));
+    return { path: "/governingGridIds", value: [...(rb.governingGridIds ?? []).filter((id) => !arm.has(id)), optionId] };
+  }
+  if (ARITHMETIC.has(item.reason)) {
+    const value = optionId === "sum" && item.path ? sumAt(rb, item.path) : undefined;
+    return value === undefined ? undefined : { path: item.path!, value };
+  }
+  if (secret?.apply?.[optionId]) return secret.apply[optionId];
+  if (!item.path || (item.kind !== "confirm_value" && item.kind !== "interpretation") || current === undefined || !leaf(current)) return undefined;
+  return { path: item.path, value: typeof current === "boolean" ? optionId === "true" : optionId };
+}
+
+const shortLabel = (quote: string) => {
+  const t = quote.replace(/\s+/g, " ").trim();
+  return t.length <= 60 ? t : `${t.slice(0, 60).replace(/\s+\S*$/, "")}…`;
+};
+/** As the real API: what "bill by hand" lists, the term's own words or the page to read. */
+function unclassifiedOf(rb: Rulebook, item: ReviewItem, note: string | undefined): Unclassified {
+  const w = item.where[0]!;
+  const title = rb.documents.find((x) => x.id === w.documentId)?.title ?? "the contract";
+  const t = item.term;
+  return {
+    label: t ? shortLabel(t.quote) : `Page ${w.page} of “${title}”`,
+    quote: t?.quote ?? "", page: w.page, amounts: t?.amounts ?? [],
+    ...(t?.pct !== undefined ? { pct: t.pct } : {}), ...(t?.days !== undefined ? { days: t.days } : {}),
+    note: note ?? "", prov: { source: { documentId: w.documentId, page: w.page }, confidence: 1, method: "manual", crossCheck: "not_checked" }, itemId: item.id,
+  };
+}
 
 /**
  * POST .../review/:itemId, as the real API. A typed value is compared with the PDF's own text at its spot, or, where it
  * prints nothing parseable, with the value we hold: matched, or differs (then picking a value settles it as chosen).
  * Settling a differs needs a note: keeping your own value over the PDF text says why the text is wrong; with no PDF
- * text, either value says where the page prints it, and the answer is marked `noPdfText`. Options are chosen. Can't tell
- * is left for the approver. Answering again changes the answer while the version is a draft.
+ * text, either value says where the page prints it, and the answer is marked `noPdfText`. Options are chosen; one with a
+ * `note` needs one. Can't tell is left for the approver and clears nothing. "Bill by hand" lists the term on the master,
+ * any other answer takes it off. The same settling answer again from the same person changes nothing.
  */
 function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: unknown, at = now()): Res {
   if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only a draft takes answers.`);
@@ -540,71 +608,99 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   const parsed = AnswerReviewBody.safeParse(raw);
   if (!parsed.success) return err(400, "Say who is answering.");
   const b = parsed.data;
-  // The blind re-type of hand-typed values must be done by someone who didn't type them.
+  // The blind re-type of hand-typed values must be done by someone who didn't type them, nor change any value since.
   const retype = ver.byHand && item.reason === "spot_check";
-  if (retype && ver.editors.includes(b.by)) return err(409, `${b.by} typed these values, so someone else has to re-type them.`);
+  if (retype && ver.editors.some((e) => samePerson(e, b.by))) {
+    const typist = ver.evidence.some((e) => e.note?.startsWith("Typed by hand by ") && samePerson(e.note.slice("Typed by hand by ".length), b.by));
+    return err(409, typist ? `${b.by} typed these values, so someone else has to re-type them.` : `${b.by} changed a value on this contract, so someone else has to re-type the rest.`);
+  }
   const secret = d.secrets[`${st.id}/${ver.version}/${item.id}`];
   const current = item.path ? getAt(ver.rulebook, item.path) : undefined;
-  if (Array.isArray(current) && typeof b.value === "string") b.value = b.value.split(",").map((x) => x.trim()).filter(Boolean);
+  let value = b.value;
+  if (Array.isArray(current) && typeof value === "string") value = value.split(",").map((x) => x.trim()).filter(Boolean);
   const ev = item.path ? ver.evidence.find((e) => e.path === item.path) : undefined;
   const note = b.note?.trim();
+  const a = item.answer;
+  if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (item.options.length > 0 || same(a.value, value)))
+    return ok(view(ver));
   let outcome: NonNullable<ReviewItem["outcome"]>;
   let set: { path: string; value: unknown } | undefined;
   let noPdfText = false;
   if (b.cantTell) outcome = "cant_tell";
   else if (item.options.length) {
-    if (!item.options.some((o) => o.id === b.optionId)) return err(400, "Pick one of the options.");
-    outcome = "chosen";
-    set = secret?.apply?.[b.optionId!];
+    const option = item.options.find((o) => o.id === b.optionId);
+    if (!option) return err(400, "Pick one of the options.");
+    if (option.note && !note) return err(400, `Add a short note for this answer: ${option.note.replace(/^./, (c) => c.toLowerCase())}`);
+    set = optionValue(ver.rulebook, item, option.id, current, secret);
+    const checkable = set && item.kind === "confirm_value" && item.reason !== "REQUIRED_MISSING" && !empty(current) && item.outcome !== "differs";
+    if (item.outcome === "differs" && !note) return err(400, WHERE);
+    noPdfText = item.outcome === "differs";
+    outcome = checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
+    if (outcome === "differs") set = undefined;
   } else {
-    if (b.value === undefined || b.value === null || b.value === "") return err(400, "Type a value, or say you can't tell.");
+    if (value === undefined || value === null || value === "") return err(400, "Type a value, or say you can't tell.");
+    if (item.path && !RulebookSchema.safeParse(setAt(ver.rulebook, item.path, value)).success) return err(400, "That value can't go in this field. Check what you typed.");
     // the sentence's full stop or comma after the number isn't part of it
     const text = ev?.printed ? parseAnswer(item.input ?? "text", ev.printed.trim().replace(/[.,;:]+$/, "")) : null;
     const printed = text && "value" in text ? text.value : undefined;
-    const truth = printed ?? (empty(current) ? undefined : current);
+    const truth = printed ?? (empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current);
     if (item.outcome === "differs") {
       if (printed === undefined && !note) return err(400, WHERE);
-      if (printed !== undefined && !same(b.value, printed) && !note) return err(400, WHY);
+      if (printed !== undefined && !same(value, printed) && !note) return err(400, WHY);
       noPdfText = printed === undefined;
       outcome = "chosen";
     } else if (truth === undefined) outcome = "chosen";
-    else outcome = same(b.value, truth) ? "matched" : "differs";
-    if (outcome !== "differs" && item.path) set = { path: item.path, value: b.value };
+    else outcome = same(value, truth) ? "matched" : "differs";
+    if (outcome !== "differs" && item.path) set = { path: item.path, value };
   }
   const changed = settled(item);
-  item.compare = outcome === "differs" ? { typed: b.value, read: current ?? null, printed: ev?.printed ?? null } : null;
-  item.answer = { value: b.value, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at };
+  const picked = item.options.length && !b.cantTell ? optionValue(ver.rulebook, item, b.optionId!, current, secret)?.value : undefined;
+  item.compare = outcome === "differs" ? { typed: picked ?? value, read: current ?? null, printed: ev?.printed ?? null } : null;
+  const typed = !b.cantTell && !item.options.length;
+  item.answer = { value: typed ? value : undefined, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at };
   item.sentBack = null;
   item.outcome = outcome;
   const before = set ? getAt(ver.rulebook, set.path) : undefined;
-  if (set) ver.rulebook = setAt(ver.rulebook, set.path, set.value);
-  if (ev && (outcome === "matched" || outcome === "chosen")) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
-  if (outcome !== "cant_tell" && !retype && !ver.editors.includes(b.by)) ver.editors.push(b.by);
+  let rb = upgradeRulebook(ver.rulebook);
+  if (set) rb = setAt(rb, set.path, set.value);
+  if (item.reason === "GRID_CONFLICT" && set && item.options.some((o) => o.id === rb.governingGridId)) rb = { ...rb, governingGridId: null };
+  let listed: { billByHand: string } | { offBillByHand: string } | Record<string, never> = {};
+  if (BILL_BY_HAND.has(item.reason)) {
+    const was = rb.unclassified.find((u) => u.itemId === item.id);
+    rb = { ...rb, unclassified: [...rb.unclassified.filter((u) => u.itemId !== item.id), ...(outcome === "chosen" && b.optionId === "bill_by_hand" ? [unclassifiedOf(rb, item, note)] : [])] };
+    const is = rb.unclassified.find((u) => u.itemId === item.id);
+    listed = is && !was ? { billByHand: is.label } : was && !is ? { offBillByHand: was.label } : {};
+  }
+  ver.rulebook = rb;
+  if (item.path && settled(item)) {
+    if (ev) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
+    else if (set?.path === item.path) ver.evidence.push({ path: item.path, status: "attested", where: item.where, printed: null, note: `Typed by ${b.by}` });
+  }
+  // maker-checker: whoever decides is an editor; the re-typer of hand-typed values only when their answer changes a value
+  const wrote = !!set && !same(before ?? null, set.value);
+  if (outcome !== "cant_tell" && (!retype || wrote) && !ver.editors.some((e) => samePerson(e, b.by))) ver.editors.push(b.by);
+  ver.updatedAt = at;
   st.updatedAt = at;
-  const wrote = set && JSON.stringify(before) !== JSON.stringify(set.value) ? { path: set.path, before: before ?? null, after: set.value } : {};
-  log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...wrote }, at);
+  const logged = !set || !wrote ? {} : set.path === "/governingGridIds" ? { gridId: b.optionId } : { path: set.path, before: before ?? null, after: set.value };
+  log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " "), ...(note ? { note } : {}), ...logged, ...listed }, at);
   return ok(view(ver));
 }
 
 /**
- * A version as a response shows it: notes about a value being typed blind (an answer's, a send-back's, a report's) have
- * their numbers blanked until its question is settled, as the real API does. (The web masks the values themselves.)
+ * A version as a response shows it, as the real API (versionDto): on a draft, each value with an open question is
+ * withheld with the words that restate it (mask), its printed text too, the checks' findings, and the numbers in notes
+ * about it (blindReview).
  */
 function view(ver: RulebookVersionDto): RulebookVersionDto {
-  const hidden = new Set(withheldPaths(ver));
-  if (!hidden.size) return ver;
+  const hidden = withheldPaths(ver);
+  const rulebook = ver.rulebook && upgradeRulebook(ver.rulebook);
+  if (!hidden.length) return { ...ver, rulebook };
   return {
     ...ver,
-    review: ver.review.map((i) =>
-      !i.path || !hidden.has(i.path)
-        ? i
-        : {
-            ...i,
-            answer: i.answer && (i.answer.note ? { ...i.answer, note: blankNumbers(i.answer.note) } : i.answer),
-            sentBack: i.sentBack && { ...i.sentBack, note: blankNumbers(i.sentBack.note) },
-            ...(i.reported ? { reported: { ...i.reported, note: blankNumbers(i.reported.note) } } : {}),
-          },
-    ),
+    rulebook: rulebook && mask(rulebook, hidden),
+    anomalies: [],
+    evidence: ver.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
+    review: blindReview(ver.review, hidden, ver.evidence),
   };
 }
 
@@ -653,6 +749,9 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
     const ev = i.path ? ver.evidence.find((e) => e.path === i.path) : undefined;
     if (ev?.status === "attested") Object.assign(ev, { status: "conflict", note: `Sent back by ${by}` });
   }
+  // a term listed to bill by hand comes off the list while its answer is reopened
+  if (ver.rulebook) ver.rulebook = { ...upgradeRulebook(ver.rulebook), unclassified: upgradeRulebook(ver.rulebook).unclassified.filter((u) => !itemIds.includes(u.itemId ?? "")) };
+  ver.updatedAt = at;
   st.updatedAt = at;
   log(d, by, st.id, "review.sent_back", { version: ver.version, questions: items.length, itemIds: items.map((i) => i!.id), note }, at);
   raiseAlert(d, { kind: "sent_back", studyId: st.id, version: ver.version, by, count: items.length, note, at });
@@ -669,13 +768,13 @@ function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at =
   const marks = new Map((ver.proofread ?? []).map((m) => [m.path, m]));
   for (const path of paths) marks.set(path, { path, by, at });
   ver.proofread = [...marks.values()];
+  ver.updatedAt = at;
   log(d, by, st.id, "values.proofread", { version: ver.version, values: paths.length }, at);
   return ok(view(ver));
 }
 
 // ---------------------------------------------------------------- "This looks wrong" and typing by hand
 
-const leaf = (v: unknown) => v === null || typeof v !== "object" || (Array.isArray(v) && v.every((x) => typeof x !== "object"));
 
 function addQuestion(d: Db, ver: RulebookVersionDto, x: Spec) {
   ver.review.push(toItem(x));
@@ -694,8 +793,11 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   let draft = ver;
   if (ver.status === "signed") {
     const newest = versionsOf(d, st.id).at(-1)!;
+    // as the real API: an amendment that couldn't be read is read again first, never replaced by a correction
+    if (newest.status === "failed") return err(409, `The amendment in version ${newest.version} couldn't be read. Read it again, or type it in by hand, then report this on that version.`);
+    if (newest.status === "extracting") return err(409, `Version ${newest.version} is being read right now. When it's ready, report this there.`);
     if (newest.version !== ver.version) return err(409, `Version ${newest.version} is already in progress. Report it there.`);
-    draft = { ...structuredClone(ver), version: ver.version + 1, status: "draft", createdAt: now(), signedBy: null, signedAt: null, editors: [], review: [], byHand: false, proofread: [] };
+    draft = { ...structuredClone(ver), version: ver.version + 1, status: "draft", createdAt: now(), updatedAt: now(), signedBy: null, signedAt: null, editors: [], review: [], byHand: false, proofread: [], warnings: [] };
     d.versions.push(draft);
     st.status = "amendment_in_review";
   } else if (ver.status !== "draft" || ver.byHand) return err(409, `Version ${ver.version} is ${ver.status}; report a value on the live version or a draft.`);
@@ -704,6 +806,7 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   addQuestion(d, draft, x);
   // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
   draft.review.at(-1)!.reported = { by, note, at: now() };
+  draft.updatedAt = now();
   st.updatedAt = now();
   const value = getAt(draft.rulebook!, path);
   log(d, by, st.id, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, path, value: labelFor(path, draft.rulebook), note });
@@ -718,9 +821,10 @@ function startByHand(d: Db, st: Study, raw: unknown): Res {
   const newest = vs.at(-1);
   if (newest && (newest.status === "draft" || newest.status === "extracting")) return err(409, `Version ${newest.version} is already in progress.`);
   const docs = d.documents.filter((x) => st.documentIds.includes(x.id)).map((x) => ({ id: x.id, kind: x.kind, title: x.filename.replace(/\.pdf$/i, ""), date: null }));
-  const ver = newVersion(st.id, (newest?.version ?? 0) + 1, "draft");
+  const ver = newVersion(st.id, (newest?.version ?? 0) + (newest?.status === "failed" ? 0 : 1), "draft");
   Object.assign(ver, { byHand: true, cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, rulebook: blankRulebook(docs, { sponsor: st.sponsor ?? "", protocol: st.protocol ?? "", site: st.siteName ?? "", pi: st.investigator ?? "" }) });
-  d.versions.push(ver);
+  // replaces the failed attempt, as the real API: same version number, never a gap
+  d.versions = [...d.versions.filter((v) => !(v.studyId === st.id && v.version === ver.version)), ver];
   st.status = latestSigned(d, st.id) ? "amendment_in_review" : "needs_review";
   st.updatedAt = now();
   log(d, parsed.data.by, st.id, "version.manual_created", { version: ver.version });
@@ -757,10 +861,25 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
     ev.push({ path, status: "attested", where: [], printed: null, note: `Typed by hand by ${by}` });
   ver.rulebook = rb;
   ver.evidence = ev.filter((e) => getAt(rb, e.path) !== undefined);
-  if (!ver.editors.includes(by)) ver.editors.push(by);
+  ver.updatedAt = now();
+  if (!ver.editors.some((e) => samePerson(e, by))) ver.editors.push(by);
   st.updatedAt = now();
   if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, path, value: labelFor(path, rb), before: before ?? null, after: value });
   return ok(view(ver));
+}
+
+/** As the real API's placeholders(): numbers in a hand-typed master nobody typed (not an order, a schema version or provenance). */
+function placeholders(rb: Rulebook, evidence: ValueEvidence[]): string[] {
+  const typed = new Set(evidence.map((e) => e.path));
+  const out: string[] = [];
+  const walk = (node: unknown, path: string, key: string) => {
+    if (key === "prov" || key === "schemaVersion" || key === "order") return;
+    if (typeof node === "number") return void (typed.has(path) || out.push(path));
+    if (Array.isArray(node)) node.forEach((x, i) => walk(x, `${path}/${i}`, String(i)));
+    else if (node && typeof node === "object") for (const [k, x] of Object.entries(node)) walk(x, `${path}/${k.replace(/~/g, "~0").replace(/\//g, "~1")}`, k);
+  };
+  walk(rb, "", "");
+  return out;
 }
 
 /** POST .../by-hand/done: someone else re-types 10 randomly chosen typed values (all of them if fewer), blind. */
@@ -774,6 +893,10 @@ function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): 
   // ponytail: Math.random shuffle; a seeded pick if the sample ever needs to be reproducible.
   const sample = typed.map((e) => [Math.random(), e] as const).sort((a, b) => a[0] - b[0]).slice(0, 10).map(([, e]) => e);
   for (const e of sample) addQuestion(d, ver, askAbout(ver.rulebook!, ver.evidence, e.path, `t${++d.seq}`, "spot_check"));
+  // As the real API: a number nobody typed holds the blank form's placeholder (a visit's total 0), never seen by a
+  // person, so it's asked as missing. (The sample server has no contract checks to run on what was typed.)
+  for (const p of placeholders(ver.rulebook!, ver.evidence)) addQuestion(d, ver, { ...askAbout(ver.rulebook!, ver.evidence, p, `missing:${p}`, "REQUIRED_MISSING"), truth: undefined, lines: [] });
+  ver.updatedAt = now();
   st.updatedAt = now();
   log(d, parsed.data.by, st.id, "byhand.done", { version: ver.version, typed: typed.length, "re-type": sample.length });
   return ok(view(ver));
@@ -828,6 +951,8 @@ export function mockPageSrc(docId: string, page: number): string {
 // ---------------------------------------------------------------- routes
 
 type Res = { status: number; json: unknown };
+/** A 400's message as the real API words it (zod's prettifyError). */
+const pretty = (e: { issues: { message: string; path: PropertyKey[] }[] }) => e.issues.map((i) => `✖ ${i.message}${i.path.length ? `\n  → at ${i.path.map(String).join(".")}` : ""}`).join("\n");
 const ok = (json: unknown): Res => ({ status: 200, json });
 const err = (status: number, message: string): Res => ({ status, json: { statusCode: status, error: status === 409 ? "Conflict" : "Error", message } });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -876,8 +1001,14 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (method === "POST" && path === "/alerts/read") return readAlerts(d, body);
   if (method === "GET" && path === "/settings") return ok(d.settings);
   if (method === "PATCH" && path === "/settings") {
-    d.settings = { ...d.settings, ...(b as Partial<SettingsDto>) };
-    log(d, by, null, "settings.updated", b);
+    const parsed = PatchSettingsBody.safeParse(body);
+    if (!parsed.success) return err(400, pretty(parsed.error));
+    const { by: who, ...patch } = parsed.data;
+    const after = { ...d.settings, ...patch };
+    // the same settings again change nothing, so they log nothing
+    if (JSON.stringify(after) === JSON.stringify(d.settings)) return ok(d.settings);
+    log(d, who ?? "system", null, "settings.updated", { before: d.settings, after });
+    d.settings = after;
     return ok(d.settings);
   }
   if (method === "GET" && path === "/audit") return listAudit(d, query);
@@ -885,7 +1016,11 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     const fd = body as FormData;
     const uploader = (fd.get("by") as string | null) ?? "system";
     const out: DocumentDto[] = [];
-    for (const f of fd.getAll("files[]") as File[]) {
+    const files = fd.getAll("files[]") as File[];
+    if (!files.length) return err(400, "No files in upload (field files[])");
+    // as the real API, all or none: a file that isn't a PDF refuses the whole upload
+    for (const f of files) if (new TextDecoder().decode(await f.slice(0, 5).arrayBuffer()) !== "%PDF-") return err(415, `${f.name} is not a PDF`);
+    for (const f of files) {
       const sha = await sha256Hex(f);
       const existing = d.documents.find((x) => x.sha256 === sha);
       if (existing) {
@@ -916,10 +1051,14 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if ((r = m(/^\/documents\/([^/]+)$/)) && method === "PATCH") {
     const doc = d.documents.find((x) => x.id === r![1]);
     if (!doc) return err(404, "Document not found");
+    const parsed = SetDocumentKindBody.safeParse(body);
+    if (!parsed.success) return err(400, pretty(parsed.error));
+    if (doc.kind === parsed.data.kind) return ok(doc);
     const before = doc.kind;
-    doc.kind = b.kind as DocumentKind;
-    const st = d.studies.find((s) => s.documentIds.includes(doc.id));
-    log(d, by, st?.id ?? null, "document.kind_changed", { file: doc.filename, before, after: doc.kind });
+    doc.kind = parsed.data.kind;
+    // a shared file: every study that uses it logs the change
+    const using = d.studies.filter((s) => s.documentIds.includes(doc.id));
+    for (const st of using.length ? using : [null]) log(d, parsed.data.by, st?.id ?? null, "document.kind_set", { documentId: doc.id, from: before, to: doc.kind });
     return ok(doc);
   }
 
@@ -930,23 +1069,35 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
 
   if (rest === "" && method === "GET") return ok(detail(d, st));
   if (rest === "" && method === "PATCH") {
-    for (const k of ["sponsor", "protocol", "siteName", "investigator"] as const) if (typeof b[k] === "string") st[k] = b[k] as string;
+    const parsed = ConfirmStudyBody.safeParse(body);
+    if (!parsed.success) return err(400, pretty(parsed.error));
+    if (versionsOf(d, st.id).some((v) => v.status === "signed" || v.status === "superseded"))
+      return err(409, "This contract has an approved version, so its sponsor, protocol, site and investigator can't be changed any more: they're part of what was approved.");
+    for (const k of ["sponsor", "protocol", "siteName", "investigator"] as const) st[k] = parsed.data[k];
     st.updatedAt = now();
     log(d, by, st.id, "study.confirmed", { sponsor: st.sponsor, protocol: st.protocol, site: st.siteName, investigator: st.investigator });
     return ok(detail(d, st));
   }
   if (rest === "/extract" && method === "POST") {
     const vs = versionsOf(d, st.id);
-    if (vs.some((v) => v.status === "extracting")) return err(409, "This contract is already being read.");
+    const latest = vs.at(-1);
+    // as the real API: a read already running is handed back; a draft is approved first; a failed read is read again in its own version
+    if (latest?.status === "extracting") {
+      const running = d.jobs.filter((j) => j.studyId === st.id && j.kind === "extract" && j.version === latest.version).at(-1);
+      if (running) return ok({ jobId: running.id, version: latest.version });
+    }
+    if (latest?.status === "draft") return err(409, `Version ${latest.version} is a draft under review; sign it off before extracting again`);
     for (const id of (b.documentIds as string[] | undefined) ?? []) if (!st.documentIds.includes(id)) st.documentIds.push(id);
-    const version = (vs[vs.length - 1]?.version ?? 0) + 1;
+    const retry = latest && (latest.status === "failed" || latest.status === "extracting");
+    const version = retry ? latest.version : (latest?.version ?? 0) + 1;
     const attempts = d.jobs.filter((j) => j.studyId === st.id && j.kind === "extract").length;
     const docs = d.documents.filter((x) => st.documentIds.includes(x.id));
     const fail = attempts === 0 && docs.some((x) => /fail|unreadable/i.test(x.filename));
-    d.versions.push(newVersion(st.id, version, "extracting"));
+    d.versions = [...d.versions.filter((v) => !(v.studyId === st.id && v.version === version)), newVersion(st.id, version, "extracting")];
     const job: Job = { id: `job-${++d.seq}`, kind: "extract", studyId: st.id, version, startedAt: Date.now(), durationMs: 7000, fail, applied: false };
     d.jobs.push(job);
-    if (!latestSigned(d, st.id)) st.status = "extracting";
+    // an amendment being read is being read, not waiting for approval (as the real API)
+    st.status = "extracting";
     st.updatedAt = now();
     log(d, by, st.id, "extraction.queued", { version });
     return ok({ jobId: job.id, version });
@@ -973,7 +1124,10 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (vrest === "/diff" && method === "GET") {
     const other = d.versions.find((v) => v.studyId === st.id && v.version === Number(query.get("against")));
     if (!other) return err(404, "Version to compare against not found");
-    return ok(diffRulebooks(other.rulebook, ver.rulebook));
+    // blind entry, as the real API: both sides masked alike, and a withheld value never shown as changed
+    const hidden = [...new Set([...withheldPaths(other), ...withheldPaths(ver)])];
+    const shown = (rb: Rulebook | null) => rb && (hidden.length ? mask(upgradeRulebook(rb), hidden) : upgradeRulebook(rb));
+    return ok(diffRulebooks(shown(other.rulebook), shown(ver.rulebook)).filter((e) => !hidden.includes(e.path)));
   }
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
   if (vrest === "/report" && method === "POST") return report(d, st, ver, body);
@@ -982,12 +1136,21 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (vrest === "/values" && method === "PATCH") return typeValue(d, st, ver, body);
   if (vrest === "/by-hand/done" && method === "POST") return finishByHand(d, st, ver, body);
   if (vrest === "/sign-off" && method === "POST") {
-    if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; only a draft can be approved.`);
-    const open = ver.review.filter((i) => i.blocking && !settled(i)).length;
+    // as the real API: as seen (asOf), every question settled, typing re-typed, every number backed, then maker-checker
+    const parsed = SignOffBody.safeParse(body);
+    if (!parsed.success) return err(400, pretty(parsed.error));
+    const { by, asOf } = parsed.data;
+    if (ver.status === "signed" || ver.status === "superseded") return err(409, `Version ${ver.version} is ${ver.status} and immutable; changes need a new version (amendment)`);
+    if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only draft versions can be changed`);
+    if (ver.updatedAt !== asOf) return err(409, "This contract changed since you opened it. Check it again.");
+    if (ver.byHand && !ver.review.length) return err(409, "Typing isn't marked done yet, so nobody has re-typed the values.");
+    const open = ver.review.filter((i) => !settled(i)).length;
     if (open) return err(409, `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`);
-    if (d.settings.makerChecker && ver.editors.includes(by)) return err(409, `Maker-checker is on: ${by} answered questions on this contract, so someone else has to approve it.`);
+    const unconfirmed = ver.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
+    if (unconfirmed) return err(409, `${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`);
+    if (d.settings.makerChecker && ver.editors.some((e) => samePerson(e, by))) return err(409, `Maker-checker is on: ${by} answered questions on this contract, so someone else has to approve it.`);
     for (const v of versionsOf(d, st.id)) if (v.status === "signed") v.status = "superseded";
-    Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), appliesFrom: ver.rulebook?.appliesFrom.value ?? null });
+    Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), updatedAt: now(), appliesFrom: ver.rulebook?.appliesFrom.value ?? null });
     st.status = "live";
     st.updatedAt = now();
     log(d, by, st.id, "version.signed", { version: ver.version, ...(b.note ? { note: b.note } : {}) });

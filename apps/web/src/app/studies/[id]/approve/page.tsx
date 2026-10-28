@@ -1,19 +1,19 @@
 "use client";
 
-import { settled, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { settled, withheldPaths, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { DiffView } from "@/components/DiffView";
 import { initials, NeedsPerson } from "@/components/Sidebar";
 import { SpotView, DEFAULT_ZOOM } from "@/components/SpotView";
 import { Badge, Button, btnCls, cx, Dialog, ErrorNote, fieldCls, inputCls, LoadError, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
-import { keyTerms, type KeyTerm } from "@/lib/approve";
-import { formatValue, relativeTime } from "@/lib/format";
+import { HIDDEN, keyTerms, type KeyTerm } from "@/lib/approve";
+import { relativeTime } from "@/lib/format";
 import { keys, useDiff, useInvalidateStudy, useSettings, useStudy, useVersion } from "@/lib/queries";
 import { approveState, formatAnswer, queueOrder, versionStage } from "@/lib/review";
 
@@ -24,6 +24,17 @@ export default function ApprovePage() {
   const version = useVersion(id, draft?.version ?? null);
   // Kept here, not in Approve: once approved the study has no draft any more, and the screens below would replace this one.
   const [approved, setApproved] = useState<number | null>(null);
+  // What's approved is what's on screen: the version is fetched again every few seconds and when the window comes back,
+  // so an answer changed in another tab shows here (and the API refuses an approval of an older view, SignOffBody.asOf).
+  const qc = useQueryClient();
+  const v = draft?.version ?? null;
+  useEffect(() => {
+    if (v === null || approved !== null) return;
+    const again = () => void qc.invalidateQueries({ queryKey: keys.version(id, v) });
+    const t = setInterval(again, 15_000);
+    window.addEventListener("focus", again);
+    return () => (clearInterval(t), window.removeEventListener("focus", again));
+  }, [qc, id, v, approved]);
 
   if (approved !== null && study.data) return <Approved study={study.data} version={approved} />;
   const failed = (!study.data && study.error) || (!version.data && version.error);
@@ -58,14 +69,20 @@ export default function ApprovePage() {
 
 type Step = 1 | 2 | 3;
 
+/** A tick is for a term as it was shown: if its value changes (an answer in another tab), it needs ticking again. */
+const tickKey = (t: KeyTerm) => `${t.id}:${t.value}`;
+
 function Approve({ study, version, onApproved }: { study: StudyDetailDto; version: RulebookVersionDto; onApproved: (v: number) => void }) {
   const by = useActingAs();
   const settings = useSettings();
   const rb = version.rulebook!;
-  const terms = useMemo(() => keyTerms(rb, version.evidence), [rb, version.evidence]);
+  const terms = useMemo(() => keyTerms(rb, version.evidence, new Set(withheldPaths(version))), [rb, version]);
   const order = useMemo(() => queueOrder(version.review), [version.review]);
-  const open = order.filter((i) => i.blocking && !settled(i));
-  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  // Every question holds approval, one not needed to approve too (ADR-001 §6): the API refuses otherwise.
+  const open = order.filter((i) => !settled(i));
+  const answered = order.length - open.length;
+  const [ticks, setTicks] = useState<Set<string>>(new Set());
+  const ticked = new Set(terms.filter((t) => ticks.has(tickKey(t))).map((t) => t.id));
   const [step, setStep] = useState<Step>(open.length ? 1 : 2);
   const answersOk = open.length === 0;
   const termsOk = ticked.size === terms.length;
@@ -88,7 +105,7 @@ function Approve({ study, version, onApproved }: { study: StudyDetailDto; versio
           <nav aria-label="Approval steps" className="flex flex-col gap-1">
             {(
               [
-                [1, "Check the answers", answersOk ? `${order.length} answered` : `${open.length} still open`],
+                [1, "Check the answers", answersOk ? `${answered} answered` : `${open.length} still open`],
                 [2, "Check the key terms", `${ticked.size} of ${terms.length} ticked`],
                 [3, "Approve", answersOk && termsOk ? "Ready" : "After steps 1 and 2"],
               ] as [Step, string, string][]
@@ -115,7 +132,7 @@ function Approve({ study, version, onApproved }: { study: StudyDetailDto; versio
               </button>
             ))}
           </nav>
-          <Summary version={version} />
+          <Summary version={version} terms={terms} />
         </aside>
 
         <section className="min-w-0 rounded-card bg-surface p-7 shadow-card ring-1 ring-ink/[0.05]">
@@ -125,7 +142,10 @@ function Approve({ study, version, onApproved }: { study: StudyDetailDto; versio
               study={study}
               terms={terms}
               ticked={ticked}
-              onTick={(id) => setTicked((s) => (s.has(id) ? new Set([...s].filter((x) => x !== id)) : new Set([...s, id])))}
+              onTick={(id) => {
+                const k = tickKey(terms.find((t) => t.id === id)!);
+                setTicks((s) => (s.has(k) ? new Set([...s].filter((x) => x !== k)) : new Set([...s, k])));
+              }}
               onNext={() => setStep(3)}
             />
           )}
@@ -157,17 +177,19 @@ function StepHead({ n, title, sub }: { n: number; title: string; sub: ReactNode 
   );
 }
 
-/** "What you're approving": the money at a glance, and how it was checked. */
-function Summary({ version }: { version: RulebookVersionDto }) {
+/**
+ * "What you're approving": the money at a glance, and how it was checked. The per-patient figure is the first billed
+ * grid's key term, so a withheld total shows as hidden (never the visits added up in its place).
+ */
+function Summary({ version, terms }: { version: RulebookVersionDto; terms: KeyTerm[] }) {
   const rb = version.rulebook!;
   const ev = (s: string) => version.evidence.filter((e) => e.status === s).length;
   const checked = version.evidence.filter((e) => e.status === "confirmed").length;
   const proofed = (version.proofread ?? []).length;
   const people = [...new Set(version.review.flatMap((i) => (i.answer ? [i.answer.by] : [])))];
-  const handBilled = version.review.filter((i) => i.kind === "unclassified").length;
+  const handBilled = rb.unclassified.length;
   const unprinted = version.review.filter(notInPdf).length;
-  const g = rb.budgetGrids.find((x) => !rb.governingGridId || x.id === rb.governingGridId);
-  const perPatient = g?.perPatientTotals[0]?.cents ?? g?.visits.reduce((n, v) => n + v.totalCents, 0) ?? null;
+  const perPatient = terms.find((t) => t.id.startsWith("patient-"));
   const rows: [string, ReactNode][] = [
     ...(version.pdfCheck ? ([["Matched the PDF", <span key="m" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-ok" />{ev("confirmed").toLocaleString("en-US")}</span>]] as [string, ReactNode][]) : []),
     ["Confirmed by people", <span key="c" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-info" />{ev("attested")}</span>],
@@ -178,10 +200,14 @@ function Summary({ version }: { version: RulebookVersionDto }) {
   return (
     <div className="rounded-card bg-sunken p-5">
       <p className="eyebrow">What you&apos;re approving</p>
-      {perPatient !== null && (
+      {perPatient && (
         <div className="mt-3">
-          <p className="num text-figure font-semibold tracking-tight">{formatValue("/x/amountCents", perPatient)}</p>
-          <p className="text-small text-muted">per patient · {g!.label}</p>
+          {perPatient.value === HIDDEN ? (
+            <p className="text-title font-semibold tracking-tight text-warn">{HIDDEN}</p>
+          ) : (
+            <p className="num text-figure font-semibold tracking-tight">{perPatient.value}</p>
+          )}
+          <p className="text-small text-muted">per patient{perPatient.value === HIDDEN ? ": its question is still open" : ` · ${perPatient.detail.replace(/^.* · /, "")}`}</p>
         </div>
       )}
       <dl className="mt-4 flex flex-col divide-y divide-line">
@@ -193,6 +219,16 @@ function Summary({ version }: { version: RulebookVersionDto }) {
         ))}
       </dl>
       {people.length > 0 && <p className="mt-3 text-small text-faint">Answered by {people.join(", ")}</p>}
+      {version.warnings.length > 0 && (
+        <div className="mt-4 flex items-start gap-2 rounded-tile bg-warn-soft p-3 text-small text-ink-2">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
+          <ul className="flex flex-col gap-1">
+            {version.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -247,7 +283,7 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
       <StepHead
         n={1}
         title="Check the answers"
-        sub="Every question a person answered, and who answered it. If one looks wrong, send it back with a note, or change it yourself."
+        sub="Every question a person answered, and who answered it. If one looks wrong, send it back with a note, or change it yourself. Every question has to be settled before approval, including ones marked not needed to approve and ones left for you."
       />
       {open.length > 0 && (
         <div className="mb-5 flex flex-col gap-3 rounded-tile bg-warn-soft p-5">
@@ -257,7 +293,11 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
           <ul className="flex flex-col gap-2">
             {open.map((i) => (
               <li key={i.id} className="flex flex-wrap items-center justify-between gap-3 text-small">
-                <span className="max-w-[60ch] text-ink-2">{i.question}</span>
+                <span className="max-w-[60ch] text-ink-2">
+                  {i.question}
+                  {i.outcome === "cant_tell" && <span className="block text-faint">Left for the approver: answer it, or send it back with a note.</span>}
+                  {i.outcome === "differs" && <span className="block text-faint">Waiting for a pick between two values.</span>}
+                </span>
                 <Link href={review(i)} className={btnCls("primary", "sm")}>
                   Answer now
                 </Link>
@@ -435,13 +475,19 @@ function Sign(p: {
   const signed = !!want && typed.trim().toUpperCase() === want;
   const checked = version.evidence.filter((e) => e.status === "confirmed").length;
   const proofed = (version.proofread ?? []).length;
-  const handBilled = version.review.filter((i) => i.kind === "unclassified");
+  const handBilled = version.rulebook!.unclassified;
+  const qc = useQueryClient();
   const approve = useMutation({
-    mutationFn: () => api.signOff(study.id, version.version, { by: by!, note: [`Key terms checked: ${p.ticked.join(", ")}.`, note.trim()].filter(Boolean).join(" ") }),
+    mutationFn: () => {
+      // asOf: the version as shown; the API refuses it if anything changed since
+      return api.signOff(study.id, version.version, { by: by!, note: [`Key terms checked: ${p.ticked.join(", ")}.`, note.trim()].filter(Boolean).join(" "), asOf: version.updatedAt });
+    },
     onSuccess: () => {
       p.onApproved(version.version);
       void invalidate(study.id);
     },
+    // refused (changed meanwhile, a question reopened): show what it is now
+    onError: () => void qc.invalidateQueries({ queryKey: keys.version(study.id, version.version) }),
   });
   const blockers = [...p.missing.map((m) => `First, ${m}.`), ...p.gate.reasons];
 
@@ -472,7 +518,16 @@ function Sign(p: {
           <li className="flex items-start gap-2.5">
             <CircleHelp className="mt-1 size-4 shrink-0 text-warn" strokeWidth={2} />
             <span>
-              {handBilled.length} {handBilled.length === 1 ? "term is" : "terms are"} billed by hand: {handBilled.map((i) => i.question.replace(/ The invoicing master has no place.*$/, "")).join(" · ")}
+              {handBilled.length} {handBilled.length === 1 ? "term is" : "terms are"} billed by hand, from the contract&apos;s own words (they&apos;re in the
+              master and its Excel export):
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {handBilled.map((u, i) => (
+                  <li key={i} className="text-small">
+                    {u.quote ? `“${u.quote}”` : u.label} <span className="text-faint">· page {u.page}</span>
+                    {u.note && <span className="text-muted"> · {u.note}</span>}
+                  </li>
+                ))}
+              </ul>
             </span>
           </li>
         )}

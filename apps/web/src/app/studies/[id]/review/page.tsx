@@ -60,6 +60,9 @@ export default function ReviewPage() {
   return <Focus key={`${id}/${vnum}/${item ?? ""}`} study={study.data} version={version.data} start={item} back={back} />;
 }
 
+/** For screen readers: what the icon beside a question in the list says. */
+const STATUS_TEXT = { todo: "To do", done: "Done", differs: "Pick the value the page shows", cant_tell: "Left for the approver" } as const;
+
 const STATUS_ICON = {
   todo: <span className="size-3.5 rounded-full ring-[1.5px] ring-line-strong" />,
   done: (
@@ -110,6 +113,8 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
     setPick(id);
     setChanging(null);
     setListOpen(false);
+    // a refused answer's message belongs to its own question, not the next one
+    answer.reset();
   };
 
   const send = (item: ReviewItem, body: Body) =>
@@ -161,8 +166,11 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                   active ? "bg-surface shadow-card ring-1 ring-ink/[0.06]" : "hover:bg-ink/[0.04]",
                 )}
               >
-                <span className="mt-0.5 grid size-4 shrink-0 place-items-center">{STATUS_ICON[itemStatus(i)]}</span>
-                <span className={cx("line-clamp-2 text-small", active ? "font-medium text-ink" : itemStatus(i) === "done" ? "text-faint" : "text-ink-2")}>{i.question}</span>
+                <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center">{STATUS_ICON[itemStatus(i)]}</span>
+                <span className={cx("line-clamp-2 text-small", active ? "font-medium text-ink" : itemStatus(i) === "done" ? "text-faint" : "text-ink-2")}>
+                  <span className="sr-only">{STATUS_TEXT[itemStatus(i)]}: </span>
+                  {i.question}
+                </span>
               </button>
             );
           })}
@@ -333,12 +341,16 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   const [cant, setCant] = useState(false);
   const [why, setWhy] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  // a reason, or a choice that needs saying why (what to ask the sponsor, what's on a page billed by hand)
+  const [optNote, setOptNote] = useState("");
+  const asks = item.options.find((o) => o.id === choice)?.note;
 
   function submit(e: FormEvent) {
     e.preventDefault();
     if (item.options.length) {
       if (!choice) return setMsg("Pick one of the answers, or choose “Can't tell”.");
-      return onAnswer({ optionId: choice });
+      if (asks && !optNote.trim()) return setMsg(`Add a short note: ${asks.replace(/^./, (c) => c.toLowerCase())}`);
+      return onAnswer({ optionId: choice, ...(asks && optNote.trim() ? { note: optNote.trim() } : {}) });
     }
     const p = parseAnswer(item.input ?? "text", raw);
     if ("error" in p) return setMsg(p.error);
@@ -395,6 +407,15 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
               {o.label}
             </label>
           ))}
+          {asks && (
+            <div className="mt-1 flex flex-col gap-2">
+              <label htmlFor={`on-${item.id}`} className="text-small font-medium text-ink-2">
+                {asks} (required)
+              </label>
+              <textarea id={`on-${item.id}`} rows={2} className={cx("w-full py-2.5 text-body", fieldCls)} value={optNote} onChange={(e) => (setOptNote(e.target.value), setMsg(null))} />
+              <p className="text-small text-faint">The approver reads it with your answer.</p>
+            </div>
+          )}
         </fieldset>
       ) : (
         <div className="flex flex-col gap-2">
@@ -468,7 +489,7 @@ function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body
   return (
     <div className="flex flex-col gap-6">
       <Heading item={item} />
-      <div className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-body text-ink-2">
+      <div role="alert" className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-body text-ink-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
         {pdf ? (
           <p>
@@ -488,27 +509,35 @@ function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body
           </p>
         )}
       </div>
-      <div role="radiogroup" aria-label="Which value is right" className="flex flex-col gap-2.5">
-        {options.map((o) => (
-          <button
+      {/* real radio buttons: arrow keys move between them, and focus lands on the first, so it isn't lost on <body> */}
+      <fieldset className="flex flex-col gap-2.5">
+        <legend className="sr-only">Which value is right</legend>
+        {options.map((o, i) => (
+          <label
             key={String(o.own)}
-            type="button"
-            role="radio"
-            aria-checked={pickedOwn === o.own}
-            onClick={() => (setPickedOwn(o.own), setMsg(null))}
             className={cx(
-              "flex items-center justify-between gap-4 rounded-tile px-4 py-4 text-left ring-1 transition-colors",
+              "flex cursor-pointer items-center justify-between gap-4 rounded-tile px-4 py-4 text-left ring-1 transition-colors",
               pickedOwn === o.own ? "bg-brand-soft ring-2 ring-brand" : "ring-line-strong hover:bg-sunken",
             )}
           >
-            <span>
-              <span className="block text-body text-ink-2">{o.label}</span>
-              <span className="block text-small text-faint">{o.hint}</span>
+            <span className="flex items-start gap-3">
+              <input
+                type="radio"
+                name={`pick-${item.id}`}
+                checked={pickedOwn === o.own}
+                onChange={() => (setPickedOwn(o.own), setMsg(null))}
+                autoFocus={i === 0}
+                className="mt-1.5 accent-[var(--color-primary)]"
+              />
+              <span>
+                <span className="block text-body text-ink-2">{o.label}</span>
+                <span className="block text-small text-faint">{o.hint}</span>
+              </span>
             </span>
             <span className="num text-title font-semibold tracking-tight">{o.shown}</span>
-          </button>
+          </label>
         ))}
-      </div>
+      </fieldset>
       {needsNote && (
         <div className="flex flex-col gap-2">
           <label htmlFor={`n-${item.id}`} className="text-small font-medium text-ink-2">

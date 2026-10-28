@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, storedVersion, testApp, upload } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -116,7 +116,7 @@ describe("sign-off", () => {
       await answer(studyId, 1, item, { value: 1 }),
       await post(`${base}/send-back`, { itemIds: [item], note: "x", by: "Ben" }),
       await post(`${base}/by-hand/done`, { by: "Asha" }),
-      await post(`${base}/sign-off`, { by: "Ben" }),
+      await post(`${base}/sign-off`, { by: "Ben", asOf: "any" }),
     ];
     for (const w of writes) expect(w.statusCode, w.body).toBe(409);
     expect(writes.at(-1)!.json().message).toMatch(/immutable/);
@@ -155,7 +155,7 @@ describe("amendment", () => {
     expect((await app.inject({ url: `/api/v1/studies/${studyId}/versions/2/diff` })).statusCode).toBe(400);
     expect((await version(studyId, 2)).appliesFrom).toBe("2026-01-01");
 
-    expect((await post(`/api/v1/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 2, { by: "Ben" })).statusCode).toBe(200);
     s = await study(studyId);
     expect(s).toMatchObject({ status: "live", liveVersion: 2 });
     expect(s.versions.map((x) => [x.version, x.status])).toEqual([
@@ -177,7 +177,7 @@ describe("amendment carries the live version's corrections", () => {
     await answer(studyId, 1, `confirm:${netDays}`, { value: 30, note: "§4.2 on page 1" }); // …and kept: no PDF text, so the note says where
     await answer(studyId, 1, "anomaly:GRID_CONFLICT:/budgetGrids/0", { optionId: "g2" });
     await settleAll(built, studyId, 1);
-    expect((await post(`/api/v1/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
 
     const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend") }])).json<DocumentDto[]>();
     expect((await extract(app, studyId, { documentIds: [amend!.id], by: "Asha" })).job.state).toBe("succeeded");
@@ -189,7 +189,7 @@ describe("amendment carries the live version's corrections", () => {
     expect(v2.review.filter((i) => i.path === g2Total).map((i) => i.reason)).toEqual(["VISIT_TOTAL_MISMATCH"]);
     // carried too, but nothing on the page backs it: asked again
     expect([at(v2.rulebook, netDays), v2.review.find((i) => i.path === netDays)?.reason]).toEqual([30, "UNGROUNDED_VALUE"]);
-    expect(v2.rulebook!.governingGridId).toBe("g2");
+    expect(v2.rulebook!.governingGridIds).toEqual(["g2"]);
     expect(v2.review.map((i) => i.reason)).not.toContain("GRID_CONFLICT");
     expect(v2.editors).toEqual([]);
 
@@ -201,11 +201,11 @@ describe("amendment carries the live version's corrections", () => {
       version: 2,
       from: 1,
       carried: [expect.objectContaining({ path: g2Total, before: 848800, after: 848900, by: "Sam", items: ["g2", "V2"] }), expect.objectContaining({ path: netDays, before: 45, after: 30 })],
-      grid: { from: "g2", to: "g2" },
+      grid: { from: ["g2"], to: ["g2"] },
     });
 
     // transitively: v3 gets v1's carried corrections and v2's own
-    expect((await post(`/api/v1/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 2, { by: "Ben" })).statusCode).toBe(200);
     await extract(app, studyId);
     const v3 = await storedVersion(built, studyId, 3);
     expect([at(v3.rulebook, g2Total), at(v3.rulebook, netDays)]).toEqual([848900, 30]);

@@ -85,14 +85,14 @@ async function watch(page: Page) {
 }
 
 /** The answer to each question the fake reading of WORK_ORDER asks, by its wording. */
-const ANSWERS: [RegExp, { type: string } | { pick: RegExp }][] = [
+const ANSWERS: [RegExp, { type: string } | { pick: RegExp; note?: string }][] = [
   [/effective date/, { type: "2025-08-22" }],
   [/overhead percentage/, { type: "40" }],
   [/how many days must an invoice be paid/, { type: "45" }],
   [/months after the study closes/, { type: "6" }],
   [/"Administrative fee" due/, { type: "45" }],
   [/screen failures can be billed/, { type: "7" }],
-  [/Master CTA/, { pick: /doesn't affect billing/ }],
+  [/Master CTA/, { pick: /doesn't affect billing/, note: "The master agreement sets no prices for this work order." }],
   [/bill from/, { pick: /Exhibit A \(revised\)/ }],
 ];
 
@@ -108,7 +108,11 @@ async function answer(page: Page, question: string) {
   const a = ANSWERS.find(([q]) => q.test(question))?.[1];
   if (!a) throw new Error(`No answer in the test for: ${question}`);
   if ("type" in a) await page.getByLabel("What the contract says").fill(a.type);
-  else await page.getByRole("radio", { name: a.pick }).check();
+  else {
+    await page.getByRole("radio", { name: a.pick }).check();
+    // a pick that needs saying why (what to ask the sponsor, why it doesn't matter) shows its required note
+    if (a.note) await page.getByLabel(/\(required\)$/).fill(a.note);
+  }
   await send(page, "Save and next");
 }
 
@@ -239,7 +243,9 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.getByRole("link", { name: "Back to the contract" }).click();
   });
 
-  await test.step("approval, signed with initials", async () => {
+  await test.step("approval by someone who didn't answer, signed with initials", async () => {
+    // Maker-checker is on in a new database: Asha answered, so Ben approves.
+    await actAs(page, "Ben Okafor");
     await page.getByRole("link", { name: "Review and approve" }).click();
     // Every question is answered, so it opens on the key terms.
     await expect(page.getByRole("heading", { name: "Check the key terms" })).toBeVisible();
@@ -248,11 +254,12 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.getByRole("button", { name: "Next: approve" }).click();
     const sign = page.getByRole("button", { name: "Approve invoicing master" });
     await expect(sign).toBeDisabled();
-    await page.getByLabel("Type AP to sign as Asha Patel").fill("ap");
+    await page.getByLabel("Type BO to sign as Ben Okafor").fill("bo");
     await sign.click();
     await expect(page.getByRole("heading", { name: "Approved. Version 1 is live." })).toBeVisible();
     await page.goto(studyUrl);
     await expect(page.getByText("Live: version 1")).toBeVisible();
+    await actAs(page, "Asha Patel");
   });
 
   await test.step("live: tabs and the value drawer by keyboard", async () => {

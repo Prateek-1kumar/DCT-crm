@@ -11,6 +11,7 @@ import type {
   RulebookVersionDto,
   SearchResults,
   SettingsDto,
+  SignOffBody,
   StudyCounts,
   StudyDetailDto,
   StudyListQuery,
@@ -152,7 +153,8 @@ export const api = {
     request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, { ...body, note: "Typed by hand" }),
   /** Proposed route: typing is done; picks the values someone else re-types blind. */
   finishByHand: (id: string, v: number, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/by-hand/done`, { by }),
-  signOff: (id: string, v: number, body: { by: string; note?: string }) =>
+  /** `asOf`: the version's `updatedAt` as the approver saw it; a 409 if anything changed since. */
+  signOff: (id: string, v: number, body: SignOffBody) =>
     request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/sign-off`, body),
 
   /** Alerts for one person (everyone sees every alert; read state is theirs), newest first. */

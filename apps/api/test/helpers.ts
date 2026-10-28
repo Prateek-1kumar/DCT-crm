@@ -14,9 +14,19 @@ export async function testApp(opts: { workers?: boolean } = {}): Promise<Built> 
   return buildApp(opts);
 }
 
+/**
+ * Empties the test database. The audit log and signed versions refuse TRUNCATE (drizzle/0011_truncate_guards.sql), so the
+ * guards are turned off for this one transaction only: nobody else ever sees them off. Maker-checker starts off, as most
+ * tests have one person answer and approve.
+ */
 export async function resetDb({ ctx }: Built) {
-  // TRUNCATE bypasses the row-level append-only trigger; fine for a test database.
-  await ctx.db.execute(sql`TRUNCATE audit_log, jobs, rulebook_versions, study_documents, documents, studies, idempotency_keys RESTART IDENTITY CASCADE`);
+  await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_truncate`);
+    await tx.execute(sql`ALTER TABLE rulebook_versions DISABLE TRIGGER rulebook_versions_no_truncate`);
+    await tx.execute(sql`TRUNCATE audit_log, jobs, rulebook_versions, study_documents, documents, studies, idempotency_keys RESTART IDENTITY CASCADE`);
+    await tx.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER audit_log_no_truncate`);
+    await tx.execute(sql`ALTER TABLE rulebook_versions ENABLE TRIGGER rulebook_versions_no_truncate`);
+  });
   await ctx.db.execute(sql`UPDATE settings SET people = '[]', maker_checker = false`);
   // queued jobs of rows just deleted would run first, ahead of the next test's
   await ctx.db.execute(sql`DELETE FROM pgboss.job WHERE name IN ('identify', 'extract', 'stranded') AND state <> 'active'`);
@@ -146,12 +156,18 @@ export async function settleAll(built: Built, studyId: string, version: number, 
   await settleAll(built, studyId, version, by, n - open.length);
 }
 
+/** Approval as the approve page sends it: with the version as `by` last saw it (`asOf`). */
+export async function signOff(app: App, studyId: string, version: number, body: { by: string; note?: string; asOf?: string }) {
+  const asOf = body.asOf ?? (await app.inject({ url: `/api/v1/studies/${studyId}/versions/${version}` })).json<RulebookVersionDto>().updatedAt;
+  return app.inject({ method: "POST", url: `/api/v1/studies/${studyId}/versions/${version}/sign-off`, payload: { ...body, asOf } });
+}
+
 /** A study whose first version is approved by Ben after Asha answered everything. */
 export async function liveStudy(built: Built, seed = "live", opts?: { scan?: boolean }) {
   const s = await newStudy(built.app, seed, opts);
   await extract(built.app, s.studyId);
   await settleAll(built, s.studyId, 1);
-  const res = await built.app.inject({ method: "POST", url: `/api/v1/studies/${s.studyId}/versions/1/sign-off`, payload: { by: "Ben" } });
+  const res = await signOff(built.app, s.studyId, 1, { by: "Ben" });
   if (res.statusCode !== 200) throw new Error(res.body);
   return s;
 }

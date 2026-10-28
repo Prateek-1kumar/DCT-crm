@@ -1,6 +1,6 @@
 "use client";
 
-import type { BudgetGrid } from "@dct/shared";
+import { gridChoice, type BudgetGrid } from "@dct/shared";
 import type { ReactNode } from "react";
 import { formatCents } from "@/lib/money";
 import { isHit, useRulebook, Val } from "./review-context";
@@ -19,7 +19,8 @@ export function GridTable({ index }: { index: number }) {
   const grid = rulebook.budgetGrids[index]!;
   const base = `/budgetGrids/${index}`;
   const visits = [...grid.visits].sort((a, b) => a.order - b.order);
-  const governing = rulebook.governingGridId === grid.id;
+  // chosen for its arm, or another grid of its arm was (GRID_CONFLICT, one choice per arm)
+  const choice = gridChoice(rulebook, grid);
 
   const cell = (path: string, label: string, prov: BudgetGrid["prov"], text: ReactNode) => (
     <button
@@ -37,9 +38,10 @@ export function GridTable({ index }: { index: number }) {
       <div className="flex flex-wrap items-center gap-2 text-[13px]">
         <span className="font-medium">{grid.label}</span>
         {grid.arm && <Badge>{grid.arm}</Badge>}
-        {governing && <Badge tone="ok">Billed from this grid</Badge>}
+        {choice?.billed === true && <Badge tone="ok">Billed from this grid</Badge>}
+        {choice?.billed === false && <Badge tone="warn">Not billed: {choice.instead.label} is billed instead</Badge>}
         <span className="text-muted">
-          Stated overhead {grid.statedOverheadPct ?? "—"}% · Header:{" "}
+          Stated overhead <Val path={`${base}/statedOverheadPct`}>{grid.statedOverheadPct ?? "—"}%</Val> · Header:{" "}
           {masked.has(`${base}/header`) ? <span className="text-warn">needs you</span> : `${grid.header.investigator ?? "—"}, ${grid.header.siteName ?? "—"}`}
         </span>
         <button type="button" className="text-accent hover:underline" onClick={() => show(base, grid.prov, grid.label)}>

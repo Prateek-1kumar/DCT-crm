@@ -100,7 +100,8 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   const [open, setOpen] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
   const rb = version.rulebook!;
-  const masked = version.status === "draft" && version.review.some((i) => i.path === path && !settled(i));
+  // a value, or one it's made of (a cap's limit), withheld for a blind answer
+  const masked = version.status === "draft" && version.review.some((i) => !!i.path && (i.path === path || i.path.startsWith(`${path}/`)) && !settled(i));
   const ev = version.evidence.find((e) => e.path === path);
   const prov = findProv(rb, path);
   const mark = version.proofread?.find((m) => m.path === path);
@@ -159,7 +160,8 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
             <Check aria-hidden className="size-3.5" strokeWidth={3} /> Proofread by {mark.by} · {formatDate(mark.at)}
           </p>
         )}
-        {prov?.source?.quote && <blockquote className="border-l-2 border-line-strong pl-3 text-muted italic">“{prov.source.quote}”</blockquote>}
+        {/* a rule's quote prints its number: never while the value is withheld */}
+        {!masked && prov?.source?.quote && <blockquote className="border-l-2 border-line-strong pl-3 text-muted italic">“{prov.source.quote}”</blockquote>}
       </div>
 
       <div className="min-h-0 flex-1 px-3">

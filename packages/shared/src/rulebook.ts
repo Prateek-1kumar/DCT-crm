@@ -194,6 +194,28 @@ export const Overpayment = z.object({
   prov: Provenance,
 });
 
+/**
+ * A money term the invoicing master has no field for (ADR-001 §7): billed by hand. Listed when a person answers a
+ * question "bill it by hand", and approved with the version.
+ */
+export const Unclassified = z.object({
+  /** What it is, in a few words. */
+  label: z.string(),
+  /** The contract's own words; empty when a person listed a page that can't be searched (a scan, a picture). */
+  quote: z.string(),
+  page: z.number().int().positive(),
+  /** Every amount in those words. */
+  amounts: z.array(Cents),
+  pct: z.number().optional(),
+  days: z.number().int().optional(),
+  /** What the person who listed it wrote; empty when nothing. */
+  note: z.string(),
+  prov: Provenance,
+  /** The question that listed it: changing that answer on the draft takes it off the list again. */
+  itemId: z.string().optional(),
+});
+export type Unclassified = z.infer<typeof Unclassified>;
+
 export const Rulebook = z.object({
   schemaVersion: z.literal(1),
   study: StudyInfo,
@@ -202,8 +224,13 @@ export const Rulebook = z.object({
   overhead: Overhead,
   payment: Payment,
   budgetGrids: z.array(BudgetGrid),
-  /** Chosen by the accountant when budgetGrids has more than one conflicting grid for the same arm. */
+  /** Versions from before per-arm choices kept the one grid chosen here; read as the choice for that grid's arm. Never set now. */
   governingGridId: z.string().nullable(),
+  /**
+   * The grid to bill from, chosen by the accountant for each arm whose grids disagree (GRID_CONFLICT): at most one id per
+   * arm, so a pick for one arm never changes another's. Read it through governingGrids().
+   */
+  governingGridIds: z.array(z.string()).default([]),
   invoiceables: z.array(Invoiceable),
   screenFail: ScreenFail.nullable(),
   siteFees: z.array(SiteFee),
@@ -213,5 +240,45 @@ export const Rulebook = z.object({
   rounding: sourced(z.enum(["printed_amounts", "cents", "unspecified"])),
   /** Amendments: date new terms apply from; retroactive when before execution. */
   appliesFrom: sourced(z.string().nullable()),
+  /** Money terms billed by hand (ADR-001 §7). Optional in what's stored: signed versions from before the list never change. */
+  unclassified: z.array(Unclassified).default([]),
 });
 export type Rulebook = z.infer<typeof Rulebook>;
+
+/**
+ * A stored rulebook as this schema reads it. Signed versions are never rewritten (ADR-001 §7), so one saved before a field
+ * existed is read with that field empty: every reader of a stored rulebook goes through here.
+ */
+export const upgradeRulebook = (rb: Rulebook): Rulebook => {
+  const old = rb as Omit<Rulebook, "governingGridIds" | "unclassified"> & Partial<Pick<Rulebook, "governingGridIds" | "unclassified">>;
+  return old.governingGridIds && old.unclassified ? rb : { ...old, governingGridIds: old.governingGridIds ?? [], unclassified: old.unclassified ?? [] };
+};
+
+/** Grids priced for the same arm, grouped as the contract checks group them (GRID_CONFLICT). */
+export const armKey = (g: Pick<BudgetGrid, "arm">) => (g.arm ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * The grid chosen to bill from, per arm (armKey → grid id): the per-arm picks, and a version's one pick from before them
+ * for its own grid's arm. An arm missing here has no choice: all its grids stand.
+ */
+export function governingGrids(rb: Pick<Rulebook, "budgetGrids" | "governingGridId"> & { governingGridIds?: string[] }): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const id of [...(rb.governingGridIds ?? []), ...(rb.governingGridId ? [rb.governingGridId] : [])]) {
+    const g = rb.budgetGrids.find((x) => x.id === id);
+    if (g && !out.has(armKey(g))) out.set(armKey(g), g.id);
+  }
+  return out;
+}
+
+/** The grids billing uses: an arm's chosen grid, or every grid of an arm with no choice. */
+export function billedGrids(rb: Parameters<typeof governingGrids>[0]): BudgetGrid[] {
+  const chosen = governingGrids(rb);
+  return rb.budgetGrids.filter((g) => (chosen.get(armKey(g)) ?? g.id) === g.id);
+}
+
+/** For a grid: billed from (chosen for its arm), not billed (another grid was chosen, which is named), or null (no choice). */
+export function gridChoice(rb: Parameters<typeof governingGrids>[0], g: BudgetGrid): { billed: true } | { billed: false; instead: BudgetGrid } | null {
+  const id = governingGrids(rb).get(armKey(g));
+  if (!id) return null;
+  return id === g.id ? { billed: true } : { billed: false, instead: rb.budgetGrids.find((x) => x.id === id)! };
+}

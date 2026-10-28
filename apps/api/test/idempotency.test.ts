@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { maintain } from "../src/jobs.js";
-import { type App, type Built, makePdf, makeTextPdf, multipart, resetDb, settleAll, storedVersion, testApp, waitJob } from "./helpers.js";
+import { type App, type Built, makePdf, makeTextPdf, multipart, resetDb, settleAll, signOff, storedVersion, testApp, waitJob } from "./helpers.js";
 
 // Every write route, sent twice with one Idempotency-Key: the second gets the first's response, byte for byte, and
 // changes nothing (rows, audit entries, alerts, jobs). Sent at once (a double click): one effect.
@@ -28,6 +28,8 @@ type Req = { method: "POST" | "PATCH"; url: string; payload?: object | Buffer; h
 const send = (r: Req, key?: string) =>
   app.inject({ method: r.method, url: `/api/v1${r.url}`, payload: r.payload as object, headers: { ...r.headers, ...(key ? { "idempotency-key": key } : {}) } });
 const quoted = () => `"${randomUUID()}"`; // a structured-field string, as the web sends it
+/** Version 1 as the approver last saw it, as the approve page sends it with the approval. */
+const asOf = async (studyId: string) => (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).json<RulebookVersionDto>().updatedAt;
 
 /** Everything a write can leave behind. */
 async function effects() {
@@ -37,7 +39,7 @@ async function effects() {
     (SELECT count(*) FROM jobs)::int AS jobs, (SELECT count(*) FROM pgboss.job WHERE name IN ('identify', 'extract'))::int AS queued,
     (SELECT count(*) FROM audit_log)::int AS audit, (SELECT count(*) FROM alerts)::int AS alerts,
     (SELECT count(*) FROM alert_reads)::int AS reads, (SELECT count(*) FROM idempotency_keys)::int AS keys,
-    (SELECT coalesce(json_agg(json_build_object('v', version, 's', status, 'r', review, 'p', proofread) ORDER BY study_id, version), '[]') FROM rulebook_versions)::text AS state,
+    (SELECT coalesce(json_agg(json_build_object('v', version, 's', status, 'r', review, 'p', proofread, 'u', rulebook->'unclassified') ORDER BY study_id, version), '[]') FROM rulebook_versions)::text AS state,
     (SELECT coalesce(json_agg(json_build_object('s', status, 'n', needs_you, 'p', sponsor) ORDER BY id), '[]') FROM studies)::text AS studyState,
     (SELECT coalesce(json_agg(people), '[]') FROM settings)::text AS settings`);
   return rows[0]!;
@@ -87,11 +89,15 @@ describe("every write, sent twice with one key, writes once", () => {
     expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === `confirm:${G2_TOTAL}`)!.outcome).toBe("differs");
 
     await twice({ method: "POST", url: `${v}/report`, payload: { path: FEE, note: "check", by: "Sam" } });
+    // listing a term to bill by hand writes the master's list once
+    const term = (await storedVersion(built, studyId, 1)).review.find((i) => i.reason === "UNACCOUNTED_TERM")!.id;
+    await twice({ method: "POST", url: `${v}/review/${encodeURIComponent(term)}`, payload: { optionId: "bill_by_hand", by: "Sam" } });
+    expect((await storedVersion(built, studyId, 1)).rulebook!.unclassified).toHaveLength(1);
     await twice({ method: "POST", url: `${v}/proofread`, payload: { paths: ["/invoiceables/0/amountCents"], by: "Sam" } });
     await settleAll(built, studyId, 1);
     await twice({ method: "POST", url: `${v}/send-back`, payload: { itemIds: [`confirm:${G2_TOTAL}`], note: "look again", by: "Morgan" } });
     await settleAll(built, studyId, 1);
-    await twice({ method: "POST", url: `${v}/sign-off`, payload: { by: "Ben" } });
+    await twice({ method: "POST", url: `${v}/sign-off`, payload: { by: "Ben", asOf: await asOf(studyId) } });
     // on the live version: a correction draft, once (a repeat without the key is a 409: version 2 is in progress)
     await twice({ method: "POST", url: `${v}/report`, payload: { path: FEE, note: "looks off", by: "Sam" } });
     expect((await storedVersion(built, studyId, 2)).status).toBe("draft");
@@ -135,7 +141,7 @@ describe("a double click: the same request at once, one key", () => {
     expect(await count("review.answered")).toBe(1);
     expect(await count("review.changed")).toBe(0);
     await settleAll(built, studyId, 1);
-    expect((await all({ method: "POST", url: `${v}/sign-off`, payload: { by: "Ben" } })).statusCode).toBe(200);
+    expect((await all({ method: "POST", url: `${v}/sign-off`, payload: { by: "Ben", asOf: await asOf(studyId) } })).statusCode).toBe(200);
     expect(await count("version.signed")).toBe(1);
     expect((await all({ method: "POST", url: `${v}/report`, payload: { path: FEE, note: "looks off", by: "Sam" } })).statusCode).toBe(200);
     expect(await count("version.correction_opened")).toBe(1);
@@ -162,7 +168,7 @@ describe("a double click: the same request at once, one key", () => {
 });
 
 describe("the key's rules", () => {
-  const settings = (people: string[]): Req => ({ method: "PATCH", url: "/settings", payload: { people, by: "Asha" } });
+  const settings = (people: string[], makerChecker?: boolean): Req => ({ method: "PATCH", url: "/settings", payload: { people, by: "Asha", ...(makerChecker === undefined ? {} : { makerChecker }) } });
 
   it("the same key with a different request is refused in plain words (422)", async () => {
     const key = quoted();
@@ -186,10 +192,12 @@ describe("the key's rules", () => {
     await waitJob(app, jobId);
     await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
     const key = quoted();
-    const signOff: Req = { method: "POST", url: `/studies/${studyId}/versions/1/sign-off`, payload: { by: "Ben" } };
-    expect((await send(signOff, key)).statusCode).toBe(409); // questions open
+    await settleAll(built, studyId, 1, "Ben");
+    await send(settings(["Ben"], true));
+    const signOff: Req = { method: "POST", url: `/studies/${studyId}/versions/1/sign-off`, payload: { by: "Ben", asOf: await asOf(studyId) } };
+    expect((await send(signOff, key)).statusCode).toBe(409); // maker-checker: Ben answered
     expect((await effects()).keys).toBe(0);
-    await settleAll(built, studyId, 1);
+    await send(settings(["Ben"], false));
     const ok = await send(signOff, key);
     expect([ok.statusCode, ok.headers["idempotent-replayed"]]).toEqual([200, undefined]);
   });

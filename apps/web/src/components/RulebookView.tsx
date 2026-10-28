@@ -1,6 +1,6 @@
 "use client";
 
-import type { Rulebook } from "@dct/shared";
+import { gridChoice, type Rulebook } from "@dct/shared";
 import { useState, type ReactNode } from "react";
 import { DOC_KIND_LABEL, ENUM_OPTIONS, formatDate, formatValue } from "@/lib/format";
 import { formatCents } from "@/lib/money";
@@ -65,6 +65,9 @@ export function RulebookView({ part }: { part: MasterPart }) {
               { key: "requiredDocs", label: "Needs" },
             ]}
           />
+        </Section>
+        <Section id="bill-by-hand" title={`Bill by hand (${rb.unclassified.length})`}>
+          <BillByHand />
         </Section>
         <Section id="screen-fail" title="Screen failures">
           {rb.screenFail ? (
@@ -177,8 +180,8 @@ export function RulebookView({ part }: { part: MasterPart }) {
 
 function Grids() {
   const { rulebook: rb, focused } = useRulebook();
-  // Opens on the grid billing uses; then a grid picked by hand, until a value in another grid is shown (search, ⌘K).
-  const [picked, setPicked] = useState<{ i: number; at: string | null }>(() => ({ i: Math.max(0, rb.budgetGrids.findIndex((g) => g.id === rb.governingGridId)), at: null }));
+  // Opens on a grid billing uses; then a grid picked by hand, until a value in another grid is shown (search, ⌘K).
+  const [picked, setPicked] = useState<{ i: number; at: string | null }>(() => ({ i: Math.max(0, rb.budgetGrids.findIndex((g) => gridChoice(rb, g)?.billed)), at: null }));
   if (rb.budgetGrids.length === 1) return <GridTable index={0} />;
   const m = /^\/budgetGrids\/(\d+)/.exec(focused ?? "");
   const i = Math.min(m && picked.at !== focused ? Number(m[1]) : picked.i, rb.budgetGrids.length - 1);
@@ -199,7 +202,8 @@ function Grids() {
           >
             {g.label}
             {g.arm && <span className="opacity-70"> · {g.arm}</span>}
-            {rb.governingGridId === g.id && " · billed from this one"}
+            {gridChoice(rb, g)?.billed === true && " · billed from this one"}
+            {gridChoice(rb, g)?.billed === false && <span className="opacity-70"> · not billed</span>}
           </button>
         ))}
       </div>
@@ -223,6 +227,35 @@ function Section({ id, title, children }: { id: string; title: string; children:
 
 const NotInContract = () => <p className="text-small text-muted">Not in the contract.</p>;
 
+/**
+ * Money terms the invoicing master has no field for (ADR-001 §7): listed when someone answered "bill it by hand". They're
+ * approved with the version and in its Excel export, but nothing bills them automatically: an accountant bills each from
+ * the contract's own words.
+ */
+function BillByHand() {
+  const { rulebook: rb, show } = useRulebook();
+  if (!rb.unclassified.length) return <p className="text-small text-muted">Nothing is billed by hand: every money term the contract has is in the invoicing master.</p>;
+  return (
+    <>
+      <p className="mb-3 text-small text-muted">These money terms have no place in the invoicing master, so nothing bills them for you. Bill each one by hand, from the contract&apos;s own words.</p>
+      <ul className="flex flex-col divide-y divide-line">
+        {rb.unclassified.map((u, i) => (
+          <li key={i} className="flex flex-wrap items-start justify-between gap-3 py-2.5 text-small">
+            <span className="min-w-0 flex-1">
+              <span className="block text-ink">{u.quote ? `“${u.quote}”` : u.label}</span>
+              {u.amounts.length > 0 && <span className="num block text-muted">{u.amounts.map((c) => formatCents(c)).join(", ")}</span>}
+              {u.note && <span className="block text-muted">Note: {u.note}</span>}
+            </span>
+            <button type="button" onClick={() => show(`/unclassified/${i}`, u.prov, u.label)} className="text-caption whitespace-nowrap text-accent hover:underline">
+              page {u.page} ↗
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 function ShowLink({ path, label }: { path: string; label: string }) {
   const { rulebook, show } = useRulebook();
   const prov = findProv(rulebook, path);
@@ -238,9 +271,12 @@ function Sourced({ label, at }: { label: string; at: string }) {
   return <Row label={label} path={`${at}/value`} />;
 }
 
+/** A value made of others (a cap: kind, limit, ratio) is hidden while one of them is withheld for a blind answer. */
+const holds = (masked: Set<string>, path: string) => [...masked].some((p) => p.startsWith(`${path}/`));
+
 /** One labelled value: click to see it in the contract. */
 function Row({ label, path, display }: { label: string; path: string; display?: string }) {
-  const { rulebook, show, focused, hits } = useRulebook();
+  const { rulebook, show, focused, hits, masked } = useRulebook();
   const value = getAt(rulebook, path);
   const prov = findProv(rulebook, path);
   return (
@@ -259,9 +295,13 @@ function Row({ label, path, display }: { label: string; path: string; display?: 
           className={cx("-mx-1 rounded px-1 text-left text-small hover:bg-accent-soft", value === null && "text-faint italic")}
           title={prov?.source ? `Show page ${prov.source.page} of the contract` : "No page reference"}
         >
-          <Val path={path}>
-            <span className={typeof value === "number" ? "num" : ""}>{display ?? formatValue(path, value)}</span>
-          </Val>
+          {holds(masked, path) ? (
+            <span className="text-warn">needs you</span>
+          ) : (
+            <Val path={path}>
+              <span className={typeof value === "number" ? "num" : ""}>{display ?? formatValue(path, value)}</span>
+            </Val>
+          )}
         </button>
       </dd>
     </div>
@@ -271,7 +311,7 @@ function Row({ label, path, display }: { label: string; path: string; display?: 
 type Col = { key: string; label: string; num?: boolean; fmt?: (o: Record<string, unknown>) => string };
 
 function ItemTable({ at, cols }: { at: string; cols: Col[] }) {
-  const { rulebook, show, focused, hits } = useRulebook();
+  const { rulebook, show, focused, hits, masked } = useRulebook();
   const items = (getAt(rulebook, at) as Record<string, unknown>[] | undefined) ?? [];
   if (!items.length) return <NotInContract />;
   return (
@@ -298,7 +338,7 @@ function ItemTable({ at, cols }: { at: string; cols: Col[] }) {
                   return (
                     <td key={c.key} className={cx("px-2 py-2 first:pl-5 last:pr-5", c.num && "num text-right")}>
                       <button type="button" data-path={path} className="-mx-1 rounded px-1 text-left hover:bg-accent-soft" onClick={() => show(path, prov, `${name} · ${c.label}`)}>
-                        <Val path={path}>{c.fmt ? c.fmt(o) : formatValue(path, o[c.key])}</Val>
+                        {holds(masked, path) ? <span className="text-warn">needs you</span> : <Val path={path}>{c.fmt ? c.fmt(o) : formatValue(path, o[c.key])}</Val>}
                       </button>
                     </td>
                   );

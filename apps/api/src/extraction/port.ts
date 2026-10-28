@@ -2,7 +2,7 @@ import type { bindEvidence, isoDate, readTextLayer, reviewFromEvidence } from "@
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
-/** Mirrors the `@dct/extraction` interface in docs/PHASE-1.md. */
+/** Mirrors the `@dct/extraction` interface (docs/PHASE-1.md, "`@dct/extraction`"; docs/phase-1/extraction.md). */
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
 type StudyGuess = { sponsor: string | null; protocol: string | null; siteName: string | null; investigator: string | null };
@@ -14,6 +14,8 @@ export type ExtractionOutput = {
   cost: { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number }[];
   /** Ambiguity / retroactive notes the rulebook schema can't hold; stored on the version and passed back to the checks. */
   notes?: ExtractionNote[];
+  /** What made the reading weaker than usual (a skipped or failed re-read, a failed cross-read); saved, never dropped (jobs.ts). */
+  warnings?: string[];
 };
 
 export type ExtractionNote = {

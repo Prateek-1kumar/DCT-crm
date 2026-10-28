@@ -81,6 +81,7 @@ describe("RulebookVersionDto: blind entry", () => {
   const dto = (rulebook: unknown, status: string, review: unknown[]) => ({
     version: 1, status, createdAt: "2026-01-01T00:00:00Z", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s1", rulebook, anomalies: [], editors: [],
     cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [],
+    updatedAt: "2026-01-01T00:00:00.000Z", warnings: [],
   });
   const withheld = () => {
     const rb = structuredClone(minimal) as unknown as Rulebook;

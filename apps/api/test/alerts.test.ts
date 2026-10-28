@@ -3,7 +3,7 @@ import { desc, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { alerts, studies } from "../src/db/schema.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { type App, type Built, extract as extractJob, newStudy as create, resetDb, settleAll, testApp } from "./helpers.js";
+import { type App, type Built, extract as extractJob, newStudy as create, resetDb, settleAll, signOff, testApp } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -46,7 +46,7 @@ describe("raised by the workflow", () => {
       ["ready_for_approval", "Asha", null],
       ["questions_ready", "system", 8],
     ]);
-    expect(await post(`/api/v1/studies/${id}/versions/1/sign-off`, { by: "Ben" })).toMatchObject({ statusCode: 200 });
+    expect(await signOff(app, id, 1, { by: "Ben" })).toMatchObject({ statusCode: 200 });
     expect((await alertsFor("Ben")).items).toHaveLength(2); // live raises nothing
   });
 

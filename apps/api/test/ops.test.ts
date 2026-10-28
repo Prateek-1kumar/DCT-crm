@@ -1,6 +1,10 @@
 import { sql } from "drizzle-orm";
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ConfigError, parseConfig } from "../src/config.js";
+import { ConfigError, parseConfig, readingProblem } from "../src/config.js";
+import { startBoss } from "../src/jobs.js";
 import { type App, type Built, testApp } from "./helpers.js";
 
 // Production basics: probes, settings checked at startup, request ids.
@@ -57,6 +61,23 @@ describe("every response carries its request id", () => {
   });
 });
 
+describe("a database behind this build", () => {
+  it("starts no job worker on it; one that's up to date does", async () => {
+    const quiet = () => {};
+    const log = { error: quiet, warn: quiet, info: quiet } as unknown as Parameters<typeof startBoss>[0]["log"];
+    const workers = async (schemaBehind: boolean) => {
+      const boss = await startBoss({ db: built.ctx.db, log, work: true, schemaBehind });
+      try {
+        return boss.getWipData().map((w) => w.name).sort();
+      } finally {
+        await boss.stop({ graceful: false });
+      }
+    };
+    expect(await workers(true)).toEqual([]);
+    expect(await workers(false)).toEqual(["extract", "identify", "maintenance", "stranded"]);
+  });
+});
+
 describe("settings, checked at startup", () => {
   const base = { DATABASE_URL: "postgres://dct:dct@localhost:5434/dct_finance_test", EXTRACTION_FAKE: "1" };
   const problems = (env: Record<string, string>) => {
@@ -83,8 +104,21 @@ describe("settings, checked at startup", () => {
     expect(msg).toContain("- UPLOAD_DIR must be an absolute path");
     expect(msg).toContain("- LOG_LEVEL must be one of fatal, error, warn, info, debug, trace, silent");
     expect(msg).toContain("- EXTRACTION_MAX_USD must be a number of dollars above 0");
-    expect(msg).toContain("- ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)");
     for (const value of [secret, "mysql", "eighty", "loud", "2O"]) expect(msg).not.toContain(value);
+  });
+
+  it("only a server that reads contracts needs the AI key; the migrator never does", async () => {
+    expect(problems({ DATABASE_URL: base.DATABASE_URL })).toBeNull();
+    expect(readingProblem({})).toContain("- ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)");
+    expect(readingProblem({ ANTHROPIC_API_KEY: "k" })).toBeNull();
+    expect(readingProblem({ EXTRACTION_FAKE: "1" })).toBeNull();
+    // the release step itself: no key, no fake reading (set but empty, so .env can't fill them in)
+    const api = path.resolve(import.meta.dirname, "..");
+    const { stdout } = await promisify(execFile)(path.join(api, "node_modules/.bin/tsx"), ["src/db/migrate.ts"], {
+      cwd: api,
+      env: { ...process.env, DATABASE_URL: base.DATABASE_URL, ANTHROPIC_API_KEY: "", EXTRACTION_FAKE: "" },
+    });
+    expect(stdout).toContain("migrations applied");
   });
 
   it("an OpenAI cross-read needs its key and model, and a price as two numbers", () => {

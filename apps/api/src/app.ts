@@ -30,6 +30,13 @@ const CONCURRENT: Record<string, string> = {
   "55P03": "lock wait timed out",
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** @fastify/multipart's limits, by its error codes, in plain words (its own say "request file too large"). */
+const UPLOAD_LIMITS: Record<string, string> = {
+  FST_REQ_FILE_TOO_LARGE: `This file is bigger than the ${config.maxUploadBytes / 1024 / 1024} MB limit. Split it into smaller PDFs and upload those.`,
+  FST_FILES_LIMIT: "Upload at most 50 files at once.",
+  FST_PARTS_LIMIT: "This upload has too many parts. Upload at most 50 files at once.",
+  FST_FIELDS_LIMIT: "This upload has too many fields. Upload the PDFs alone.",
+};
 
 /** `p`, or a rejection once `ms` have passed. */
 const within = <T>(ms: number, p: Promise<T>) =>
@@ -60,7 +67,9 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
   let stopped = false;
   boss.once("stopped", () => (stopped = true));
 
-  app.setErrorHandler((err: Error & { statusCode?: number; query?: string; cause?: { code?: string; message?: string } }, req, reply) => {
+  app.setErrorHandler((err: Error & { statusCode?: number; code?: string; query?: string; cause?: { code?: string; message?: string } }, req, reply) => {
+    const limit = err.code ? UPLOAD_LIMITS[err.code] : undefined;
+    if (limit) return reply.status(413).send({ statusCode: 413, error: STATUS_CODES[413], message: limit });
     const code = err.cause?.code;
     const bad = code ? BAD_INPUT[code] : undefined;
     const clash = code ? CONCURRENT[code] : undefined;

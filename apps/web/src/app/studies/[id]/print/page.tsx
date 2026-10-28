@@ -1,5 +1,6 @@
 "use client";
 
+import { billedGrids } from "@dct/shared";
 import { Printer } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
@@ -41,7 +42,8 @@ export default function PrintSummary() {
   const ver = version.data;
   const rb = ver.rulebook!;
   const terms = keyTerms(rb, ver.evidence);
-  const grids = rb.budgetGrids.filter((g) => !rb.governingGridId || g.id === rb.governingGridId);
+  // each arm's chosen grid, and every grid of an arm with no choice
+  const grids = billedGrids(rb);
 
   return (
     <div className="mx-auto max-w-[900px] px-8 py-8 text-small text-ink print:max-w-none print:p-0">
@@ -186,6 +188,37 @@ export default function PrintSummary() {
           </table>
         </Part>
       )}
+
+      <Part title="Bill by hand">
+        {rb.unclassified.length ? (
+          <>
+            <p className="mb-2 text-muted">These money terms have no place in the invoicing master, so nothing bills them automatically. Bill each one by hand, from the contract&apos;s own words.</p>
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className={th}>What the contract says</th>
+                  <th className={th}>Page</th>
+                  <th className={`${th} text-right`}>Amounts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rb.unclassified.map((u, i) => (
+                  <tr key={i} className="break-inside-avoid">
+                    <td className={td}>
+                      {u.quote ? `“${u.quote}”` : u.label}
+                      {u.note && <span className="block text-caption text-muted">{u.note}</span>}
+                    </td>
+                    <td className={td}>{u.page}</td>
+                    <td className={`${td} num text-right`}>{u.amounts.map((c) => formatCents(c)).join(", ") || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <p className="text-muted">Nothing: every money term the contract has is in the invoicing master.</p>
+        )}
+      </Part>
 
       <Part title="Payment terms">
         <dl>

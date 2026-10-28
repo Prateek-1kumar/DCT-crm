@@ -2,7 +2,7 @@ import type { AlertPage, AuditPage, DiffEntry, MasterSearch, RulebookVersionDto,
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, storedVersion, testApp, upload } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -52,11 +52,16 @@ describe("reading checks every number against the PDF's own text", () => {
       ["VALUE_CONFLICT", "confirm_value", true],
       ...UNGROUNDED.map(() => ["UNGROUNDED_VALUE", "confirm_value", true]),
       ["UNACCOUNTED_TERM", "unaccounted", true], // parking at $12.00
-      ["VISIT_TOTAL_MISMATCH", "contract_problem", true], // the printed totals don't add up: the contract itself is off
+      ["VISIT_TOTAL_MISMATCH", "contract_problem", false], // the printed totals don't add up: the contract itself is off (a Review question)
       ["MISSING_REFERENCED_DOC", "contract_problem", false],
       ["GRID_CONFLICT", "contract_problem", true],
     ]); // the second read's disagreement is not evidence, so it asks nothing
-    expect(v.review.find((i) => i.reason === "GRID_CONFLICT")).toMatchObject({ path: "/governingGridId", options: [{ id: "g1", label: "Exhibit A" }, { id: "g2", label: "Exhibit A (revised)" }] });
+    expect(v.review.find((i) => i.reason === "GRID_CONFLICT")).toMatchObject({ path: null, options: [{ id: "g1", label: "Exhibit A" }, { id: "g2", label: "Exhibit A (revised)" }] });
+    // which number governs, and a note for the sponsor query (ADR-001 §6)
+    expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")!.options).toEqual([
+      { id: "printed", label: "The visit total as printed", note: "What should we ask the sponsor?" },
+      { id: "sum", label: "Its subtotal, overhead and non-procedure amounts added up", note: "What should we ask the sponsor?" },
+    ]);
     expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 });
     expect((await get<StudyDetailDto>(`/studies/${studyId}`)).documents[0]!.text).toBe("text");
   });
@@ -96,7 +101,7 @@ describe("blind entry", () => {
     // first (recheck), and it holds the value back too. A differs answer shows the comparison, to that item only.
     await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 });
     expect(at((await version(studyId)).rulebook, G2_TOTAL)).toBeNull();
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Ask why the total is a dollar over" });
     expect(at((await version(studyId)).rulebook, G2_TOTAL)).toBe(848900);
     const differs = await answer(studyId, `confirm:${NET_DAYS}`, { value: 30 });
     expect(differs.compare).toEqual({ typed: 30, read: 45, printed: null });
@@ -160,7 +165,7 @@ describe("blind entry", () => {
     expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(200);
     // and the errors a curious person could provoke
     expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(409);
-    expect((await call("POST", `/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(409);
+    expect((await call("POST", `/studies/${studyId}/versions/1/sign-off`, { by: "Ben", asOf: (await version(studyId)).updatedAt })).statusCode).toBe(409);
     expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: ["reported:9"], note: sent, by: "Morgan" })).statusCode).toBe(409); // open again: nothing to send back
     expect((await call("POST", `/studies/${studyId}/versions/1/review/nope`, { value: 1, by: "Sam" })).statusCode).toBe(404);
 
@@ -195,7 +200,7 @@ describe("blind entry", () => {
     await answer(studyId, item, { value: 848900 });
     // the typed total doesn't add up, which is asked about that same total: the note stays blanked until that's settled too
     expect((await auditOf(studyId)).find((e) => e.action === "review.sent_back")!.detail.note).not.toBe(sent);
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
     await answer(studyId, v.review.find((i) => i.reason === "reported")!.id, { value: 45 });
     expect((await version(studyId)).review.find((i) => i.reason === "reported")!.reported).toMatchObject({ by: "Avery", note: reported });
     const settledLog = await auditOf(studyId);
@@ -246,7 +251,7 @@ describe("answering", () => {
     expect(await answer(studyId, "anomaly:GRID_CONFLICT:/budgetGrids/0", { optionId: "g2" })).toMatchObject({ outcome: "chosen" });
     expect(await answer(studyId, "anomaly:MISSING_REFERENCED_DOC:/referencedDocuments/0", { cantTell: true, note: "ask legal" })).toMatchObject({ outcome: "cant_tell" });
     stored = await storedVersion(built, studyId, 1);
-    expect([stored.rulebook!.governingGridId, at(stored.rulebook, NET_DAYS)]).toEqual(["g2", 30]);
+    expect([stored.rulebook!.governingGridIds, at(stored.rulebook, NET_DAYS)]).toEqual([["g2"], 30]);
     expect(stored.editors).toEqual(["Sam"]);
     const log = (await auditOf(studyId)).filter((e) => e.action.startsWith("review."));
     // newest first; settling a "differs" is the first settled answer, not a change
@@ -270,11 +275,12 @@ describe("answering", () => {
     expect((await version(studyId)).review.map((i) => i.id)).not.toContain(`anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`);
     await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 });
     const v = await version(studyId);
-    expect(v.review.find((i) => i.id === `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`)).toMatchObject({ kind: "contract_problem", blocking: true, outcome: null, options: [{ id: "as_printed" }] });
+    expect(v.review.find((i) => i.id === `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`)).toMatchObject({ kind: "contract_problem", blocking: false, outcome: null, options: [{ id: "printed" }, { id: "sum" }] });
     expect(await summary(studyId)).toMatchObject({ needsYou: 1 });
-    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).json().message).toBe("1 question still needs an answer before this can be approved.");
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
-    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    // not needed to approve is still needed: approval takes every question settled (ADR-001 §6)
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).json().message).toBe("1 question still needs an answer before this can be approved.");
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
   });
 
   it("a typed date is checked against the date the PDF prints, however it's written", async () => {
@@ -290,7 +296,9 @@ describe("answering", () => {
     const settledDate = await answer(studyId, id, { value: "2025-08-22" });
     expect(settledDate).toMatchObject({ outcome: "chosen" });
     expect(settledDate.answer).not.toHaveProperty("noPdfText");
-    expect(await answer(studyId, id, { value: "2025-08-22" })).toMatchObject({ outcome: "matched" }); // the PDF's own text, typed
+    // the same answer again from the same person changes nothing; from someone else it's checked: the PDF's own text, typed
+    expect(await answer(studyId, id, { value: "2025-08-22" })).toMatchObject({ outcome: "chosen" });
+    expect(await answer(studyId, id, { value: "2025-08-22", by: "Ben" })).toMatchObject({ outcome: "matched" });
   });
 
   it("refuses what isn't an answer", async () => {
@@ -304,23 +312,28 @@ describe("answering", () => {
     expect((await storedVersion(built, studyId, 1)).review.every((i) => i.outcome === null)).toBe(true);
   });
 
-  it("refuses approval while blocking questions are unsettled, then applies maker-checker", async () => {
+  it("refuses approval while any question is unsettled, then applies maker-checker", async () => {
     const { studyId } = await draft();
-    const signOff = (by: string) => post(`/studies/${studyId}/versions/1/sign-off`, { by });
-    const blocked = await signOff("Morgan");
+    const approve = (by: string) => signOff(app, studyId, 1, { by });
+    const blocked = await approve("Morgan");
     expect(blocked.statusCode).toBe(409);
-    expect(blocked.json().message).toBe("7 questions still need an answer before this can be approved.");
-    // A non-blocking question left for the approver doesn't hold approval up; a blocking "can't tell" does.
+    expect(blocked.json().message).toBe("8 questions still need an answer before this can be approved.");
+    // A "can't tell" holds approval up, a blocking one and one that's not needed to approve alike; the second waits for
+    // the approver (it doesn't count as needing you).
     await settleAll(built, studyId, 1, "Sam");
     await answer(studyId, "anomaly:GRID_CONFLICT:/budgetGrids/0", { cantTell: true });
-    expect((await signOff("Morgan")).json().message).toBe("1 question still needs an answer before this can be approved.");
+    expect((await approve("Morgan")).json().message).toBe("1 question still needs an answer before this can be approved.");
     await answer(studyId, "anomaly:GRID_CONFLICT:/budgetGrids/0", { optionId: "g1" });
     await answer(studyId, "anomaly:MISSING_REFERENCED_DOC:/referencedDocuments/0", { cantTell: true });
     expect(await summary(studyId)).toMatchObject({ needsYou: 0 });
+    expect((await approve("Morgan")).json().message).toBe("1 question still needs an answer before this can be approved.");
+    await answer(studyId, "anomaly:MISSING_REFERENCED_DOC:/referencedDocuments/0", { optionId: "later" });
 
     await patch("/settings", { makerChecker: true, by: "Morgan" });
-    expect((await signOff("Sam")).json().message).toBe("Maker-checker is on: Sam answered questions on this contract, so someone else has to approve it.");
-    expect((await signOff("Morgan")).statusCode).toBe(200);
+    expect((await approve("Sam")).json().message).toBe("Maker-checker is on: Sam answered questions on this contract, so someone else has to approve it.");
+    // the same person however the name is typed
+    for (const by of [" Sam ", "sam", "SAM"]) expect((await approve(by)).statusCode, by).toBe(409);
+    expect((await approve("Morgan")).statusCode).toBe(200);
     expect(await get<StudyDetailDto>(`/studies/${studyId}`)).toMatchObject({ status: "live", liveVersion: 1, needsYou: 0 });
     expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(`confirm:${G2_TOTAL}`)}`, { value: 1, by: "Sam" })).json().message).toBe(
       "Version 1 is signed; only a draft takes answers.",
@@ -363,7 +376,7 @@ describe("“This looks wrong”", () => {
 
     // Matches the PDF text, approved: v2 is live with the same numbers.
     expect(await answer(studyId, v2.review[0]!.id, { value: 5500 }, 2)).toMatchObject({ outcome: "matched" });
-    expect((await post(`/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 2, { by: "Ben" })).statusCode).toBe(200);
     expect((await get<StudyDetailDto>(`/studies/${studyId}`)).versions.map((x) => [x.version, x.status])).toEqual([[2, "signed"], [1, "superseded"]]);
   });
 });
@@ -388,7 +401,7 @@ describe("proofreading", () => {
 
     const v2 = (await post(`/studies/${studyId}/versions/1/report`, { path: paths[1], note: "x", by: "Sam" })).json<RulebookVersionDto>();
     await answer(studyId, v2.review[0]!.id, { value: 1200000 }, 2);
-    await post(`/studies/${studyId}/versions/2/sign-off`, { by: "Ben" });
+    await signOff(app, studyId, 2, { by: "Ben" });
     expect((await post(`/studies/${studyId}/versions/1/proofread`, { paths, by: "Avery" })).json().message).toBe("Version 1 can't be proofread.");
   });
 });
@@ -451,12 +464,13 @@ describe("typing in by hand", () => {
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/0/totalCents", value: null, note: "x", by: "Avery" })).statusCode).toBe(400);
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: "/nope", value: 1, note: "x", by: "Avery" })).statusCode).toBe(400);
     expect(v.editors).toEqual(["Avery"]);
-    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).json().message).toMatch(/^Typing isn't marked done yet/);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).json().message).toMatch(/^Typing isn't marked done yet/);
 
-    // 3 typed values → all 3 are re-typed.
+    // 3 typed values → all 3 are re-typed. The visit total nobody typed holds the blank form's 0: asked as missing.
     v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
-    expect(v.review).toHaveLength(3);
-    expect(v.review.every((i) => i.reason === "spot_check" && i.blocking && i.answer === null)).toBe(true);
+    expect(v.review.map((i) => i.reason).sort()).toEqual(["REQUIRED_MISSING", "spot_check", "spot_check", "spot_check"]);
+    expect(v.review.find((i) => i.reason === "REQUIRED_MISSING")).toMatchObject({ path: "/budgetGrids/0/visits/0/totalCents", blocking: true, input: "money" });
+    expect(v.review.every((i) => i.blocking && i.answer === null)).toBe(true);
     expect(v.review.every((i) => i.path && at(v.rulebook, i.path) === null)).toBe(true); // blind
     expect((await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).statusCode).toBe(409);
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: NET_DAYS, value: 30, note: "x", by: "Avery" })).json().message).toBe("Typing is marked done. Use “This looks wrong” to change a value.");
@@ -465,11 +479,14 @@ describe("typing in by hand", () => {
     expect(await answer(studyId, days.id, { value: 40 })).toMatchObject({ outcome: "differs", compare: { typed: 40, read: 45, printed: null } });
     expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(days.id)}`, { value: 45, by: "Sam" })).statusCode).toBe(400); // nothing in the PDF's text decides it
     expect(await answer(studyId, days.id, { value: 45, note: "page 4, §4.2" })).toMatchObject({ outcome: "chosen", answer: { noPdfText: true } });
+    // the missing total is typed by the typist (anyone may: it's not a re-type); nobody can approve $0 that wasn't typed
+    expect(await answer(studyId, "missing:/budgetGrids/0/visits/0/totalCents", { value: 18500, by: "Avery" })).toMatchObject({ outcome: "chosen" });
+    expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ status: "attested" });
     await settleAll(built, studyId, 1, "Sam");
-    // Re-typing isn't editing: with maker-checker on, the re-typer may approve and the typist may not.
+    // Re-typing as typed isn't editing: with maker-checker on, the re-typer may approve and the typist may not.
     await patch("/settings", { makerChecker: true, by: "Morgan" });
-    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Avery" })).statusCode).toBe(409);
-    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Sam" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 1, { by: "Avery" })).statusCode).toBe(409);
+    expect((await signOff(app, studyId, 1, { by: "Sam" })).statusCode).toBe(200);
   });
 
   it("re-types at most 10 hand-typed values", async () => {
@@ -484,7 +501,7 @@ describe("typing in by hand", () => {
     }
     const v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
     expect(v.evidence).toHaveLength(12);
-    expect(v.review).toHaveLength(10);
+    expect(v.review.filter((i) => i.reason === "spot_check")).toHaveLength(10);
   });
 
   it("refuses typing on a draft that isn't typed by hand, and a blank start while one is in progress", async () => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Person } from "./evidence";
 
 /**
  * Alerts: a contract has reached a step where someone is needed. Everyone on the team sees every alert; whether it has
@@ -32,7 +33,7 @@ export type AlertDto = z.infer<typeof AlertDto>;
 
 /** GET /alerts?for=&cursor=&limit=: newest first, with `read` and `unread` for `for`. `cursor` is opaque. */
 export const AlertListQuery = z.object({
-  for: z.string().min(1),
+  for: Person,
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
@@ -42,5 +43,5 @@ export const AlertPage = z.object({ items: z.array(AlertDto), unread: z.number()
 export type AlertPage = z.infer<typeof AlertPage>;
 
 /** POST /alerts/read: marks `ids` (or, without ids, every alert) read for `by`. Returns `{ unread }`. */
-export const ReadAlertsBody = z.object({ by: z.string().min(1), ids: z.array(z.string()).min(1).max(100).optional() });
+export const ReadAlertsBody = z.object({ by: Person, ids: z.array(z.string()).min(1).max(100).optional() });
 export type ReadAlertsBody = z.infer<typeof ReadAlertsBody>;

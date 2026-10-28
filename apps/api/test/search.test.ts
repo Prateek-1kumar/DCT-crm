@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { studies } from "../src/db/schema.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { type App, type Built, extract as extractJob, liveStudy as approved, newStudy as create, resetDb, settleAll, testApp } from "./helpers.js";
+import { type App, type Built, extract as extractJob, liveStudy as approved, newStudy as create, resetDb, settleAll, signOff, testApp } from "./helpers.js";
 
 // ExcelJS is a dependency of @dct/shared only; load it from there to read the export back.
 type Sheet = { name: string; getColumn(n: number): { values: unknown[] }; getRow(n: number): { getCell(n: number): { value: unknown } } };
@@ -135,7 +135,7 @@ describe("stored stage follows the workflow", () => {
     expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 1 });
     await settleAll(built, id, 1);
     expect(protocols(await list("?view=approval"))).toEqual(["SYN-001"]);
-    await post(`/api/v1/studies/${id}/versions/1/sign-off`, { by: "Ben" });
+    await signOff(app, id, 1, { by: "Ben" });
     expect((await list("?view=live")).items[0]).toMatchObject({ id, liveVersion: 1, needsYou: 0 });
 
     const bad = await newStudy("bad");
@@ -194,7 +194,7 @@ describe("one invoicing master", () => {
     expect(res.rawPayload.subarray(0, 4)).toEqual(Buffer.from("PK\x03\x04"));
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(res.rawPayload);
-    expect(wb.worksheets.map((w) => w.name)).toEqual(["Summary", "Budget grid", "Fees & invoiceables", "Payment terms"]);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Summary", "Budget grid", "Fees & invoiceables", "Payment terms", "Bill by hand"]);
     const summary = wb.worksheets[0]!;
     const cell = (label: string) => summary.getColumn(1).values.indexOf(label);
     expect(summary.getRow(cell("Sponsor")).getCell(2).value).toBe("Synthetic Pharma");

@@ -43,21 +43,27 @@ describe("stages", () => {
 });
 
 describe("approveState", () => {
-  const draft = { status: "draft" as const, rulebook, editors: ["Avery"], review: [q("1", true, "matched"), q("2", false, "cant_tell")] };
+  const draft = { status: "draft" as const, rulebook, editors: ["Avery"], byHand: false, evidence: [], review: [q("1", true, "matched"), q("2", false, "chosen")] };
 
-  it("allows a draft whose blocking questions are settled", () => {
+  it("allows a draft whose questions are all settled", () => {
     expect(approveState(draft, { makerChecker: false }, "Avery")).toEqual({ allowed: true, reasons: [] });
   });
-  it("blocks while a blocking question is unsettled, and says how many", () => {
-    const s = approveState({ ...draft, review: [q("1", true), q("2", true, "cant_tell"), q("3", false)] }, { makerChecker: false }, "Avery");
+  it("blocks while any question is unsettled, one not needed to approve too, and says how many", () => {
+    const s = approveState({ ...draft, review: [q("1", true), q("2", true, "cant_tell"), q("3", false), q("4", false, "cant_tell")] }, { makerChecker: false }, "Avery");
     expect(s.allowed).toBe(false);
-    expect(s.reasons.join(" ")).toContain("2 questions need an answer first");
+    expect(s.reasons.join(" ")).toContain("4 questions need an answer first");
+  });
+  it("as the API: typing by hand marked done, and every number backed", () => {
+    expect(approveState({ ...draft, byHand: true, review: [] }, { makerChecker: false }, "Avery").reasons.join(" ")).toMatch(/Typing isn't marked done yet/);
+    const unbacked = { ...draft, evidence: [{ path: "/x", status: "conflict" as const, where: [], printed: null, note: null }] };
+    expect(approveState(unbacked, { makerChecker: false }, "Avery").reasons.join(" ")).toMatch(/1 number isn't confirmed/);
   });
   it("needs a person", () => {
     expect(approveState(draft, { makerChecker: false }, null).reasons.join(" ")).toMatch(/Choose your name/);
   });
-  it("applies maker-checker only when on", () => {
-    expect(approveState(draft, { makerChecker: true }, "Avery").reasons.join(" ")).toMatch(/someone else has to approve/);
+  it("applies maker-checker only when on (on unless the settings say otherwise), to the person however the name is typed", () => {
+    for (const by of ["Avery", " avery "]) expect(approveState(draft, { makerChecker: true }, by).reasons.join(" ")).toMatch(/someone else has to approve/);
+    expect(approveState(draft, undefined, "Avery").allowed).toBe(false);
     expect(approveState(draft, { makerChecker: true }, "Sam").allowed).toBe(true);
   });
   it("refuses non-drafts", () => {

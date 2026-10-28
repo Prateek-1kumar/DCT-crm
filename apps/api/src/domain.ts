@@ -1,12 +1,15 @@
 import {
   type AlertKind,
+  armKey,
   type DocumentDto,
   type DocumentKind,
+  governingGrids,
   Rulebook,
   type RulebookVersionDto,
   type StudyStatus,
   type StudySummaryDto,
   type VersionStatus,
+  upgradeRulebook,
   type VersionSummaryDto,
 } from "@dct/shared";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -47,24 +50,27 @@ export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
 });
 
 /**
- * Blind entry: on a draft, a value with an open question is withheld (null) from the master, its printed text from the
- * evidence, and the checks' anomalies (their messages and details carry the reading) until nothing is withheld.
- * Every response that carries a version goes through here.
+ * Blind entry: on a draft, a value with an open question is withheld (null) from the master along with the words that
+ * restate it (mask), its printed text from the evidence, and the checks' anomalies (their messages and details carry the
+ * reading) until nothing is withheld. Every response that carries a version goes through here.
  */
 export const versionDto = (v: VersionRow): RulebookVersionDto => {
   const hidden = hiddenPaths(v);
+  const rulebook = v.rulebook && upgradeRulebook(v.rulebook);
   return {
     ...versionSummaryDto(v),
     studyId: v.studyId,
-    rulebook: v.rulebook && hidden.length ? mask(v.rulebook, hidden) : v.rulebook,
+    rulebook: rulebook && hidden.length ? mask(rulebook, hidden) : rulebook,
     anomalies: hidden.length ? [] : v.anomalies,
     editors: v.editors,
     cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
     evidence: v.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
-    review: blindReview(v.review, hidden),
+    review: blindReview(v.review, hidden, v.evidence),
     pdfCheck: v.pdfCheck,
     byHand: v.byHand,
     proofread: v.proofread,
+    updatedAt: v.updatedAt.toISOString(),
+    warnings: v.warnings,
   };
 };
 
@@ -78,7 +84,7 @@ export function studySummaryDto(s: StudyRow, liveVersion: number | null): StudyS
     investigator: s.investigator,
     status: s.status as StudyStatus,
     liveVersion,
-    // ponytail: until review items are wired (ADR-001 step 5) the two are the same count; give openAnomalies its own column then.
+    // ponytail: kept for the web, which reads needsYou; the same count. Give it its own column if anything ever needs it apart.
     openAnomalies: s.needsYou,
     needsYou: s.needsYou,
     updatedAt: s.updatedAt.toISOString(),
@@ -92,8 +98,9 @@ export function raiseAlert(tx: Tx, a: typeof alerts.$inferInsert) {
 
 /**
  * Study status is derived from its versions, so it can't drift:
- * none → setting_up; latest extracting/failed/draft → extracting/extraction_failed/needs_review,
- * or amendment_in_review while an earlier version is live; latest signed → live.
+ * none → setting_up; latest extracting/failed/draft → extracting/extraction_failed/needs_review; a latest draft while an
+ * earlier version is live → amendment_in_review; latest signed → live. An amendment being read, or one that couldn't be
+ * read, shows as such even while a version is live: it isn't waiting for approval, and a failed one must be seen.
  * Also stores needs_you, what the web counts as needing a person on the latest draft (see needsYouOf); the list's
  * `stage` is generated from both. Every write that changes a version calls this.
  * A stage change into needs you, waiting for approval (after reading or answering) or couldn't read raises an alert,
@@ -107,7 +114,7 @@ export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system",
   let status: StudyStatus;
   if (!latest) status = "setting_up";
   else if (latest.status === "signed") status = "live";
-  else if (hasLive) status = "amendment_in_review";
+  else if (latest.status === "draft" && hasLive) status = "amendment_in_review";
   else status = ({ extracting: "extracting", failed: "extraction_failed", draft: "needs_review" } as const)[latest.status as "extracting" | "failed" | "draft"] ?? "needs_review";
   const needsYou = needsYouOf(latest);
   const [after] = await tx.update(studies).set({ status, needsYou, updatedAt: new Date() }).where(eq(studies.id, studyId)).returning({ stage: studies.stage });
@@ -133,13 +140,16 @@ export async function lockStudy(tx: Tx, id: string): Promise<StudyRow> {
   return s;
 }
 
-/** `forUpdate` (a write): the study is locked first (lockStudy), then the version. */
+/**
+ * `forUpdate` (a write): the study is locked first (lockStudy), then the version. Its rulebook is read as the current
+ * schema reads it (upgradeRulebook): a version saved before a field existed has it empty.
+ */
 export async function loadVersion(tx: Tx, studyId: string, version: number, forUpdate = false): Promise<VersionRow> {
   if (forUpdate) await lockStudy(tx, studyId);
   const q = tx.select().from(rulebookVersions).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.version, version)));
   const [row] = forUpdate ? await q.for("update") : await q;
   if (!row) throw notFound(`Version ${version} of study ${studyId}`);
-  return row;
+  return { ...row, rulebook: row.rulebook && upgradeRulebook(row.rulebook) };
 }
 
 /** Only drafts can change. Signed versions are immutable. */
@@ -197,6 +207,7 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[]): Rulebook {
       },
     ],
     governingGridId: null,
+    governingGridIds: [],
     invoiceables: [],
     screenFail: null,
     siteFees: [],
@@ -205,6 +216,7 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[]): Rulebook {
     overpayment: null,
     rounding: m("unspecified"),
     appliesFrom: m(null),
+    unclassified: [],
   });
 }
 
@@ -283,8 +295,17 @@ export function carryCorrections(rulebook: Rulebook, corrections: Correction[]) 
   return { rulebook: rb, carried, skipped };
 }
 
-/** The live version's governing grid, found in the new read by label and arm. */
-export function carryGrid(rulebook: Rulebook, live: Rulebook): string | null {
-  const chosen = live.budgetGrids.find((g) => g.id === live.governingGridId);
-  return chosen ? (rulebook.budgetGrids.find((g) => g.label === chosen.label && g.arm === chosen.arm)?.id ?? null) : null;
+/**
+ * The live version's governing grid for each arm, found in the new read by label. An arm's choice is carried only when
+ * the new read has the same grids for that arm (the same labels): an amendment that adds, drops or renames one of its
+ * grids has to be chosen again, so its GRID_CONFLICT is asked. Returns the new read's grid ids, one per arm carried.
+ */
+export function carryGrid(rulebook: Rulebook, live: Rulebook): string[] {
+  const labels = (rb: Rulebook, arm: string) => JSON.stringify(rb.budgetGrids.filter((g) => armKey(g) === arm).map((g) => g.label).sort());
+  return [...governingGrids(live)].flatMap(([arm, id]) => {
+    const chosen = live.budgetGrids.find((g) => g.id === id)!;
+    if (labels(rulebook, arm) !== labels(live, arm)) return [];
+    const same = rulebook.budgetGrids.find((g) => armKey(g) === arm && g.label === chosen.label);
+    return same ? [same.id] : [];
+  });
 }

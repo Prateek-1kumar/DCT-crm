@@ -1,4 +1,4 @@
-import { Rulebook } from "@dct/shared";
+import { Rulebook, upgradeRulebook } from "@dct/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { FastifyBaseLogger } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -45,9 +45,12 @@ export async function startBoss(ctx: JobCtx & { work: boolean; schemaBehind?: bo
     await boss.updateQueue(name, all); // createQueue leaves a queue that already exists as it was
   }
   await boss.createQueue("maintenance", { retryLimit: 0 });
-  if (ctx.work) {
-    // jobs a crash left behind are failed before any job runs (not on a database whose tables this build doesn't know yet)
-    if (!ctx.schemaBehind) await maintain(ctx, boss);
+  // No worker and no schedule on a database whose tables this build doesn't know yet: they would run jobs against them.
+  // /readyz says the schema is behind; migrate, then restart.
+  if (ctx.work && ctx.schemaBehind) ctx.log.error("jobs not started: the database is behind this build");
+  if (ctx.work && !ctx.schemaBehind) {
+    // jobs a crash left behind are failed before any job runs
+    await maintain(ctx, boss);
     // A handler that throws gets a plain error (failure() logs the cause), never a database error's SQL and values: pg-boss
     // keeps what it threw, and it's copied into the stranded job.
     const run = <T>(fn: (data: T) => Promise<unknown>) => async ([job]: { data: T }[]) => {
@@ -78,6 +81,26 @@ export async function queueJob(tx: Tx, boss: PgBoss, kind: Kind, studyId: string
   await tx.insert(jobs).values({ id, kind, studyId, version });
   await boss.send(kind, version === null ? { jobId: id, studyId } : { jobId: id, studyId, version }, { id, db: fromDrizzle(tx, sql) });
   return id;
+}
+
+/**
+ * What made a reading weaker than usual, in plain words for the reviewer (the reading's own words go in the audit log for
+ * the team). A failed or skipped re-read leaves a budget grid read once; a failed second reading leaves the first unchecked
+ * by it; going over the cost limit is said too. Nothing is said for what's simply off by choice.
+ */
+export function plainWarnings(warnings: string[] = []): string[] {
+  return [
+    ...new Set(
+      warnings.flatMap((w) => {
+        const grid = /budget grid (\d+)/i.exec(w)?.[1];
+        if (grid && /re-read .*failed|failed.*re-read|re-read was skipped/i.test(w))
+          return [`Budget grid ${grid} was read only once: its second, closer reading ${/skipped/i.test(w) ? "was skipped to stay within the cost limit" : "failed"}. Check its numbers with extra care.`];
+        if (/cross-read failed/i.test(w)) return ["The second, independent reading failed, so nothing compared the first reading against it."];
+        if (/over the .* limit/i.test(w)) return ["This reading cost more than the usual limit. Tell the team."];
+        return [];
+      }),
+    ),
+  ];
 }
 
 /** What a failed job says on screen: its own message, never a database error's (the SQL and every value bound to it). */
@@ -245,10 +268,11 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
     const [live] = await db.select().from(rulebookVersions).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.status, "signed")));
     let carriedDetail: Record<string, unknown> | null = null;
     if (live?.rulebook) {
+      const liveRb = upgradeRulebook(live.rulebook);
       const values = carryCorrections(rulebook, await correctionsOf(db, live));
-      const gridId = carryGrid(values.rulebook, live.rulebook);
-      rulebook = gridId ? { ...values.rulebook, governingGridId: gridId } : values.rulebook;
-      carriedDetail = { version, from: live.version, carried: values.carried, skipped: values.skipped, grid: { from: live.rulebook.governingGridId, to: gridId } };
+      const grids = carryGrid(values.rulebook, liveRb);
+      rulebook = { ...values.rulebook, governingGridIds: grids };
+      carriedDetail = { version, from: live.version, carried: values.carried, skipped: values.skipped, grid: { from: liveRb.governingGridIds.length ? liveRb.governingGridIds : [liveRb.governingGridId].filter(Boolean), to: grids } };
     }
     const anomalies = port.runContractChecks(rulebook, { crossRead, pages: out.pages, notes });
     // Every value checked against the PDF's own text, and what's left for a person (ADR-001). No AI.
@@ -271,6 +295,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
           pdfCheck,
           pages: out.pages,
           notes,
+          warnings: plainWarnings(out.warnings),
           cost: out.cost,
           costUsd: sum("usd"),
           inputTokens: sum("inputTokens"),
@@ -284,7 +309,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
       if (!filled.length) throw new Error(`version ${version} is no longer being read`);
       await refreshStudyStatus(tx, studyId);
       if (carriedDetail) await audit(tx, "system", studyId, CARRIED, carriedDetail);
-      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd") });
+      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.warnings?.length ? { warnings: out.warnings } : {}) });
       await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null, errorDetail: null });
     });
   } catch (err) {

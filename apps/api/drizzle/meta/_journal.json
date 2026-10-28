@@ -71,6 +71,20 @@
       "when": 1793210951562,
       "tag": "0009_idempotency_and_one_live_read",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793217075298,
+      "tag": "0010_perfect_virginia_dare",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793217085633,
+      "tag": "0011_truncate_guards",
+      "breakpoints": true
     }
   ]
 }

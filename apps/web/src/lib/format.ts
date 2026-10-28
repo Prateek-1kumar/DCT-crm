@@ -96,6 +96,7 @@ const TOP: Record<string, string> = {
   study: "Study", payment: "Payment", overhead: "Overhead", budgetGrids: "Budget grid", invoiceables: "Invoiceable", siteFees: "Site fee",
   deadlines: "Deadline", screenFail: "Screen fail", holdback: "Holdback", overpayment: "Overpayment", rounding: "Rounding",
   appliesFrom: "Applies from", documents: "Document", referencedDocuments: "Referenced document", governingGridId: "Governing grid",
+  governingGridIds: "Governing grid", unclassified: "Bill by hand",
 };
 const FIELD: Record<string, string> = { pct: "Percent", n: "Limit", unitCents: "Unit price", cents: "Amount" };
 const humanize = (k: string) =>

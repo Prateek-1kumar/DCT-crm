@@ -96,9 +96,10 @@ export const miscRoutes =
       return { items: page, nextCursor: items.length > limit ? encodeCursor(Number(page.at(-1)!.id)) : null };
     });
 
+    // maker-checker is on unless someone turned it off (ADR-001 §10)
     const read = async (tx: Tx = db): Promise<SettingsDto> => {
       const [row] = await tx.select().from(settings).where(eq(settings.id, 1));
-      return { makerChecker: row?.makerChecker ?? false, people: row?.people ?? [] };
+      return { makerChecker: row?.makerChecker ?? true, people: row?.people ?? [] };
     };
 
     app.get("/settings", () => read());
@@ -109,7 +110,7 @@ export const miscRoutes =
       return write(db, req, reply, async (tx) => {
         // read under the row lock: two edits at once each see the other's
         const [row] = await tx.select().from(settings).where(eq(settings.id, 1)).for("no key update");
-        const before: SettingsDto = { makerChecker: row?.makerChecker ?? false, people: row?.people ?? [] };
+        const before: SettingsDto = { makerChecker: row?.makerChecker ?? true, people: row?.people ?? [] };
         const after = { ...before, ...patch };
         // the same settings again change nothing, so they log nothing
         if (isDeepStrictEqual(before, after)) return before;

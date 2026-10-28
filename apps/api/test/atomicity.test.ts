@@ -1,4 +1,4 @@
-import type { AlertPage, DocumentDto } from "@dct/shared";
+import type { AlertPage, DocumentDto, RulebookVersionDto } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { type App, type Built, extract, liveStudy, makeTextPdf, multipart, newStudy, resetDb, settleAll, storedVersion, testApp, upload, waitJob } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makeTextPdf, multipart, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload, waitJob } from "./helpers.js";
 
 // A failure injected into the last insert of a write (a trigger that raises): nothing of the write is left behind. No
 // status change without its audit entry, no alert without its transition, no job without its row, no orphan file.
@@ -71,12 +71,13 @@ describe("a write that fails at its last insert leaves nothing half-saved", () =
     const { studyId } = await newStudy(app, "sign");
     await extract(app, studyId);
     await settleAll(built, studyId, 1);
-    await noTrace(() => failInsert("audit_log", "action", "version.signed"), `/studies/${studyId}/versions/1/sign-off`, { by: "Ben" });
+    const asOf = async (id: string) => (await app.inject({ url: `/api/v1/studies/${id}/versions/1` })).json<RulebookVersionDto>().updatedAt;
+    await noTrace(() => failInsert("audit_log", "action", "version.signed"), `/studies/${studyId}/versions/1/sign-off`, { by: "Ben", asOf: await asOf(studyId) });
     // the response's key is the very last insert: failing it rolls the approval back too
     const { studyId: other } = await newStudy(app, "sign2");
     await extract(app, other);
     await settleAll(built, other, 1);
-    await noTrace(() => failInsert("idempotency_keys", "status", "200"), `/studies/${other}/versions/1/sign-off`, { by: "Ben" });
+    await noTrace(() => failInsert("idempotency_keys", "status", "200"), `/studies/${other}/versions/1/sign-off`, { by: "Ben", asOf: await asOf(other) });
   });
 
   it("send back: answers still answered, evidence as it was, no sent_back alert, no log entry", async () => {
@@ -93,6 +94,14 @@ describe("a write that fails at its last insert leaves nothing half-saved", () =
     const grid = "anomaly:GRID_CONFLICT:/budgetGrids/0";
     expect((await post(`/studies/${studyId}/versions/1/send-back`, { itemIds: [grid], note: "which grid?", by: "Morgan" })).statusCode).toBe(200);
     await noTrace(() => failInsert("alerts", "kind", "ready_for_approval"), `/studies/${studyId}/versions/1/review/${encodeURIComponent(grid)}`, { optionId: "g2", by: "Sam" });
+  });
+
+  it("a bill-by-hand answer: the term not listed on the master, the question still open", async () => {
+    const { studyId } = await newStudy(app, "bill");
+    await extract(app, studyId);
+    const term = (await storedVersion(built, studyId, 1)).review.find((i) => i.reason === "UNACCOUNTED_TERM")!.id;
+    await noTrace(() => failInsert("audit_log", "action", "review.answered"), `/studies/${studyId}/versions/1/review/${encodeURIComponent(term)}`, { optionId: "bill_by_hand", by: "Sam" });
+    expect((await storedVersion(built, studyId, 1)).rulebook!.unclassified).toHaveLength(1);
   });
 
   it("'This looks wrong' on the live version: no correction draft, the study still live", async () => {

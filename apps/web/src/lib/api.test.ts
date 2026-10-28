@@ -23,7 +23,7 @@ describe("api writes", () => {
   it("don't retry what the server refused, and reads carry no key", async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Version 1 is signed" }), { status: 409 }));
     vi.stubGlobal("fetch", fetch);
-    await expect(api.signOff("s", 1, { by: "Ben" })).rejects.toMatchObject({ status: 409, message: "Version 1 is signed" });
+    await expect(api.signOff("s", 1, { by: "Ben", asOf: "2026-10-29T00:00:00.000Z" })).rejects.toMatchObject({ status: 409, message: "Version 1 is signed" });
     expect(fetch).toHaveBeenCalledTimes(1);
     fetch.mockResolvedValue(ok({ makerChecker: false, people: [] }));
     await api.getSettings();

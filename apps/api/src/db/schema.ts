@@ -84,6 +84,8 @@ export const rulebookVersions = pgTable(
     anomalies: jsonb("anomalies").$type<ContractAnomaly[]>().notNull().default([]),
     pages: jsonb("pages").$type<ExtractionOutput["pages"]>().notNull().default([]),
     notes: jsonb("notes").$type<ExtractionNote[]>().notNull().default([]),
+    /** What made the reading weaker than usual, in plain words (jobs.ts plainWarnings); shown with the version. */
+    warnings: jsonb("warnings").$type<string[]>().notNull().default([]),
     cost: jsonb("cost").$type<ExtractionOutput["cost"]>().notNull().default([]),
     costUsd: doublePrecision("cost_usd").notNull().default(0),
     inputTokens: integer("input_tokens").notNull().default(0),
@@ -196,13 +198,13 @@ export const alertReads = pgTable(
   (t) => [primaryKey({ columns: [t.alertId, t.person] })],
 );
 
-/** Single row (id = 1), seeded by migration. */
+/** Single row (id = 1), seeded by migration. Maker-checker is on unless someone turns it off (ADR-001 §10). */
 export const settings = pgTable(
   "settings",
   {
     id: integer("id").primaryKey().default(1),
     people: jsonb("people").$type<string[]>().notNull().default([]),
-    makerChecker: boolean("maker_checker").notNull().default(false),
+    makerChecker: boolean("maker_checker").notNull().default(true),
   },
   (t) => [check("settings_single_row", sql`${t.id} = 1`)],
 );

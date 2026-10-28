@@ -7,8 +7,16 @@ import { mockRequest, mockReset } from "./server";
 const get = async (path: string) => (await mockRequest("GET", path, undefined)).json;
 const list = async (q = "") => StudyPage.parse(await get(`/studies?limit=100${q}`)).items;
 const post = (path: string, body: unknown) => mockRequest("POST", path, body);
-const answer = async (study: string, item: string, body: Record<string, unknown>) =>
-  RulebookVersionDto.parse((await post(`/studies/${study}/versions/1/review/${item}`, { by: "Sam Rivera", ...body })).json);
+const answer = async (study: string, item: string, body: Record<string, unknown>, v = 1) =>
+  RulebookVersionDto.parse((await post(`/studies/${study}/versions/${v}/review/${item}`, { by: "Sam Rivera", ...body })).json);
+/** Approval as the approve page sends it: with the version as `by` last saw it. */
+const signOff = async (study: string, v: number, by: string) =>
+  post(`/studies/${study}/versions/${v}/sign-off`, { by, asOf: RulebookVersionDto.parse(await get(`/studies/${study}/versions/${v}`)).updatedAt });
+/** Settles a question as the API tests' settleAll does: the first option (with a note), or the value again with a note. */
+const settle = async (study: string, i: { id: string; options: { id: string }[] }, v = 1) =>
+  answer(study, i.id, i.options.length ? { optionId: i.options[0]!.id, note: "checked" } : { value: 1, note: "checked" }, v).then(async (r) => {
+    if (r.review.find((x) => x.id === i.id)!.outcome === "differs") await answer(study, i.id, { value: 1, note: "checked" }, v);
+  });
 
 describe("mock API", () => {
   beforeEach(() => mockReset());
@@ -55,10 +63,7 @@ describe("mock API", () => {
     await answer("st-northwind", "q1", { value: 9800 });
     expect((await alerts("Taylor Brooks")).items).toHaveLength(seeded.items.length);
     const v = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
-    for (const i of v.review.filter((x) => x.outcome === null))
-      await answer("st-northwind", i.id, i.options.length ? { optionId: i.options[0]!.id } : { value: 1, note: "checked" }).then(async (r) => {
-        if (r.review.find((x) => x.id === i.id)!.outcome === "differs") await answer("st-northwind", i.id, { value: 1, note: "checked" });
-      });
+    for (const i of v.review.filter((x) => x.outcome === null)) await settle("st-northwind", i);
     const after = await alerts("Taylor Brooks");
     expect(after.items[0]).toMatchObject({ kind: "ready_for_approval", studyId: "st-northwind", by: "Sam Rivera", read: false });
     expect(after.unread).toBe(seeded.unread + 1);
@@ -129,25 +134,35 @@ describe("mock API", () => {
     expect(v.review.find((i) => i.id === "q1")!.outcome).toBe("chosen");
 
     v = await answer("st-northwind", "q2", { optionId: "g-nw-b" });
-    expect(v.rulebook!.governingGridId).toBe("g-nw-b");
+    expect(v.rulebook!.governingGridIds).toEqual(["g-nw-b"]);
     expect((await post("/studies/st-northwind/versions/1/review/q2", { optionId: "nope", by: "Sam" })).status).toBe(400);
     v = await answer("st-northwind", "q7", { cantTell: true });
     expect(v.review.find((i) => i.id === "q7")!.outcome).toBe("cant_tell");
     expect(v.editors).toEqual(["Sam Rivera"]);
   });
 
-  it("refuses approval while blocking questions are unsettled, then applies maker-checker", async () => {
-    expect((await post("/studies/st-northwind/versions/1/sign-off", { by: "Morgan Lee" })).status).toBe(409);
+  it("refuses approval while any question is unsettled or the version changed since, then applies maker-checker (on by default)", async () => {
+    expect((await signOff("st-northwind", 1, "Morgan Lee")).status).toBe(409);
+    expect((await post("/studies/st-northwind/versions/1/sign-off", { by: "Morgan Lee" })).status).toBe(400); // as seen when?
     const v = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
-    for (const i of v.review.filter((x) => x.blocking))
-      await answer("st-northwind", i.id, i.options.length ? { optionId: i.options[0]!.id } : { value: 1, note: "checked" }).then(async (r) => {
-        if (r.review.find((x) => x.id === i.id)!.outcome === "differs") await answer("st-northwind", i.id, { value: 1, note: "checked" });
-      });
-    await mockRequest("PATCH", "/settings", { makerChecker: true, by: "Morgan Lee" });
-    expect((await post("/studies/st-northwind/versions/1/sign-off", { by: "Sam Rivera" })).status).toBe(409);
-    expect((await post("/studies/st-northwind/versions/1/sign-off", { by: "Morgan Lee" })).status).toBe(200);
+    for (const i of v.review) await settle("st-northwind", i);
+    const seen = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1")).updatedAt;
+    await post("/studies/st-northwind/versions/1/proofread", { paths: ["/siteFees/0/amountCents"], by: "Avery Chen" });
+    expect((await post("/studies/st-northwind/versions/1/sign-off", { by: "Morgan Lee", asOf: seen })).json).toMatchObject({ message: "This contract changed since you opened it. Check it again." });
+    expect(((await get("/settings")) as { makerChecker: boolean }).makerChecker).toBe(true);
+    for (const by of ["Sam Rivera", " sam rivera "]) expect((await signOff("st-northwind", 1, by)).status, by).toBe(409);
+    expect((await signOff("st-northwind", 1, "Morgan Lee")).status).toBe(200);
     expect(StudyDetailDto.parse(await get("/studies/st-northwind")).status).toBe("live");
-  });
+
+    // a question not needed to approve still holds approval: left for the approver, it must be settled (ADR-001 §6)
+    await answer("st-halcyon", "a5", { cantTell: true, by: "Taylor Brooks" }, 2);
+    expect(((await signOff("st-halcyon", 2, "Morgan Lee")).json as { message: string }).message).toBe("1 question still needs an answer before this can be approved.");
+    expect((await post("/studies/st-halcyon/versions/2/review/a5", { optionId: "sum", by: "Taylor Brooks" })).json).toMatchObject({ message: "Add a short note for this answer: what should we ask the sponsor?" });
+    const sum = await answer("st-halcyon", "a5", { optionId: "sum", note: "Ask why Week 52 is printed low", by: "Taylor Brooks" }, 2);
+    const week52 = sum.rulebook!.budgetGrids[0]!.visits[5]!;
+    expect(week52.totalCents).toBe(week52.procedureSubtotalCents! + week52.overheadCents! + week52.nonProcedureCents!); // the sum governs: written
+    expect((await signOff("st-halcyon", 2, "Morgan Lee")).status).toBe(200);
+  }, 30_000); // many requests, each with the sample server's network delay
 
   it("“This looks wrong” on a draft adds a blocking blind question and sends an approved-ready study back to Needs you", async () => {
     const summary = async () => (await list()).find((s) => s.id === "st-halcyon")!;
@@ -271,9 +286,9 @@ describe("mock API", () => {
   it("types a contract in by hand, then someone else re-types a blind sample of up to 10 values", async () => {
     const start = await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
     const v0 = RulebookVersionDto.parse(start.json);
-    expect(v0).toMatchObject({ version: 2, status: "draft", byHand: true, evidence: [], review: [] });
+    expect(v0).toMatchObject({ version: 1, status: "draft", byHand: true, evidence: [], review: [] }); // replaces the failed read, as the real API
     const type = async (path: string, value: unknown) => {
-      const r = await mockRequest("PATCH", "/studies/st-solace/versions/2/values", { path, value, note: "Typed by hand", by: "Avery Chen" });
+      const r = await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path, value, note: "Typed by hand", by: "Avery Chen" });
       expect(r.status, path).toBe(200);
       return RulebookVersionDto.parse(r.json);
     };
@@ -286,38 +301,107 @@ describe("mock API", () => {
     // Removing row 0 moves row 1's typed values up.
     v = await type("/budgetGrids/0/procedures", [v.rulebook!.budgetGrids[0]!.procedures[1]!]);
     expect(v.evidence.map((e) => e.path).sort()).toEqual(["/budgetGrids/0/procedures/0/cells/V1", "/budgetGrids/0/procedures/0/name", "/payment/netDays/value"]);
-    expect((await mockRequest("PATCH", "/studies/st-solace/versions/2/values", { path: "/budgetGrids/0/visits/0/totalCents", value: null, note: "x", by: "Avery Chen" })).status).toBe(400);
+    expect((await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/budgetGrids/0/visits/0/totalCents", value: null, note: "x", by: "Avery Chen" })).status).toBe(400);
     expect((await list()).find((s) => s.id === "st-solace")!.needsYou).toBe(1);
+    expect(((await signOff("st-solace", 1, "Morgan Lee")).json as { message: string }).message).toBe("Typing isn't marked done yet, so nobody has re-typed the values.");
 
-    // 3 typed values → all 3 are re-typed.
-    v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/2/by-hand/done", { by: "Avery Chen" })).json);
-    expect(v.review).toHaveLength(3);
-    expect(v.review.every((i) => i.reason === "spot_check" && i.blocking && i.answer === null)).toBe(true);
-    expect((await mockRequest("PATCH", "/studies/st-solace/versions/2/values", { path: "/payment/netDays/value", value: 30, note: "x", by: "Avery Chen" })).status).toBe(409);
+    // 3 typed values → all 3 are re-typed; the visit total nobody typed holds the blank form's 0, so it's asked as missing
+    v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
+    expect(v.review.map((i) => i.reason).sort()).toEqual(["REQUIRED_MISSING", "spot_check", "spot_check", "spot_check"]);
+    expect(v.review.find((i) => i.reason === "REQUIRED_MISSING")).toMatchObject({ path: "/budgetGrids/0/visits/0/totalCents", input: "money", blocking: true });
+    expect(v.review.every((i) => i.blocking && i.answer === null)).toBe(true);
+    expect((await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/payment/netDays/value", value: 30, note: "x", by: "Avery Chen" })).status).toBe(409);
     const days = v.review.find((i) => i.path === "/payment/netDays/value")!;
-    expect((await post(`/studies/st-solace/versions/2/review/${days.id}`, { value: 45, by: "Avery Chen" })).status).toBe(409);
-    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/2/review/${days.id}`, { value: 40, by: "Sam Rivera" })).json);
+    expect((await post(`/studies/st-solace/versions/1/review/${days.id}`, { value: 45, by: "Avery Chen" })).status).toBe(409);
+    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/1/review/${days.id}`, { value: 40, by: "Sam Rivera" })).json);
     expect(v.review.find((i) => i.id === days.id)).toMatchObject({ outcome: "differs", compare: { typed: 40, read: 45, printed: null } });
+    // keeping a different value is a correction: the re-typer is then an editor, and can't approve alone
+    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/1/review/${days.id}`, { value: 40, note: "page 4, §4.2", by: "Sam Rivera" })).json);
+    expect(v.editors).toEqual(["Avery Chen", "Sam Rivera"]);
   }, 30_000); // many requests, each with the mock's simulated network delay
 
   it("re-types at most 10 hand-typed values", async () => {
     await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
     const patch = async (path: string, value: unknown) =>
-      RulebookVersionDto.parse((await mockRequest("PATCH", "/studies/st-solace/versions/2/values", { path, value, note: "x", by: "Avery Chen" })).json);
+      RulebookVersionDto.parse((await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path, value, note: "x", by: "Avery Chen" })).json);
     for (let i = 0; i < 4; i++) {
       const rb = (await patch("/payment/netDays/value", null)).rulebook!;
       await patch("/invoiceables", [...rb.invoiceables, blankInvoiceable()]);
       for (const k of ["name", "amountCents", "amountWithOverheadCents"]) await patch(`/invoiceables/${i}/${k}`, k === "name" ? `Item ${i}` : 1000 * (i + 1));
     }
-    const v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/2/by-hand/done", { by: "Avery Chen" })).json);
+    const v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
     expect(v.evidence).toHaveLength(12);
-    expect(v.review).toHaveLength(10);
+    expect(v.review.filter((i) => i.reason === "spot_check")).toHaveLength(10);
   }, 30_000); // many requests, each with the mock's simulated network delay
 
   it("amendment diff lists changed fees with readable labels", async () => {
     const diff = DiffEntry.array().parse(await get("/studies/st-halcyon/versions/2/diff?against=1"));
     expect(diff.find((e) => e.path === "/payment/netDays/value")).toMatchObject({ change: "changed", before: 45, after: 30, label: "Payment › Net days" });
     expect(diff.some((e) => e.change === "added" && e.label.includes("Remote monitoring visit"))).toBe(true);
+  });
+});
+
+describe("mock API: in step with the real API's rules", () => {
+  beforeEach(() => mockReset());
+
+  it("withholds a value with an open question: the value, its printed text, its quote and the words that restate it", async () => {
+    const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    // q6: the screen-fail amount, asked blind; the fixture's evidence prints the right answer
+    expect(nw.rulebook!.screenFail!.amountCents).toBeNull();
+    expect(nw.evidence.find((e) => e.path === "/screenFail/amountCents")!.printed).toBeNull();
+    expect(nw.rulebook!.screenFail!.prov.source).not.toHaveProperty("quote");
+    expect(nw.rulebook!.budgetGrids[0]!.procedures[3]!.cells.V2).toBeNull(); // q1
+    await answer("st-northwind", "q6", { value: 61000 });
+    expect(RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1")).rulebook!.screenFail!.prov.source).toHaveProperty("quote");
+  });
+
+  it("bill by hand lists the term on the master; another answer takes it off; send back too", async () => {
+    let v = await answer("st-northwind", "q7", { optionId: "bill_by_hand" });
+    expect(v.rulebook!.unclassified).toMatchObject([{ label: "§7.2 Parking. Sponsor will reimburse parking at $12.00 per…", amounts: [1200], itemId: "q7" }]);
+    v = await answer("st-northwind", "q7", { optionId: "not_payment" });
+    expect(v.rulebook!.unclassified).toEqual([]);
+    await answer("st-northwind", "q7", { optionId: "bill_by_hand" });
+    v = RulebookVersionDto.parse((await post("/studies/st-northwind/versions/1/send-back", { itemIds: ["q7"], note: "Is it per visit?", by: "Morgan Lee" })).json);
+    expect(v.rulebook!.unclassified).toEqual([]);
+    // the seeded amendment lists its courier pickups
+    expect(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).rulebook!.unclassified.map((u) => u.amounts)).toEqual([[9500]]);
+  });
+
+  it("the same settling answer again changes nothing; picking one arm's grid keeps the others'", async () => {
+    await answer("st-northwind", "q5", { value: 2600 }); // differs from the PDF's $25.00
+    const kept = await answer("st-northwind", "q5", { value: 2600, note: "Ink correction on the page" });
+    expect(kept.review.find((i) => i.id === "q5")!.outcome).toBe("chosen");
+    const logged = AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items.length;
+    expect((await answer("st-northwind", "q5", { value: 2600, note: "Ink correction on the page" })).review.find((i) => i.id === "q5")!.outcome).toBe("chosen");
+    expect(AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items).toHaveLength(logged);
+  });
+
+  it("refuses what the API refuses: reading again over a draft, editing approved details, a file that isn't a PDF, bad settings", async () => {
+    expect((await post("/studies/st-northwind/extract", { by: "Sam Rivera" })).json).toMatchObject({ statusCode: 409, message: "Version 1 is a draft under review; sign it off before extracting again" });
+    const edit = await mockRequest("PATCH", "/studies/st-meridian", { sponsor: "S", protocol: "P", siteName: "S", investigator: "I", by: "Sam Rivera" });
+    expect([edit.status, (edit.json as { message: string }).message]).toEqual([409, expect.stringMatching(/approved version/)]);
+    const fd = new FormData();
+    fd.append("files[]", new File(["hello"], "notes.txt"));
+    expect(await mockRequest("POST", "/uploads", fd)).toMatchObject({ status: 415, json: { message: "notes.txt is not a PDF" } });
+    expect((await mockRequest("PATCH", "/settings", { makerChecker: "yes", by: "Sam Rivera" })).status).toBe(400);
+  });
+
+  it("reads a failed read again in its own version; an amendment being read, or that couldn't be read, isn't waiting for approval", async () => {
+    // Solace's read failed: reading again reuses version 1
+    expect((await post("/studies/st-solace/extract", { by: "Sam Rivera" })).json).toMatchObject({ version: 1 });
+    expect(StudyDetailDto.parse(await get("/studies/st-solace")).versions.map((v) => [v.version, v.status])).toEqual([[1, "extracting"]]);
+    // Meridian is live: its amendment is being read, not waiting for approval; "This looks wrong" on the live version says so
+    expect((await post("/studies/st-meridian/extract", { by: "Sam Rivera" })).json).toMatchObject({ version: 2 });
+    expect((await list()).find((s) => s.id === "st-meridian")).toMatchObject({ status: "extracting", liveVersion: 1 });
+    expect((await post("/studies/st-meridian/versions/1/report", { path: "/payment/netDays/value", note: "x", by: "Sam Rivera" })).json).toMatchObject({
+      message: "Version 2 is being read right now. When it's ready, report this there.",
+    });
+  });
+
+  it("a shared file's kind change is logged on every study that uses it", async () => {
+    const res = await mockRequest("PATCH", "/documents/doc-hal-cta", { kind: "master_agreement", by: "Sam Rivera" });
+    expect(res.status).toBe(200);
+    expect(AuditPage.parse(await get("/audit?studyId=st-halcyon&limit=5")).items[0]).toMatchObject({ action: "document.kind_set", detail: { documentId: "doc-hal-cta", to: "master_agreement" } });
   });
 });
 

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, testApp, upload } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, testApp, upload } from "./helpers.js";
 
 // Regression tests for the security review (backend-audit.md): one block per finding.
 
@@ -74,9 +74,9 @@ describe("H7: blind entry has no side doors", () => {
     const problem = (await version(studyId)).review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")!;
     expect(problem.question).not.toMatch(/848900/);
     expect(await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 })).toMatchObject({ outcome: "matched" });
-    await answer(studyId, problem.id, { optionId: "as_printed" });
+    await answer(studyId, problem.id, { optionId: "printed", note: "Query the total" });
     // the typed total doesn't add up in its own grid either: asked on the typed numbers (recheck), and settled
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "as_printed" });
+    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
     expect((await version(studyId)).review.find((i) => i.id === problem.id)!.question).toMatch(/848900/); // nothing in its grid withheld now
 
     // "This looks wrong" on two values: one the earlier answer holds, one in the problem's grid.
@@ -116,7 +116,7 @@ describe("M2: what was approved stays as approved", () => {
     expect((await patch(`/studies/${studyId}`, { sponsor: "Row Sponsor", protocol: "ROW-1", siteName: "Row Site", investigator: "Dr Row", by: "Asha" })).statusCode).toBe(200);
     await extract(app, studyId);
     await settleAll(built, studyId, 1);
-    expect((await post(`/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
     expect((await patch(`/studies/${studyId}`, { sponsor: "S", protocol: "P", siteName: "S", investigator: "I", by: "Asha" })).statusCode).toBe(409);
     const x = await get(`/studies/${studyId}/versions/1/export.xlsx`);
     expect(x.headers["content-disposition"]).toBe('attachment; filename="SYN-001-v1-invoicing-master.xlsx"');
@@ -156,7 +156,7 @@ describe("item 3: a blind re-type checks yes/no and fixed-list values too", () =
     const PAID = "/payment/visitPayment/value";
     for (const [p, value] of [[AUTOPAY, false], [PAID, "invoice"], ["/payment/netDays/value", 45]] as const) expect((await type(p, value)).statusCode).toBe(200);
     const v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
-    expect(v.review.map((i) => i.path).sort()).toEqual([AUTOPAY, "/payment/netDays/value", PAID].sort());
+    expect(v.review.filter((i) => i.reason === "spot_check").map((i) => i.path).sort()).toEqual([AUTOPAY, "/payment/netDays/value", PAID].sort());
     expect(await answer(studyId, `spot:${AUTOPAY}`, { optionId: "true" })).toMatchObject({ outcome: "differs", compare: { typed: true, read: false } });
     expect(await answer(studyId, `spot:${PAID}`, { optionId: "invoice" })).toMatchObject({ outcome: "matched" });
   });

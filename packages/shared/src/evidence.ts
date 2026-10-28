@@ -35,6 +35,11 @@ export type ValueEvidence = z.infer<typeof ValueEvidence>;
 export const ReviewKind = z.enum(["confirm_value", "unaccounted", "contract_problem", "interpretation", "unclassified"]);
 export type ReviewKind = z.infer<typeof ReviewKind>;
 
+/** Who did something: the name picked in "Who's working today?". Edge spaces are dropped, so one person is one name. */
+export const Person = z.string().trim().min(1);
+/** Whether two names are the same person: as typed, ignoring edge spaces and case. */
+export const samePerson = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 export const ReviewAnswer = z.object({
   /** Typed value: cents for money, a number for % / days / counts, ISO date, or text. */
   value: z.unknown().optional(),
@@ -63,8 +68,16 @@ export const ReviewItem = z.object({
   question: z.string(),
   /** What the person types; null for choice items. */
   input: z.enum(["money", "percent", "number", "date", "text"]).nullable(),
-  /** Choices, none pre-selected. */
-  options: z.array(z.object({ id: z.string(), label: z.string() })),
+  /**
+   * Choices, none pre-selected. `note`: picking this one needs a note, and this is what it asks, e.g. "What should we ask
+   * the sponsor?" (a question that's not needed to approve clears by a reason from a fixed list plus a note, ADR-001 §6).
+   */
+  options: z.array(z.object({ id: z.string(), label: z.string(), note: z.string().optional() })),
+  /**
+   * A money term found in the PDF's text that the master doesn't hold (UNACCOUNTED_TERM): its words and figures, listed
+   * to bill by hand if that's the answer. The question shows the same words.
+   */
+  term: z.object({ quote: z.string(), amounts: z.array(z.number().int()), pct: z.number().optional(), days: z.number().int().optional() }).optional(),
   where: z.array(PageBox),
   /** Must be settled before approval. */
   blocking: z.boolean(),
@@ -87,22 +100,22 @@ export const ProofreadMark = z.object({ path: z.string(), by: z.string(), at: z.
 export type ProofreadMark = z.infer<typeof ProofreadMark>;
 
 /** POST /studies/:id/versions/:v/proofread: these values looked right to `by`. */
-export const ProofreadBody = z.object({ paths: z.array(z.string()).min(1).max(5000), by: z.string().min(1) });
+export const ProofreadBody = z.object({ paths: z.array(z.string()).min(1).max(5000), by: Person });
 
 /**
  * POST /studies/:id/versions/:v/report: "This looks wrong" on any value. On a draft it adds a blocking confirm_value item;
  * on a live version it opens a correction draft (copy of the live version + that item). Returns the draft.
  */
-export const ReportValueBody = z.object({ path: z.string(), note: z.string().min(1), by: z.string().min(1) });
+export const ReportValueBody = z.object({ path: z.string(), note: z.string().min(1), by: Person });
 
 /**
  * POST /studies/:id/versions/by-hand: blank draft for a contract that couldn't be read; every value typed is `attested`.
  * POST /studies/:id/versions/:v/by-hand/done (same body): typing finished; a different person re-types up to 10 random values blind.
  */
-export const ByHandBody = z.object({ by: z.string().min(1) });
+export const ByHandBody = z.object({ by: Person });
 
 /** POST /studies/:id/versions/:v/send-back: the approver reopens answered questions with a note; the contract goes back to Needs you. */
-export const SendBackBody = z.object({ itemIds: z.array(z.string()).min(1).max(1000), note: z.string().min(1), by: z.string().min(1) });
+export const SendBackBody = z.object({ itemIds: z.array(z.string()).min(1).max(1000), note: z.string().min(1), by: Person });
 
 /** POST /studies/:id/versions/:v/review/:itemId. Also changes an earlier answer while the version is a draft. */
 export const AnswerReviewBody = z.object({
@@ -114,7 +127,7 @@ export const AnswerReviewBody = z.object({
    * the PDF's text prints nothing to decide it, with either value (where the page prints it).
    */
   note: z.string().optional(),
-  by: z.string().min(1),
+  by: Person,
 });
 
 // ---- Notes never give a withheld value away ----

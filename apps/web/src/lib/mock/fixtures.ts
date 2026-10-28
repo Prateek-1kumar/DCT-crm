@@ -170,6 +170,7 @@ export function makeRulebook(c: StudyCfg): Rulebook {
     },
     budgetGrids: c.grids.map((g) => makeGrid(g, c.pi, c.site)),
     governingGridId: null,
+    governingGridIds: [],
     invoiceables: [
       inv("UNSCH", "Unscheduled visit", 57200, 80000, "fixed", "per occurrence", d, 10, true),
       inv("SAE", "SAE reporting", 25000, 35000, "fixed", "per SAE", d, 10, false),
@@ -200,6 +201,7 @@ export function makeRulebook(c: StudyCfg): Rulebook {
     overpayment: { refundDays: 30, sponsorMayOffset: true, prov: P(d, 8, "§4.8 Overpayment") },
     rounding: s("printed_amounts" as const, P(d, 5, "Exhibit A §1")),
     appliesFrom: s(null, { ...P(d, 2, "§1"), crossCheck: "not_checked" }),
+    unclassified: [],
   };
 }
 
@@ -321,6 +323,7 @@ export type Secret = { truth?: unknown; lines: string[]; apply?: Record<string, 
 export type Spec = Pick<ReviewItem, "id" | "kind" | "reason" | "path" | "question" | "where" | "blocking"> & {
   input?: ReviewItem["input"];
   options?: ReviewItem["options"];
+  term?: ReviewItem["term"];
   truth?: unknown;
   /** The tool's misreading, written into the master. */
   read?: unknown;
@@ -346,7 +349,7 @@ const inputFor = (rb: Rulebook, path: string, value?: unknown): NonNullable<Revi
 /** The DTO side of a question: explicit fields, so nothing secret can reach a response. */
 export const toItem = (x: Spec): ReviewItem => ({
   id: x.id, kind: x.kind, reason: x.reason, path: x.path, question: x.question, input: x.input ?? null, options: x.options ?? [],
-  where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null, sentBack: null,
+  where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null, sentBack: null, ...(x.term ? { term: x.term } : {}),
 });
 export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines, apply: x.apply });
 
@@ -436,22 +439,20 @@ const overheadScope = (id: string, doc: string, page: number, n: number): Spec =
   lines: ["§2 Overhead. Institution overhead shall be applied to the costs above."],
   apply: Object.fromEntries(OVERHEAD_OPTIONS.map((o) => [o.id, { path: "/overhead/appliesTo/value", value: o.id }])),
 });
-const pharmacyFee = (id: string, doc: string, page: number, n: number): Spec => ({
+/** As the real API's money-term questions (UNACCOUNTED_TERM): "bill by hand" lists the term on the master (ADR-001 §7). */
+const UNACCOUNTED_OPTIONS = [
+  { id: "bill_by_hand", label: "A payment term: list it to bill by hand" },
+  { id: "not_payment", label: "Not a payment term" },
+  { id: "covered", label: "Already covered by another line" },
+];
+const moneyTerm = (id: string, doc: string, page: number, n: number, line: string, amounts: number[]): Spec => ({
   id, kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, blocking: true,
-  question: "This sentence mentions money, but nothing in the invoicing master covers it. What is it?",
-  options: [
-    { id: "bill_by_hand", label: "A payment term: list it to bill by hand" },
-    { id: "not_payment", label: "Not a payment term" },
-    { id: "covered", label: "Already covered by another line" },
-  ],
-  where: [pb(doc, page, box(n))], lines: ["§6.4 Pharmacy. Sponsor shall pay a one-time pharmacy set-up fee of $1,500.00 upon site activation."],
+  question: `Page ${page} has ${amounts.length > 1 ? "amounts" : "an amount"} that the invoicing master doesn't have: "${line.replace(/[.;:,]$/, "")}". How should it be handled?`,
+  options: UNACCOUNTED_OPTIONS, term: { quote: line, amounts }, where: [pb(doc, page, box(n))], lines: [line],
 });
-const parking = (id: string, doc: string, page: number, n: number): Spec => ({
-  id, kind: "unclassified", reason: "UNCLASSIFIED", path: null, blocking: false,
-  question: "“Sponsor will reimburse parking at $12.00 per subject visit.” The invoicing master has no place for this yet, so it goes on the list to bill by hand. OK?",
-  options: [{ id: "ok", label: "OK, bill it by hand" }], where: [pb(doc, page, box(n))],
-  lines: ["§7.2 Parking. Sponsor will reimburse parking at $12.00 per subject visit."],
-});
+const pharmacyFee = (id: string, doc: string, page: number, n: number) =>
+  moneyTerm(id, doc, page, n, "§6.4 Pharmacy. Sponsor shall pay a one-time pharmacy set-up fee of $1,500.00 upon site activation.", [150000]);
+const parking = (id: string, doc: string, page: number, n: number) => moneyTerm(id, doc, page, n, "§7.2 Parking. Sponsor will reimburse parking at $12.00 per subject visit.", [1200]);
 const cell = (id: string, reason: string, gi: number, pi: number, visit: string, label: string, cents: number, where: PageBox, read?: number): Spec => {
   const proc = PROCS[pi]!;
   const v = VISITS.find((x) => x.code === visit)!;
@@ -468,7 +469,8 @@ export function northwindSpecs(): Spec[] {
   return [
     cell("q1", "VALUE_CONFLICT", 0, 3, "V2", "Exhibit A", 9800, pb(wo, 9, box(0)), 9300),
     {
-      id: "q2", kind: "contract_problem", reason: "GRID_CONFLICT", path: "/governingGridId", blocking: true,
+      // a choice per arm, not a value: the server writes it into governingGridIds, as the real API
+      id: "q2", kind: "contract_problem", reason: "GRID_CONFLICT", path: null, blocking: true,
       question: "Exhibit A and Attachment 2 both price every visit, and they disagree on 4 procedures. Which one should we bill from?",
       options: [
         { id: "g-nw-a", label: "Exhibit A – Budget (in the work order)" },
@@ -476,7 +478,6 @@ export function northwindSpecs(): Spec[] {
       ],
       where: [pb(wo, 9, box(1)), pb("doc-nw-bud", 2, box(1))],
       lines: ["EXHIBIT A – BUDGET  ·  Spirometry $98.00  ·  ECG $76.00  ·  Physical exam $142.00", "ATTACHMENT 2 – PAYMENT SCHEDULE  ·  Spirometry $104.00  ·  ECG $81.00  ·  Physical exam $138.00"],
-      apply: { "g-nw-a": { path: "/governingGridId", value: "g-nw-a" }, "g-nw-b": { path: "/governingGridId", value: "g-nw-b" } },
     },
     overheadScope("q3", wo, 5, 2),
     pharmacyFee("q4", wo, 7, 3),
@@ -531,7 +532,7 @@ export function newContractSpecs(t: { doc: string; pages: number; gridPage: numb
       question: "The work order refers to a Master Clinical Trial Agreement that wasn't uploaded, so terms that depend on it can't be checked. How should we go on?",
       options: [
         { id: "later", label: "Go ahead; I'll upload it later" },
-        { id: "not_needed", label: "It doesn't affect billing" },
+        { id: "not_needed", label: "It doesn't affect billing", note: "Why doesn't it affect billing?" },
       ],
       where: [pb(t.doc, p(2), box(5))], lines: ["This Work Order is entered into pursuant to the Master Clinical Trial Agreement dated January 15, 2024."],
     });
@@ -539,8 +540,11 @@ export function newContractSpecs(t: { doc: string; pages: number; gridPage: numb
   return out;
 }
 
-/** An amendment: retroactive with no date, a misread new fee, a spot check, a hand-billed term, a total that doesn't add up. */
-export function amendmentSpecs(doc: string, rmvIndex: number): Spec[] {
+/**
+ * An amendment: retroactive with no date, a misread new fee, a spot check, a hand-billed term, a total that doesn't add up
+ * (`week52`: the Week 52 visit's total its lines add up to; the amendment prints it $5.00 lower).
+ */
+export function amendmentSpecs(doc: string, rmvIndex: number, week52: number): Spec[] {
   return [
     {
       id: "a1", kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", path: "/appliesFrom/value", blocking: true, input: "date",
@@ -553,20 +557,16 @@ export function amendmentSpecs(doc: string, rmvIndex: number): Spec[] {
       lines: ["Remote monitoring visit (RMV)  ·  per visit  ·  $420.00"],
     },
     cell("a3", "spot_check", 0, 3, "V2", "the amended budget", 11200, pb(doc, 3, box(2))),
+    moneyTerm("a4", doc, 5, 3, "§3.4 Courier. Sponsor will pay $95.00 for each courier pickup of stored samples.", [9500]),
     {
-      id: "a4", kind: "unclassified", reason: "UNCLASSIFIED", path: null, blocking: false,
-      question: "“Sponsor will pay $95.00 for each courier pickup of stored samples.” The invoicing master has no place for this yet, so it goes on the list to bill by hand. OK?",
-      options: [{ id: "ok", label: "OK, bill it by hand" }], where: [pb(doc, 5, box(3))],
-      lines: ["§3.4 Courier. Sponsor will pay $95.00 for each courier pickup of stored samples."],
-    },
-    {
-      id: "a5", kind: "contract_problem", reason: "ARITHMETIC_MISMATCH", path: "/budgetGrids/0/visits/5/totalCents", blocking: false,
+      // a Review question (ADR-001 §6): which number governs, with a note for the sponsor query; "sum" writes the sum
+      id: "a5", kind: "contract_problem", reason: "VISIT_TOTAL_MISMATCH", path: "/budgetGrids/0/visits/5/totalCents", blocking: false,
       question: "In the amended budget, the Week 52 visit total is printed $5.00 lower than its lines add up to. Which should we bill?",
       options: [
-        { id: "printed", label: "The printed total" },
-        { id: "sum", label: "The sum of the lines" },
+        { id: "printed", label: "The visit total as printed", note: "What should we ask the sponsor?" },
+        { id: "sum", label: "Its subtotal, overhead and non-procedure amounts added up", note: "What should we ask the sponsor?" },
       ],
-      where: [pb(doc, 3, box(4))], lines: ["Week 52  ·  Visit total (as printed)"],
+      where: [pb(doc, 3, box(4))], read: week52 - 500, lines: ["Week 52  ·  Visit total (as printed)"],
     },
   ];
 }
