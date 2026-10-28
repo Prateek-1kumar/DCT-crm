@@ -10,6 +10,7 @@ import { renderPage } from "../src/index";
 import type { CostEntry, LlmClient, LlmRequest } from "../src/llm";
 import type { AiGrid, AiTerms } from "../src/prompts";
 import { pageCount, renderTiles } from "../src/render";
+import { readTextLayer } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
 /** 3-page synthetic PDF: portrait text-ish page, a landscape "grid" page, a blank page. */
@@ -138,9 +139,44 @@ describe("extractWith (mocked AI)", () => {
     const rb = makeRulebook();
     rb.payment.invoiceAddress.value = "Pay to account 123456789012";
     rb.payment.netDays.prov.source = { documentId: "nope", page: 1, quote: "wire to ABA routing number on file" };
+    rb.payment.netDaysFrom.value = "receipt of invoice; refunds to GB82 WEST 1234 5698 7654 32 or 1234-5678-9012";
+    rb.payment.paymentConditions.value = ["Wire via Deutsche Bank, SWIFT DEUTDEFF", "eCRFs complete by 2025-08-22"];
+    rb.overhead.pct.prov.source = { documentId: "d1", page: 1, location: "Exhibit B, bank account no. 12345678" };
     const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: null });
     expect(out.rulebook.payment.invoiceAddress.value).toBe("Pay to account [redacted]");
     expect(out.rulebook.payment.netDays.prov.source).toEqual({ documentId: "d1", page: 1 });
+    // IBANs and grouped digit runs go wherever they are; a string about a bank with a code in it goes whole; dates stay
+    expect(out.rulebook.payment.netDaysFrom.value).toBe("receipt of invoice; refunds to [redacted] or [redacted]");
+    expect(out.rulebook.payment.paymentConditions.value).toEqual(["[redacted]", "eCRFs complete by 2025-08-22"]);
+    expect(out.rulebook.overhead.pct.prov.source!.location).toBe("[redacted]");
+  });
+
+  it("paints bank details over in the images it sends (text pages)", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const text = [
+      "Payee bank ABA routing 021000021, account 123456789.",
+      "This page continues the agreement between the parties and the site, as set out above in full detail.",
+      "A second ordinary line of words keeps this page well above the threshold for a real text layer.",
+    ];
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, text.map((t, i) => `BT /F1 10 Tf 40 ${732 - 20 * i} Td (${t}) Tj ET\n`).join("")));
+    const file = join(mkdtempSync(join(tmpdir(), "dct-extract-")), "bank.pdf");
+    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+    const sent: { name: string; png: Buffer }[] = [];
+    const c = mockClient("anthropic", makeRulebook());
+    const call = c.call.bind(c);
+    c.call = (req) => (req.images.forEach((i) => sent.push({ name: req.name, png: i.png })), call(req));
+    await extractWith({ documents: [{ id: "d1", filename: "bank.pdf", path: file, kind: null }] }, { primary: c, cross: null });
+    const [page] = await readTextLayer(file, "d1");
+    const account = page!.words.find((w) => w.text === "123456789.")!.rect;
+    for (const s of sent.filter((x) => x.name === "classify" || x.name === "terms")) {
+      const pix = new mupdf.Image(s.png).toPixmap();
+      const k = pix.getWidth() / 612; // the page is 612 pt wide
+      const [x0, y0, x1, y1] = account.map((v) => Math.round(v * k)) as [number, number, number, number];
+      const px = pix.getPixels();
+      for (let y = y0 + 1; y < y1 - 1; y++) for (let x = x0 + 1; x < x1 - 1; x++) expect(px[y * pix.getStride() + x]).toBeLessThan(10);
+    }
+    expect(sent.some((x) => x.name === "terms")).toBe(true);
   });
 
   it("identifyWith keeps known kinds and fills the rest", async () => {
@@ -170,17 +206,26 @@ describe("EXTRACTION_FAKE=1", () => {
   });
 });
 
-describe("cost budget ($1 per contract)", () => {
-  it("refuses before any terms or grid read when the estimate exceeds the budget", async () => {
+describe("cost cap ($20 per contract, on real spend)", () => {
+  it("stops before the next AI call once what was spent reaches the cap", async () => {
     const seen: Seen[] = [];
     const saved = CONFIG.maxUsd;
-    CONFIG.maxUsd = 0.05;
+    CONFIG.maxUsd = 0.02; // the mock spends $0.01 a call
     try {
-      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/exceeds the \$0.05 budget/);
+      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/has spent \$0.02, the \$0.02 limit per contract/);
     } finally {
       CONFIG.maxUsd = saved;
     }
-    expect(seen.map((x) => x.name)).toEqual(["classify"]);
+    expect(seen.map((x) => x.name)).toEqual(["classify", "terms"]);
+  });
+
+  it("bounds each call's output tokens by its kind", async () => {
+    const limits: Record<string, number | undefined> = {};
+    const c = mockClient("anthropic", makeRulebook());
+    const call = c.call.bind(c);
+    c.call = (req) => ((limits[req.name] = req.maxTokens), call(req));
+    await extractWith({ documents: docs }, { primary: c, cross: null });
+    expect(limits).toMatchObject({ classify: 8_000, terms: 32_000, grid: 64_000 });
   });
 
   it("by default the cross-reader reads terms only, not budget grids", async () => {

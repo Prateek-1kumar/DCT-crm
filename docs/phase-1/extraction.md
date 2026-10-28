@@ -58,7 +58,7 @@ pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
 - **Image sizes** stay under Claude's vision limits (2576 px long edge, ~3.75 MP): bigger images get downscaled server-side, which would waste the high-DPI render. Term pages ≤ 2150 px, grid tiles 1900 px square with 8% overlap. A letter page at 400 DPI is 6 tiles; on the McAllen detailed grid a tile reads cleanly.
 - **Rotation**: detected by the classifier per page (sideways grids), applied before rendering.
 - **Multi-document studies**: all documents' term pages go into one terms call (so terms from master + work order + amendment merge in one read); every document's grids are read; `referencedDocuments[].present` is decided against the uploaded list.
-- **Security**: system prompt tells the models to ignore payee bank details; after parsing, 8–17-digit runs in any string are replaced with `[redacted]` and quotes mentioning bank/routing/account/SWIFT/IBAN are dropped. Nothing logs contract text; the eval prints amounts and field names only.
+- **Security**: on text pages, bank details (a bank sentence's account, routing and IBAN words: `bankRects`) are painted black in every image sent to a model (ADR-001 §9); scans have no text to find them by, so there the system prompt tells the models to ignore them. After parsing, in any string (list items too): IBANs and runs of 8+ digits, whole or grouped by spaces or hyphens (not ISO dates), become `[redacted]`; a string about a bank that still carries an account or SWIFT code is replaced whole; quotes mentioning bank/routing/account/SWIFT/IBAN are dropped. Nothing logs contract text; the eval prints amounts and field names only.
 - **Checks, notable rules**
   - Tolerance: ±$1 when `rounding = printed_amounts`, else ±1 cent.
   - `PER_PATIENT_TOTAL_MISMATCH` accepts a printed total equal to all visits minus one contiguous block of visits (McAllen "double-blind only" skips the open-label block; unscheduled/ET at the end), with ±$1 per visit when rounded. Heuristic: could hide a mismatch that equals some block sum.
@@ -95,6 +95,7 @@ All in `CONFIG` (`packages/extraction/src/extract.ts`); render limits are `RENDE
 
 | Limit | Default | On exceed |
 |---|---|---|
+| `render.timeoutMs` | 30 s | one mupdf call (draw a page, read its text) is stopped and its worker replaced; `RenderTimeoutError`, and that page fails at once from then on |
 | `render.maxDpi` | 600 | requested DPI clamped (applies to `renderPage` and grid tiles; `EXTRACTION_GRID_DPI` above 600 is clamped) |
 | `render.maxPixels` | 40 MP per image | full page downscaled to fit; an oversize tile/clip is rejected (`RangeError`) |
 | page number | 1 ≤ page ≤ pageCount, integer | `RangeError` (renderPage gets page numbers from user requests) |
@@ -111,7 +112,7 @@ All in `CONFIG` (`packages/extraction/src/extract.ts`); render limits are `RENDE
 - **Why not OpenAI:** gpt-5.5 cost more than the primary read ($1–2.30 per contract), and on McAllen every disagreement checked against the golden answers was its misread.
 - **Image sizes:** terms pages at 1568 px (Claude's recommended size). Grid tiles unchanged (400 DPI).
 - **Effort:** medium on terms and grids; a re-read runs once at high effort.
-- **Guard:** `estimateUsd()` runs before any read and refuses when the required reads would exceed `EXTRACTION_MAX_USD` (default 1). The output allowances are generous on purpose. Grid re-reads run only while `spent + 1.5 × that grid's estimate` stays under the cap; otherwise they're skipped with a warning.
+- **Guard:** a runaway cap on real spend, `EXTRACTION_MAX_USD` (default $20 per contract; user decision 2026-10-28): checked before every model call, which then fails with `ExtractionLimitError`. Calls already running can still finish, so the overshoot is at most their cost. Each call's output (thinking included) is bounded by its kind (`CONFIG.maxOutputTokens`: 8K classify/identify, 32K terms, 64K grid). Grid re-reads run only while `spent + 1.5 × that grid's estimate` stays under the cap.
 - **Offline estimates** (no AI calls, page types replayed from earlier runs): Shah $0.46, COPD $0.54, McAllen $0.81, HCWC $0.81.
 - **Measured before this change** (Sonnet + gpt-5.5 cross-read of everything): $1.46, $2.16, $3.53, $3.84.
 - **Not live-tested yet** (user will run): re-measure with `pnpm eval <name>`.

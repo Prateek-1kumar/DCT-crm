@@ -1,9 +1,9 @@
-import type { AlertPage, AuditEntryDto, DocumentDto, RulebookVersionDto } from "@dct/shared";
+import type { AlertPage, AuditEntryDto } from "@dct/shared";
 import { desc, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { alerts, studies } from "../src/db/schema.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { type App, type Built, makePdf, resetDb, testApp, upload, waitJob } from "./helpers.js";
+import { type App, type Built, extract as extractJob, newStudy as create, resetDb, settleAll, testApp } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -19,47 +19,34 @@ beforeEach(async () => {
 
 const get = async <T>(url: string) => (await app.inject({ url })).json<T>();
 const post = (url: string, payload: object) => app.inject({ method: "POST", url, payload });
-const alertsFor = (person: string, qs = "") => get<AlertPage>(`/api/alerts?for=${encodeURIComponent(person)}${qs}`);
+const alertsFor = (person: string, qs = "") => get<AlertPage>(`/api/v1/alerts?for=${encodeURIComponent(person)}${qs}`);
 const markRead = async (by: string, ids?: string[]) => {
-  const res = await post("/api/alerts/read", { by, ids });
+  const res = await post("/api/v1/alerts/read", { by, ids });
   expect(res.statusCode).toBe(200);
   return res.json<{ unread: number }>();
 };
 
 // ---- through the real workflow (fake extraction) ----
 
-async function newStudy(seedText: string) {
-  const [doc] = (await upload(app, [{ name: "Work Order.pdf", data: await makePdf(seedText) }])).json<DocumentDto[]>();
-  const { studyId, jobId } = (await post("/api/studies", { documentIds: [doc!.id] })).json<{ studyId: string; jobId: string }>();
-  await waitJob(app, jobId);
-  return studyId;
-}
-async function extract(studyId: string) {
-  const { jobId } = (await post(`/api/studies/${studyId}/extract`, {})).json<{ jobId: string }>();
-  return waitJob(app, jobId);
-}
-async function resolve(studyId: string, by: string, n = Infinity) {
-  const v = await get<RulebookVersionDto>(`/api/studies/${studyId}/versions/1`);
-  for (const a of v.anomalies.filter((x) => !x.resolution).slice(0, n))
-    await post(`/api/studies/${studyId}/versions/1/anomalies/${encodeURIComponent(a.id)}/resolve`, { kind: "accepted_with_note", note: "ok", by });
-}
+const newStudy = async (seedText: string) => (await create(app, seedText)).studyId;
+const extract = (studyId: string) => extractJob(app, studyId);
 
 describe("raised by the workflow", () => {
   it("reading with open questions, then answering the last one; none while the stage stays put", async () => {
     const id = await newStudy("flow");
     await extract(id);
     expect((await alertsFor("Asha")).items).toEqual([
-      { id: expect.any(String), kind: "questions_ready", studyId: id, protocol: "SYN-001", sponsor: "Synthetic Pharma", version: 1, at: expect.any(String), by: "system", count: 4, note: null, read: false },
+      { id: expect.any(String), kind: "questions_ready", studyId: id, protocol: "SYN-001", sponsor: "Synthetic Pharma", version: 1, at: expect.any(String), by: "system", count: 8, note: null, read: false },
     ]);
-    await resolve(id, "Asha", 3); // still needs you
+    await settleAll(built, id, 1, "Asha", 3); // still needs you
     expect((await alertsFor("Ben")).items).toHaveLength(1);
-    await resolve(id, "Asha");
+    await settleAll(built, id, 1, "Asha");
     const page = await alertsFor("Ben");
     expect(page.items.map((a) => [a.kind, a.by, a.count])).toEqual([
       ["ready_for_approval", "Asha", null],
-      ["questions_ready", "system", 4],
+      ["questions_ready", "system", 8],
     ]);
-    expect(await post(`/api/studies/${id}/versions/1/sign-off`, { by: "Ben" })).toMatchObject({ statusCode: 200 });
+    expect(await post(`/api/v1/studies/${id}/versions/1/sign-off`, { by: "Ben" })).toMatchObject({ statusCode: 200 });
     expect((await alertsFor("Ben")).items).toHaveLength(2); // live raises nothing
   });
 
@@ -98,9 +85,9 @@ describe("list", () => {
     }
     expect(ids).toEqual(newestFirst);
     expect(page.unread).toBe(23);
-    expect((await app.inject({ url: "/api/alerts?for=Asha&cursor=bm9wZQ" })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/alerts?for=Asha&cursor=bm9wZQ" })).statusCode).toBe(400);
     const bad = Buffer.from(JSON.stringify([1.5, s!.id])).toString("base64url");
-    expect((await app.inject({ url: `/api/alerts?for=Asha&cursor=${bad}` })).statusCode).toBe(400);
+    expect((await app.inject({ url: `/api/v1/alerts?for=Asha&cursor=${bad}` })).statusCode).toBe(400);
   });
 });
 
@@ -130,13 +117,13 @@ describe("read state", () => {
     expect(await markRead("Asha")).toEqual({ unread: 0 });
     expect(await readOf("Asha")).toEqual({ [a1!.id]: true, [a2!.id]: true, [mine!.id]: true });
     expect((await alertsFor("Ben")).unread).toBe(2);
-    expect((await get<AuditEntryDto[]>("/api/audit")).some((e) => e.action === "alerts.read")).toBe(false); // reading alerts changes no contract
+    expect((await get<AuditEntryDto[]>("/api/v1/audit")).some((e) => e.action === "alerts.read")).toBe(false); // reading alerts changes no contract
   });
 
   it("400s on a bad query or body", async () => {
-    for (const url of ["/api/alerts", "/api/alerts?for=", "/api/alerts?for=Asha&limit=0", "/api/alerts?for=Asha&limit=51"])
+    for (const url of ["/api/v1/alerts", "/api/v1/alerts?for=", "/api/v1/alerts?for=Asha&limit=0", "/api/v1/alerts?for=Asha&limit=51"])
       expect((await app.inject({ url })).statusCode, url).toBe(400);
     for (const payload of [{}, { by: "" }, { by: "Asha", ids: [] }, { by: "Asha", ids: "x" }, { by: "Asha", ids: ["not-a-uuid"] }])
-      expect((await post("/api/alerts/read", payload)).statusCode, JSON.stringify(payload)).toBe(400);
+      expect((await post("/api/v1/alerts/read", payload)).statusCode, JSON.stringify(payload)).toBe(400);
   });
 });

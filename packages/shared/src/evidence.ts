@@ -80,7 +80,7 @@ export const ProofreadMark = z.object({ path: z.string(), by: z.string(), at: z.
 export type ProofreadMark = z.infer<typeof ProofreadMark>;
 
 /** POST /studies/:id/versions/:v/proofread: these values looked right to `by`. */
-export const ProofreadBody = z.object({ paths: z.array(z.string()).min(1), by: z.string().min(1) });
+export const ProofreadBody = z.object({ paths: z.array(z.string()).min(1).max(5000), by: z.string().min(1) });
 
 /**
  * POST /studies/:id/versions/:v/report: "This looks wrong" on any value. On a draft it adds a blocking confirm_value item;
@@ -95,7 +95,7 @@ export const ReportValueBody = z.object({ path: z.string(), note: z.string().min
 export const ByHandBody = z.object({ by: z.string().min(1) });
 
 /** POST /studies/:id/versions/:v/send-back: the approver reopens answered questions with a note; the contract goes back to Needs you. */
-export const SendBackBody = z.object({ itemIds: z.array(z.string()).min(1), note: z.string().min(1), by: z.string().min(1) });
+export const SendBackBody = z.object({ itemIds: z.array(z.string()).min(1).max(1000), note: z.string().min(1), by: z.string().min(1) });
 
 /** POST /studies/:id/versions/:v/review/:itemId. Also changes an earlier answer while the version is a draft. */
 export const AnswerReviewBody = z.object({

@@ -36,6 +36,20 @@
       "when": 1793195813734,
       "tag": "0004_gigantic_stature",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793197306466,
+      "tag": "0005_talented_slyde",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793200355235,
+      "tag": "0006_signed_versions_locked",
+      "breakpoints": true
     }
   ]
 }

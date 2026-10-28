@@ -1,4 +1,4 @@
-import type { DiffEntry } from "@dct/shared";
+import { type DiffEntry, ENUM_LABELS } from "@dct/shared";
 import { isDeepStrictEqual } from "node:util";
 import { isObj } from "./http.js";
 
@@ -40,13 +40,30 @@ export function itemIds(root: unknown, tokens: string[]): string[] {
 }
 const nameOf = (x: Record<string, unknown>) => pick(x, ["name", "label", "title", "description", "kind", "code", "id"]) ?? "?";
 const esc = (k: string) => k.replace(/~/g, "~0").replace(/\//g, "~1");
+const FIELD: Record<string, string> = { pct: "Percent", n: "Limit", unitCents: "Unit price", cents: "Amount" };
 /** "amountWithOverheadCents" → "Amount with overhead". */
 const humanize = (k: string) =>
+  FIELD[k] ??
   k
     .replace(/Cents$/, "")
     .replace(/([a-z])([A-Z])/g, (_, a: string, b: string) => `${a} ${b.toLowerCase()}`)
     .replace(/^./, (c) => c.toUpperCase());
 const SEP = " › ";
+
+/** One value's label, as the diff and the web write it: "/payment/netDays/value" → "Payment › Net days". */
+export function labelFor(rulebook: unknown, path: string): string {
+  const tokens = path.split("/").slice(1).map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
+  const parts: string[] = [];
+  let node = rulebook;
+  tokens.forEach((t, i) => {
+    node = Array.isArray(node) ? node[Number(t)] : isObj(node) ? node[t] : undefined;
+    if (t === "value" || t === "cells") return;
+    if (i === 0) parts.push(SECTIONS[t] ?? humanize(t));
+    else if (/^\d+$/.test(t)) parts.push(isObj(node) ? ((typeof node.kind === "string" && ENUM_LABELS.kind?.[node.kind]) || nameOf(node)) : `#${Number(t) + 1}`);
+    else parts.push(tokens[i - 1] === "cells" ? t : humanize(t));
+  });
+  return parts.join(SEP);
+}
 
 /** Index items by identity; repeated identities get an occurrence suffix. */
 function keyed(items: Record<string, unknown>[]) {

@@ -1,4 +1,4 @@
-import type { AlertKind, ContractAnomaly, Rulebook } from "@dct/shared";
+import type { AlertKind, ContractAnomaly, ProofreadMark, ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import {
   bigserial,
@@ -55,6 +55,8 @@ export const documents = pgTable("documents", {
   kind: text("kind").notNull().default("other"),
   pageCount: integer("page_count").notNull(),
   storagePath: text("storage_path").notNull(),
+  /** From the PDF's own text at upload: "text" when any page has a real text layer, else "scan"; null = not known. */
+  textSource: text("text_source").$type<"text" | "scan">(),
   uploadedAt: ts("uploaded_at"),
 });
 
@@ -87,6 +89,15 @@ export const rulebookVersions = pgTable(
     outputTokens: integer("output_tokens").notNull().default(0),
     appliesFrom: text("applies_from"),
     editors: jsonb("editors").$type<string[]>().notNull().default([]),
+    /** Evidence ledger, one status per money value (ADR-001). */
+    evidence: jsonb("evidence").$type<ValueEvidence[]>().notNull().default([]),
+    /** What a person answers before approval. Values with an open question are withheld from responses (versionDto). */
+    review: jsonb("review").$type<ReviewItem[]>().notNull().default([]),
+    /** Money values checked against the PDF's own text; null for a scan. */
+    pdfCheck: jsonb("pdf_check").$type<{ values: number; matched: number }>(),
+    byHand: boolean("by_hand").notNull().default(false),
+    /** "Looks right" marks; the one column a signed version still takes (see the immutability trigger). */
+    proofread: jsonb("proofread").$type<ProofreadMark[]>().notNull().default([]),
     signedBy: text("signed_by"),
     signedAt: timestamp("signed_at", { withTimezone: true }),
     signNote: text("sign_note"),

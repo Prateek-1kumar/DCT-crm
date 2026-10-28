@@ -20,6 +20,9 @@ import type {
 
 export const MOCK = process.env.NEXT_PUBLIC_API_MOCK === "1";
 
+/** Every route of the real API is under /api/v1 (the Next rewrite forwards /api/* as is). */
+const BASE = "/api/v1";
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -46,7 +49,7 @@ async function request<T>(method: string, path: string, body?: Body): Promise<T>
   }
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, init);
+    res = await fetch(`${BASE}${path}`, init);
   } catch {
     throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
   }
@@ -150,7 +153,7 @@ export const api = {
       const f = await mockExport(id, v, by);
       href = URL.createObjectURL(f.blob);
       filename = f.filename;
-    } else href = `/api/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`;
+    } else href = `${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`;
     const a = Object.assign(document.createElement("a"), { href, download: filename ?? "" });
     a.click();
     if (MOCK) setTimeout(() => URL.revokeObjectURL(href), 10_000);
@@ -159,6 +162,6 @@ export const api = {
   /** URL for an <img>. Mock mode renders a synthetic (vector) page in the browser. `dpi`: sharper page for close-ups. */
   pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => {
     if (MOCK) return (await import("./mock/server")).mockPageSrc(docId, page);
-    return `/api/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`;
+    return `${BASE}/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`;
   },
 };

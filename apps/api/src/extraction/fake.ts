@@ -1,5 +1,5 @@
 import type { ContractAnomaly, DocumentKind, Rulebook } from "@dct/shared";
-import type { ExtractionPort, InputDoc } from "./port.js";
+import type { ExtractionPort, InputDoc, NoAi } from "./port.js";
 
 // Fake adapter (EXTRACTION_FAKE=1): a synthetic rulebook shaped like the COPD work order, with
 // deliberate problems so every review action has something to act on. Never touches AI or real PDFs.
@@ -146,8 +146,8 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
 /** Test hook: make the next N extractStudy calls throw. */
 export const fakeControls = { failNext: 0 };
 
-// No renderPage: fake mode renders real pages (see port.ts).
-export const fakeExtraction: Omit<ExtractionPort, "renderPage"> = {
+// No renderPage or text layer: fake mode uses the real ones (see port.ts).
+export const fakeExtraction: Omit<ExtractionPort, NoAi> = {
   async identifyDocuments(docs) {
     return {
       documentKinds: Object.fromEntries(docs.map((d, i) => [d.id, kindFromName(d.filename, i)])),

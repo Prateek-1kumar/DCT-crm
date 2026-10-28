@@ -1,5 +1,5 @@
 import type { BudgetGrid, PageBox, Provenance, ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
-import { amounts, boxOf, frame, inventory, NUMBER, type Span, type TextPage, visualLines, type Word } from "./textlayer";
+import { amounts, bare, boxOf, frame, inventory, NUMBER, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
 /**
  * Binder (ADR-001 §5), no AI: each money value in a rulebook is looked up at its own position in the PDF's text, and
@@ -13,7 +13,7 @@ type Cols = { dir: Word["dir"]; at: Map<string, [number, number]>; unit: [number
 const norm = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
 const ptr = (s: string) => s.replace(/~/g, "~0").replace(/\//g, "~1");
 const cents = (s: string | null) => {
-  const t = (s ?? "").replace(/\s/g, "");
+  const t = bare((s ?? "").replace(/\s/g, ""));
   return NUMBER.test(t) && !t.endsWith("%") ? Math.round(Number(t.replace(/[^\d.]/g, "")) * 100) : null;
 };
 const txt = (ws: Word[]) => ws.map((w) => w.text).join(" ");
@@ -208,7 +208,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const pg = pageAt(src);
       const cols = src ? colsOn.get(`${src.documentId}#${src.page}`) : null;
       if (!pg || !cols) return null;
-      const cands = pg.lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(w.text) || /invoic/i.test(w.text)) && columnOf(cols, w)));
+      const cands = pg.lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(bare(w.text)) || /invoic/i.test(w.text)) && columnOf(cols, w)));
       return { pg, cols, cands };
     };
     const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = []) => {
@@ -231,7 +231,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const c = ctx(p.prov.source);
       const found = rowOf.get(pi);
       // Numbers outside the price columns of a row the master holds (code, count) belong to that row; they aren't prices.
-      if (c && found) for (const w of found.row.words) if (NUMBER.test(w.text) && frame(w)[2] <= c.cols.left && !columnOf(c.cols, w)) bound.add(w);
+      if (c && found) for (const w of found.row.words) if (NUMBER.test(bare(w.text)) && frame(w)[2] <= c.cols.left && !columnOf(c.cols, w)) bound.add(w);
       const entries: [string, string, number | "invoiceable"][] = Object.entries(p.cells).map(([k, v]) => [`${pp}/cells/${ptr(k)}`, k, v]);
       if (p.unitCents !== null) entries.push([`${pp}/unitCents`, "#unit", p.unitCents]);
       for (const [path, key, value] of entries) {
@@ -269,7 +269,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const lineAmounts = (pg: Page) => pg.lines.filter((l) => amounts(l.words).length);
     const found = pg ? rowsFor(pg.lines, lineAmounts(pg), code, name)[0] : undefined;
     // Numbers on the item's row other than amounts (code, count) belong to it.
-    const rowNumbers = (l: Line) => l.words.filter((w) => NUMBER.test(w.text) && !amounts(l.words).some((a) => a.words.includes(w)));
+    const rowNumbers = (l: Line) => l.words.filter((w) => NUMBER.test(bare(w.text)) && !amounts(l.words).some((a) => a.words.includes(w)));
     const onRow = found ? amounts(found.row.words) : [];
     if (found) rowNumbers(found.row).forEach((w) => bound.add(w));
     const quote = pg ? findQuote(pg, src?.quote) : null;
@@ -371,10 +371,11 @@ function ask(rb: Rulebook, path: string): Pick<ReviewItem, "question" | "input">
   return { question: "What does the contract say for this value?", input: "text" };
 }
 
+// No "add it to the master": nothing can add a value to a read draft, so picking it would drop the term silently.
 const UNACCOUNTED_OPTIONS = [
-  { id: "add", label: "Add it to the invoicing master" },
-  { id: "bill_by_hand", label: "Keep as a term to bill by hand" },
+  { id: "bill_by_hand", label: "A payment term: list it to bill by hand" },
   { id: "not_payment", label: "Not a payment term" },
+  { id: "covered", label: "Already covered by another line" },
 ];
 
 /**

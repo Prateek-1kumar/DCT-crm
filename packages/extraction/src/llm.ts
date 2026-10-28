@@ -16,6 +16,8 @@ export type LlmRequest<T> = {
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Cache the images (Anthropic prompt caching): later calls with the same system + images pay ~10% for them. */
   cacheImages?: boolean;
+  /** Most output tokens (thinking included) this call may use; past it the call fails ("hit max_tokens"). */
+  maxTokens?: number;
 };
 
 export type CostEntry = { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number };
@@ -90,8 +92,8 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
         const msg = await client.beta.messages
           .stream({
             model,
-            // 128K needs streaming (we stream); max-effort grid re-reads can think at length.
-            max_tokens: 128000,
+            // Streamed, so large limits are allowed; each call type passes its own (extract.ts CONFIG.maxOutputTokens).
+            max_tokens: req.maxTokens ?? 32_000,
             ...fallback,
             thinking: { type: "adaptive" },
             output_config: { effort: req.effort ?? "high", format },
@@ -146,6 +148,7 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
           input: [{ role: "user", content }],
           // strict:false — the shared schemas use optional fields, which strict mode forbids; zod validates instead.
           text: { format: { type: "json_schema", name: req.name.replace(/[^a-zA-Z0-9_-]/g, "_"), schema, strict: false } },
+          max_output_tokens: req.maxTokens ?? 32_000,
         });
         usage.input += res.usage?.input_tokens ?? 0;
         usage.output += res.usage?.output_tokens ?? 0;

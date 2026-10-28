@@ -223,6 +223,28 @@ describe("bindEvidence", () => {
   });
 });
 
+describe("an amount at the end of a sentence", () => {
+  it("is read with its full stop, not taken from the next line", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const lines = [
+      "The start-up fee is $7,455.00.",
+      "The archiving fee is $1,000.00 per year.",
+      "This page continues the agreement between the parties and the site, as set out above in full detail.",
+      "A second ordinary line of words keeps this page well above the threshold for a real text layer.",
+    ];
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, lines.map((t, i) => at(40, 60 + 20 * i, t)).join("")));
+    const file = join(mkdtempSync(join(tmpdir(), "dct-evidence-")), "stop.pdf");
+    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+    const text = await readTextLayer(file, "d1");
+    const rb = rulebook();
+    rb.siteFees = [{ ...rb.siteFees[0]!, code: null, name: "Start-up fee", amountCents: 745500, prov: { source: { documentId: "d1", page: 1 }, confidence: 0.9, method: "ai", crossCheck: "not_checked" } }];
+    const fee = bindEvidence(rb, text).evidence.find((e) => e.path === "/siteFees/0/amountCents");
+    expect(fee).toMatchObject({ status: "confirmed", printed: "$7,455.00." });
+    expect(inventory(text).filter((x) => x.kind === "amount").map((x) => x.words.map((w) => w.text).join(" "))).toEqual(["$7,455.00.", "$1,000.00"]);
+  });
+});
+
 describe("reviewFromEvidence", () => {
   const rb = rulebook();
   rb.budgetGrids[0]!.procedures[0]!.cells.V1 = 20000;
@@ -241,7 +263,7 @@ describe("reviewFromEvidence", () => {
     const terms = items.filter((i) => i.kind === "unaccounted");
     // The 40% its quote no longer binds, the interest %, the withholding sentence, the unbilled row (one item for its 4 numbers).
     expect(terms.map((i) => i.where.length)).toEqual([1, 1, 1, 4]);
-    expect(terms[0]!.options.map((o) => o.label)).toEqual(["Add it to the invoicing master", "Keep as a term to bill by hand", "Not a payment term"]);
+    expect(terms[0]!.options.map((o) => o.id)).toEqual(["bill_by_hand", "not_payment", "covered"]);
     expect(terms.every((i) => i.blocking && i.input === null && i.answer === null)).toBe(true);
   });
 

@@ -1,14 +1,15 @@
-import type { AuditEntryDto, DocumentDto, MasterSearch, RulebookVersionDto, SearchResults, StudyCounts, StudyPage } from "@dct/shared";
+import type { AuditEntryDto, MasterSearch, SearchResults, StudyCounts, StudyPage } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { studies } from "../src/db/schema.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { type App, type Built, makePdf, resetDb, testApp, upload, waitJob } from "./helpers.js";
+import { type App, type Built, extract as extractJob, liveStudy as approved, newStudy as create, resetDb, settleAll, testApp } from "./helpers.js";
 
 // ExcelJS is a dependency of @dct/shared only; load it from there to read the export back.
-type Workbook = { xlsx: { load(b: Buffer): Promise<unknown> }; worksheets: { name: string }[] };
+type Sheet = { name: string; getColumn(n: number): { values: unknown[] }; getRow(n: number): { getCell(n: number): { value: unknown } } };
+type Workbook = { xlsx: { load(b: Buffer): Promise<unknown> }; worksheets: Sheet[] };
 const ExcelJS = createRequire(path.resolve(import.meta.dirname, "../../../packages/shared/package.json"))("exceljs") as { Workbook: new () => Workbook };
 
 let app: App;
@@ -25,7 +26,7 @@ beforeEach(async () => {
 
 const get = async <T>(url: string) => (await app.inject({ url })).json<T>();
 const post = (url: string, payload: object) => app.inject({ method: "POST", url, payload });
-const list = (qs = "") => get<StudyPage>(`/api/studies${qs}`);
+const list = (qs = "") => get<StudyPage>(`/api/v1/studies${qs}`);
 const protocols = (p: StudyPage) => p.items.map((s) => s.protocol);
 
 type Seed = { protocol: string; status: string; needsYou?: number; siteName?: string | null; sponsor?: string; investigator?: string; daysAgo: number };
@@ -68,8 +69,8 @@ describe("contract list", () => {
     expect(protocols(await list("?q=okafor"))).toEqual(["LIVE-NEW"]);
     expect(await list("?q=%25")).toMatchObject({ items: [], total: 0 }); // % is a literal, not a wildcard
     expect((await list("?view=needs-you&q=new")).total).toBe(1);
-    expect((await app.inject({ url: "/api/studies?view=nope" })).statusCode).toBe(400);
-    expect((await app.inject({ url: "/api/studies?limit=0" })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/studies?view=nope" })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/studies?limit=0" })).statusCode).toBe(400);
   });
 
   it("pages with an opaque cursor: no duplicates or gaps, ties broken by id", async () => {
@@ -103,7 +104,7 @@ describe("contract list", () => {
       expect(paged.total).toBe(whole.total);
     }
     expect((await list("?limit=100")).total).toBe(23);
-    expect((await app.inject({ url: "/api/studies?cursor=bm9wZQ" })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/studies?cursor=bm9wZQ" })).statusCode).toBe(400);
   });
 
   it("counts per view and per site; site narrows the views, not the site list", async () => {
@@ -112,46 +113,29 @@ describe("contract list", () => {
       { name: "Site A", count: 4 },
       { name: "Site B", count: 3 },
     ];
-    expect(await get<StudyCounts>("/api/studies/counts")).toEqual({ all: 8, views: { "needs-you": 2, approval: 1, live: 2, failed: 1 }, sites });
-    expect(await get<StudyCounts>("/api/studies/counts?site=Site%20A")).toEqual({ all: 4, views: { "needs-you": 1, approval: 1, live: 1, failed: 0 }, sites });
+    expect(await get<StudyCounts>("/api/v1/studies/counts")).toEqual({ all: 8, views: { "needs-you": 2, approval: 1, live: 2, failed: 1 }, sites });
+    expect(await get<StudyCounts>("/api/v1/studies/counts?site=Site%20A")).toEqual({ all: 4, views: { "needs-you": 1, approval: 1, live: 1, failed: 0 }, sites });
   });
 });
 
 // ---- through the real workflow (fake extraction) ----
 
-async function newStudy(seedText: string) {
-  const [doc] = (await upload(app, [{ name: "Work Order.pdf", data: await makePdf(seedText) }])).json<DocumentDto[]>();
-  const { studyId, jobId } = (await post("/api/studies", { documentIds: [doc!.id] })).json<{ studyId: string; jobId: string }>();
-  await waitJob(app, jobId);
-  return studyId;
-}
-async function extract(studyId: string) {
-  const { jobId } = (await post(`/api/studies/${studyId}/extract`, {})).json<{ jobId: string }>();
-  return waitJob(app, jobId);
-}
-async function resolveAll(studyId: string) {
-  const v = await get<RulebookVersionDto>(`/api/studies/${studyId}/versions/1`);
-  for (const a of v.anomalies.filter((x) => !x.resolution))
-    await post(`/api/studies/${studyId}/versions/1/anomalies/${encodeURIComponent(a.id)}/resolve`, { kind: "accepted_with_note", note: "ok", by: "Asha" });
-}
-async function liveStudy(seedText = "live") {
-  const studyId = await newStudy(seedText);
-  await extract(studyId);
-  await resolveAll(studyId);
-  expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
-  return studyId;
-}
-const viewsNow = async () => (await get<StudyCounts>("/api/studies/counts")).views;
+const newStudy = async (seedText: string) => (await create(app, seedText)).studyId;
+const extract = (studyId: string) => extractJob(app, studyId);
+const liveStudy = async (seedText = "live") => (await approved(built, seedText)).studyId;
+const viewsNow = async () => (await get<StudyCounts>("/api/v1/studies/counts")).views;
 
 describe("stored stage follows the workflow", () => {
   it("setting up → needs you → approval → live; a failed read is in failed", async () => {
     const id = await newStudy("flow");
     expect((await list()).items[0]).toMatchObject({ id, status: "setting_up", needsYou: 0 });
     await extract(id);
-    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 4, openAnomalies: 4 });
-    await resolveAll(id);
+    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 8, openAnomalies: 8 });
+    await settleAll(built, id, 1, "Asha", 7);
+    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 1 });
+    await settleAll(built, id, 1);
     expect(protocols(await list("?view=approval"))).toEqual(["SYN-001"]);
-    await post(`/api/studies/${id}/versions/1/sign-off`, { by: "Ben" });
+    await post(`/api/v1/studies/${id}/versions/1/sign-off`, { by: "Ben" });
     expect((await list("?view=live")).items[0]).toMatchObject({ id, liveVersion: 1, needsYou: 0 });
 
     const bad = await newStudy("bad");
@@ -167,7 +151,7 @@ describe("global search", () => {
     const live = await liveStudy();
     const draft = await newStudy("draft"); // a draft's rates are not searched
     await extract(draft);
-    const search = (q: string, extra = "") => get<SearchResults>(`/api/search?q=${encodeURIComponent(q)}${extra}`);
+    const search = (q: string, extra = "") => get<SearchResults>(`/api/v1/search?q=${encodeURIComponent(q)}${extra}`);
 
     const byName = await search("synthetic");
     expect(byName.contracts.map((s) => s.id).sort()).toEqual([live, draft].sort());
@@ -190,38 +174,44 @@ describe("global search", () => {
 describe("one invoicing master", () => {
   it("searches the version's items", async () => {
     const id = await liveStudy();
-    const res = await get<MasterSearch>(`/api/studies/${id}/versions/1/search?q=blood`);
+    const res = await get<MasterSearch>(`/api/v1/studies/${id}/versions/1/search?q=blood`);
     expect(res.q).toBe("blood");
     expect(res.hits).toEqual(expect.arrayContaining([{ path: "/budgetGrids/0/procedures/0", section: "grid", label: "Blood draw (36415)" }]));
-    expect((await get<MasterSearch>(`/api/studies/${id}/versions/1/search?q=572`)).hits).toEqual([{ path: "/invoiceables/0", section: "invoiceables", label: "Unscheduled visit" }]);
-    expect((await app.inject({ url: `/api/studies/${id}/versions/9/search?q=x` })).statusCode).toBe(404);
+    expect((await get<MasterSearch>(`/api/v1/studies/${id}/versions/1/search?q=572`)).hits).toEqual([{ path: "/invoiceables/0", section: "invoiceables", label: "Unscheduled visit" }]);
+    expect((await app.inject({ url: `/api/v1/studies/${id}/versions/9/search?q=x` })).statusCode).toBe(404);
   });
 
   it("exports an xlsx workbook, named after the protocol, and logs it", async () => {
     const id = await liveStudy();
-    await app.inject({ method: "PATCH", url: `/api/studies/${id}`, payload: { sponsor: "S", protocol: 'SYN/001 "b"', siteName: "Site A", investigator: "Dr. Test", by: "Asha" } });
-    const res = await app.inject({ url: `/api/studies/${id}/versions/1/export.xlsx?by=Asha` });
+    // Once approved, the study's details are locked; the workbook is named and headed from the approved version.
+    const edit = await app.inject({ method: "PATCH", url: `/api/v1/studies/${id}`, payload: { sponsor: "S", protocol: 'SYN/001 "b"', siteName: "Site A", investigator: "Dr. Test", by: "Asha" } });
+    expect(edit.statusCode).toBe(409);
+    expect(edit.json().message).toMatch(/approved version, so its sponsor, protocol, site and investigator can't be changed/);
+    const res = await app.inject({ url: `/api/v1/studies/${id}/versions/1/export.xlsx?by=Asha` });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    expect(res.headers["content-disposition"]).toBe('attachment; filename="SYN-001-b-v1-invoicing-master.xlsx"');
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="SYN-001-v1-invoicing-master.xlsx"');
     expect(res.rawPayload.subarray(0, 4)).toEqual(Buffer.from("PK\x03\x04"));
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(res.rawPayload);
     expect(wb.worksheets.map((w) => w.name)).toEqual(["Summary", "Budget grid", "Fees & invoiceables", "Payment terms"]);
-    expect((await get<AuditEntryDto[]>(`/api/audit?studyId=${id}`))[0]).toMatchObject({ by: "Asha", action: "version.exported", detail: { version: 1, format: "xlsx" } });
+    const summary = wb.worksheets[0]!;
+    const cell = (label: string) => summary.getColumn(1).values.indexOf(label);
+    expect(summary.getRow(cell("Sponsor")).getCell(2).value).toBe("Synthetic Pharma");
+    expect((await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${id}`))[0]).toMatchObject({ by: "Asha", action: "version.exported", detail: { version: 1, format: "xlsx" } });
   });
 
   it("exports only approved versions", async () => {
     const id = await newStudy("draft");
     await extract(id);
-    expect((await app.inject({ url: `/api/studies/${id}/versions/1/export.xlsx` })).statusCode).toBe(409);
+    expect((await app.inject({ url: `/api/v1/studies/${id}/versions/1/export.xlsx` })).statusCode).toBe(409);
   });
 
   it("404s when the version has no rulebook", async () => {
     const id = await newStudy("failed");
     fakeControls.failNext = 1;
     await extract(id);
-    expect((await app.inject({ url: `/api/studies/${id}/versions/1/export.xlsx` })).statusCode).toBe(404);
-    expect((await app.inject({ url: `/api/studies/${id}/versions/1/search?q=a` })).statusCode).toBe(404);
+    expect((await app.inject({ url: `/api/v1/studies/${id}/versions/1/export.xlsx` })).statusCode).toBe(404);
+    expect((await app.inject({ url: `/api/v1/studies/${id}/versions/1/search?q=a` })).statusCode).toBe(404);
   });
 });

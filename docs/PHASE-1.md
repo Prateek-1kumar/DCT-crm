@@ -98,7 +98,7 @@ type ExtractionOutput = {
 
 ### HTTP API (A produces, C consumes)
 
-All routes are under `/api`. Bodies and responses are the types in `packages/shared/src/api.ts`.
+All routes are under `/api/v1` (since 2026-10-28; nothing stays on `/api`). Bodies and responses are the types in `packages/shared/src/api.ts`. The table below is the Phase 1 plan; the routes as built, including the review questions that replaced anomaly resolution, are in `docs/phase-1/api.md`.
 
 | Method | Route | Purpose |
 |---|---|---|

@@ -1,3 +1,4 @@
+import type { bindEvidence, readTextLayer, reviewFromEvidence } from "@dct/extraction";
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
@@ -29,7 +30,14 @@ export interface ExtractionPort {
   extractStudy(input: { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void }): Promise<ExtractionOutput>;
   runContractChecks(rulebook: Rulebook, opts?: CheckOptions): ContractAnomaly[];
   renderPage(pdfPath: string, page: number, dpi?: number): Promise<Buffer>;
+  /** The evidence pipeline (ADR-001): the PDF's own text, each value bound to its spot, the questions for a person. No AI. */
+  readTextLayer: typeof readTextLayer;
+  bindEvidence: typeof bindEvidence;
+  reviewFromEvidence: typeof reviewFromEvidence;
 }
+
+/** The parts of the port with no AI in them: fake mode uses the real ones. */
+export type NoAi = "renderPage" | "readTextLayer" | "bindEvidence" | "reviewFromEvidence";
 
 let cached: Promise<ExtractionPort> | undefined;
 
@@ -39,10 +47,10 @@ export function getExtraction(): Promise<ExtractionPort> {
   return cached;
 }
 
-/** Fake mode fakes only the AI: page images are rendered from the real PDF, so the viewer shows real pages. */
+/** Fake mode fakes only the AI: page images and the PDF's text come from the real PDF, so the viewer and the checks are real. */
 async function loadFake(): Promise<ExtractionPort> {
-  const [{ fakeExtraction }, { renderPage }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
-  return { ...fakeExtraction, renderPage };
+  const [{ fakeExtraction }, { renderPage, readTextLayer, bindEvidence, reviewFromEvidence }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
+  return { ...fakeExtraction, renderPage, readTextLayer, bindEvidence, reviewFromEvidence };
 }
 
 async function loadReal(): Promise<ExtractionPort> {

@@ -19,7 +19,7 @@ export default defineConfig({
   webServer: [
     {
       command: "pnpm --filter @dct/api exec tsx scripts/e2e-reset.ts && pnpm --filter @dct/api start",
-      url: "http://127.0.0.1:4100/api/settings",
+      url: "http://127.0.0.1:4100/api/v1/settings",
       env,
       reuseExistingServer: false,
       timeout: 60_000,

@@ -32,7 +32,7 @@ function watch(page: Page) {
     if (m.type() === "error" && !/Failed to load resource/.test(m.text())) problems.push(`console: ${m.text()}`);
   });
   page.on("response", (r) => {
-    if (r.url().includes("/api/") && r.status() >= 500) problems.push(`${r.status()} ${r.request().method()} ${r.url()}`);
+    if (r.url().includes("/api/v1/") && r.status() >= 500) problems.push(`${r.status()} ${r.request().method()} ${r.url()}`);
   });
   return problems;
 }
@@ -69,7 +69,7 @@ test("bring on board → review → sign off → amend → sign v2 → audit →
   await test.step("identify and confirm", async () => {
     await page.getByRole("button", { name: /Identify 2 documents/ }).dblclick();
     await expect(page.getByLabel("Sponsor")).toHaveValue(/\S/, { timeout: 30_000 });
-    expect((await (await request.get("/api/studies")).json()).total).toBe(1); // the double-click made one study
+    expect((await (await request.get("/api/v1/studies")).json()).total).toBe(1); // the double-click made one study
     await page.reload(); // refresh on the confirm step resumes it
     await expect(page.getByLabel("Sponsor")).toHaveValue(/\S/);
     await expect(page.getByLabel("Principal investigator")).not.toHaveValue("");
@@ -201,7 +201,7 @@ test("bring on board → review → sign off → amend → sign v2 → audit →
     await expect(inv.getByText("Unscheduled visit › Amount with overhead")).toBeVisible();
     await expect(page.getByRole("heading", { name: /^Applies from/ })).toBeVisible();
     await expect(page.getByRole("region", { name: "Study" })).toHaveCount(0); // full rulebook hidden by default
-    expect((await (await request.get(`/api${new URL(studyUrl).pathname}`)).json()).liveVersion).toBe(1);
+    expect((await (await request.get(`/api/v1${new URL(studyUrl).pathname}`)).json()).liveVersion).toBe(1);
   });
 
   await test.step("settle v2 and sign it; v1 is superseded", async () => {
@@ -217,7 +217,7 @@ test("bring on board → review → sign off → amend → sign v2 → audit →
   await test.step("audit log shows everything, newest first", async () => {
     await page.getByRole("link", { name: "Audit log" }).last().click();
     await page.waitForURL(/\/audit\?studyId=/);
-    const entries = await (await request.get(`/api/audit?studyId=${new URL(studyUrl).pathname.split("/").pop()}`)).json();
+    const entries = await (await request.get(`/api/v1/audit?studyId=${new URL(studyUrl).pathname.split("/").pop()}`)).json();
     const actions: string[] = entries.map((e: { action: string }) => e.action);
     expect(actions[0]).toBe("version.signed");
     for (const a of ["study.created", "study.identified", "study.confirmed", "extraction.queued", "extraction.completed", "value.corrected", "anomaly.resolved", "grid.chosen", "version.signed"])
@@ -229,12 +229,12 @@ test("bring on board → review → sign off → amend → sign v2 → audit →
   });
 
   await test.step("page image URL: wrong page numbers are 404s", async () => {
-    const study = await (await request.get(`/api${new URL(studyUrl).pathname}`)).json();
+    const study = await (await request.get(`/api/v1${new URL(studyUrl).pathname}`)).json();
     const doc = study.documents[0];
-    for (const n of [0, doc.pageCount + 1, 9999]) expect((await request.get(`/api/documents/${doc.id}/pages/${n}.png`)).status()).toBe(404);
-    expect((await request.get(`/api/documents/${doc.id}/pages/abc.png`)).status()).toBe(404);
-    expect((await request.get(`/api/documents/not-a-uuid/pages/1.png`)).status()).toBe(400);
-    expect((await request.get(`/api/documents/${doc.id}/pages/${doc.pageCount}.png`)).status()).toBe(200);
+    for (const n of [0, doc.pageCount + 1, 9999]) expect((await request.get(`/api/v1/documents/${doc.id}/pages/${n}.png`)).status()).toBe(404);
+    expect((await request.get(`/api/v1/documents/${doc.id}/pages/abc.png`)).status()).toBe(404);
+    expect((await request.get(`/api/v1/documents/not-a-uuid/pages/1.png`)).status()).toBe(400);
+    expect((await request.get(`/api/v1/documents/${doc.id}/pages/${doc.pageCount}.png`)).status()).toBe(200);
   });
 
   await test.step("non-PDF rejected in the browser and by the API", async () => {

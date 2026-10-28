@@ -2,7 +2,8 @@ import type { AuditEntryDto, DiffEntry, DocumentDto, RulebookVersionDto, StudyDe
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
-import { type App, type Built, makePdf, resetDb, testApp, upload, waitJob } from "./helpers.js";
+import { at } from "../src/review.js";
+import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, storedVersion, testApp, upload } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -17,51 +18,21 @@ beforeEach(async () => {
 });
 
 const get = async <T>(url: string) => (await app.inject({ url })).json<T>();
-const study = (id: string) => get<StudyDetailDto>(`/api/studies/${id}`);
-const version = (id: string, v: number) => get<RulebookVersionDto>(`/api/studies/${id}/versions/${v}`);
-const auditActions = async (studyId: string) => (await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`)).map((a) => a.action);
-
-async function newStudy(seed = "s") {
-  const [doc] = (await upload(app, [{ name: "Work Order.pdf", data: await makePdf(seed) }])).json<DocumentDto[]>();
-  const res = await app.inject({ method: "POST", url: "/api/studies", payload: { documentIds: [doc!.id] } });
-  expect(res.statusCode).toBe(201);
-  const { studyId, jobId } = res.json<{ studyId: string; jobId: string }>();
-  expect((await waitJob(app, jobId)).state).toBe("succeeded");
-  return { studyId, doc: doc! };
-}
-
-async function extract(studyId: string, body: object = {}) {
-  const res = await app.inject({ method: "POST", url: `/api/studies/${studyId}/extract`, payload: body });
-  expect(res.statusCode).toBe(202);
-  const { jobId, version: v } = res.json<{ jobId: string; version: number }>();
-  return { job: await waitJob(app, jobId), v };
-}
-
+const study = (id: string) => get<StudyDetailDto>(`/api/v1/studies/${id}`);
+const version = (id: string, v: number) => get<RulebookVersionDto>(`/api/v1/studies/${id}/versions/${v}`);
+const auditActions = async (studyId: string) => (await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`)).map((a) => a.action);
 const post = (url: string, payload: object) => app.inject({ method: "POST", url, payload });
 const patch = (url: string, payload: object) => app.inject({ method: "PATCH", url, payload });
-const resolve = (studyId: string, v: number, aid: string, by = "Asha") =>
-  post(`/api/studies/${studyId}/versions/${v}/anomalies/${encodeURIComponent(aid)}/resolve`, { kind: "accepted_with_note", note: "checked", by });
-
-async function resolveAll(studyId: string, v: number) {
-  for (const a of (await version(studyId, v)).anomalies.filter((x) => !x.resolution)) expect((await resolve(studyId, v, a.id)).statusCode).toBe(200);
-}
-
-async function liveStudy() {
-  const { studyId, doc } = await newStudy();
-  await extract(studyId);
-  await resolveAll(studyId, 1);
-  expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
-  return { studyId, doc };
-}
+const answer = (studyId: string, v: number, item: string, body: object) => post(`/api/v1/studies/${studyId}/versions/${v}/review/${encodeURIComponent(item)}`, { by: "Sam", ...body });
 
 describe("bring a study on board", () => {
   it("creates a study, identifies documents in the background, then confirms details", async () => {
-    const { studyId, doc } = await newStudy();
+    const { studyId, doc } = await newStudy(app, "s");
     const s = await study(studyId);
     expect(s).toMatchObject({ status: "setting_up", sponsor: "Synthetic Pharma", protocol: "SYN-001", liveVersion: null });
-    expect(s.documents).toEqual([expect.objectContaining({ id: doc.id, kind: "work_order" })]);
+    expect(s.documents).toEqual([expect.objectContaining({ id: doc.id, kind: "work_order", text: "text" })]);
 
-    const res = await patch(`/api/studies/${studyId}`, { sponsor: "Synthetic Pharma Inc", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
+    const res = await patch(`/api/v1/studies/${studyId}`, { sponsor: "Synthetic Pharma Inc", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
     expect(res.json<StudyDetailDto>().sponsor).toBe("Synthetic Pharma Inc");
     expect(await auditActions(studyId)).toEqual(["study.confirmed", "study.identified", "study.created"]);
   });
@@ -69,46 +40,53 @@ describe("bring a study on board", () => {
   it("a double-submitted create (same files) makes one study, not two", async () => {
     const docs = (await upload(app, [{ name: "a.pdf", data: await makePdf("dbl-a") }, { name: "b.pdf", data: await makePdf("dbl-b") }])).json<DocumentDto[]>();
     const ids = docs.map((d) => d.id);
-    const [r1, r2] = await Promise.all([post("/api/studies", { documentIds: ids }), post("/api/studies", { documentIds: [...ids].reverse() })]);
+    const [r1, r2] = await Promise.all([post("/api/v1/studies", { documentIds: ids }), post("/api/v1/studies", { documentIds: [...ids].reverse() })]);
     expect(r1.json()).toEqual(r2.json());
-    expect((await get<StudyPage>("/api/studies")).total).toBe(1);
+    expect((await get<StudyPage>("/api/v1/studies")).total).toBe(1);
     // a different file set is a different study
-    expect((await post("/api/studies", { documentIds: [ids[0]] })).json().studyId).not.toBe(r1.json().studyId);
+    expect((await post("/api/v1/studies", { documentIds: [ids[0]] })).json().studyId).not.toBe(r1.json().studyId);
   });
 
   it("rejects unknown documents and bad bodies", async () => {
-    expect((await post("/api/studies", { documentIds: [] })).statusCode).toBe(400);
-    expect((await post("/api/studies", { documentIds: ["00000000-0000-0000-0000-000000000000"] })).statusCode).toBe(400);
-    expect((await app.inject({ url: "/api/studies/00000000-0000-0000-0000-000000000000" })).statusCode).toBe(404);
+    expect((await post("/api/v1/studies", { documentIds: [] })).statusCode).toBe(400);
+    expect((await post("/api/v1/studies", { documentIds: ["00000000-0000-0000-0000-000000000000"] })).statusCode).toBe(400);
+    expect((await app.inject({ url: "/api/v1/studies/00000000-0000-0000-0000-000000000000" })).statusCode).toBe(404);
+  });
+
+  it("serves nothing on the old /api path", async () => {
+    expect((await app.inject({ url: "/api/settings" })).statusCode).toBe(404);
+    expect((await app.inject({ url: "/api/v1/settings" })).statusCode).toBe(200);
   });
 });
 
 describe("extraction", () => {
-  it("fills a draft version with anomalies and cost", async () => {
-    const { studyId } = await newStudy();
-    const { job, v } = await extract(studyId);
+  it("fills a draft version with evidence, questions and cost; the checks' findings are kept", async () => {
+    const { studyId } = await newStudy(app, "s");
+    const { job, v } = await extract(app, studyId);
     expect(job).toMatchObject({ state: "succeeded", progress: 100 });
     expect(v).toBe(1);
     const ver = await version(studyId, 1);
     expect(ver.status).toBe("draft");
     expect(ver.rulebook?.study.sponsor.value).toBe("Synthetic Pharma");
-    expect(ver.anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "GRID_CONFLICT", "MISSING_REFERENCED_DOC", "VISIT_TOTAL_MISMATCH"]);
     expect(ver.cost).toEqual({ usd: expect.closeTo(0.07, 6), inputTokens: 1800, outputTokens: 350 });
-    const [summary] = (await get<StudyPage>("/api/studies")).items;
-    expect(summary).toMatchObject({ status: "needs_review", openAnomalies: 4, liveVersion: null });
+    expect(ver.review).toHaveLength(8);
+    expect((await storedVersion(built, studyId, 1)).anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "GRID_CONFLICT", "MISSING_REFERENCED_DOC", "VISIT_TOTAL_MISMATCH"]);
+    const [summary] = (await get<StudyPage>("/api/v1/studies")).items;
+    expect(summary).toMatchObject({ status: "needs_review", needsYou: 8, openAnomalies: 8, liveVersion: null });
+    expect((await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`))[0]).toMatchObject({ action: "extraction.completed", detail: { questions: 8, pdfCheck: { values: 31, matched: 27 } } });
     // a draft is under review: no second extraction on top of it
-    expect((await post(`/api/studies/${studyId}/extract`, {})).statusCode).toBe(409);
+    expect((await post(`/api/v1/studies/${studyId}/extract`, {})).statusCode).toBe(409);
   });
 
   it("marks a failed extraction, and a retry reuses the same version", async () => {
-    const { studyId } = await newStudy();
+    const { studyId } = await newStudy(app, "s");
     fakeControls.failNext = 1;
-    const first = await extract(studyId);
+    const first = await extract(app, studyId);
     expect(first.job).toMatchObject({ state: "failed", error: "fake extraction failure" });
     expect((await study(studyId)).status).toBe("extraction_failed");
     expect((await version(studyId, 1)).status).toBe("failed");
 
-    const retry = await extract(studyId);
+    const retry = await extract(app, studyId);
     expect(retry).toMatchObject({ v: 1, job: { state: "succeeded" } });
     const s = await study(studyId);
     expect(s.status).toBe("needs_review");
@@ -116,8 +94,8 @@ describe("extraction", () => {
   });
 
   it("re-running a delivered job is a no-op", async () => {
-    const { studyId } = await newStudy();
-    const { v } = await extract(studyId);
+    const { studyId } = await newStudy(app, "s");
+    const { v } = await extract(app, studyId);
     const { runExtract } = await import("../src/jobs.js");
     const before = await version(studyId, v);
     await runExtract(built.ctx.db, { jobId: "00000000-0000-0000-0000-000000000000", studyId, version: v });
@@ -125,145 +103,44 @@ describe("extraction", () => {
   });
 });
 
-describe("review", () => {
-  it("corrects a value: validated, marked manual, logged and re-checked (resolutions kept)", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    expect((await resolve(studyId, 1, "MISSING_REFERENCED_DOC:/referencedDocuments/0")).statusCode).toBe(200);
-
-    const url = `/api/studies/${studyId}/versions/1/values`;
-    expect((await patch(url, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800.5, note: "x", by: "Asha" })).statusCode).toBe(400);
-    expect((await patch(url, { path: "/nope/0", value: 1, note: "x", by: "Asha" })).statusCode).toBe(400);
-
-    const res = await patch(url, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800, note: "printed total is a typo", by: "Asha" });
-    expect(res.statusCode).toBe(200);
-    const ver = res.json<RulebookVersionDto>();
-    expect(ver.rulebook!.budgetGrids[0]!.visits[1]).toMatchObject({ totalCents: 848800, prov: { method: "manual" } });
-    // the correction cleared the anomaly: it stays on record, settled as fixed with the correction's note
-    expect(ver.anomalies.find((a) => a.code === "VISIT_TOTAL_MISMATCH")?.resolution).toMatchObject({ kind: "fixed", by: "Asha", note: "printed total is a typo" });
-    expect(ver.anomalies.find((a) => a.code === "MISSING_REFERENCED_DOC")?.resolution).toMatchObject({ by: "Asha", kind: "accepted_with_note" });
-    expect(ver.editors).toEqual(["Asha"]);
-
-    const entries = await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`);
-    expect(entries[0]).toMatchObject({
-      by: "Asha",
-      action: "value.corrected",
-      detail: { version: 1, path: "/budgetGrids/0/visits/1/totalCents", before: 848900, after: 848800, note: "printed total is a typo" },
-    });
-  });
-
-  it("Fix value in the UI = PATCH then resolve 'fixed': works even when the PATCH cleared the anomaly", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    const aid = "VISIT_TOTAL_MISMATCH:/budgetGrids/0/visits/1/totalCents";
-    await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800, note: "p.9 prints 8,488.00", by: "Asha" });
-    const res = await post(`/api/studies/${studyId}/versions/1/anomalies/${encodeURIComponent(aid)}/resolve`, { kind: "fixed", note: "p.9 prints 8,488.00", by: "Asha" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json<RulebookVersionDto>().anomalies.find((a) => a.id === aid)?.resolution).toMatchObject({ kind: "fixed" });
-    // and a later, unrelated correction doesn't drop or re-settle it
-    const later = await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 30, note: "x", by: "Ben" });
-    expect(later.json<RulebookVersionDto>().anomalies.filter((a) => a.id === aid)).toEqual([expect.objectContaining({ resolution: expect.objectContaining({ by: "Asha" }) })]);
-  });
-
-  it("resolves an anomaly", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    const res = await resolve(studyId, 1, "AI_DISAGREEMENT:/invoiceables/0/amountWithOverheadCents");
-    expect(res.json<RulebookVersionDto>().anomalies.find((a) => a.code === "AI_DISAGREEMENT")?.resolution).toMatchObject({
-      kind: "accepted_with_note",
-      note: "checked",
-      by: "Asha",
-    });
-    expect((await resolve(studyId, 1, "NOPE")).statusCode).toBe(404);
-    expect((await post(`/api/studies/${studyId}/versions/1/anomalies/x/resolve`, { kind: "fixed", note: "", by: "A" })).statusCode).toBe(400);
-    expect((await get<StudyPage>("/api/studies")).items[0]!.openAnomalies).toBe(3);
-  });
-
-  it("chooses the governing grid, which settles GRID_CONFLICT", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    const url = `/api/studies/${studyId}/versions/1/grid-choice`;
-    expect((await post(url, { gridId: "missing", note: "n", by: "Asha" })).statusCode).toBe(400);
-    const ver = (await post(url, { gridId: "g2", note: "revised grid governs per sponsor email", by: "Asha" })).json<RulebookVersionDto>();
-    expect(ver.rulebook!.governingGridId).toBe("g2");
-    expect(ver.anomalies.find((a) => a.code === "GRID_CONFLICT")?.resolution).toMatchObject({ kind: "chosen", by: "Asha" });
-    expect(await auditActions(studyId)).toContain("grid.chosen");
-  });
-});
-
 describe("sign-off", () => {
-  it("is blocked until every anomaly is settled, then makes the version live", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    const url = `/api/studies/${studyId}/versions/1/sign-off`;
-    const blocked = await post(url, { by: "Ben" });
-    expect(blocked.statusCode).toBe(409);
-    expect(blocked.json().message).toMatch(/4 unresolved anomalies/);
-
-    await resolveAll(studyId, 1);
-    const ok = await post(url, { by: "Ben", note: "all checked" });
-    expect(ok.json<RulebookVersionDto>()).toMatchObject({ status: "signed", signedBy: "Ben" });
-    expect(await study(studyId)).toMatchObject({ status: "live", liveVersion: 1, openAnomalies: 0 });
-    expect(await auditActions(studyId)).toContain("version.signed");
-  });
-
-  it("maker-checker: whoever corrected values cannot sign", async () => {
-    expect(await get("/api/settings")).toEqual({ makerChecker: false, people: [] });
-    const s = (await patch("/api/settings", { makerChecker: true, people: ["Asha", "Ben"], by: "Ben" })).json();
-    expect(s).toEqual({ makerChecker: true, people: ["Asha", "Ben"] });
-
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800, note: "typo", by: "Asha" });
-    await resolveAll(studyId, 1);
-    const blocked = await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Asha" });
-    expect(blocked.statusCode).toBe(409);
-    expect(blocked.json().message).toMatch(/maker-checker/);
-    expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
-  });
-
-  it("maker-checker off (default): the editor may sign", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/1/totalCents", value: 848800, note: "typo", by: "Asha" });
-    await resolveAll(studyId, 1);
-    expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Asha" })).statusCode).toBe(200);
-  });
-
-  it("signed versions are immutable (API 409, and the database refuses too)", async () => {
-    const { studyId } = await liveStudy();
-    const base = `/api/studies/${studyId}/versions/1`;
+  it("signed versions are immutable (API 409, and the database refuses too); proofread marks are the exception", async () => {
+    const { studyId } = await liveStudy(built);
+    const base = `/api/v1/studies/${studyId}/versions/1`;
+    const item = (await version(studyId, 1)).review[0]!.id;
     const writes = [
       await patch(`${base}/values`, { path: "/payment/netDays/value", value: 30, note: "x", by: "Asha" }),
-      await resolve(studyId, 1, "GRID_CONFLICT:/budgetGrids/0"),
-      await post(`${base}/grid-choice`, { gridId: "g1", note: "x", by: "Asha" }),
+      await answer(studyId, 1, item, { value: 1 }),
+      await post(`${base}/send-back`, { itemIds: [item], note: "x", by: "Ben" }),
+      await post(`${base}/by-hand/done`, { by: "Asha" }),
       await post(`${base}/sign-off`, { by: "Ben" }),
     ];
-    for (const w of writes) {
-      expect(w.statusCode).toBe(409);
-      expect(w.json().message).toMatch(/immutable/);
-    }
-    await expect(built.ctx.db.execute(sql`UPDATE rulebook_versions SET rulebook = '{}' WHERE status = 'signed'`)).rejects.toThrow();
+    for (const w of writes) expect(w.statusCode, w.body).toBe(409);
+    expect(writes.at(-1)!.json().message).toMatch(/immutable/);
+    for (const col of ["rulebook", "review", "evidence"])
+      await expect(built.ctx.db.execute(sql.raw(`UPDATE rulebook_versions SET ${col} = '[]' WHERE status = 'signed'`))).rejects.toThrow();
+    await built.ctx.db.execute(sql`UPDATE rulebook_versions SET proofread = '[]' WHERE status = 'signed'`);
   });
 });
 
 describe("amendment", () => {
   it("creates v2 while v1 stays live; diff shows the change; signing v2 supersedes v1", async () => {
-    const { studyId } = await liveStudy();
+    const { studyId } = await liveStudy(built);
     const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend") }])).json<DocumentDto[]>();
-    const { job, v } = await extract(studyId, { documentIds: [amend!.id], by: "Asha" });
+    const { job, v } = await extract(app, studyId, { documentIds: [amend!.id], by: "Asha" });
     expect(job.state).toBe("succeeded");
     expect(v).toBe(2);
 
     let s = await study(studyId);
     expect(s).toMatchObject({ status: "amendment_in_review", liveVersion: 1 });
-    expect(s.documents.map((d) => d.id)).toContain(amend!.id);
+    expect(s.documents.map((d) => [d.id, d.text])).toContainEqual([amend!.id, "scan"]);
     expect(s.versions.map((x) => [x.version, x.status])).toEqual([
       [2, "draft"],
       [1, "signed"],
     ]);
 
-    const diff = await get<DiffEntry[]>(`/api/studies/${studyId}/versions/2/diff?against=1`);
+    await settleAll(built, studyId, 2);
+    const diff = await get<DiffEntry[]>(`/api/v1/studies/${studyId}/versions/2/diff?against=1`);
     expect(diff).toContainEqual({
       path: "/invoiceables/0/amountWithOverheadCents",
       change: "changed",
@@ -272,11 +149,10 @@ describe("amendment", () => {
       label: "Invoiceable › Unscheduled visit › Amount with overhead",
     });
     expect(diff).toContainEqual(expect.objectContaining({ path: "/appliesFrom/value", before: null, after: "2026-01-01" }));
-    expect((await app.inject({ url: `/api/studies/${studyId}/versions/2/diff` })).statusCode).toBe(400);
+    expect((await app.inject({ url: `/api/v1/studies/${studyId}/versions/2/diff` })).statusCode).toBe(400);
     expect((await version(studyId, 2)).appliesFrom).toBe("2026-01-01");
 
-    await resolveAll(studyId, 2);
-    expect((await post(`/api/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    expect((await post(`/api/v1/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
     s = await study(studyId);
     expect(s).toMatchObject({ status: "live", liveVersion: 2 });
     expect(s.versions.map((x) => [x.version, x.status])).toEqual([
@@ -287,121 +163,67 @@ describe("amendment", () => {
 });
 
 describe("amendment carries the live version's corrections", () => {
-  const visitTotal = "/budgetGrids/0/visits/1/totalCents";
-  const unsched = "/invoiceables/0/amountWithOverheadCents";
-  const fee = "/siteFees/0/amountCents";
+  const g2Total = "/budgetGrids/1/visits/1/totalCents";
+  const netDays = "/payment/netDays/value";
 
-  it("replays value corrections, the grid choice and unchanged resolutions; skips what the amendment changed or moved", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
-    const base = `/api/studies/${studyId}/versions/1`;
-    for (const [path, value] of [[visitTotal, 848800], [unsched, 80100], [fee, 1300000]] as const)
-      expect((await patch(`${base}/values`, { path, value, note: `fix ${path}`, by: "Asha" })).statusCode).toBe(200);
-    expect((await post(`${base}/grid-choice`, { gridId: "g2", note: "revised governs", by: "Asha" })).statusCode).toBe(200);
-    expect((await post(`${base}/anomalies/${encodeURIComponent("MISSING_REFERENCED_DOC:/referencedDocuments/0")}/resolve`, { kind: "accepted_with_note", note: "CTA on file", by: "Asha" })).statusCode).toBe(200);
-    await resolveAll(studyId, 1);
-    expect((await post(`${base}/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+  it("replays the values answers wrote and the grid choice; the new read is still checked against the PDF", async () => {
+    const { studyId } = await newStudy(app, "s");
+    await extract(app, studyId);
+    expect((await answer(studyId, 1, `confirm:${g2Total}`, { value: 848900 })).statusCode).toBe(200); // the page prints 8,489.00
+    await answer(studyId, 1, `confirm:${netDays}`, { value: 30 }); // differs from the read 45…
+    await answer(studyId, 1, `confirm:${netDays}`, { value: 30 }); // …and kept: no PDF text to say otherwise
+    await answer(studyId, 1, "anomaly:GRID_CONFLICT:/budgetGrids/0", { optionId: "g2" });
+    await settleAll(built, studyId, 1);
+    expect((await post(`/api/v1/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
 
     const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend") }])).json<DocumentDto[]>();
-    expect((await extract(studyId, { documentIds: [amend!.id], by: "Asha" })).job.state).toBe("succeeded");
-    const v2 = await version(studyId, 2);
-    const rb = v2.rulebook!;
-
-    // unchanged by the amendment → carried, marked manual
-    expect(rb.budgetGrids[0]!.visits[1]).toMatchObject({ totalCents: 848800, prov: { method: "manual" } });
-    expect(rb.governingGridId).toBe("g2");
-    // the amendment changed it → its value stands
-    expect(rb.invoiceables[0]!.amountWithOverheadCents).toBe(90000);
-    // index 0 is now a different fee (same amount): not overwritten; the original fee keeps the AI read
-    expect(rb.siteFees.map((f) => [f.code, f.amountCents])).toEqual([["SC001", 1200000], ["SC003", 1200000]]);
-
-    const missing = v2.anomalies.find((a) => a.code === "MISSING_REFERENCED_DOC")!;
-    expect(missing.resolution).toMatchObject({ kind: "accepted_with_note", note: "Carried from v1: CTA on file", by: "Asha" });
-    // same id, different detail (Claude now reads 90000) → open again
-    expect(v2.anomalies.find((a) => a.code === "AI_DISAGREEMENT")).toMatchObject({ detail: { claude: 90000, openai: 80100 }, resolution: null });
-    expect(v2.anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "MISSING_REFERENCED_DOC"]);
+    expect((await extract(app, studyId, { documentIds: [amend!.id], by: "Asha" })).job.state).toBe("succeeded");
+    const v2 = await storedVersion(built, studyId, 2);
+    // the read has 8,488.00 again: carried, marked manual, and now confirmed by the page, so nobody types it again
+    // (that the printed total doesn't add up is asked once, as a problem in the contract)
+    expect(v2.rulebook!.budgetGrids[1]!.visits[1]).toMatchObject({ totalCents: 848900, prov: { method: "manual" } });
+    expect(v2.evidence.find((e) => e.path === g2Total)).toMatchObject({ status: "confirmed" });
+    expect(v2.review.filter((i) => i.path === g2Total).map((i) => i.reason)).toEqual(["VISIT_TOTAL_MISMATCH"]);
+    // carried too, but nothing on the page backs it: asked again
+    expect([at(v2.rulebook, netDays), v2.review.find((i) => i.path === netDays)?.reason]).toEqual([30, "UNGROUNDED_VALUE"]);
+    expect(v2.rulebook!.governingGridId).toBe("g2");
+    expect(v2.review.map((i) => i.reason)).not.toContain("GRID_CONFLICT");
     expect(v2.editors).toEqual([]);
 
-    const diff = await get<DiffEntry[]>(`/api/studies/${studyId}/versions/2/diff?against=1`);
-    expect(diff).toContainEqual(expect.objectContaining({ path: unsched, before: 80100, after: 90000 }));
-    expect(diff.map((d) => d.path)).not.toContain(visitTotal);
-    expect(diff.some((d) => d.path.startsWith("/governingGridId") || d.path.startsWith("/budgetGrids"))).toBe(false);
-
-    const entries = await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`);
-    const carried = entries.find((e) => e.action === "version.corrections_carried")!;
-    expect(carried.detail).toMatchObject({
+    const carried = async () => (await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`)).find((e) => e.action === "version.corrections_carried")!.detail;
+    // both paths have an open question on v2, so the log withholds their values for now
+    expect((await carried()).carried).toEqual([expect.not.objectContaining({ after: expect.anything() }), expect.not.objectContaining({ after: expect.anything() })]);
+    await settleAll(built, studyId, 2);
+    expect(await carried()).toMatchObject({
       version: 2,
       from: 1,
-      carried: [expect.objectContaining({ path: visitTotal, before: 848900, after: 848800, by: "Asha", items: ["g1", "V2"] })],
-      skipped: [
-        expect.objectContaining({ path: unsched, reason: "amendment_changed" }),
-        expect.objectContaining({ path: fee, reason: "item_moved", items: ["SC003"] }),
-      ],
+      carried: [expect.objectContaining({ path: g2Total, before: 848800, after: 848900, by: "Sam", items: ["g2", "V2"] }), expect.objectContaining({ path: netDays, before: 45, after: 30 })],
       grid: { from: "g2", to: "g2" },
-      resolutions: [{ anomalyId: missing.id, code: "MISSING_REFERENCED_DOC", kind: "accepted_with_note" }],
     });
 
-    // transitively: v3 gets v1's carried correction and v2's own
-    expect((await patch(`/api/studies/${studyId}/versions/2/values`, { path: unsched, value: 90100, note: "p.4", by: "Ben" })).statusCode).toBe(200);
-    await resolveAll(studyId, 2);
-    expect((await post(`/api/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
-    await extract(studyId);
-    const v3 = await version(studyId, 3);
-    expect(v3.rulebook!.budgetGrids[0]!.visits[1]!.totalCents).toBe(848800);
-    expect(v3.rulebook!.invoiceables[0]!.amountWithOverheadCents).toBe(90100);
-    expect(await get<DiffEntry[]>(`/api/studies/${studyId}/versions/3/diff?against=2`)).toEqual([]);
+    // transitively: v3 gets v1's carried corrections and v2's own
+    expect((await post(`/api/v1/studies/${studyId}/versions/2/sign-off`, { by: "Ben" })).statusCode).toBe(200);
+    await extract(app, studyId);
+    const v3 = await storedVersion(built, studyId, 3);
+    expect([at(v3.rulebook, g2Total), at(v3.rulebook, netDays)]).toEqual([848900, 30]);
+    await settleAll(built, studyId, 3);
+    expect(await get<DiffEntry[]>(`/api/v1/studies/${studyId}/versions/3/diff?against=2`)).toEqual([]);
   });
 
   it("a first extraction carries nothing", async () => {
-    const { studyId } = await newStudy();
-    await extract(studyId);
+    const { studyId } = await newStudy(app, "s");
+    await extract(app, studyId);
     expect(await auditActions(studyId)).not.toContain("version.corrections_carried");
-  });
-});
-
-describe("manual entry", () => {
-  it("replaces a failed extraction with a blank manual draft that goes through checks and sign-off", async () => {
-    const { studyId } = await newStudy();
-    await patch(`/api/studies/${studyId}`, { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. Test", by: "Asha" });
-    fakeControls.failNext = 1;
-    await extract(studyId);
-    const url = `/api/studies/${studyId}/versions`;
-    expect((await post(url, { by: "Asha" })).statusCode).toBe(400); // manual: true is required
-
-    const res = await post(url, { manual: true, by: "Asha" });
-    expect(res.statusCode).toBe(201);
-    expect(res.json()).toEqual({ version: 1 }); // reuses the failed version number
-    const ver = await version(studyId, 1);
-    expect(ver.status).toBe("draft");
-    expect(ver.rulebook!.study.sponsor).toEqual({ value: "Acme", prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } });
-    expect(ver.rulebook!.budgetGrids).toEqual([]);
-    expect((await study(studyId)).status).toBe("needs_review");
-    expect(await auditActions(studyId)).toContain("version.manual_created");
-    // a second click doesn't make another draft
-    expect((await post(url, { manual: true, by: "Asha" })).statusCode).toBe(409);
-
-    expect((await patch(`/api/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 45, note: "p.3", by: "Asha" })).statusCode).toBe(200);
-    await resolveAll(studyId, 1);
-    expect((await post(`/api/studies/${studyId}/versions/1/sign-off`, { by: "Ben" })).statusCode).toBe(200);
-  });
-
-  it("for an amendment, seeds the draft from the live rulebook", async () => {
-    const { studyId } = await liveStudy();
-    const res = await post(`/api/studies/${studyId}/versions`, { manual: true, by: "Asha" });
-    expect(res.json()).toEqual({ version: 2 });
-    expect(await study(studyId)).toMatchObject({ status: "amendment_in_review", liveVersion: 1 });
-    const [v1, v2] = [await version(studyId, 1), await version(studyId, 2)];
-    expect(v2.rulebook!.invoiceables).toEqual(v1.rulebook!.invoiceables);
   });
 });
 
 describe("audit log", () => {
   it("is append-only", async () => {
-    const { studyId } = await newStudy();
-    const entries = await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`);
+    const { studyId } = await newStudy(app, "s");
+    const entries = await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`);
     expect(entries.length).toBeGreaterThan(0);
     await expect(built.ctx.db.execute(sql`UPDATE audit_log SET by = 'mallory'`)).rejects.toThrow();
     await expect(built.ctx.db.execute(sql`DELETE FROM audit_log`)).rejects.toThrow();
-    expect(await get<AuditEntryDto[]>(`/api/audit?studyId=${studyId}`)).toEqual(entries);
+    expect(await get<AuditEntryDto[]>(`/api/v1/audit?studyId=${studyId}`)).toEqual(entries);
   });
 });

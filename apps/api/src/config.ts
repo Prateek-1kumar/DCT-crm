@@ -23,5 +23,12 @@ export const config = {
   /** Origins allowed on mutating requests (CSRF guard). */
   allowedOrigins: list(process.env.ALLOWED_ORIGINS, local(3100).map((h) => `http://${h}`)),
   extractionFake: process.env.EXTRACTION_FAKE === "1",
+  /**
+   * This computer only (user decision 2026-10-28). There's no login: every write's `by` is whatever name was picked. Login
+   * must come before this listens anywhere else, or before more than one person uses it (docs/phase-1/api.md).
+   */
+  listenHost: "127.0.0.1",
   maxUploadBytes: 50 * 1024 * 1024,
+  /** Pages per uploaded PDF; the same limit the reading has (@dct/extraction CONFIG.maxPagesPerDoc). */
+  maxUploadPages: 100,
 };

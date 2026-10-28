@@ -1,5 +1,6 @@
 import {
   amountOf,
+  ByHandBody,
   ConfirmStudyBody,
   CreateStudyBody,
   ENUM_LABELS,
@@ -18,13 +19,10 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import { documents, jobs, listKey, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
-import { appliesFromOf, audit, documentDto, manualRulebook, refreshStudyStatus, studySummaryDto, versionSummaryDto } from "../domain.js";
-import { getExtraction } from "../extraction/port.js";
+import { appliesFromOf, audit, documentDto, manualRulebook, refreshStudyStatus, studySummaryDto, versionDto, versionSummaryDto } from "../domain.js";
 import { createJob, sendJob } from "../jobs.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 
-/** POST /studies/:id/versions: manual entry when extraction failed. Not in @dct/shared yet (proposed). */
-const CreateVersionBody = z.object({ manual: z.literal(true), by: z.string().min(1) });
 const SearchQuery = z.object({ q: z.string().default(""), limit: z.coerce.number().int().min(1).max(50).default(8) });
 
 /** Each list view is one `stage` (see the column). */
@@ -46,7 +44,7 @@ const summaryCols = {
 const listOrder = [studies.stage, listKey, studies.id];
 
 /** Keyset cursor: the last row's (stage, listKey, id), base64url JSON. */
-const Cursor = z.tuple([z.number().int(), z.string().regex(/^-?\d+(\.\d+)?$/), z.uuid()]);
+const Cursor = z.tuple([z.number().int().min(0).max(5), z.string().regex(/^-?\d{1,20}(\.\d{1,12})?$/), z.uuid()]);
 const encodeCursor = (r: { stage: number; key: string; id: string }) => Buffer.from(JSON.stringify([r.stage, r.key, r.id])).toString("base64url");
 function decodeCursor(c: string) {
   try {
@@ -112,7 +110,7 @@ export const studyRoutes =
 
     /** Per view and per site, for tabs and the sidebar. `site` narrows the view counts, never the site list. */
     app.get<{ Querystring: { site?: string } }>("/studies/counts", async (req): Promise<StudyCounts> => {
-      const site = req.query.site || undefined;
+      const site = typeof req.query.site === "string" && req.query.site ? req.query.site : undefined;
       const byStage = await db.select({ stage: studies.stage, n: count() }).from(studies).where(site ? eq(studies.siteName, site) : undefined).groupBy(studies.stage);
       // <> '' also drops NULL
       const sites = await db.select({ name: studies.siteName, count: count() }).from(studies).where(ne(studies.siteName, "")).groupBy(studies.siteName).orderBy(studies.siteName);
@@ -183,6 +181,9 @@ export const studyRoutes =
       await db.transaction(async (tx) => {
         const [s] = await tx.select().from(studies).where(eq(studies.id, req.params.id)).for("update");
         if (!s) throw notFound("Study");
+        // Once a version is approved, these are what billing was approved under: an amendment changes them, an edit can't.
+        const [live] = await tx.select({ version: rulebookVersions.version }).from(rulebookVersions).where(and(eq(rulebookVersions.studyId, s.id), inArray(rulebookVersions.status, ["signed", "superseded"]))).limit(1);
+        if (live) throw new HttpError(409, "This contract has an approved version, so its sponsor, protocol, site and investigator can't be changed any more: they're part of what was approved.");
         await tx.update(studies).set({ ...fields, updatedAt: new Date() }).where(eq(studies.id, s.id));
         const before = { sponsor: s.sponsor, protocol: s.protocol, siteName: s.siteName, investigator: s.investigator };
         await audit(tx, by, s.id, "study.confirmed", { before, after: fields });
@@ -232,45 +233,37 @@ export const studyRoutes =
     });
 
     /**
-     * Manual entry: a draft seeded from the live rulebook (amendment) or a blank one prefilled with the
-     * confirmed study details. Values are tagged manual and go through the same checks and sign-off.
+     * Typing a contract in by hand when it couldn't be read: a blank draft (one empty budget grid), every value typed is
+     * attested, and someone else re-types a sample blind when typing is done. Replaces a failed version in place.
      */
-    app.post<{ Params: { id: string } }>("/studies/:id/versions", async (req, reply) => {
-      const { by } = parse(CreateVersionBody, req.body);
+    app.post<{ Params: { id: string } }>("/studies/:id/versions/by-hand", async (req, reply) => {
+      const body = ByHandBody.safeParse(req.body);
+      if (!body.success) throw new HttpError(400, "Say who is typing.");
+      const { by } = body.data;
       const studyId = req.params.id;
-      const port = await getExtraction();
-      const version = await db.transaction(async (tx) => {
+      const row = await db.transaction(async (tx) => {
         const [s] = await tx.select().from(studies).where(eq(studies.id, studyId)).for("update");
         if (!s) throw notFound("Study");
-        const versions = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version));
-        const latest = versions[0];
-        if (latest?.status === "draft") throw new HttpError(409, `Version ${latest.version} is already a draft under review; correct its values there`);
-        if (latest?.status === "extracting") throw new HttpError(409, `Version ${latest.version} is still being extracted; wait for it to finish or fail`);
+        const [latest] = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version)).limit(1);
+        if (latest?.status === "draft" || latest?.status === "extracting") throw new HttpError(409, `Version ${latest.version} is already in progress.`);
         const docs = await tx
           .select({ d: documents })
           .from(studyDocuments)
           .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
           .where(eq(studyDocuments.studyId, studyId))
           .orderBy(studyDocuments.addedAt, documents.filename);
-        const liveRow = versions.find((v) => v.status === "signed");
-        const live = liveRow?.rulebook;
-        const rulebook = manualRulebook(s, docs.map((r) => r.d), live ?? null);
-        const anomalies = port.runContractChecks(rulebook, { crossRead: null, pages: [], notes: [] });
-        const fields = { status: "draft", rulebook, crossRead: null, anomalies, pages: [], notes: [], cost: [], costUsd: 0, inputTokens: 0, outputTokens: 0, appliesFrom: appliesFromOf(rulebook), error: null, updatedAt: new Date() };
-        let v: number;
-        if (latest?.status === "failed") {
-          // replaces the failed attempt: same version number, never a gap
-          v = latest.version;
-          await tx.update(rulebookVersions).set(fields).where(eq(rulebookVersions.id, latest.id));
-        } else {
-          v = (latest?.version ?? 0) + 1;
-          await tx.insert(rulebookVersions).values({ studyId, version: v, ...fields });
-        }
+        const rulebook = manualRulebook(s, docs.map((r) => r.d));
+        const fields = { status: "draft", byHand: true, rulebook, crossRead: null, anomalies: [], evidence: [], review: [], pdfCheck: null, pages: [], notes: [], cost: [], costUsd: 0, inputTokens: 0, outputTokens: 0, appliesFrom: appliesFromOf(rulebook), error: null, updatedAt: new Date() };
+        // replaces the failed attempt: same version number, never a gap
+        const [v] =
+          latest?.status === "failed"
+            ? await tx.update(rulebookVersions).set(fields).where(eq(rulebookVersions.id, latest.id)).returning()
+            : await tx.insert(rulebookVersions).values({ studyId, version: (latest?.version ?? 0) + 1, ...fields }).returning();
         await refreshStudyStatus(tx, studyId, by);
-        await audit(tx, by, studyId, "version.manual_created", { version: v, seededFrom: live ? "live version" : "blank", seededFromVersion: live ? liveRow!.version : null });
-        return v;
+        await audit(tx, by, studyId, "version.manual_created", { version: v!.version, byHand: true });
+        return v!;
       });
-      return reply.status(201).send({ version });
+      return reply.status(201).send(versionDto(row));
     });
 
     app.get<{ Params: { id: string } }>("/jobs/:id", async (req): Promise<JobDto> => {

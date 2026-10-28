@@ -1,9 +1,7 @@
 import {
   type AlertKind,
-  type ContractAnomaly,
   type DocumentDto,
   type DocumentKind,
-  type Resolution,
   Rulebook,
   type RulebookVersionDto,
   type StudyStatus,
@@ -15,10 +13,10 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Tx } from "./db/index.js";
 import { alerts, auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
-import type { CheckOptions, ExtractionPort } from "./extraction/port.js";
 import { itemIds } from "./lib/diff.js";
 import { HttpError, notFound } from "./lib/http.js";
 import { getAt, markManual, parsePointer, setAt } from "./lib/pointer.js";
+import { blindReview, hiddenPaths, mask, needsYouOf } from "./review.js";
 
 type DocumentRow = typeof documents.$inferSelect;
 type VersionRow = typeof rulebookVersions.$inferSelect;
@@ -34,8 +32,7 @@ export const documentDto = (d: DocumentRow, duplicateOf: string | null = null): 
   sha256: d.sha256,
   kind: d.kind as DocumentKind,
   pageCount: d.pageCount,
-  // ponytail: not detected at upload yet; needs a documents column filled by readTextLayer (ADR-001 step 5).
-  text: null,
+  text: d.textSource,
   uploadedAt: d.uploadedAt.toISOString(),
   duplicateOf,
 });
@@ -49,20 +46,27 @@ export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
   appliesFrom: v.appliesFrom,
 });
 
-export const versionDto = (v: VersionRow): RulebookVersionDto => ({
-  ...versionSummaryDto(v),
-  studyId: v.studyId,
-  rulebook: v.rulebook,
-  anomalies: v.anomalies,
-  editors: v.editors,
-  cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
-  // Filled once the evidence pipeline is wired (ADR-001 build steps 2–5).
-  evidence: [],
-  review: [],
-  pdfCheck: null,
-  byHand: false,
-  proofread: [],
-});
+/**
+ * Blind entry: on a draft, a value with an open question is withheld (null) from the master, its printed text from the
+ * evidence, and the checks' anomalies (their messages and details carry the reading) until nothing is withheld.
+ * Every response that carries a version goes through here.
+ */
+export const versionDto = (v: VersionRow): RulebookVersionDto => {
+  const hidden = hiddenPaths(v);
+  return {
+    ...versionSummaryDto(v),
+    studyId: v.studyId,
+    rulebook: v.rulebook && hidden.length ? mask(v.rulebook, hidden) : v.rulebook,
+    anomalies: hidden.length ? [] : v.anomalies,
+    editors: v.editors,
+    cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
+    evidence: v.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
+    review: blindReview(v.review, hidden),
+    pdfCheck: v.pdfCheck,
+    byHand: v.byHand,
+    proofread: v.proofread,
+  };
+};
 
 /** From the study row alone (needs_you is kept by refreshStudyStatus), so lists never load a rulebook. */
 export function studySummaryDto(s: StudyRow, liveVersion: number | null): StudySummaryDto {
@@ -81,7 +85,7 @@ export function studySummaryDto(s: StudyRow, liveVersion: number | null): StudyS
   };
 }
 
-/** Status changes raise theirs in refreshStudyStatus; sent_back is raised by the send-back write. */
+/** Status changes raise theirs in refreshStudyStatus; sent_back is raised by the send-back write (which passes alert: false). */
 export function raiseAlert(tx: Tx, a: typeof alerts.$inferInsert) {
   return tx.insert(alerts).values(a);
 }
@@ -90,11 +94,12 @@ export function raiseAlert(tx: Tx, a: typeof alerts.$inferInsert) {
  * Study status is derived from its versions, so it can't drift:
  * none → setting_up; latest extracting/failed/draft → extracting/extraction_failed/needs_review,
  * or amendment_in_review while an earlier version is live; latest signed → live.
- * Also stores needs_you (the list's `stage` is generated from both). Every write that changes a version calls this.
+ * Also stores needs_you, what the web counts as needing a person on the latest draft (see needsYouOf); the list's
+ * `stage` is generated from both. Every write that changes a version calls this.
  * A stage change into needs you, waiting for approval (after reading or answering) or couldn't read raises an alert,
- * `by` whoever caused it.
+ * `by` whoever caused it, unless the write raises its own (`alert: false`).
  */
-export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system"): Promise<StudyStatus> {
+export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system", { alert = true } = {}): Promise<StudyStatus> {
   const [before] = await tx.select({ stage: studies.stage }).from(studies).where(eq(studies.id, studyId)).for("no key update");
   const versions = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version));
   const latest = versions[0];
@@ -104,8 +109,7 @@ export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system")
   else if (latest.status === "signed") status = "live";
   else if (hasLive) status = "amendment_in_review";
   else status = ({ extracting: "extracting", failed: "extraction_failed", draft: "needs_review" } as const)[latest.status as "extracting" | "failed" | "draft"] ?? "needs_review";
-  // Until review items are wired (ADR-001 step 5), open anomalies on the latest draft are what needs a person.
-  const needsYou = latest?.status === "draft" ? latest.anomalies.filter((a) => !a.resolution).length : 0;
+  const needsYou = needsYouOf(latest);
   const [after] = await tx.update(studies).set({ status, needsYou, updatedAt: new Date() }).where(eq(studies.id, studyId)).returning({ stage: studies.stage });
   const from = before?.stage;
   const kind: AlertKind | null =
@@ -114,7 +118,7 @@ export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system")
     : after.stage === 3 ? "ready_for_approval"
     : after.stage === 1 ? "couldnt_read"
     : null;
-  if (kind && latest) await raiseAlert(tx, { kind, studyId, version: latest.version, by, count: kind === "questions_ready" ? needsYou : null });
+  if (kind && latest && alert) await raiseAlert(tx, { kind, studyId, version: latest.version, by, count: kind === "questions_ready" ? needsYou : null });
   return status;
 }
 
@@ -132,37 +136,17 @@ export function assertDraft(v: VersionRow): asserts v is VersionRow & { rulebook
   if (v.status !== "draft" || !v.rulebook) throw new HttpError(409, `Version ${v.version} is ${v.status}; only draft versions can be changed`);
 }
 
-/**
- * Re-run contract checks; anomalies whose id still exists keep their resolution.
- * An anomaly the change made disappear stays in the list, settled by this change (`settledBy`),
- * so the review keeps its record and a follow-up resolve call doesn't 404.
- */
-export function recheck(
-  port: ExtractionPort,
-  rulebook: Rulebook,
-  row: { crossRead: Rulebook | null; pages: CheckOptions["pages"]; notes: CheckOptions["notes"]; anomalies: ContractAnomaly[] },
-  settledBy: Omit<Resolution, "at">,
-): ContractAnomaly[] {
-  const resolved = new Map(row.anomalies.map((a) => [a.id, a.resolution]));
-  const fresh = port.runContractChecks(rulebook, { crossRead: row.crossRead, pages: row.pages, notes: row.notes }).map((a) => ({ ...a, resolution: resolved.get(a.id) ?? a.resolution ?? null }));
-  const at = new Date().toISOString();
-  const gone = row.anomalies.filter((a) => !fresh.some((f) => f.id === a.id)).map((a) => ({ ...a, resolution: a.resolution ?? { ...settledBy, at } }));
-  return [...fresh, ...gone];
-}
-
 /** Date the version's terms apply from: amendment date, else the contract's effective date. */
 export const appliesFromOf = (rb: Rulebook) => rb.appliesFrom.value ?? rb.study.effectiveDate.value;
 
+const MANUAL = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } as const;
+
 /**
- * Starting point for manual entry. Amendment: a copy of the live rulebook (only what changes needs
- * editing; appliesFrom is cleared so it must be entered). Otherwise a valid blank rulebook, every
- * value tagged manual, prefilled with the confirmed study details.
+ * Starting point for typing a contract in by hand (as apps/web/src/lib/byhand.ts blankRulebook): every value empty and
+ * tagged manual, prefilled with the confirmed study details, with one empty budget grid for the form to fill.
  */
-export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook | null): Rulebook {
-  const prov = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } as const;
-  const m = <T>(value: T) => ({ value, prov });
-  const documentList = docs.map((d) => ({ id: d.id, kind: d.kind as DocumentKind, title: d.filename, date: null }));
-  if (live) return Rulebook.parse({ ...structuredClone(live), documents: documentList, appliesFrom: m(null) });
+export function manualRulebook(s: StudyRow, docs: DocumentRow[]): Rulebook {
+  const m = <T>(value: T) => ({ value, prov: MANUAL });
   return Rulebook.parse({
     schemaVersion: 1,
     study: {
@@ -174,7 +158,7 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook 
       effectiveDate: m(null),
       currency: "USD",
     },
-    documents: documentList,
+    documents: docs.map((d) => ({ id: d.id, kind: d.kind as DocumentKind, title: d.filename, date: null })),
     referencedDocuments: [],
     overhead: { pct: m(null), appliesTo: m("unspecified") },
     payment: {
@@ -186,7 +170,19 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook 
       requiredReferences: m([]),
       paymentConditions: m([]),
     },
-    budgetGrids: [],
+    budgetGrids: [
+      {
+        id: "g-hand",
+        label: "Budget",
+        arm: null,
+        statedOverheadPct: null,
+        visits: [{ code: "V1", name: "", order: 1, procedureSubtotalCents: null, overheadCents: null, nonProcedureCents: null, totalCents: 0, autopay: true, prov: MANUAL }],
+        procedures: [{ code: null, name: "", unitCents: null, overheadApplied: false, category: "procedure", cells: {}, prov: MANUAL }],
+        perPatientTotals: [],
+        header: { investigator: null, siteName: null },
+        prov: MANUAL,
+      },
+    ],
     governingGridId: null,
     invoiceables: [],
     screenFail: null,
@@ -205,12 +201,15 @@ export function manualRulebook(s: StudyRow, docs: DocumentRow[], live: Rulebook 
 export type Correction = { path: string; before: unknown; after: unknown; note?: string; by?: string; items?: string[] };
 export type SkipReason = "amendment_changed" | "item_moved" | "path_missing" | "invalid" | "already_equal";
 export const CARRIED = "version.corrections_carried";
+/** "This looks wrong" on the live version: a draft copied from it. */
+export const CORRECTION_OPENED = "version.correction_opened";
 
 /**
  * Every correction that makes version `v`'s values differ from the AI read, oldest first, replayed
- * from the audit log: what `v` carried at extraction (`version.corrections_carried`), what a manual
- * draft inherited by copying its live version (`version.manual_created` → recurse), and its own
- * `value.corrected` entries.
+ * from the audit log: what `v` carried at extraction (`version.corrections_carried`), what a draft
+ * inherited by copying its live version (`version.manual_created` or `version.correction_opened` with
+ * `seededFromVersion` → recurse), its answers that wrote a value (`review.answered` / `review.changed`
+ * with `after`), and `value.corrected` entries from before review questions existed.
  */
 export async function correctionsOf(tx: Tx, v: { studyId: string; version: number }): Promise<Correction[]> {
   const rows = await tx
@@ -219,7 +218,7 @@ export async function correctionsOf(tx: Tx, v: { studyId: string; version: numbe
     .where(
       and(
         eq(auditLog.studyId, v.studyId),
-        inArray(auditLog.action, ["value.corrected", CARRIED, "version.manual_created"]),
+        inArray(auditLog.action, ["value.corrected", "review.answered", "review.changed", CARRIED, "version.manual_created", CORRECTION_OPENED]),
         sql`${auditLog.detail}->>'version' = ${String(v.version)}`,
       ),
     )
@@ -227,9 +226,9 @@ export async function correctionsOf(tx: Tx, v: { studyId: string; version: numbe
   const out: Correction[] = [];
   for (const { action, by, detail: d } of rows) {
     if (action === CARRIED) out.push(...(d.carried as Correction[]));
-    else if (action === "version.manual_created") {
+    else if (action === "version.manual_created" || action === CORRECTION_OPENED) {
       if (typeof d.seededFromVersion === "number") out.push(...(await correctionsOf(tx, { studyId: v.studyId, version: d.seededFromVersion })));
-    } else out.push({ path: d.path as string, before: d.before, after: d.after, note: d.note as string, by, items: d.items as string[] | undefined });
+    } else if ("after" in d) out.push({ path: d.path as string, before: d.before, after: d.after, note: d.note as string | undefined, by, items: d.items as string[] | undefined });
   }
   return out;
 }
@@ -275,16 +274,4 @@ export function carryCorrections(rulebook: Rulebook, corrections: Correction[]) 
 export function carryGrid(rulebook: Rulebook, live: Rulebook): string | null {
   const chosen = live.budgetGrids.find((g) => g.id === live.governingGridId);
   return chosen ? (rulebook.budgetGrids.find((g) => g.label === chosen.label && g.arm === chosen.arm)?.id ?? null) : null;
-}
-
-/** Copy the resolution of every live anomaly found again unchanged (same id, deep-equal detail). */
-export function carryResolutions(anomalies: ContractAnomaly[], live: { version: number; anomalies: ContractAnomaly[] }) {
-  const carried: { anomalyId: string; code: string; kind: Resolution["kind"] }[] = [];
-  const out = anomalies.map((a) => {
-    const old = live.anomalies.find((o) => o.id === a.id && isDeepStrictEqual(o.detail, a.detail))?.resolution;
-    if (!old || a.resolution) return a;
-    carried.push({ anomalyId: a.id, code: a.code, kind: old.kind });
-    return { ...a, resolution: { ...old, note: `Carried from v${live.version}: ${old.note.replace(/^Carried from v\d+: /, "")}` } };
-  });
-  return { anomalies: out, carried };
 }

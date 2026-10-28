@@ -1,7 +1,6 @@
-import { readFile } from "node:fs/promises";
 import type { PageBox } from "@dct/shared";
-import * as mupdf from "mupdf";
 import { MIN_PAGE_TEXT } from "./checks";
+import { pageCount, textPage } from "./render";
 
 /** The PDF's own text (mupdf structured text), no AI: words with boxes, each page's text source, hidden text. */
 
@@ -33,70 +32,11 @@ export type TextPage = {
 /** COPD's signed budget grid is set in 3.2 pt type, so the ADR's "under 4 pt" would hide a real grid. */
 export const MIN_VISIBLE_PT = 2;
 
+/** Every page's text, read in the mupdf worker (render.ts), one page at a time: a page that hangs fails the read, it can't hang the server. */
 export async function readTextLayer(pdfPath: string, documentId: string): Promise<TextPage[]> {
-  const doc = mupdf.Document.openDocument(await readFile(pdfPath), "application/pdf");
-  try {
-    const out: TextPage[] = [];
-    for (let i = 0; i < doc.countPages(); i++) {
-      const page = doc.loadPage(i);
-      try {
-        out.push(readPage(page, documentId, i + 1));
-      } finally {
-        page.destroy();
-      }
-    }
-    return out;
-  } finally {
-    doc.destroy();
-  }
-}
-
-function readPage(page: mupdf.Page, documentId: string, n: number): TextPage {
-  const [px0, py0, px1, py1] = page.getBounds();
-  // Invisible render mode (3 Tr) reaches a device as ignoreText; structured text keeps it as plain black text.
-  // ponytail: glyphs matched to chars by origin on a 0.5 pt grid. Upgrade: compare the render under each word.
-  const key = (x: number, y: number) => `${Math.round(x * 2)},${Math.round(y * 2)}`;
-  const invisible = new Set<string>();
-  const dev = new mupdf.Device({
-    ignoreText: (text, m) => text.walk({ showGlyph: (_f, t) => void invisible.add(key(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5])) }),
-  });
-  page.run(dev, mupdf.Matrix.identity);
-  dev.close();
-  dev.destroy();
-
-  const words: Word[] = [];
-  let [chars, imageArea, block, line, dir] = [0, 0, -1, -1, 0 as Word["dir"]];
-  let cur: Pick<Word, "text" | "rect" | "hidden"> | null = null;
-  const flush = () => {
-    if (cur) words.push({ ...cur, dir, block, line });
-    cur = null;
-  };
-  const st = page.toStructuredText("preserve-images,clip=no");
-  st.walk({
-    onImageBlock: ([x0, y0, x1, y1]) => void (imageArea = Math.max(imageArea, Math.max(0, Math.min(x1, px1) - Math.max(x0, px0)) * Math.max(0, Math.min(y1, py1) - Math.max(y0, py0)))),
-    beginTextBlock: () => void block++,
-    beginLine: (_b, _w, [dx, dy]) => {
-      line++;
-      dir = ((Math.round(Math.atan2(dy, dx) / (Math.PI / 2)) + 4) % 4) as Word["dir"];
-    },
-    onChar: (c, [ox, oy], _font, size, q, color) => {
-      if (!c.trim()) return flush();
-      chars++;
-      const r: Rect = [Math.min(q[0], q[2], q[4], q[6]), Math.min(q[1], q[3], q[5], q[7]), Math.max(q[0], q[2], q[4], q[6]), Math.max(q[1], q[3], q[5], q[7])];
-      // ponytail: white means white fill; white text on a dark box is visible but flagged. Upgrade: sample the render under the glyph.
-      const hidden = size < MIN_VISIBLE_PT || color.every((v) => v > 0.95) || ox < px0 || ox > px1 || oy < py0 || oy > py1 || invisible.has(key(ox, oy));
-      cur ??= { text: "", rect: r, hidden: false };
-      cur.text += c;
-      cur.rect = union([cur.rect, r]);
-      cur.hidden ||= hidden;
-    },
-    endLine: flush,
-  });
-  st.destroy();
-  const [width, height] = [px1 - px0, py1 - py0];
-  // ponytail: a genuine text page under MIN_PAGE_TEXT characters reads as image_only, so it goes to page attestation.
-  const source = chars < MIN_PAGE_TEXT ? "image_only" : imageArea > 0.8 * width * height ? "ocr_layer" : "text";
-  return { documentId, page: n, width, height, source, words, hidden: words.filter((w) => w.hidden).length };
+  const out: TextPage[] = [];
+  for (let i = 1, n = await pageCount(pdfPath); i <= n; i++) out.push(await textPage(pdfPath, i, documentId, MIN_VISIBLE_PT, MIN_PAGE_TEXT));
+  return out;
 }
 
 export const union = (rs: Rect[]): Rect => [Math.min(...rs.map((r) => r[0])), Math.min(...rs.map((r) => r[1])), Math.max(...rs.map((r) => r[2])), Math.max(...rs.map((r) => r[3]))];
@@ -164,14 +104,16 @@ export type SpanKind = "amount" | "grid_number" | "percent" | "days" | "ratio" |
 export type Span = { kind: SpanKind; where: PageBox; words: Word[]; /** The line or sentence it sits in. */ text: string };
 
 export const NUMBER = /^\(?(?:US)?\$?\d[\d,]*(?:\.\d+)?\)?%?$/;
+/** A number as printed without the sentence punctuation after it: "$7,455.00." → "$7,455.00". Test NUMBER on this. */
+export const bare = (s: string) => s.replace(/(?<=[\d)%])[.,;:]+$/, "");
 const CURRENCY = /^\(?(?:US\$|\$|USD)$/;
 
 /** Dollar amounts in reading order; a lone "$" joins the number after it. `currencyOnly`: only those with a sign. */
 export function amounts(ws: Word[], currencyOnly = false): { words: Word[]; cents: number }[] {
   const out: { words: Word[]; cents: number }[] = [];
   ws.forEach((w, i) => {
-    const pair = CURRENCY.test(w.text) && ws[i + 1] && NUMBER.test(ws[i + 1]!.text);
-    const t = pair ? w.text + ws[i + 1]!.text : w.text;
+    const pair = CURRENCY.test(w.text) && ws[i + 1] && NUMBER.test(bare(ws[i + 1]!.text));
+    const t = bare(pair ? w.text + ws[i + 1]!.text : w.text);
     if (CURRENCY.test(ws[i - 1]?.text ?? "") || !NUMBER.test(t) || t.endsWith("%")) return;
     const money = /\$|USD/.test(t) || (!currencyOnly && /\d,\d{3}|\.\d{2}\)?$/.test(t));
     const whole = t.replace(/[^\d.]/g, "").split(".")[0]!;
@@ -200,6 +142,20 @@ export function sentences(p: TextPage): Word[][] {
 
 const text = (ws: Word[]) => ws.map((w) => w.text).join(" ");
 
+/** Bank or payment instructions: a bank keyword and a digit run in one sentence (ADR-001 §9). */
+const bankSentence = (s: Word[]) => KEYWORDS.bank.test(text(s)) && /\d[\d\s-]{4,}\d/.test(text(s));
+
+/**
+ * Where the bank details are on a text page, in page points, to paint over before the page goes to a model (ADR-001 §9):
+ * in each bank sentence, every word carrying 3+ digits (account, routing, sort code) or opening like an IBAN. Scans have none.
+ */
+export function bankRects(p: TextPage): Rect[] {
+  if (p.source !== "text") return [];
+  return sentences(p)
+    .filter(bankSentence)
+    .flatMap((s) => s.filter((w) => (w.text.match(/\d/g)?.length ?? 0) >= 3 || /^[A-Z]{2}\d{2}/.test(w.text)).map((w) => w.rect));
+}
+
 /**
  * Every money-relevant span on the text pages (ADR-001 §3): currency amounts, numbers in table rows, and %, day,
  * ratio and "up to N" figures or absence keywords in a money sentence. Bank instructions are left out.
@@ -214,12 +170,12 @@ export function inventory(pages: TextPage[]): Span[] {
       out.push({ kind, where: boxOf(p, ws), words: ws, text: text(ctx).slice(0, 240) });
     };
     const sents = sentences(p);
-    for (const s of sents) if (KEYWORDS.bank.test(text(s)) && /\d[\d\s-]{4,}\d/.test(text(s))) s.forEach((w) => taken.add(w));
+    for (const s of sents) if (bankSentence(s)) s.forEach((w) => taken.add(w));
     const lines = visualLines(p.words.filter((w) => !w.hidden));
     for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l);
     for (const l of lines) {
       // Table row ("grid row band"): 2+ numbers, each set off from the word before it by a column gap.
-      const cells = l.filter((w, i) => NUMBER.test(w.text) && (i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1]));
+      const cells = l.filter((w, i) => NUMBER.test(bare(w.text)) && (i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1]));
       if (cells.length >= 2) for (const w of cells) add("grid_number", [w], l);
     }
     for (const s of sents) {

@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CONFIG, ExtractionLimitError, extractWith, identifyWith } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { LlmClient } from "../src/llm";
-import { RENDER_LIMITS, renderPng, renderTiles, tileLayout } from "../src/render";
+import { openDocuments, pageCount, RENDER_LIMITS, RenderTimeoutError, renderPng, renderTiles, tileLayout } from "../src/render";
+import { bankRects, readTextLayer } from "../src/textlayer";
 
 function pdfWith(pages: number, size: [number, number] = [612, 792]): string {
   const doc = new mupdf.PDFDocument();
@@ -21,7 +22,7 @@ const dims = (png: Buffer) => [png.readUInt32BE(16), png.readUInt32BE(20)];
 
 const saved = { ...RENDER_LIMITS, maxPagesPerDoc: CONFIG.maxPagesPerDoc, maxPagesTotal: CONFIG.maxPagesTotal, maxTilesPerExtraction: CONFIG.maxTilesPerExtraction, maxImagesPerExtraction: CONFIG.maxImagesPerExtraction };
 afterEach(() => {
-  Object.assign(RENDER_LIMITS, { maxDpi: saved.maxDpi, maxPixels: saved.maxPixels, maxTilesPerPage: saved.maxTilesPerPage });
+  Object.assign(RENDER_LIMITS, { maxDpi: saved.maxDpi, maxPixels: saved.maxPixels, maxTilesPerPage: saved.maxTilesPerPage, timeoutMs: saved.timeoutMs });
   CONFIG.maxPagesPerDoc = saved.maxPagesPerDoc;
   CONFIG.maxTilesPerExtraction = saved.maxTilesPerExtraction;
   CONFIG.maxPagesTotal = saved.maxPagesTotal;
@@ -115,5 +116,65 @@ describe("tile budget", () => {
     expect(layout.count).toBeGreaterThan(1);
     await expect(renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count - 1 })).rejects.toThrow(/left in the budget/);
     expect(await renderTiles(pdf, 1, { dpi: 400, maxPx: 1000, maxTiles: layout.count })).toHaveLength(layout.count);
+  });
+});
+
+describe("the mupdf worker", () => {
+  it("stops a page that takes too long to draw, without blocking the event loop; that page then fails at once", async () => {
+    // a crafted content stream: hundreds of thousands of full-page strokes
+    const doc = new mupdf.PDFDocument();
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, {}, "0 0 m 612 792 l S\n".repeat(400_000)));
+    const slow = join(mkdtempSync(join(tmpdir(), "dct-limits-")), "slow.pdf");
+    writeFileSync(slow, doc.saveToBuffer("").asUint8Array());
+    RENDER_LIMITS.timeoutMs = 300;
+    let ticks = 0;
+    const tick = setInterval(() => ticks++, 10);
+    const t0 = Date.now();
+    await expect(renderPng(slow, 1, { dpi: 400 })).rejects.toThrow(RenderTimeoutError);
+    clearInterval(tick);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(ticks).toBeGreaterThan(10); // the main thread kept running while mupdf was busy
+    const again = Date.now();
+    await expect(renderPng(slow, 1, { dpi: 72 })).rejects.toThrow(/isn't tried again/);
+    expect(Date.now() - again).toBeLessThan(100);
+    // a fresh worker serves everything else
+    RENDER_LIMITS.timeoutMs = saved.timeoutMs;
+    expect((await renderPng(pdfWith(1), 1, { dpi: 72 })).subarray(1, 4).toString()).toBe("PNG");
+  });
+
+  it("keeps at most 8 PDFs open", async () => {
+    for (let i = 0; i < 10; i++) expect(await pageCount(pdfWith(1))).toBe(1);
+    expect(await openDocuments()).toBe(8);
+  });
+});
+
+describe("bank details (ADR-001 §9)", () => {
+  it("are painted over in the page image, on text pages", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const line = (y: number, t: string) => `BT /F1 10 Tf 40 ${792 - y} Td (${t}) Tj ET\n`;
+    const text = [
+      "Payee bank ABA routing 021000021, account 123456789.",
+      "Sponsor shall pay each invoice within forty-five (45) days of receipt of invoice.",
+      "This page continues the agreement between the parties and the site, as set out above in full detail.",
+      "A second ordinary line of words keeps this page well above the threshold for a real text layer.",
+    ];
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, text.map((t, i) => line(60 + 20 * i, t)).join("")));
+    const file = join(mkdtempSync(join(tmpdir(), "dct-limits-")), "bank.pdf");
+    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+    const [page] = await readTextLayer(file, "d1");
+    const rects = bankRects(page!);
+    expect(page!.words.filter((w) => rects.includes(w.rect)).map((w) => w.text)).toEqual(["021000021,", "123456789."]);
+    // the 45 in the payment sentence is no bank detail
+    const pixels = async (mask?: [number, number, number, number][]) => {
+      const pix = new mupdf.Image(await renderPng(file, 1, { dpi: 72, gray: true, mask })).toPixmap();
+      const [x0, y0, x1, y1] = rects[1]!.map(Math.round) as [number, number, number, number];
+      const px = pix.getPixels();
+      const out: number[] = [];
+      for (let y = y0 + 1; y < y1 - 1; y++) for (let x = x0 + 1; x < x1 - 1; x++) out.push(px[y * pix.getStride() + x]!);
+      return out;
+    };
+    expect((await pixels()).some((v) => v > 200)).toBe(true); // black text on white
+    expect((await pixels(rects)).every((v) => v < 10)).toBe(true); // all black
   });
 });

@@ -2,9 +2,10 @@ import { type DocumentKind, Rulebook } from "@dct/shared";
 import type { ZodType } from "zod";
 import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
-import { clientsFromEnv, type CostEntry, type Image, type LlmClient, priceOf } from "./llm";
+import { clientsFromEnv, type CostEntry, type Image, type LlmClient, type LlmRequest, priceOf } from "./llm";
 import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
-import { dpiToFit, pageCount, pageText, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
+import { dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
+import { bankRects, readTextLayer } from "./textlayer";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
@@ -33,8 +34,10 @@ export const CONFIG = {
   pageMaxPx: 2150,
   /** Terms pages: Claude's recommended 1568 px long edge (~1.6K tokens/page vs ~4.8K at 2150); contract text stays legible. */
   termsMaxPx: 1568,
-  /** Hard cost budget per extraction, all providers (user decision 2026-10-26: $1 per contract). */
-  maxUsd: Number(process.env.EXTRACTION_MAX_USD) || 1,
+  /** Runaway cap on real spend per extraction, all providers (ADR-001 §11; user decision 2026-10-28: $20 per contract). */
+  maxUsd: Number(process.env.EXTRACTION_MAX_USD) || 20,
+  /** Output tokens (thinking included) one call may use: page sorting is short, a dense grid is long. */
+  maxOutputTokens: { classify: 8_000, identify: 8_000, terms: 32_000, grid: 64_000 },
   /** Send budget grids to the cross-reader too. Off: grids are verified by arithmetic, and grid cross-reads were most of the cost. */
   crossGrids: process.env.CROSS_READ_GRIDS === "1",
   pageMaxDpi: 300,
@@ -89,9 +92,16 @@ function envClients(): Clients {
 
 const label = (documentId: string, page: number, extra = "") => `documentId ${documentId}, page ${page}${extra ? `, ${extra}` : ""}`;
 
-async function pageImage(doc: InputDoc, page: number, maxPx: number, rotate: Rotation = 0, capDpi = CONFIG.pageMaxDpi): Promise<Image> {
+/** Bank details on each text page (documentId#page → areas), painted over in every image a model gets (ADR-001 §9). */
+type Masks = Map<string, PageRect[]>;
+async function bankMasks(documents: InputDoc[]): Promise<Masks> {
+  const pages = (await Promise.all(documents.map((d) => readTextLayer(d.path, d.id)))).flat();
+  return new Map(pages.map((p) => [`${p.documentId}#${p.page}`, bankRects(p)]));
+}
+
+async function pageImage(doc: InputDoc, page: number, maxPx: number, masks: Masks, rotate: Rotation = 0, capDpi = CONFIG.pageMaxDpi): Promise<Image> {
   const dpi = await dpiToFit(doc.path, page, maxPx, capDpi);
-  return { label: label(doc.id, page), png: await renderPng(doc.path, page, { dpi, rotate, gray: true }) };
+  return { label: label(doc.id, page), png: await renderPng(doc.path, page, { dpi, rotate, gray: true, mask: masks.get(`${doc.id}#${page}`) }) };
 }
 
 async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Promise<R[]> {
@@ -119,9 +129,10 @@ export async function identifyDocuments(docs: InputDoc[]) {
 export async function identifyWith(docs: InputDoc[], llm: LlmClient) {
   const counts = (await countPages(docs)).map((n) => Math.min(3, n));
   budget(CONFIG.maxImagesPerExtraction, "page images").take(counts.reduce((a, b) => a + b, 0));
+  const masks = await bankMasks(docs);
   const images: Image[] = [];
-  for (const [i, d] of docs.entries()) for (let p = 1; p <= counts[i]!; p++) images.push(await pageImage(d, p, CONFIG.identifyMaxPx));
-  const res = await llm.call({ name: "identify", system: SYSTEM, prompt: identifyPrompt(docs), images, schema: AiIdentify, effort: "low" });
+  for (const [i, d] of docs.entries()) for (let p = 1; p <= counts[i]!; p++) images.push(await pageImage(d, p, CONFIG.identifyMaxPx, masks));
+  const res = await llm.call({ name: "identify", system: SYSTEM, prompt: identifyPrompt(docs), images, schema: AiIdentify, effort: "low", maxTokens: CONFIG.maxOutputTokens.identify });
   const documentKinds: Record<string, DocumentKind> = {};
   for (const d of docs) documentKinds[d.id] = d.kind ?? res.documents.find((x) => x.id === d.id)?.kind ?? "other";
   return { documentKinds, studyGuess: res.studyGuess };
@@ -138,17 +149,31 @@ type ClassifiedPage = PageInfo & { rotation: Rotation; gridGroup: string | null 
 
 export async function extractWith(
   { documents, onProgress }: { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void },
-  clients: Clients,
+  given: Clients,
 ): Promise<ExtractionOutput> {
   const progress = (pct: number, step: string) => onProgress?.(Math.round(pct), step);
   const warnings: string[] = [];
   if (!documents.length) throw new Error("extractStudy: no documents");
+
+  // Runaway cap on what was really spent: checked before every model call. ponytail: calls already in flight (a few, run in
+  // parallel) can each still finish, so the overshoot is at most their cost. Upgrade: reserve each call's worst case first.
+  const spent = () => [...new Set([given.primary, given.fast, given.cross])].reduce((n, c) => n + (c ? c.cost().usd : 0), 0);
+  const capped = (c: LlmClient): LlmClient => ({
+    ...c,
+    async call<T>(req: LlmRequest<T>): Promise<T> {
+      if (spent() >= CONFIG.maxUsd)
+        throw new ExtractionLimitError(`This read has spent $${spent().toFixed(2)}, the $${CONFIG.maxUsd.toFixed(2)} limit per contract, so it was stopped before the next AI call`);
+      return c.call(req);
+    },
+  });
+  const clients: Clients = { primary: capped(given.primary), cross: given.cross && capped(given.cross), fast: given.fast && capped(given.fast) };
 
   // 0. Caps first: nothing is rendered or sent until the page counts are within limits.
   const counts = await countPages(documents);
   const images = budget(CONFIG.maxImagesPerExtraction, "page images");
   const tiles = budget(CONFIG.maxTilesPerExtraction, "grid image tiles");
   images.take(counts.reduce((a, b) => a + b, 0));
+  const masks = await bankMasks(documents);
 
   // 1. Classify every page (low-res, upright or not).
   progress(2, "Rendering pages");
@@ -156,8 +181,8 @@ export async function extractWith(
     await pool(documents, CONFIG.concurrency, async (doc) => {
       const n = counts[documents.indexOf(doc)]!;
       const images = [];
-      for (let p = 1; p <= n; p++) images.push(await pageImage(doc, p, CONFIG.classifyMaxPx));
-      const res = await (clients.fast ?? clients.primary).call({ name: "classify", system: SYSTEM, prompt: classifyPrompt(doc.id, doc.filename, n), images, schema: AiPages, effort: "low" });
+      for (let p = 1; p <= n; p++) images.push(await pageImage(doc, p, CONFIG.classifyMaxPx, masks));
+      const res = await (clients.fast ?? clients.primary).call({ name: "classify", system: SYSTEM, prompt: classifyPrompt(doc.id, doc.filename, n), images, schema: AiPages, effort: "low", maxTokens: CONFIG.maxOutputTokens.classify });
       return Array.from({ length: n }, (_, i): ClassifiedPage => {
         const r = res.pages.find((x) => x.page === i + 1);
         // A page the classifier skipped is read as terms rather than silently dropped.
@@ -175,7 +200,7 @@ export async function extractWith(
   let termPages = readable.filter((p) => p.kind === "terms" || p.kind === "invoiceables" || p.kind === "budget_grid");
   if (!termPages.length) termPages = readable;
   images.take(termPages.length);
-  const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.termsMaxPx, p.rotation)));
+  const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.termsMaxPx, masks, p.rotation)));
 
   const groups: ClassifiedPage[][] = [];
   for (const p of readable.filter((x) => x.kind === "budget_grid")) {
@@ -190,24 +215,20 @@ export async function extractWith(
     const imgs: Image[] = [];
     for (const p of g) {
       const doc = docOf.get(p.documentId)!;
-      const opts = { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true };
+      const opts = { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true, mask: masks.get(`${doc.id}#${p.page}`) };
       const layout = await tileLayout(doc.path, p.page, opts);
       tiles.take(layout.count);
       images.take(layout.count + (layout.count > 1 ? 1 : 0));
       const pageTiles = await renderTiles(doc.path, p.page, { ...opts, maxTiles: layout.count });
-      if (pageTiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, p.rotation)), label: label(doc.id, p.page, "overview") });
+      if (pageTiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, masks, p.rotation)), label: label(doc.id, p.page, "overview") });
       for (const t of pageTiles) imgs.push({ label: label(doc.id, p.page, pageTiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png });
     }
     gridImages.push(imgs);
   }
   progress(25, `Reading ${termPages.length} term pages and ${groups.length} budget grid(s)`);
 
-  // Budget: estimate the required reads up front and refuse rather than overspend; optional steps
-  // (grid re-reads) only run while the running total stays under the cap.
-  const spent = () => [...new Set([clients.primary, clients.fast, clients.cross])].reduce((n, c) => n + (c ? c.cost().usd : 0), 0);
+  // Optional steps (grid re-reads) only run while the running total plus their estimate stays under the cap.
   const est = estimateUsd(clients, termImages, gridImages);
-  if (est.required > CONFIG.maxUsd)
-    throw new ExtractionLimitError(`Estimated cost $${est.required.toFixed(2)} exceeds the $${CONFIG.maxUsd.toFixed(2)} budget per extraction; split the upload or raise EXTRACTION_MAX_USD`);
   const crossGrids = CONFIG.crossGrids;
 
   // 3. Independent reads.
@@ -219,7 +240,7 @@ export async function extractWith(
     const who = isPrimary ? "primary" : "cross-check";
     // The first terms call writes the image cache; the other two then read it at ~10% of the price.
     const termsCall = <T>(name: string, part: "study" | "payment" | "items", schema: ZodType<T>) =>
-      llm.call({ name, system: SYSTEM, prompt: termsPrompt(documents, part), images: termImages, schema, effort: isPrimary ? "medium" : "low", cacheImages: true });
+      llm.call({ name, system: SYSTEM, prompt: termsPrompt(documents, part), images: termImages, schema, effort: isPrimary ? "medium" : "low", cacheImages: true, maxTokens: CONFIG.maxOutputTokens.terms });
     const termsP = termsCall("terms", "study", AiTermsStudy)
       .then((study) => Promise.all([termsCall("terms-payment", "payment", AiTermsPayment), termsCall("terms-items", "items", AiTermsItems)]).then(([payment, items]) => ({ ...study, ...payment, ...items })))
       .then((t): AiTerms => (tick(`Read contract terms (${who})`), t));
@@ -233,6 +254,7 @@ export async function extractWith(
           images: gridImages[i]!,
           schema: AiGrids,
           effort,
+          maxTokens: CONFIG.maxOutputTokens.grid,
         });
       let res = await readGrid("medium");
       // Numbers that don't add up are usually a misread digit: re-read that grid once at max effort
@@ -312,18 +334,30 @@ export function assemble(terms: AiTerms, grids: AiGrid[], docs: InputDoc[]): { r
   return { rulebook: Rulebook.parse(raw), notes: cleanNotes };
 }
 
-const BANKISH = /\b(routing|aba|swift|iban|account\s*(no|number|#)|acct|bank)\b/i;
+const BANKISH = /\b(routing|aba|swift|iban|bic|account\s*(no|number|#)|acct|bank)\b/i;
+/** An IBAN, printed whole or in groups of four. */
+const IBAN = /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?\b/g;
+/** 8+ digits, whole or grouped by single spaces or hyphens (account, routing), but not an ISO date. */
+const DIGIT_RUN = /\b(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){7,}\b/g;
+/** A SWIFT/BIC code: 4 bank letters, 2 country letters, 2 location characters, optional 3-character branch. */
+const BIC = /\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/;
+
+/** Long digit runs and IBANs go; a string about a bank that still carries an account or SWIFT code goes whole. */
+export function scrub(s: string): string {
+  const t = s.replace(IBAN, "[redacted]").replace(DIGIT_RUN, "[redacted]");
+  return BANKISH.test(t) && (t.includes("[redacted]") || BIC.test(t)) ? "[redacted]" : t;
+}
 
 /**
  * Normalise provenance (method/crossCheck, unknown document ids) and scrub anything bank-like
  * the model may have copied despite instructions: long digit runs, and quotes mentioning bank details.
  */
 function sanitize(v: unknown, ids: Set<string>, onlyId: string | null): void {
-  if (Array.isArray(v)) return v.forEach((x) => sanitize(x, ids, onlyId));
+  if (Array.isArray(v)) return v.forEach((x, i) => (typeof x === "string" ? (v[i] = scrub(x)) : sanitize(x, ids, onlyId)));
   if (!v || typeof v !== "object") return;
   const o = v as Record<string, unknown>;
   for (const [k, x] of Object.entries(o)) {
-    if (typeof x === "string" && k !== "id" && k !== "documentId") o[k] = x.replace(/\b\d{8,17}\b/g, "[redacted]");
+    if (typeof x === "string" && k !== "id" && k !== "documentId") o[k] = scrub(x);
     else sanitize(x, ids, onlyId);
   }
   if ("method" in o && "crossCheck" in o && "confidence" in o) {

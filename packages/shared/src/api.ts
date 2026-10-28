@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
-import { ProofreadMark, ReviewItem, ValueEvidence } from "./evidence";
+import { ProofreadMark, ReviewItem, settled, ValueEvidence } from "./evidence";
 import { DocumentKind, Rulebook } from "./rulebook";
 
-/** HTTP contract between apps/api and apps/web. All routes are under /api. */
+/** HTTP contract between apps/api and apps/web. All routes are under /api/v1. */
 
 export const StudyStatus = z.enum(["setting_up", "extracting", "extraction_failed", "needs_review", "live", "amendment_in_review"]);
 export type StudyStatus = z.infer<typeof StudyStatus>;
@@ -56,9 +56,23 @@ export const StudyDetailDto = StudySummaryDto.extend({
 });
 export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
 
+/**
+ * Blind entry: on a draft, the value at each open review question's path is withheld from every response until it is
+ * answered (the API's versionDto, search, diff and audit). The web masks the same paths.
+ */
+export const withheldPaths = (v: { status: string; review: ReviewItem[] }): string[] =>
+  v.status === "draft" ? v.review.flatMap((i) => (i.path && !settled(i) ? [i.path] : [])) : [];
+
+const pointer = (path: PropertyKey[]) => path.map((k) => `/${String(k).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
+
 export const RulebookVersionDto = VersionSummaryDto.extend({
   studyId: z.string(),
-  rulebook: Rulebook.nullable(),
+  /**
+   * A valid Rulebook, except that on a draft each withheld value (withheldPaths) is null, whatever its type, until its
+   * question is answered; its evidence's `printed` is null too. Checked below: nothing else may be null or invalid.
+   */
+  rulebook: z.custom<Rulebook>((v) => typeof v === "object" && v !== null).nullable(),
+  /** What the contract checks found; empty on a draft while any value is withheld (their messages carry the reading). */
   anomalies: z.array(ContractAnomaly),
   /** Names of people who corrected values in this version (for the optional maker-checker rule). */
   editors: z.array(z.string()),
@@ -71,6 +85,13 @@ export const RulebookVersionDto = VersionSummaryDto.extend({
   byHand: z.boolean(),
   /** Values someone proofread and found right (one mark per value, the latest). */
   proofread: z.array(ProofreadMark),
+}).superRefine((v, ctx) => {
+  if (!v.rulebook) return;
+  const r = Rulebook.safeParse(v.rulebook);
+  if (r.success) return;
+  const withheld = new Set(withheldPaths(v));
+  const valueAt = (path: PropertyKey[]) => path.reduce<unknown>((n, k) => (n !== null && typeof n === "object" ? (n as Record<PropertyKey, unknown>)[k] : undefined), v.rulebook);
+  for (const i of r.error.issues) if (!(withheld.has(pointer(i.path)) && valueAt(i.path) === null)) ctx.addIssue({ code: "custom", message: i.message, path: ["rulebook", ...i.path] });
 });
 export type RulebookVersionDto = z.infer<typeof RulebookVersionDto>;
 
@@ -105,9 +126,9 @@ export type AuditEntryDto = z.infer<typeof AuditEntryDto>;
 
 // ---- Request bodies ----
 
-export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1), by: z.string().min(1).optional() });
+export const CreateStudyBody = z.object({ documentIds: z.array(z.string()).min(1).max(50), by: z.string().min(1).optional() });
 /** POST /studies/:id/extract — documentIds adds documents (amendment journey). */
-export const ExtractBody = z.object({ documentIds: z.array(z.string()).optional(), by: z.string().min(1).optional() });
+export const ExtractBody = z.object({ documentIds: z.array(z.string()).max(50).optional(), by: z.string().min(1).optional() });
 export const ConfirmStudyBody = z.object({
   sponsor: z.string(),
   protocol: z.string(),
