@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { DocumentDto } from "@dct/shared";
+import { PDFDocument, PDFName, PDFNumber } from "pdf-lib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
+import { getExtraction } from "../src/extraction/port.js";
 import { type App, type Built, makePdf, makeTextPdf, resetDb, testApp, upload } from "./helpers.js";
 
 let app: App;
@@ -40,6 +42,18 @@ describe("POST /api/v1/uploads", () => {
     for (const d of docs) expect(d).toMatchObject({ id: first!.id, duplicateOf: first!.id, filename: "a.pdf" });
     const sha = first!.sha256;
     expect(readdirSync(config.uploadDir).filter((f) => f.startsWith(sha))).toEqual([`${sha}.pdf`]);
+  });
+
+  it("counts pages as the read does (mupdf, in its worker), and refuses in words a file it can't open", async () => {
+    // a page tree that says it holds 1 page, with 3 under it: pdf-lib counted 3, while the read and the viewer see 1
+    const odd = await PDFDocument.create();
+    for (let i = 0; i < 3; i++) odd.addPage([200, 200]);
+    odd.catalog.Pages().set(PDFName.of("Count"), PDFNumber.of(1));
+    const [doc] = (await upload(app, [{ name: "claims.pdf", data: Buffer.from(await odd.save()) }])).json<DocumentDto[]>();
+    expect(doc!.pageCount).toBe(await (await getExtraction()).pageCount(path.join(config.uploadDir, `${doc!.sha256}.pdf`)));
+    expect(doc!.pageCount).toBe(1);
+    const bad = await upload(app, [{ name: "broken.pdf", data: Buffer.from("%PDF-1.7\nnot really a PDF\n") }]);
+    expect([bad.statusCode, bad.json().message]).toEqual([400, "broken.pdf could not be read as a PDF"]);
   });
 
   it("rejects non-PDF files", async () => {

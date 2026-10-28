@@ -1,6 +1,6 @@
 import { renderPng } from "./render";
 
-export { identifyDocuments, extractStudy, ExtractionLimitError, type InputDoc, type ExtractionOutput } from "./extract";
+export { identifyDocuments, extractStudy, ExtractionLimitError, type InputDoc, type ExtractionOutput, type ReadWarning } from "./extract";
 export { runContractChecks, type CheckOptions, type ExtractionNote, type PageInfo } from "./checks";
 export { pageCount, RENDER_LIMITS, RenderTimeoutError } from "./render";
 export { readTextLayer, type TextPage, type Span } from "./textlayer";

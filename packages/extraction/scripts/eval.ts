@@ -52,7 +52,7 @@ if (!scoreOnly) {
       });
       writeFileSync(join(outDir, `${g.name}.json`), JSON.stringify(out, null, 2));
       const usd = out.cost.reduce((a, c) => a + c.usd, 0);
-      console.log(`\n  done in ${Math.round((Date.now() - t0) / 1000)}s, $${usd.toFixed(2)}${out.warnings.length ? `; warnings: ${out.warnings.join("; ")}` : ""}`);
+      console.log(`\n  done in ${Math.round((Date.now() - t0) / 1000)}s, $${usd.toFixed(2)}${out.warnings.length ? `; warnings: ${out.warnings.map((w) => w.text).join("; ")}` : ""}`);
     } catch (e) {
       console.log(`\n  FAILED: ${(e as Error).message}`);
     }

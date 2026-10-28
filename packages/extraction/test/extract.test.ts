@@ -125,6 +125,7 @@ describe("extractWith (mocked AI)", () => {
     expect(solo.crossRead).toBeNull();
     expect(solo.cost).toHaveLength(1);
     expect(solo.rulebook.payment.netDays.prov.crossCheck).toBe("not_checked");
+    expect(solo.warnings).toEqual([{ kind: "cross_read_off", text: "The cross-read is off (CROSS_READ=off, or no key)." }]);
 
     const broken = mockClient("openai", rb);
     broken.call = async () => {
@@ -132,7 +133,37 @@ describe("extractWith (mocked AI)", () => {
     };
     const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: broken });
     expect(out.crossRead).toBeNull();
-    expect(out.warnings.join()).toMatch(/The cross-read failed: boom/);
+    expect(out.warnings).toEqual([{ kind: "cross_read_failed", text: "The cross-read failed: boom" }]);
+  });
+
+  it("says by kind what made the reading weaker, in its own words: a re-read that failed or was skipped", async () => {
+    const rb = makeRulebook();
+    rb.budgetGrids[0]!.visits[0]!.totalCents = 89000; // its parts add up to 840.00: a misread digit, so the grid is re-read
+    const failing = mockClient("anthropic", rb);
+    const call = failing.call.bind(failing);
+    failing.call = (req) => (req.name === "grid-reread" ? Promise.reject(new Error("the answer was cut off")) : call(req));
+    const off = { kind: "cross_read_off", text: "The cross-read is off (CROSS_READ=off, or no key)." };
+    expect((await extractWith({ documents: docs }, { primary: failing, cross: null })).warnings).toEqual([
+      { kind: "grid_reread_failed", grid: 1, text: "The re-read of budget grid 1 failed, so the first read was kept: the answer was cut off" },
+      off,
+    ]);
+    CONFIG.maxUsd = 0.2; // under what the re-read is estimated to cost
+    expect((await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: null })).warnings).toEqual([
+      { kind: "grid_reread_skipped", grid: 1, text: "Budget grid 1: 1 total(s) don't add up; the re-read was skipped to stay within the $0.20 limit." },
+      off,
+    ]);
+  });
+
+  it("stops before the next AI call once its signal aborts, and gives every call the signal", async () => {
+    const stop = new AbortController();
+    const seen: Seen[] = [];
+    const signals: (AbortSignal | undefined)[] = [];
+    const c = mockClient("anthropic", makeRulebook(), seen);
+    const call = c.call.bind(c);
+    c.call = (req) => (signals.push(req.signal), req.name === "classify" && stop.abort(), call(req));
+    await expect(extractWith({ documents: docs, signal: stop.signal }, { primary: c, cross: mockClient("anthropic", makeRulebook()) })).rejects.toThrow(/aborted/);
+    expect(seen.map((x) => x.name)).toEqual(["classify"]);
+    expect(signals).toEqual([stop.signal]);
   });
 
   it("scrubs bank-like content and fixes unknown document ids", async () => {
@@ -177,6 +208,13 @@ describe("extractWith (mocked AI)", () => {
       for (let y = y0 + 1; y < y1 - 1; y++) for (let x = x0 + 1; x < x1 - 1; x++) expect(px[y * pix.getStride() + x]).toBeLessThan(10);
     }
     expect(sent.some((x) => x.name === "terms")).toBe(true);
+  });
+
+  it("identifyWith scrubs bank details from the guess it gives back (stored on the study and in the audit log)", async () => {
+    const c = mockClient("anthropic", makeRulebook());
+    const guess = { sponsor: "Acme Bio, account 123456789012", protocol: "ACM-100", siteName: "Pay to IBAN GB82 WEST 1234 5698 7654 32", investigator: null };
+    c.call = async (req) => req.schema.parse({ documents: [{ id: "d1", kind: "work_order", title: "WO", date: null }], studyGuess: guess });
+    expect((await identifyWith(docs, c)).studyGuess).toEqual({ sponsor: "Acme Bio, account [redacted]", protocol: "ACM-100", siteName: "[redacted]", investigator: null });
   });
 
   it("identifyWith keeps known kinds and fills the rest", async () => {

@@ -52,6 +52,6 @@ export async function fakeExtract({ documents, onProgress }: { documents: InputD
       { provider: "openai", model: "fake", inputTokens: 0, outputTokens: 0, usd: 0 },
     ],
     notes: remap(fixture.notes, documents),
-    warnings: ["EXTRACTION_FAKE=1: synthetic fixture, not read from the uploaded files"],
+    warnings: [{ kind: "fake", text: "EXTRACTION_FAKE=1: synthetic fixture, not read from the uploaded files" }],
   };
 }

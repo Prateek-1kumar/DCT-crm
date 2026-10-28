@@ -18,6 +18,8 @@ export type LlmRequest<T> = {
   cacheImages?: boolean;
   /** Most output tokens (thinking included) this call may use; past it the call fails ("hit max_tokens"). */
   maxTokens?: number;
+  /** Aborts the request in flight (a read pg-boss gave up on: extract.ts `capped`). */
+  signal?: AbortSignal;
 };
 
 export type CostEntry = { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number };
@@ -59,7 +61,10 @@ async function withParseRetry<T>(name: string, schema: z.ZodType<T>, attempt: ()
       if (r.success) return r.data;
       lastErr = z.prettifyError(r.error).slice(0, 2000);
     } catch (e) {
-      lastErr = `not JSON: ${(e as Error).message}`;
+      // V8 quotes the reply around the fault ("Unexpected token 'x', "…" is not valid JSON"), and this message is stored
+      // (a job's detail, a reading's warnings): only the error's class and where the reply broke, when it says.
+      const at = /at position \d+/.exec((e as Error).message)?.[0];
+      lastErr = `not JSON (${(e as Error).name}${at ? ` ${at}` : ""})`;
     }
   }
   throw new LlmError(`The AI's answer for "${name}" didn't have the expected shape, twice: ${lastErr}`);
@@ -99,7 +104,7 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
             output_config: { effort: req.effort ?? "high", format },
             system: req.system,
             messages: [{ role: "user", content }],
-          })
+          }, { signal: req.signal })
           .finalMessage();
         const u = msg.usage;
         const cacheW = u.cache_creation_input_tokens ?? 0;
@@ -149,7 +154,7 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
           // strict:false — the shared schemas use optional fields, which strict mode forbids; zod validates instead.
           text: { format: { type: "json_schema", name: req.name.replace(/[^a-zA-Z0-9_-]/g, "_"), schema, strict: false } },
           max_output_tokens: req.maxTokens ?? 32_000,
-        });
+        }, { signal: req.signal });
         usage.input += res.usage?.input_tokens ?? 0;
         usage.output += res.usage?.output_tokens ?? 0;
         if (res.status === "incomplete") throw new LlmError(`The OpenAI answer for "${req.name}" is incomplete (${res.incomplete_details?.reason ?? "no reason given"}).`);

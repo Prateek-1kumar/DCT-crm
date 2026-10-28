@@ -29,9 +29,6 @@ importers:
       fastify:
         specifier: ^5.12.7
         version: 5.12.7
-      pdf-lib:
-        specifier: ^1.17.1
-        version: 1.17.1
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -51,6 +48,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.11
         version: 0.31.11
+      pdf-lib:
+        specifier: ^1.17.1
+        version: 1.17.1
       tsup:
         specifier: ^9.0.0
         version: 9.0.0(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)

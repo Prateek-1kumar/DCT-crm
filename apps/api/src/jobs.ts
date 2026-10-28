@@ -7,7 +7,7 @@ import { config } from "./config.js";
 import type { Db, Tx } from "./db/index.js";
 import { documents, jobs, rulebookVersions, studies, studyDocuments } from "./db/schema.js";
 import { appliesFromOf, audit, CARRIED, carryCorrections, carryGrid, correctionsOf, lockStudy, refreshStudyStatus } from "./domain.js";
-import { getExtraction, type InputDoc } from "./extraction/port.js";
+import { type ExtractionOutput, getExtraction, type InputDoc } from "./extraction/port.js";
 import { deleteExpiredKeys } from "./lib/idempotency.js";
 import { reviewDraft } from "./review.js";
 
@@ -37,6 +37,8 @@ export async function startBoss(ctx: JobCtx & { work: boolean; schemaBehind?: bo
   const { log } = ctx;
   const boss = new PgBoss({ connectionString: config.databaseUrl, useListenNotify: true, max: config.jobsDbMax, application_name: "dct-jobs" });
   boss.on("error", (err) => log.error({ err: err.message }, "pg-boss error"));
+  // Its words only: a warning's data can hold job data (a slow query's bound values, an overrun's job ids).
+  boss.on("warning", (w) => log.warn({ warning: w.message }, "pg-boss warning"));
   await boss.start();
   await boss.createQueue(STRANDED, { retryLimit: 5, retryDelay: 30 });
   for (const [name, opts] of Object.entries(QUEUES)) {
@@ -52,10 +54,11 @@ export async function startBoss(ctx: JobCtx & { work: boolean; schemaBehind?: bo
     // jobs a crash left behind are failed before any job runs
     await maintain(ctx, boss);
     // A handler that throws gets a plain error (failure() logs the cause), never a database error's SQL and values: pg-boss
-    // keeps what it threw, and it's copied into the stranded job.
-    const run = <T>(fn: (data: T) => Promise<unknown>) => async ([job]: { data: T }[]) => {
+    // keeps what it threw, and it's copied into the stranded job. `signal` aborts once pg-boss gives up on the job (past
+    // its time, its claim lost, a shutdown).
+    const run = <T>(fn: (data: T, signal: AbortSignal) => Promise<unknown>) => async ([job]: { data: T; signal: AbortSignal }[]) => {
       try {
-        await fn(job!.data);
+        await fn(job!.data, job!.signal);
       } catch (err) {
         throw new Error(failure(err, log).detail ?? "job failed");
       }
@@ -64,7 +67,7 @@ export async function startBoss(ctx: JobCtx & { work: boolean; schemaBehind?: bo
     // (pg-boss's default is 30 s) a backlog, as after a restart, would start a job every 30 seconds.
     const fast = { pollingIntervalSeconds: 0.5, notifyPollingIntervalSeconds: 1 };
     await boss.work<IdentifyData>("identify", fast, run((d) => runIdentify(ctx, d)));
-    await boss.work<ExtractData>("extract", fast, run((d) => runExtract(ctx, d)));
+    await boss.work<ExtractData>("extract", fast, run((d, signal) => runExtract(ctx, d, signal)));
     await boss.work(STRANDED, { ...fast, includeMetadata: true }, async ([job]) => recover(ctx, (job!.data as IdentifyData).jobId, job!.sourceOutput));
     await boss.work("maintenance", async () => maintain(ctx, boss));
     await boss.schedule("maintenance", "*/10 * * * *");
@@ -83,25 +86,31 @@ export async function queueJob(tx: Tx, boss: PgBoss, kind: Kind, studyId: string
   return id;
 }
 
+type ReadWarning = NonNullable<ExtractionOutput["warnings"]>[number];
+
 /**
  * What made a reading weaker than usual, in plain words for the reviewer (the reading's own words go in the audit log for
  * the team). A failed or skipped re-read leaves a budget grid read once; a failed second reading leaves the first unchecked
- * by it; going over the cost limit is said too. Nothing is said for what's simply off by choice.
+ * by it; going over the cost limit is said too. Nothing is said for what's simply off by choice. By kind, never by the
+ * reading's wording; a kind added in @dct/extraction fails the typecheck here until it's worded.
  */
-export function plainWarnings(warnings: string[] = []): string[] {
-  return [
-    ...new Set(
-      warnings.flatMap((w) => {
-        const grid = /budget grid (\d+)/i.exec(w)?.[1];
-        if (grid && /re-read .*failed|failed.*re-read|re-read was skipped/i.test(w))
-          return [`Budget grid ${grid} was read only once: its second, closer reading ${/skipped/i.test(w) ? "was skipped to stay within the cost limit" : "failed"}. Check its numbers with extra care.`];
-        if (/cross-read failed/i.test(w)) return ["The second, independent reading failed, so nothing compared the first reading against it."];
-        if (/over the .* limit/i.test(w)) return ["This reading cost more than the usual limit. Tell the team."];
-        return [];
-      }),
-    ),
-  ];
+function plainWarning(w: ReadWarning): string | null {
+  switch (w.kind) {
+    case "grid_reread_skipped":
+      return `Budget grid ${w.grid} was read only once: its second, closer reading was skipped to stay within the cost limit. Check its numbers with extra care.`;
+    case "grid_reread_failed":
+      return `Budget grid ${w.grid} was read only once: its second, closer reading failed. Check its numbers with extra care.`;
+    case "cross_read_failed":
+      return "The second, independent reading failed, so nothing compared the first reading against it.";
+    case "over_limit":
+      return "This reading cost more than the usual limit. Tell the team.";
+    case "cross_read_off":
+    case "fake":
+      return null;
+  }
 }
+
+export const plainWarnings = (warnings: ReadWarning[] = []): string[] => [...new Set(warnings.flatMap((w) => plainWarning(w) ?? []))];
 
 /** What a failed job says on screen: its own message, never a database error's (the SQL and every value bound to it). */
 const PLAIN = {
@@ -235,7 +244,11 @@ export async function runIdentify({ db, log }: JobCtx, { jobId, studyId }: Ident
   }
 }
 
-export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version }: ExtractData) {
+/**
+ * `signal`: the job's (pg-boss). Once pg-boss gives up on the job it has failed it into the stranded queue, where `recover`
+ * words why: the read then starts no further AI call, never writes its result, and leaves the failing to `recover`.
+ */
+export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version }: ExtractData, signal?: AbortSignal) {
   // Claimed once: a read never runs twice, since each run pays for AI calls. A job that isn't queued any more is already
   // running (a duplicate delivery), finished, or was stopped.
   const claimed = await db
@@ -254,6 +267,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
     const docs = await studyInputDocs(db, studyId);
     const out = await port.extractStudy({
       documents: docs,
+      signal,
       onProgress: (pct, step) => {
         progress = progress
           .then(() => db.update(jobs).set({ progress: Math.max(1, Math.min(99, Math.round(pct))), step, updatedAt: new Date() }).where(and(eq(jobs.id, jobId), eq(jobs.state, "running"))))
@@ -292,6 +306,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
     await db.transaction(async (tx) => {
       await lockStudy(tx, studyId);
       if (!(await lockLive(tx, jobId))) return; // stopped meanwhile (recover): the read is dropped, the version stays failed
+      if (signal?.aborted) return; // pg-boss gave up on it, so recover fails it: the read is dropped
       const filled = await tx
         .update(rulebookVersions)
         .set({
@@ -319,13 +334,14 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
       if (!filled.length) throw new Error(`version ${version} is no longer being read`);
       await refreshStudyStatus(tx, studyId);
       if (carriedDetail) await audit(tx, "system", studyId, CARRIED, carriedDetail);
-      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.warnings?.length ? { warnings: out.warnings } : {}) });
+      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.warnings?.length ? { warnings: out.warnings.map((w) => w.text) } : {}) });
       await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null, errorDetail: null });
     });
   } catch (err) {
     await progress;
     const { error, detail } = failure(err, log);
-    await failJob(db, job, error, detail);
+    // recover words a read pg-boss gave up on (it knows why); failing it here first would say "something went wrong"
+    if (!signal?.aborted) await failJob(db, job, error, detail);
   }
 }
 
@@ -340,7 +356,9 @@ export async function recover({ db }: JobCtx, jobId: string, output?: object | n
   const o = output as { message?: unknown; value?: { message?: unknown } } | null | undefined;
   const said = String(o?.value?.message ?? o?.message ?? "the job stopped").slice(0, 300);
   const words = STOPPED[job.kind as Kind] ?? STOPPED.extract;
-  await failJob(db, job, said === "job timed out" ? words.timedOut : words.stopped, `pg-boss: ${said}`);
+  // out of time: found by pg-boss's supervisor ("job timed out"), or by the worker running it ("handler execution exceeded 7200s")
+  const late = said === "job timed out" || said.startsWith("handler execution exceeded");
+  await failJob(db, job, late ? words.timedOut : words.stopped, `pg-boss: ${said}`);
 }
 
 /**

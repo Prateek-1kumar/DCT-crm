@@ -19,8 +19,23 @@ export type ExtractionOutput = {
   /** Extra (not in PHASE-1 interface): ambiguity / retroactive notes the schema can't hold yet. Pass to runContractChecks. */
   notes: ExtractionNote[];
   /** Extra: non-fatal problems, e.g. cross-read failed. */
-  warnings: string[];
+  warnings: ReadWarning[];
 };
+
+/**
+ * What made a reading weaker than usual. The API words each kind for the reviewer (apps/api jobs.ts `plainWarnings`), so
+ * rewording `text` never loses one; `text` is the reading's own words, for the team (the audit log).
+ */
+export type ReadWarning = { text: string } & (
+  | { kind: "grid_reread_skipped"; grid: number } // a grid's totals didn't add up, and re-reading it would pass the cost limit
+  | { kind: "grid_reread_failed"; grid: number } // its first read was kept
+  | { kind: "cross_read_failed" }
+  | { kind: "cross_read_off" } // off by choice: CROSS_READ=off, or no key
+  | { kind: "over_limit" } // the read cost more than CONFIG.maxUsd
+  | { kind: "fake" } // EXTRACTION_FAKE=1
+);
+
+type ReadInput = { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void; signal?: AbortSignal };
 
 /** primary reads (Sonnet), fast sorts pages and identifies documents (Haiku; falls back to primary), cross re-reads (Haiku or OpenAI). */
 export type Clients = { primary: LlmClient; cross: LlmClient | null; fast?: LlmClient | null };
@@ -133,6 +148,7 @@ export async function identifyWith(docs: InputDoc[], llm: LlmClient) {
   const images: Image[] = [];
   for (const [i, d] of docs.entries()) for (let p = 1; p <= counts[i]!; p++) images.push(await pageImage(d, p, CONFIG.identifyMaxPx, masks));
   const res = await llm.call({ name: "identify", system: SYSTEM, prompt: identifyPrompt(docs), images, schema: AiIdentify, effort: "low", maxTokens: CONFIG.maxOutputTokens.identify });
+  sanitize(res, new Set(docs.map((d) => d.id)), null); // its guess is stored on the study and in the audit log
   const documentKinds: Record<string, DocumentKind> = {};
   for (const d of docs) documentKinds[d.id] = d.kind ?? res.documents.find((x) => x.id === d.id)?.kind ?? "other";
   return { documentKinds, studyGuess: res.studyGuess };
@@ -140,30 +156,31 @@ export async function identifyWith(docs: InputDoc[], llm: LlmClient) {
 
 // ---------------------------------------------------------------- extract
 
-export async function extractStudy(input: { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void }): Promise<ExtractionOutput> {
+/** `signal`: once it aborts, no further model call starts, and the one in flight is cancelled. */
+export async function extractStudy(input: ReadInput): Promise<ExtractionOutput> {
   if (fake()) return fakeExtract(input);
   return extractWith(input, envClients());
 }
 
 type ClassifiedPage = PageInfo & { rotation: Rotation; gridGroup: string | null };
 
-export async function extractWith(
-  { documents, onProgress }: { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void },
-  given: Clients,
-): Promise<ExtractionOutput> {
+export async function extractWith({ documents, onProgress, signal }: ReadInput, given: Clients): Promise<ExtractionOutput> {
   const progress = (pct: number, step: string) => onProgress?.(Math.round(pct), step);
-  const warnings: string[] = [];
+  const warnings: ReadWarning[] = [];
   if (!documents.length) throw new Error("There are no documents to read.");
 
   // Runaway cap on what was really spent: checked before every model call. ponytail: calls already in flight (a few, run in
   // parallel) can each still finish, so the overshoot is at most their cost. Upgrade: reserve each call's worst case first.
   const spent = () => [...new Set([given.primary, given.fast, given.cross])].reduce((n, c) => n + (c ? c.cost().usd : 0), 0);
+  // A read stopped from outside (pg-boss gave up on its job) starts no further model call, and the one in flight is
+  // cancelled through the same signal.
   const capped = (c: LlmClient): LlmClient => ({
     ...c,
     async call<T>(req: LlmRequest<T>): Promise<T> {
+      signal?.throwIfAborted();
       if (spent() >= CONFIG.maxUsd)
         throw new ExtractionLimitError(`This read has spent $${spent().toFixed(2)}, the $${CONFIG.maxUsd.toFixed(2)} limit for one read, so it was stopped before the next AI call.`);
-      return c.call(req);
+      return c.call({ ...req, signal });
     },
   });
   const clients: Clients = { primary: capped(given.primary), cross: given.cross && capped(given.cross), fast: given.fast && capped(given.fast) };
@@ -265,14 +282,15 @@ export async function extractWith(
       const visits = res.grids.reduce((n, g) => n + g.visits.length, 0);
       const affordable = spent() + est.perGrid[i]! * 1.5 <= CONFIG.maxUsd;
       if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && isPrimary && !affordable)
-        warnings.push(`Budget grid ${i + 1}: ${bad} total(s) don't add up; the re-read was skipped to stay within the $${CONFIG.maxUsd.toFixed(2)} limit.`);
+        warnings.push({ kind: "grid_reread_skipped", grid: i + 1, text: `Budget grid ${i + 1}: ${bad} total(s) don't add up; the re-read was skipped to stay within the $${CONFIG.maxUsd.toFixed(2)} limit.` });
       if (bad > 0 && bad <= Math.max(3, Math.ceil(visits * 0.25)) && isPrimary && affordable) {
         tick(`Re-reading budget grid ${i + 1} (${bad} total(s) didn't add up)`);
         try {
           const again = await readGrid("high");
           if (gridMismatches(again.grids) < bad) res = again;
         } catch (e) {
-          warnings.push(`The re-read of budget grid ${i + 1} failed, so the first read was kept: ${(e as Error).message}`);
+          // llm.ts keeps the model's reply out of its errors' messages
+          warnings.push({ kind: "grid_reread_failed", grid: i + 1, text: `The re-read of budget grid ${i + 1} failed, so the first read was kept: ${(e as Error).message}` });
         }
       }
       tick(`Read budget grid ${i + 1}/${groups.length} (${who})`);
@@ -286,13 +304,13 @@ export async function extractWith(
     read(clients.primary),
     clients.cross
       ? read(clients.cross).catch((e: unknown) => {
-          warnings.push(`The cross-read failed: ${(e as Error).message}`);
+          warnings.push({ kind: "cross_read_failed", text: `The cross-read failed: ${(e as Error).message}` });
           return null;
         })
       : Promise.resolve(null),
   ]);
-  if (!clients.cross) warnings.push("The cross-read is off (CROSS_READ=off, or no key).");
-  if (spent() > CONFIG.maxUsd) warnings.push(`The read cost $${spent().toFixed(2)}, over the $${CONFIG.maxUsd.toFixed(2)} limit (estimated $${est.required.toFixed(2)}).`);
+  if (!clients.cross) warnings.push({ kind: "cross_read_off", text: "The cross-read is off (CROSS_READ=off, or no key)." });
+  if (spent() > CONFIG.maxUsd) warnings.push({ kind: "over_limit", text: `The read cost $${spent().toFixed(2)}, over the $${CONFIG.maxUsd.toFixed(2)} limit (estimated $${est.required.toFixed(2)}).` });
 
   // 4. Mark each primary value agree/disagree with the second read.
   if (cross) markCrossCheck(primary.rulebook, cross.rulebook);

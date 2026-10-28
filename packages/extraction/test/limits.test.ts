@@ -170,6 +170,16 @@ describe("the mupdf worker", () => {
     expect((await renderPng(pdfWith(1), 1, { dpi: 72 })).subarray(1, 4).toString()).toBe("PNG");
   });
 
+  it("counts the pages a PDF's page tree holds, not what its /Count claims: the upload, the read and the viewer agree", async () => {
+    const doc = new mupdf.PDFDocument();
+    for (let i = 0; i < 2; i++) doc.insertPage(-1, doc.addPage([0, 0, 200, 200], 0, {}, ""));
+    doc.getTrailer().get("Root").get("Pages").put("Count", 5);
+    const file = join(mkdtempSync(join(tmpdir(), "dct-limits-")), "claims.pdf");
+    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+    expect(await pageCount(file)).toBe(2);
+    await expect(renderPng(file, 3)).rejects.toThrow(RangeError);
+  });
+
   it("keeps at most 8 PDFs open", async () => {
     for (let i = 0; i < 10; i++) expect(await pageCount(pdfWith(1))).toBe(1);
     expect(await openDocuments()).toBe(8);

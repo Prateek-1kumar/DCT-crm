@@ -120,7 +120,13 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
 
 const ops = {
   openDocuments: () => docs.size,
-  count: (path) => open(path).countPages(),
+  // A /Count that claims more pages than the page tree holds is corrected once mupdf loads a page, so load one first:
+  // the upload's count is then the read's, and the page viewer's.
+  count: (path) => {
+    const doc = open(path);
+    if (doc.countPages() > 0) doc.loadPage(0).destroy();
+    return doc.countPages();
+  },
   bounds: (path, page) => withPage(path, page, (p) => p.getBounds()),
   text: (path, page) => withPage(path, page, (p) => p.toStructuredText("preserve-whitespace").asText()),
   textPage: (path, page, documentId, minVisiblePt, minPageText) => withPage(path, page, (p) => textPage(p, documentId, page, minVisiblePt, minPageText)),

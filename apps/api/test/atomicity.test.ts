@@ -1,3 +1,4 @@
+import { RenderTimeoutError } from "@dct/extraction";
 import type { AlertPage, DocumentDto, RulebookVersionDto } from "@dct/shared";
 import { sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,6 +7,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
+import { getExtraction } from "../src/extraction/port.js";
 import { type App, type Built, extract, liveStudy, makeTextPdf, multipart, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload, waitJob } from "./helpers.js";
 
 // A failure injected into the last insert of a write (a trigger that raises): nothing of the write is left behind. No
@@ -210,6 +212,22 @@ describe("an upload's files and rows", () => {
     expect(doc).toMatchObject({ sha256: sha, duplicateOf: null, text: "text" });
     expect(files().filter((f) => f.startsWith(sha))).toEqual([`${sha}.pdf`]);
     expect((await app.inject({ url: `/api/v1/documents/${doc!.id}/pages/1.png` })).statusCode).toBe(200);
+  });
+
+  it("a file the PDF reader can't open in time: refused in words, and nothing of the upload is left", async () => {
+    const port = await getExtraction();
+    const real = port.pageCount;
+    const asked: string[] = [];
+    port.pageCount = async (file) => (asked.push(file), asked.length === 2 ? Promise.reject(new RenderTimeoutError("took too long")) : real(file));
+    try {
+      const res = await upload(app, [{ name: "a.pdf", data: await makeTextPdf("slow-a") }, { name: "slow.pdf", data: await makeTextPdf("slow-b") }]);
+      expect([res.statusCode, res.json().message]).toEqual([422, "slow.pdf took too long to open, so it wasn't uploaded. It may be damaged or unusually complex: save it again as a PDF, or upload a fresh copy."]);
+    } finally {
+      port.pageCount = real;
+    }
+    // each counted from its staged file, in the reader's worker (where a crafted file costs a timeout, not the event loop)
+    expect(asked.map((f) => f.startsWith(config.uploadDir) && f.endsWith(".tmp"))).toEqual([true, true]);
+    expect([files(), (await state()).documents]).toEqual([[], 0]);
   });
 
   it("several files in one upload: all or none", async () => {

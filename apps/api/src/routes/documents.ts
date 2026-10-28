@@ -5,7 +5,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { PDFDocument } from "pdf-lib";
 import type { Ctx } from "../app.js";
 import { config } from "../config.js";
 import { documents, studyDocuments } from "../db/schema.js";
@@ -43,11 +42,16 @@ async function syncDir(dir: string) {
   }
 }
 
-async function pageCount(buf: Buffer, filename: string): Promise<number> {
-  if (buf.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(415, `${filename} is not a PDF`);
+/**
+ * Pages as the read counts them: by mupdf, in its worker, from the staged file (a crafted PDF then costs a 30-second
+ * timeout there, never the event loop). One it can't open, or not in time, is refused in words.
+ */
+async function pageCount(file: string, filename: string): Promise<number> {
   try {
-    return (await PDFDocument.load(buf, { ignoreEncryption: true, updateMetadata: false })).getPageCount();
-  } catch {
+    return await (await getExtraction()).pageCount(file);
+  } catch (e) {
+    if ((e as Error).name === "RenderTimeoutError")
+      throw new HttpError(422, `${filename} took too long to open, so it wasn't uploaded. It may be damaged or unusually complex: save it again as a PDF, or upload a fresh copy.`);
     throw new HttpError(400, `${filename} could not be read as a PDF`);
   }
 }
@@ -89,13 +93,16 @@ export const documentRoutes =
           }
           const buf = await part.toBuffer(); // throws 413 past the 50 MB limit
           const filename = (part.filename || "upload.pdf").slice(0, 255);
-          const pages = await pageCount(buf, filename);
-          if (pages > config.maxUploadPages) throw new HttpError(422, `${filename} has ${pages} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
+          if (buf.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(415, `${filename} is not a PDF`);
           const sha256 = createHash("sha256").update(buf).digest("hex");
-          const [known] = await db.select({ id: documents.id }).from(documents).where(eq(documents.sha256, sha256));
-          const tmp = known ? null : path.join(config.uploadDir, `${sha256}.pdf.${randomUUID()}.tmp`);
-          if (tmp) await writeDurable(tmp, buf);
-          files.push({ filename, sha256, pages, tmp, text: null });
+          const [known] = await db.select({ pages: documents.pageCount }).from(documents).where(eq(documents.sha256, sha256));
+          const f: Staged = { filename, sha256, pages: known?.pages ?? 0, tmp: known ? null : path.join(config.uploadDir, `${sha256}.pdf.${randomUUID()}.tmp`), text: null };
+          files.push(f); // listed before it's written, so the finally below removes its temporary file whatever fails
+          if (f.tmp) {
+            await writeDurable(f.tmp, buf);
+            f.pages = await pageCount(f.tmp, filename);
+          }
+          if (f.pages > config.maxUploadPages) throw new HttpError(422, `${filename} has ${f.pages} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
         }
         if (!files.length) throw new HttpError(400, "No files in upload (field files[])");
         for (const f of files) if (f.tmp) f.text = await textSource(f.tmp);

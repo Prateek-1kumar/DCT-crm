@@ -1,4 +1,4 @@
-import { bindEvidence, isoDate, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
+import { bindEvidence, isoDate, type ReadWarning, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
 import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type MasterSearch, type ReviewItem, type Rulebook, type RulebookVersionDto, type StudyPage } from "@dct/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
@@ -403,12 +403,15 @@ describe("10. lows", () => {
   });
 
   it("a weaker reading is said in plain words with the version, and logged in the reading's own words", async () => {
-    const said = ["The re-read of budget grid 2 failed, so the first read was kept: timed out", "The cross-read is off (CROSS_READ=off, or no key)."];
+    const said: ReadWarning[] = [
+      { kind: "grid_reread_failed", grid: 2, text: "The re-read of budget grid 2 failed, so the first read was kept: timed out" },
+      { kind: "cross_read_off", text: "The cross-read is off (CROSS_READ=off, or no key)." },
+    ];
     expect(plainWarnings(said)).toEqual(["Budget grid 2 was read only once: its second, closer reading failed. Check its numbers with extra care."]);
     fakeControls.warnings = said;
     const { studyId } = await draft();
     expect((await version(studyId)).warnings).toEqual(plainWarnings(said));
-    expect((await auditOf(studyId)).find((e) => e.action === "extraction.completed")!.detail.warnings).toEqual(said);
+    expect((await auditOf(studyId)).find((e) => e.action === "extraction.completed")!.detail.warnings).toEqual(said.map((w) => w.text));
   });
 });
 

@@ -1,3 +1,4 @@
+import type { ReadWarning } from "@dct/extraction";
 import { armKey, type ContractAnomaly, type DocumentKind, type Rulebook } from "@dct/shared";
 import type { ExtractionPort, InputDoc, NoAi } from "./port.js";
 
@@ -156,13 +157,14 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
 
 /**
  * Test hooks: make the next N extractStudy calls throw; count the AI calls; hold a read until a test lets it go on; what
- * the reading warns about (as the real one words it).
+ * the reading warns about (as the real one says it); the last read's abort signal (the job's).
  */
-export const fakeControls: { failNext: number; calls: { identify: number; extract: number }; hold: Promise<void> | null; warnings: string[] } = {
+export const fakeControls: { failNext: number; calls: { identify: number; extract: number }; hold: Promise<void> | null; warnings: ReadWarning[]; signal: AbortSignal | undefined } = {
   failNext: 0,
   calls: { identify: 0, extract: 0 },
   hold: null,
   warnings: [],
+  signal: undefined,
 };
 
 // No renderPage or text layer: fake mode uses the real ones (see port.ts).
@@ -174,8 +176,9 @@ export const fakeExtraction: Omit<ExtractionPort, NoAi> = {
       studyGuess: { sponsor: "Synthetic Pharma", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test" },
     };
   },
-  async extractStudy({ documents, onProgress }) {
+  async extractStudy({ documents, onProgress, signal }) {
     fakeControls.calls.extract++;
+    fakeControls.signal = signal;
     await fakeControls.hold;
     if (fakeControls.failNext > 0) {
       fakeControls.failNext--;
