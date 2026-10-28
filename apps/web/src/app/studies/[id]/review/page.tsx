@@ -2,7 +2,7 @@
 
 import { type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Info, ListChecks, PartyPopper, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Info, ListChecks, PartyPopper, Undo2, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
@@ -25,6 +25,8 @@ export default function ReviewPage() {
   const vnum = sp.get("v") ? Number(sp.get("v")) : (draft?.version ?? null);
   const version = useVersion(id, vnum);
   const item = sp.get("item");
+  // Opened from the approval page: leaving goes back there.
+  const back = sp.get("return") === "approve" ? `/studies/${id}/approve` : `/studies/${id}`;
 
   if (study.error || version.error)
     return (
@@ -51,7 +53,7 @@ export default function ReviewPage() {
       </div>
     );
   // Keyed so a link to another question (?item=) starts fresh even though Next keeps this page mounted.
-  return <Focus key={`${id}/${vnum}/${item ?? ""}`} study={study.data} version={version.data} start={item} />;
+  return <Focus key={`${id}/${vnum}/${item ?? ""}`} study={study.data} version={version.data} start={item} back={back} />;
 }
 
 const STATUS_ICON = {
@@ -73,7 +75,7 @@ const STATUS_ICON = {
   ),
 };
 
-function Focus({ study, version, start }: { study: StudyDetailDto; version: RulebookVersionDto; start: string | null }) {
+function Focus({ study, version, start, back }: { study: StudyDetailDto; version: RulebookVersionDto; start: string | null; back: string }) {
   const by = useActingAs();
   const qc = useQueryClient();
   const answer = useAnswerReview(study.id, version.version);
@@ -185,7 +187,7 @@ function Focus({ study, version, start }: { study: StudyDetailDto; version: Rule
         <Button size="sm" className="xl:hidden" aria-label="Questions" onClick={() => setListOpen(true)}>
           <ListChecks className="size-4" strokeWidth={1.75} /> <span className="hidden sm:inline">Questions</span>
         </Button>
-        <Link href={`/studies/${study.id}`} className={cx(btnCls("secondary", "sm"), "md:ml-0")}>
+        <Link href={back} className={cx(btnCls("secondary", "sm"), "md:ml-0")}>
           Save and exit
         </Link>
       </header>
@@ -299,6 +301,14 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
         <Info className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
         {whyLine(item)}
       </p>
+      {item.sentBack && (
+        <p className="flex items-start gap-2.5 rounded-tile bg-brand-soft px-4 py-3 text-small text-ink-2">
+          <Undo2 className="mt-0.5 size-4 shrink-0 text-accent" strokeWidth={2} />
+          <span>
+            <span className="font-medium text-ink">Sent back by {item.sentBack.by}:</span> “{item.sentBack.note}”
+          </span>
+        </p>
+      )}
     </div>
   );
 }
@@ -529,7 +539,7 @@ function Finished({ study, version, onRevisit }: { study: StudyDetailDto; versio
       )}
       <div className="flex flex-wrap justify-center gap-2.5">
         {cant.length > 0 && <Button onClick={() => onRevisit(cant[0]!.id)}>Look at the &quot;can&apos;t tell&quot; ones</Button>}
-        <Link href={`/studies/${study.id}`} className={btnCls("primary", "lg")}>
+        <Link href={`/studies/${study.id}/approve`} className={btnCls("primary", "lg")}>
           Go to approval <ArrowRight className="size-[18px]" strokeWidth={2} />
         </Link>
       </div>

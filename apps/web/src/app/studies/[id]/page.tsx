@@ -2,21 +2,22 @@
 
 import type { ReviewItem, RulebookVersionDto, StudyDetailDto, VersionSummaryDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ArrowRight, BadgeCheck } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { ByHandForm } from "@/components/ByHandForm";
 import { DiffView } from "@/components/DiffView";
 import { RulebookView } from "@/components/RulebookView";
 import { DocList } from "@/components/UploadDocs";
-import { Badge, Button, Card, Dialog, ErrorNote, Field, PageTitle, pageCls, Spinner, StagePill, Stepper, btnCls, cx, inputBase, inputCls } from "@/components/ui";
+import { Badge, Button, Card, ErrorNote, PageTitle, pageCls, Spinner, StagePill, Stepper, btnCls, cx, inputBase } from "@/components/ui";
 import { Workspace } from "@/components/Workspace";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { keys, useDiff, useInvalidateStudy, useSettings, useStudy, useVersion } from "@/lib/queries";
-import { approveState, KIND_LABEL, minutesFor, needsYou, pdfCheckLine, versionStage, type StageState } from "@/lib/review";
+import { keys, useDiff, useInvalidateStudy, useStudy, useVersion } from "@/lib/queries";
+import { KIND_LABEL, minutesFor, needsYou, pdfCheckLine, versionStage, type StageState } from "@/lib/review";
 
 type Tab = "master" | "versions" | "files";
 
@@ -245,145 +246,30 @@ function FailedCard({ study }: { study: StudyDetailDto }) {
   );
 }
 
-function Tile({ n, label, tone }: { n: number; label: string; tone?: string }) {
-  return (
-    <div className="rounded-card border border-line px-4 py-3.5">
-      <p className={cx("num text-[26px] font-light", tone)}>{n}</p>
-      <p className="text-[12.5px] text-ink-2">{label}</p>
-    </div>
-  );
-}
-
+/** Ready for approval: a short summary and the way to the approval page. */
 function ApproveCard({ study, draft }: { study: StudyDetailDto; draft: RulebookVersionDto }) {
-  const by = useActingAs();
-  const settings = useSettings();
-  const [open, setOpen] = useState(false);
-  const gate = approveState(draft, settings.data, by);
   const ev = (st: string) => draft.evidence.filter((e) => e.status === st).length;
-  const cant = draft.review.filter((i) => i.outcome === "cant_tell");
-  const byHand = draft.review.filter((i) => i.kind === "unclassified");
-  const live = study.liveVersion;
+  const cant = draft.review.filter((i) => i.outcome === "cant_tell").length;
   return (
-    <Card className="flex flex-col gap-5 p-6">
-      <CheckLine draft={draft} />
-      <div>
-        <p className="eyebrow mb-1">Approve</p>
-        <h2 className="text-lg">Check the summary, then approve</h2>
-        <p className="mt-1 text-[13px] text-muted">Approving makes this the invoicing master everyone bills from. It&apos;s then locked; later changes go through a new version.</p>
+    <Card className="flex flex-wrap items-center justify-between gap-5 p-6">
+      <div className="flex items-start gap-4">
+        <span className="grid size-11 shrink-0 place-items-center rounded-tile bg-brand-soft text-accent">
+          <BadgeCheck className="size-5" strokeWidth={1.75} />
+        </span>
+        <div>
+          <p className="text-title font-semibold tracking-tight">Ready for approval</p>
+          <p className="num text-small text-muted">
+            {draft.pdfCheck ? `${ev("confirmed").toLocaleString("en-US")} matched the PDF · ` : ""}
+            {ev("attested")} confirmed by people{cant ? ` · ${cant} couldn't tell` : ""}
+          </p>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {draft.byHand ? (
-          <>
-            <Tile n={ev("attested")} label="values typed by hand" tone="text-accent" />
-            <Tile n={draft.review.filter((i) => i.reason === "spot_check" && i.outcome === "matched").length} label="re-typed blind and matched" tone="text-ok" />
-          </>
-        ) : (
-          <>
-            <Tile n={ev("confirmed")} label={draft.pdfCheck ? "numbers match the PDF" : "numbers add up in the contract's own totals"} tone="text-ok" />
-            <Tile n={ev("attested")} label="numbers confirmed by people" tone="text-accent" />
-          </>
-        )}
-        <Tile n={cant.length} label="couldn't tell" tone={cant.length ? "text-warn" : undefined} />
-        <Tile n={byHand.length} label={byHand.length === 1 ? "term to bill by hand" : "terms to bill by hand"} />
-      </div>
-      {cant.length > 0 && (
-        <ItemList title="Couldn't tell">
-          {cant.map((i) => (
-            <li key={i.id} className="flex flex-wrap items-baseline justify-between gap-2">
-              <span>
-                {i.question} {i.blocking && <Badge tone="warn">needed to approve</Badge>}
-              </span>
-              <Link href={`/studies/${study.id}/review?item=${encodeURIComponent(i.id)}`} className="text-accent hover:underline">
-                Answer now
-              </Link>
-            </li>
-          ))}
-        </ItemList>
-      )}
-      {byHand.length > 0 && (
-        <ItemList title="To bill by hand">
-          {byHand.map((i) => (
-            <li key={i.id}>{i.question.replace(/ The invoicing master has no place.*$/, "")}</li>
-          ))}
-        </ItemList>
-      )}
-      {live && live < draft.version && <AmendmentChanges study={study} version={draft.version} against={live} />}
-      {settings.data?.makerChecker && draft.editors.length > 0 && !gate.reasons.some((r) => r.startsWith("Maker-checker")) && (
-        <p className="text-[13px] text-muted">Maker-checker is on: {draft.editors.join(", ")} answered questions here, so someone else has to approve.</p>
-      )}
-      {!gate.allowed && <p id="approve-why" className="text-[13px] text-warn">Can&apos;t approve yet: {gate.reasons.join(" ")}</p>}
-      <div className="flex justify-end">
-        <Button variant="primary" disabled={!gate.allowed} onClick={() => setOpen(true)} aria-describedby={gate.allowed ? undefined : "approve-why"}>
-          Approve invoicing master
-        </Button>
-      </div>
-      <ApproveDialog open={open} onClose={() => setOpen(false)} study={study} draft={draft} />
+      <Link href={`/studies/${study.id}/approve`} className={btnCls("primary", "lg")}>
+        Review and approve <ArrowRight className="size-[18px]" strokeWidth={2} />
+      </Link>
     </Card>
   );
 }
-
-function ItemList({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div>
-      <h3 className="eyebrow mb-2">{title}</h3>
-      <ul className="flex flex-col gap-2 rounded-[10px] bg-sunken px-4 py-3 text-[13px]">{children}</ul>
-    </div>
-  );
-}
-
-function AmendmentChanges({ study, version, against }: { study: StudyDetailDto; version: number; against: number }) {
-  const diff = useDiff(study.id, version, against);
-  return (
-    <details className="rounded-[10px] border border-line px-4 py-3">
-      <summary className="cursor-pointer text-[13px]">What changes compared with live version {against}</summary>
-      <div className="mt-3">{diff.data ? <DiffView entries={diff.data} /> : diff.error ? <ErrorNote error={diff.error} /> : <Spinner />}</div>
-    </details>
-  );
-}
-
-function ApproveDialog({ open, onClose, study, draft }: { open: boolean; onClose: () => void; study: StudyDetailDto; draft: RulebookVersionDto }) {
-  const by = useActingAs();
-  const router = useRouter();
-  const invalidate = useInvalidateStudy();
-  const [note, setNote] = useState("");
-  const approve = useMutation({
-    mutationFn: () => api.signOff(study.id, draft.version, { by: by!, ...(note.trim() ? { note: note.trim() } : {}) }),
-    onSuccess: async () => {
-      await invalidate(study.id);
-      onClose();
-      router.replace(`/studies/${study.id}?approved=${draft.version}`);
-    },
-  });
-  return (
-    <Dialog open={open} onClose={onClose} title={`Approve ${study.protocol ?? "this contract"}`}>
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          approve.mutate();
-        }}
-      >
-        <p className="text-[13px] text-muted">
-          {by} approves version {draft.version} as the invoicing master for {study.sponsor}. Your name, the time and your note go in the activity log.
-        </p>
-        <Field label="Note (optional)" htmlFor="ap-note">
-          <textarea id="ap-note" rows={3} className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Anything the next person should know" />
-        </Field>
-        <ErrorNote error={approve.error} />
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" disabled={approve.isPending}>
-            {approve.isPending ? "Approving…" : "Approve and make live"}
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
-/** The live version, or the draft until one is approved. */
 function MasterTab({ study }: { study: StudyDetailDto }) {
   const withMaster = study.versions.filter((v) => v.status !== "failed" && v.status !== "extracting").sort((a, b) => b.version - a.version);
   const [picked, setPicked] = useState<number | null>(null);

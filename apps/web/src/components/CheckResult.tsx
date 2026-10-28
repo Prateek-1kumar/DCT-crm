@@ -61,7 +61,7 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
               Proofread the checked numbers
             </Link>
           )}
-          <Link href={open ? `/studies/${studyId}/review` : `/studies/${studyId}`} className={btnCls("primary", "lg")}>
+          <Link href={open ? `/studies/${studyId}/review` : `/studies/${studyId}/approve`} className={btnCls("primary", "lg")}>
             {open ? "Start answering" : "Go to approval"}
             <ArrowRight className="size-[18px]" strokeWidth={2} />
           </Link>

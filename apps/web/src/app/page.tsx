@@ -45,7 +45,7 @@ function NextStep({ s, st }: { s: StudySummaryDto; st: StageState }) {
         </div>
       );
     case "Approve":
-      return go(`/studies/${s.id}`, "Review and approve");
+      return go(`/studies/${s.id}/approve`, "Review and approve");
     case "Upload":
       return go(`/studies/new?study=${encodeURIComponent(s.id)}`, "Confirm the details");
     case "Live":
