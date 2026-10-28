@@ -18,18 +18,19 @@ Each package also has an `AGENTS.md`: [apps/api](../apps/api/AGENTS.md), [apps/w
 
 | ADR | Decision | Status |
 |---|---|---|
-| [ADR-001](phase-1/adr-001-extraction-evidence.md) | Contract extraction requires evidence for every value: a value is unconfirmed until the PDF's own text or a person confirms it; approval is gated on invariants I1–I6 | **Proposed** (2026-10-28), and mostly built. See below |
+| [ADR-001](phase-1/adr-001-extraction-evidence.md) | Contract extraction requires evidence for every value: a value is unconfirmed until the PDF's own text or a person confirms it; approval is gated on invariants I1–I6 | **Proposed** (2026-10-28), and largely built. See below |
 
-**ADR-001, what is built** (checked in code on 2026-10-29): the text layer with boxes, text-source and hidden-text detection, and bank masking (build step 1); the binder and the evidence ledger, including re-pointed page citations (step 2); the coverage sweep that asks about unaccounted money terms (part of step 3); the $20 runaway cap on real spend (part of step 4); the API's sign-off gate and blind answering (step 5); the review UI with blind answers next to the page close-up (most of step 6); scan mode with arithmetic confirmation and page attestation (part of step 7).
+**ADR-001, what is built** (checked in code on 2026-10-29; details and the product choices made while building are in its "Implementation notes"): the text layer, the binder and the evidence ledger (steps 1–2); the coverage sweep and the bill-by-hand (`unclassified`) list (part of step 3); the $20 runaway cap (part of step 4); the API's gate (step 5); the review lists of §6: interpretations picked blind, the bill-by-hand list and the 10-value blind sample with its miss gate (most of step 6); scan mode (part of step 7); the test that only `packages/extraction` imports a model SDK (§9).
 
 **Not built yet:**
-- schema version 2: `other` plus `asWritten` on every enum, the `unclassified` list, `perPatientTotals[].visitCodes` (step 3);
-- removing the second read, the OpenAI client, `LOW_CONFIDENCE` and `AI_DISAGREEMENT`. They still run, but are never asked about (step 4);
-- the classifier still decides which pages go to the terms reader. The sweep still covers every text page;
+- schema version 2: `other` plus `asWritten` on every enum, `perPatientTotals[].visitCodes` (step 3);
+- reading every page for terms: the classifier still decides which pages go to the terms reader. The sweep covers every text page;
+- removing the second read, the OpenAI client, `LOW_CONFIDENCE`, `AI_DISAGREEMENT` and cost-based re-read skipping. They still run, but are never asked about (step 4);
 - the prompt and check clean-up of §8, including the deadlines prompt's "only these kinds" (`packages/extraction/src/prompts.ts`), and the test that greps prompts for names from the answer keys (step 7);
-- the 10-value blind re-key sample on read contracts (§6). Only hand-typed contracts get a blind re-type today;
-- the test that only `packages/extraction` imports a model SDK (§9);
+- dismissing a whole section at once (§6), and the §9 hashes stored with a sign-off;
 - the held-out development set and lockbox runs (step 8).
+
+The first four need prompt changes and a live eval, which the owner hasn't approved.
 
 ## History
 
@@ -40,4 +41,4 @@ These record how Phase 1 was planned and first built. They keep decisions and bu
 | [PHASE-1.md](PHASE-1.md) | The Phase 1 plan of 2026-10-25: decisions, journeys, the interfaces between workstreams | Partly superseded (marked inline). The routes as built are in api.md |
 | [phase-1/extraction.md](phase-1/extraction.md) | Workstream B log for `packages/extraction`: decisions, resource limits, the 2026-10-26 cost decision | Limits and model choices current; accuracy and cost estimates superseded (marked inline) |
 | [phase-1/testing.md](phase-1/testing.md) | Integration testing: how the e2e runs and what it covers, the API's write and job suites, then the first integration pass's bugs | Top sections current; "Earlier integration notes" are history |
-| [phase-1/web.md](phase-1/web.md) | Workstream C log: the first build of the web | History: the screens and review flow were replaced on 2026-10-28 |
+| [phase-1/web.md](phase-1/web.md) | Workstream C log: the first build of the web | History: the screens and review flow were replaced on 2026-10-28. Its first section lists what the web does now that the log doesn't |

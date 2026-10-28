@@ -17,7 +17,7 @@ Both servers bind to 127.0.0.1 only and there is no login: one computer, one tea
 Every setting is an environment variable, listed with its default in [`.env.example`](../.env.example).
 
 - The API reads the repo-root `.env` at startup; variables already set in the environment win, and an empty value counts as unset. It checks every setting with zod (`apps/api/src/config.ts`) before it listens or connects, and exits naming each bad one, never printing a value.
-- Anything that imports the API's config runs the same check: the server, `db:migrate`, `db:migrate:dist`, `scripts/e2e-reset.ts`. So the migration step needs the server's settings too, including `ANTHROPIC_API_KEY` (or `EXTRACTION_FAKE=1`).
+- Anything that imports the API's config runs the same check: the server, `db:migrate`, `db:migrate:dist`, `scripts/e2e-reset.ts`. So the migration step needs the server's settings too, except `ANTHROPIC_API_KEY`: only the server checks for it (or `EXTRACTION_FAKE=1`) when it starts, since only the server reads contracts.
 - The web does not read the repo-root `.env`. Next.js reads `apps/web/.env*` and the shell. `API_URL` is baked into the proxy when the web is **built**.
 - Outside the repo checkout, `UPLOAD_DIR` (absolute) is required and `DATABASE_URL` must be set: the defaults point at the local dev database and `<repo>/data/uploads`.
 
@@ -41,8 +41,15 @@ Migrations never run on boot. Run them before starting the new build:
 - `pnpm --filter @dct/api db:migrate:dist` from a build, or `pnpm --filter @dct/api db:migrate` from source (dev).
 - The migrator holds an advisory lock, so two runs at once apply each migration once.
 - All pending migrations run in one transaction. There are no down migrations: to undo one, restore a backup.
-- A server started on a database that's behind logs an error and stays not ready (`/readyz` → `schema: "behind"`) until the migrations are applied. Restart it afterwards so the startup maintenance runs.
+- A server started on a database that's behind logs an error and stays not ready (`/readyz` → `schema: "behind"`) until the migrations are applied, and starts no job workers or schedule. Restart it afterwards so the workers and the startup maintenance run.
 - pg-boss creates and upgrades its own `pgboss` schema when the API starts, under its own lock.
+
+Migrations worth knowing about when you deploy them:
+
+| Migration | Does |
+|---|---|
+| `0010_perfect_virginia_dare` | Adds `rulebook_versions.warnings`. Maker-checker defaults to on, and is turned on in a database whose audit log is empty; a database already in use keeps its setting (check Settings after deploying) |
+| `0011_truncate_guards` | `TRUNCATE` is refused on the audit log, and on `rulebook_versions` while any version is approved, also through `TRUNCATE … CASCADE` |
 
 ### Health checks
 
@@ -81,7 +88,7 @@ The API writes JSON lines (pino) to stdout at `LOG_LEVEL` (default `info`):
 - A request is logged as its method and route pattern only: no ids, query strings, bodies, contract text or amounts. Probes log warnings only.
 - Every response carries `X-Request-Id`, the `reqId` of its log lines.
 - A 5xx response never shows its cause. It says "Something went wrong on the server. Try again; if it keeps happening, tell the team (ref <request id>)." Search the logs for that id: the `request failed` line has the database error code, its message and the SQL, without the values bound to it.
-- Levels: 30 info, 40 warn, 50 error. Lines worth an alert: `request failed`, `pg-boss error`, `job failed`, `idle database connection failed`, `the database is behind this build…`, `shutdown took too long: exiting`. Warnings worth reading: `a job had ended without finishing; marked failed`, `a read had no job; marked failed`, `write rolled back by a concurrent one`.
+- Levels: 30 info, 40 warn, 50 error. Lines worth an alert: `request failed`, `pg-boss error`, `job failed`, `idle database connection failed`, `the database is behind this build…`, `jobs not started: the database is behind this build`, `shutdown took too long: exiting`. Warnings worth reading: `a job had ended without finishing; marked failed`, `a read had no job; marked failed`, `write rolled back by a concurrent one`.
 
 ## Shutdown
 
@@ -112,7 +119,7 @@ In development, `pnpm dev` runs the API under `tsx watch`: saving an API file re
 
 ### "The database is behind" / `/readyz` shows `schema: "behind"`
 
-- **Symptom:** at startup, an error line `the database is behind this build: run the migrations (pnpm --filter @dct/api db:migrate), then restart` with `pending: <n>`. `/readyz` answers 503 with `schema: "behind"`. Requests that touch new tables or columns fail with the generic 5xx.
+- **Symptom:** at startup, an error line `the database is behind this build: run the migrations (pnpm --filter @dct/api db:migrate), then restart` with `pending: <n>`, then `jobs not started: the database is behind this build`. `/readyz` answers 503 with `schema: "behind"`. Requests that touch new tables or columns fail with the generic 5xx, and no read or identify job runs.
 - **Cause:** this build ships migrations the database hasn't applied: a pull or deploy with a schema change, without the release step.
 - **Fix:** back up (below), run `pnpm --filter @dct/api db:migrate:dist` (build) or `pnpm --filter @dct/api db:migrate` (dev) with the server's settings, then restart the API. `/readyz` should then show `schema: "ok"`.
 
@@ -129,22 +136,34 @@ In development, `pnpm dev` runs the API under `tsx watch`: saving an API file re
 | 415 | `<file> is not a PDF` | The file doesn't start with `%PDF-` | Upload the PDF itself, not a Word file or image |
 | 400 | `<file> could not be read as a PDF` | pdf-lib can't load it (damaged) | Get a fresh copy |
 | 422 | `<file> has <n> pages; the limit is 100 per document…` | Over 100 pages | Split it into smaller PDFs |
-| 413 | `request file too large` / `reach files limit` | Over 50 MB, or over 50 files in one request | Split the file; the web sends one file per request and refuses files over 50 MB before sending |
+| 413 | `This file is bigger than the 50 MB limit. Split it into smaller PDFs and upload those.` / `Upload at most 50 files at once.` | Over 50 MB, or over 50 files in one request | Split the file; the web sends one file per request and refuses files over 50 MB before sending |
 | 403 | `Host not allowed` / `Origin not allowed` | The request came through a host or origin not in `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Use the app's own address, or add it to those settings |
 
 A password-protected or unusual PDF can pass the upload and fail at reading instead, with "This PDF couldn't be read…".
 
 ### A config error at startup
 
-- **Symptom:** the API (or `db:migrate`) exits at once, printing `The API's settings aren't valid (check .env or the environment):` and one line per bad setting, for example `PORT must be a port number from 1 to 65535` or `ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)`.
+- **Symptom:** the API (or `db:migrate`) exits at once, printing `The API's settings aren't valid (check .env or the environment):` and one line per bad setting, for example `PORT must be a port number from 1 to 65535`. The server alone also exits with `ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)`; it checks that after the other settings, so it shows once they're right.
 - **Cause:** a setting is missing, mistyped or out of range, in `.env` or the environment. Values are never printed.
 - **Fix:** correct each named setting ([`.env.example`](../.env.example) lists them), then start again. Remember that a variable set in the shell wins over `.env`.
 
 ### The spend cap is reached
 
-- **Symptom:** a read fails with "This read has spent $<x>, the $<cap> limit per contract, so it was stopped before the next AI call."
+- **Symptom:** a read fails with "This read has spent $<x>, the $<cap> limit for one read, so it was stopped before the next AI call."
 - **Cause:** the read's tracked spend reached `EXTRACTION_MAX_USD` (default $20).
 - **Fix:** don't just retry: each retry pays again. Check why the read cost that much (page count, number of grids and tiles; the page and image limits are in `CONFIG`, `packages/extraction/src/extract.ts`). Raising the cap is the owner's decision; if they agree, set `EXTRACTION_MAX_USD`, restart the API, then "Read it again". Otherwise type the contract in by hand.
+
+### Approval refused after a random spot check missed
+
+- **Symptom:** approving says "A random spot check found a wrong number among the <kind of value>, so each of them has to be proofread before approval: <n> of <m> still to check." Everyone got the alert "<contract>: a random spot check found a wrong number", and the Activity log has "Spot check found a wrong number" (`sample.missed`).
+- **Cause:** one of the 10 values re-typed blind after the read was one the PDF check had confirmed, and the person kept a different value after looking again. That is an incident (ADR-001 §6): the check passed a wrong number, so every value of that kind is checked by a person.
+- **Fix:** proofread each value of that kind ("Proofread them" on the approve page), marking "Looks right" or reporting what's wrong, then approve. Once a sample has missed it stays missed. Tell the team: each miss is how silent errors are measured.
+
+### "This contract changed since you opened it. Check it again."
+
+- **Symptom:** approval is refused with that message (409).
+- **Cause:** approval sends the version as the approver saw it (`asOf`). Something changed it since: an answer, a report or a send-back in another tab or by someone else.
+- **Fix:** look at the approve page again (it refreshes by itself) and approve what it shows now. Nothing was saved by the refused approval.
 
 ## Backups
 

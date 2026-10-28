@@ -2,6 +2,23 @@
 
 > **History.** This page records the first build of the web, before the 2026-10-28 redesign and ADR-001. Superseded since: the anomaly panel and "Fix value / Choose reading / Accept with note" (now blind review questions, one at a time, at `/studies/:id/review`); `/studies/:id/extracting` (now `/studies/:id/reading`); "light + dark" (now light mode only, `color-scheme: light` in `src/app/globals.css`); the `resolve` and `grid-choice` calls and `PATCH .../values` on read drafts (removed from the API). The current guide is [apps/web/AGENTS.md](../../apps/web/AGENTS.md); the routes as built are in [api.md](api.md).
 
+## Since the redesign (as of 2026-10-29)
+
+What the web does now that the log below doesn't record. The rules behind each are in [api.md](api.md#review-questions-adr-001).
+
+- **Needs you** asks the review lists of ADR-001 §6 one at a time:
+  - interpretations, picked blind from the field's own values with nothing preselected; a pick that differs from the reading shows "We read …" and asks where the page says so;
+  - the blind sample, marked "Random spot check", typed like any value;
+  - an amendment's start date: type a date, or pick "Prospective only" with the amendment's own date shown;
+  - a page with a large picture, asked like a scan page.
+- **Approve**: refetches the version every 15 seconds and when the window regains focus, and sends it as shown (`asOf`), so a change in another tab is refused, not approved. It lists every open question, shows "Hidden until answered" for a key term whose value is withheld, the read's warnings, the terms billed by hand, and, after a sample miss, which values to proofread first ("Proofread them").
+- **The live master** marks values the newest draft is re-checking: "Being re-checked in version N", each linked to its question (`src/components/Rechecked.tsx`).
+- **Typing by hand**: a save that fails is marked on its own field ("Not saved.", why, and try again), and the field stays unsaved until a save goes through.
+- **Proofreading**: a "looks wrong" report whose answer was lost carries on in the draft it opened, instead of starting again on the live version.
+- **Add a contract**: a file uploaded before (a site's shared master agreement) shows "Uploaded before · will be used" and can be used on another contract.
+- **Export**: Excel is fetched, so a refusal or failure shows on screen instead of downloading as a file.
+- **Activity**: plain labels, never paths, ids or raw JSON.
+
 ## How to run
 
 ```sh

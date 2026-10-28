@@ -322,3 +322,58 @@ These came from the research passes; the strength tag is the research agent's.
 10. AWS A2I closed to new customers: https://docs.aws.amazon.com/sagemaker/latest/dg/a2i-json-humantaskactivationconditions-textract-example.html. Google Document AI human review deprecated: https://docs.cloud.google.com/document-ai/docs/deprecation (strong)
 11. CTA money-term taxonomy: SCRS Site Invoiceables Guide https://myscrs.org/wp-content/uploads/2026/05/SCRS-Site_Invoiceables_Guide_Preview.pdf; ACTA https://www.rochester.edu/orpa/_assets/word/form_ACTA.docx; a CRO payment exhibit https://www.sec.gov/Archives/edgar/data/1946563/000121390024080313/ea021474701ex10-3_60degrees.htm
 12. Hidden-text prompt injection in PDFs: https://arxiv.org/abs/2509.10248. Malicious-font text/glyph mismatch: https://arxiv.org/abs/2505.16957 (weak). Spotlighting: https://arxiv.org/abs/2403.14720
+
+## Implementation notes (2026-10-29)
+
+Added after the decision, which is unchanged above. What the code on `feature/contarcts` does against the plan, so the owner can review it in one place. Current behavior in detail: [api.md](api.md#review-questions-adr-001).
+
+**Built, by build step (§12)**
+
+| Step | State |
+|---|---|
+| 1 TextLayer | Built: boxes, text source, hidden text, the money inventory, bank masking (also account-like numbers on a bank label's line or the next two; bank words are never stored in a span's text). A text page with a picture big enough to hold prices (`largePicture`) is attested like a scan: the "budget pasted as an image" row of §3. |
+| 2 Binder, ledger | Built, stricter than §5: a single value is confirmed only when its line prints no other amount that could be it; a rule's figure counts only from a sentence about its term; two grids on one page each bind under their own header; a bracketed amount is negative. COPD: 593 of 593 cells confirmed right, none wrong confirmed. |
+| 3 Coverage | The sweep (`UNACCOUNTED_TERM`, absence sentences) and the `unclassified` list (bill by hand) are built. The list is an optional field of schema v1 (`upgradeRulebook` reads older versions with it empty), not schema v2. |
+| 4 Cost and noise | The $20 runaway cap is built. The cross-read, the OpenAI client, `LOW_CONFIDENCE` and `AI_DISAGREEMENT` still run, but are never asked. A grid re-read is still skipped when it can't be afforded or most visits fail (§8), and said in the version's `warnings`. |
+| 5 API gate | Built: every question settled, every value `confirmed` or `attested`, approval of the version as seen (`asOf`), the sample-miss gate, maker-checker on by default. |
+| 6 Review UI | Built: blind typed and picked answers next to the page crop, the interpretations, the bill-by-hand list, the 10-value sample. The interpretations and the sample are questions in the one-at-a-time Needs you flow, not screens of their own. |
+| 7 Scan mode, cleanup | Scan mode is built (arithmetic, typing, page attestation). The §8 cleanup is not. |
+| 8–9 | Not started. |
+
+**Measured on the four saved reads** (COPD / HCWC / McAllen / Shah): 16 / 23 / 13 / 12 interpretations. HCWC is over the 10–20 of §6 because it has 17 site fees, each with its trigger asked. The blind sample is 10 on each.
+
+**Interpretations, as built** (`interpretations` in `packages/shared/src/questions.ts`): overhead scope, how visits are paid, each site fee's trigger, each cap's kind where there's a cap (and its limit after it), the screen-fail basis, cap kind and how screen failures are paid (`screenFail.paidVia`, added to the §6 list: paid automatically where they should be invoiced means they're never billed), the holdback's scope, rounding, and the start date. These billing fields are **not** asked blind. The code doesn't record why, so each is for the owner to confirm:
+
+| Field | Today |
+|---|---|
+| `budgetGrids[].visits[].autopay` | Read by the AI, one per visit; in the Excel export ("How the visit is paid") |
+| `budgetGrids[].procedures[].overheadApplied`, `category` | Read by the AI, one per grid row; `overheadApplied` is in the export, `category` feeds the arithmetic checks |
+| `payment.frequency`, `payment.netDaysFrom` | Not asked; `netDays` is bound to its sentence |
+| `invoiceables[].basis`, `frequency`, `requiresPreApproval` | Not asked; the amount and the cap kind are |
+| `holdback.releaseConditions` | Not asked; the % is bound and the scope typed |
+| `overpayment.sponsorMayOffset` | Not asked; `refundDays` is bound |
+| `deadlines[].kind` | Not asked; its value binds only from a sentence with the kind's own words. It's the fixed list §7 replaces with `other` + `asWritten` |
+
+**Not built yet.** Each needs a prompt change and a live eval the owner hasn't approved:
+- schema v2: `other` plus `asWritten` on every enum, and `perPatientTotals[].visitCodes`;
+- the §8 prompt and check cleanup, including "only these kinds", and the test that greps prompts for names from the answer keys;
+- reading every page for terms (the classifier still chooses them; the sweep covers every text page);
+- removing the cross-read, the OpenAI client and cost-based re-read skipping.
+
+Also not built: dismissing a whole section at once (§6), and storing the hashes of §9 with the sign-off.
+
+**Product choices made while building.** Each is in the code; the owner may want to change any of them.
+1. "Can't tell" on any question, a Review one too, holds approval. The way forward is to answer it, or for the approver to send it back.
+2. Picks on an overhead label or a duplicate item write nothing: the printed amounts stand, or the sponsor is asked, with the query as the note.
+3. An arithmetic "the sum governs" answer writes the sum into the master, and amendments carry it like a correction.
+4. Listing a scan or picture page to bill by hand needs a note naming each term and its amount.
+5. An amendment asks bill-by-hand terms again rather than carrying them.
+6. "This looks wrong" on the live version is refused while the newest version is an amendment that couldn't be read: it's read again or typed, never replaced by a correction.
+7. Maker-checker was turned on only in a database with an empty audit log; one in use kept its setting.
+8. A cap's kind is asked only where the reading's kind isn't `none`. An empty cap is the absence sweep's to question (I4).
+9. The holdback's scope is typed, not picked, because the master holds it as free text.
+10. "Prospective only" writes the newest amendment document's own date, shown in the option, and is offered only when that document has one.
+11. A read of a study that has a live version counts as an amendment, so it asks the start date.
+12. The sample is spread over four families: grid prices, visit and per-patient totals, fee and invoiceable amounts, and rules (%, days, limits, dates).
+13. A miss stays a miss, whatever the answer becomes later.
+14. Proofreading a missed family holds approval but isn't counted in the study's "needs you" number.

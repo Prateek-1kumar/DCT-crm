@@ -11,8 +11,8 @@ Everything that touches a PDF or a model: page counts, rendering and the text la
 | `src/llm.ts` | The only place a model is called (Anthropic SDK, optional OpenAI): timeouts, retries, prices, usage. `clientsFromEnv` picks models and the second reader |
 | `src/prompts.ts` · `src/model-schema.ts` | The prompts and AI schemas (shared schemas, grid cells as a list); the compact provenance the model fills |
 | `src/render.ts` · `src/mupdf-worker.mjs` | mupdf calls, run in a worker with a 30 s timeout per call; `RENDER_LIMITS`; page images, tiles, masks |
-| `src/textlayer.ts` | `readTextLayer`: visible words with boxes, each page's text source (`text`, `ocr_layer`, `image_only`), hidden text, `bankRects`, the money-span inventory |
-| `src/binder.ts` | `bindEvidence` (each value to its spot: confirmed / conflict / ungrounded; unaccounted spans), `reviewFromEvidence` (the questions), `isoDate` |
+| `src/textlayer.ts` | `readTextLayer`: visible words with boxes, each page's text source (`text`, `ocr_layer`, `image_only`), hidden text, `largePicture` (a text page with a picture big enough to hold prices: attested like a scan), `bankRects` (bank sentences, and account-like numbers on a bank label's line or the next two), the money-span inventory (every bank word is "…" in a span's stored text). `centsOf`: a bracketed amount is negative, unless it restates words ("Three Thousand Dollars ($3,000.00)") |
+| `src/binder.ts` | `bindEvidence` (each value to its spot: confirmed / conflict / ungrounded; unaccounted spans), `reviewFromEvidence` (the questions), `isoDate`. A single value is confirmed only when its line prints no other amount that could be it, else it's asked. A rule's figure counts only from a sentence about its term (`ABOUT`). Two grids on one page each bind rows under their own header; one printed row confirms one grid's cells at most |
 | `src/checks.ts` | `runContractChecks`: arithmetic and contract-defect checks, pure code |
 | `src/score.ts` | Field-by-field scoring against `data/golden/*.json` |
 | `src/fake.ts` · `fixtures/fake-extraction.json` | `EXTRACTION_FAKE=1`: a synthetic reading (the API uses its own fake, `apps/api/src/extraction/fake.ts`) |
@@ -32,7 +32,7 @@ The scripts load the repo-root `.env` and find `data/` two levels up, or under `
 
 ## Rules
 
-- Only `src/llm.ts` imports a model SDK, and only contracts go to it.
+- Only `src/llm.ts` imports a model SDK, and only contracts go to it. `test/llm.test.ts` fails if `apps/*/src` or `packages/shared/src` imports one.
 - Every image sent to a model passes its page's bank mask (`masks` in `extract.ts`); every reply goes through `sanitize`/`scrub`. Add a new image path the same way.
 - In a read, the spend cap is checked before every model call through the `capped` clients; don't add a call that bypasses them. (`identifyDocuments`, at most 3 pages per document on the fast model, isn't capped and its cost isn't recorded.) Each call's output is bounded by its kind (`CONFIG.maxOutputTokens`).
 - Page and image limits are checked before anything is rendered or sent. Keep new work behind them.
@@ -53,5 +53,5 @@ The scripts load the repo-root `.env` and find `data/` two levels up, or under `
 
 ## Testing
 
-- `test/extract.test.ts` (pipeline with mocked clients, fake mode, the $20 cap), `test/evidence.test.ts` (text layer, inventory, binder, questions; mutation tests), `test/checks.test.ts`, `test/limits.test.ts` (render limits, the worker, bank masks), `test/llm.test.ts` (reply parsing and retries), `test/prompts.test.ts` (AI schemas convert), `test/score.test.ts`.
+- `test/extract.test.ts` (pipeline with mocked clients, fake mode, the $20 cap), `test/evidence.test.ts` (text layer, inventory, binder, questions; mutation tests), `test/checks.test.ts`, `test/limits.test.ts` (render limits, the worker, bank masks and bank words in span text), `test/llm.test.ts` (reply parsing and retries; no model SDK outside this package), `test/prompts.test.ts` (AI schemas convert), `test/score.test.ts`.
 - `test/helpers.ts` builds a small synthetic rulebook; the tests that need PDFs print synthetic ones themselves (pdf-lib). Never add a real contract to a test or fixture.

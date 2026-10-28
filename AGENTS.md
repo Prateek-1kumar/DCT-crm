@@ -20,15 +20,16 @@ ADR-001 ([docs/phase-1/adr-001-extraction-evidence.md](docs/phase-1/adr-001-extr
 | Rule | Enforced in |
 |---|---|
 | Every money value has evidence: `confirmed` (PDF text at its spot agrees; on scans, the contract's own totals agree to the cent), `attested` (a person typed or chose it blind), `conflict` or `ungrounded` | `ValueEvidence` in `packages/shared/src/evidence.ts`; set by `bindEvidence` (`packages/extraction/src/binder.ts`) and `reviewDraft` (`apps/api/src/review.ts`); an answer marks it `attested` in `answer()` |
-| Whatever isn't confirmed becomes a question; a blocking one clears only by a typed value or a pick, never free text (I6) | `reviewFromEvidence` (binder.ts), `fromAnomalies` and `answer()` in `apps/api/src/review.ts` |
-| Sign-off gate: a draft; by-hand typing marked done; no unsettled blocking question; every evidence entry `confirmed` or `attested`; maker-checker if on | `POST /studies/:id/versions/:v/sign-off` in `apps/api/src/routes/versions.ts` |
-| Blind entry: a value with an open question never leaves the server: masked in versions, search, diff, audit, alerts; numbers in notes about it blanked | `withheldPaths` (`packages/shared/src/api.ts`) → `versionDto` (`apps/api/src/domain.ts`) → `mask`, `blindReview` (`review.ts`); `blankNumbers` (`packages/shared/src/evidence.ts`); audit and alerts in `apps/api/src/routes/misc.ts`, `alerts.ts`; search and diff in `versions.ts` |
-| Maker-checker (a setting, off by default): nobody in a version's `editors` may approve it. A hand-typed value is always re-typed by someone else | sign-off route; `answer()` (409 for the typist) |
-| Approved is immutable; the old live version is superseded in the same transaction | `assertDraft` (`domain.ts`) and the trigger in `apps/api/drizzle/0006_signed_versions_locked.sql` |
-| The audit log is append-only and written in the same transaction as the change | trigger in `apps/api/drizzle/0001_guards.sql`; `audit()` in `domain.ts` |
+| Whatever isn't confirmed becomes a question. A blocker clears only by a typed value or a pick (I6); a Review question also by a fixed reason with a note; never free text alone | `reviewFromEvidence` (binder.ts), `fromAnomalies` and `answer()` in `apps/api/src/review.ts` |
+| The review lists (ADR §6): interpretations picked blind, a blind sample of 10 confirmed values per read, money terms the master can't hold listed to bill by hand (`unclassified`) | `interpretations`, `pickSample` in `packages/shared/src/questions.ts`; `reviewDraft`, `answer()` |
+| Sign-off gate: a draft, unchanged since the approver saw it (`asOf`); by-hand typing marked done; **every** question settled; every evidence entry `confirmed` or `attested`; after a sample miss, every value of that family proofread or typed; maker-checker | `POST /studies/:id/versions/:v/sign-off` in `apps/api/src/routes/versions.ts`; `sampleMisses` (questions.ts) |
+| Blind entry: a value with an open question (an interpretation's too; a cap's limit while its kind is asked) never leaves the server: masked in versions, search (which reads the masked master), diff, audit, alerts; numbers blanked in its item's words, in notes about it and in a bill-by-hand term quoted from its line | `withheldPaths` (`packages/shared/src/api.ts`) → `versionDto` (`apps/api/src/domain.ts`) → `mask`, `blindReview`, `blindDetail` (`packages/shared/src/blind.ts`); `blankNumbers` (`evidence.ts`); search and diff in `versions.ts` |
+| Maker-checker, on by default (a database already in use keeps its setting): nobody in `editors` may approve; names compared trimmed, ignoring case (`samePerson`). A re-typer whose answer changes a value becomes an editor. A hand-typed value is re-typed by someone else | sign-off route; `answer()` (409 for the typist) |
+| Approved is immutable; the old live version is superseded in the same transaction | `assertDraft` (`domain.ts`); triggers in `apps/api/drizzle/0006_signed_versions_locked.sql` and, for TRUNCATE, `0011_truncate_guards.sql` |
+| The audit log is append-only and written in the same transaction as the change | triggers in `0001_guards.sql` and `0011_truncate_guards.sql`; `audit()` in `domain.ts` |
 | Money is integer cents everywhere | `packages/shared/src/rulebook.ts`; `apps/web/src/lib/money.ts` |
 
-The in-browser sample server (`apps/web/src/lib/mock/server.ts`) mirrors all of this. Keep the two in step.
+The in-browser sample server (`apps/web/src/lib/mock/server.ts`) mirrors all of this, through the same shared code where it can (`blind.ts`, `questions.ts`). Keep the two in step.
 
 ## Adding or changing a write endpoint
 
@@ -53,7 +54,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) mirrors all of 
 
 | Suite | Command | Needs |
 |---|---|---|
-| API (vitest, real Postgres, `fastify.inject`, fake AI) | `pnpm --filter @dct/api test` | Postgres; database `dct_finance_test`; a key or `EXTRACTION_FAKE=1` (Gotchas) |
+| API (vitest, real Postgres, `fastify.inject`, fake AI) | `pnpm --filter @dct/api test` | Postgres; database `dct_finance_test` (`TEST_DATABASE_URL` overrides it and must contain `_test`: global setup refuses anything else) |
 | Shared, extraction, web units | `pnpm --filter @dct/shared test`, `pnpm --filter @dct/extraction test`, `pnpm --filter web test` | nothing (the AI is mocked) |
 | Everything above | `pnpm test` | Postgres |
 | Browser journey (Playwright, production builds, fake AI) | `pnpm e2e` | Postgres, Google Chrome, ports 3301 / 4301 free |
@@ -61,6 +62,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) mirrors all of 
 
 - API tests share `dct_finance_test` and truncate it. The e2e shares `dct_finance_e2e`, ports 3301 / 4301, `apps/web/.next-e2e` and `apps/api/dist`. **Never run two API test runs, or two e2e runs, at once**, including another agent's.
 - "Done" means: `pnpm -r typecheck` and `pnpm --filter web lint` clean, every suite green, and `pnpm e2e` green. Say which of these you ran.
+- To check one commit on its own, use a git worktree inside the repo (`git worktree add .claude/worktrees/<name> <commit>`; `.claude/` is git-ignored). In a worktree under `/private/tmp`, vitest found no test files. A worktree has no `.env` and no `data/`.
 
 ## Conventions
 
@@ -76,7 +78,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) mirrors all of 
 - Next.js 16 differs from your training data. Read the guide in `apps/web/node_modules/next/dist/docs/` before writing web code.
 - Postgres runs in Apple `container` (`container ls`, `container exec`), not Docker: `apps/api/scripts/db.sh`.
 - Run the root setup script as `pnpm run setup`: `pnpm setup` is pnpm's own command.
-- Anything that imports `apps/api/src/config.ts` exits on bad settings, and it needs `ANTHROPIC_API_KEY` unless `EXTRACTION_FAKE=1`. That includes `db:migrate`, `e2e-reset` and the API tests' global setup (vitest's `test.env` doesn't reach it), so without a key put `EXTRACTION_FAKE=1` in `.env` or the shell.
+- Anything that imports `apps/api/src/config.ts` exits on a bad setting (`db:migrate`, `e2e-reset`, the API tests' global setup). Only starting the server (`src/server.ts`: `dev`, `start`) needs `ANTHROPIC_API_KEY` or `EXTRACTION_FAKE=1`; migrations, tests and the e2e don't.
 - The API reads the repo-root `.env`; the web doesn't (Next reads `apps/web/.env*` and the shell).
 - Only one `next dev` can run in `apps/web` (it locks `.next/dev`). To see your web change while the owner's dev server runs, use a sample build on another port: `pnpm --filter web build:sample && pnpm --filter web exec next start -H 127.0.0.1 -p 3200`.
 - Saving an API file restarts `tsx watch`, which fails any read in progress.
