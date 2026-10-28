@@ -69,7 +69,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) mirrors all of 
 - Light mode only.
 - Every API route is under `/api/v1`; `/livez` and `/readyz` sit outside it.
 - The sample server stays in parity with the API: same routes, status codes, messages and rules.
-- Conventional Commit messages (`feat(api): …`). Commit only when the owner asks.
+- Conventional Commit messages (`feat(api): …`), with no `Co-Authored-By` or AI attribution lines. Commit only when the owner asks.
 
 ## Gotchas
 
