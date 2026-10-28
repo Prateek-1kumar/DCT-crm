@@ -1,174 +1,114 @@
 "use client";
 
-import type { StudyStatus, StudySummaryDto } from "@dct/shared";
+import type { StudySummaryDto } from "@dct/shared";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { Badge, Card, btnCls, Empty, ErrorNote, PageTitle, Spinner, StatusBadge, cx, inputCls } from "@/components/ui";
-import { STATUS_LABEL, formatDateTime, relativeTime } from "@/lib/format";
+import { btnCls, Empty, ErrorNote, PageTitle, pageCls, Spinner, StagePill } from "@/components/ui";
+import { formatDateTime, relativeTime } from "@/lib/format";
 import { useStudies } from "@/lib/queries";
+import { minutesFor, summaryStage } from "@/lib/review";
 
-const IN_REVIEW: StudyStatus[] = ["needs_review", "amendment_in_review"];
+const UploadIcon = () => (
+  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="size-[15px]">
+    <path d="M12 16V4M7 9l5-5 5 5M5 20h14" />
+  </svg>
+);
 
-/** Drafts open straight into review; everything else the study page. */
-const studyHref = (s: Pick<StudySummaryDto, "id" | "status">) => `/studies/${s.id}${IN_REVIEW.includes(s.status) ? "/review" : ""}`;
+function NeedsSomeone({ s }: { s: StudySummaryDto }) {
+  const st = summaryStage(s);
+  if (st.failed) return <span className="text-danger">Read it again</span>;
+  if (st.stage === "Needs you") return <span>{st.needs} {st.needs === 1 ? "question" : "questions"} <span className="text-muted">· about {minutesFor(st.needs!)} min</span></span>;
+  if (st.stage === "Approve") return <span className="text-accent">Ready to approve</span>;
+  if (st.stage === "Upload") return <span>Check the details</span>;
+  return <span className="text-faint">—</span>;
+}
 
-export default function StudiesPage() {
+export default function ContractsPage() {
   const { data, error, isPending } = useStudies();
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState<StudyStatus | "all">("all");
-
-  const queue = useMemo(
-    () => (data ?? []).filter((s) => IN_REVIEW.includes(s.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
-    [data],
-  );
-  const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return (data ?? [])
-      .filter((s) => status === "all" || s.status === status)
-      .filter((s) => !needle || [s.sponsor, s.protocol, s.siteName, s.investigator].some((f) => f?.toLowerCase().includes(needle)))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [data, q, status]);
-  const counts = useMemo(() => {
-    const c: Partial<Record<StudyStatus, number>> = {};
-    for (const s of data ?? []) c[s.status] = (c[s.status] ?? 0) + 1;
-    return c;
-  }, [data]);
+  const sites = new Map<string, StudySummaryDto[]>();
+  for (const s of [...(data ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+    const k = s.siteName ?? "No site yet";
+    sites.set(k, [...(sites.get(k) ?? []), s]);
+  }
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] px-5 py-6">
+    <div className={pageCls}>
       <PageTitle
-        title="Studies"
-        sub="Every sponsor contract, its rulebook and where it stands."
+        eyebrow="Contract setup"
+        title="Contracts"
+        sub="Each signed sponsor contract becomes an invoicing master. Nothing is billed from it until someone approves it."
         actions={
           <Link href="/studies/new" className={btnCls("primary")}>
-            + New study
+            <UploadIcon /> Add contract
           </Link>
         }
       />
       {isPending && <Spinner />}
       <ErrorNote error={error} />
-      {data && data.length === 0 && (
-        <Empty
-          title="No studies yet"
-          action={
-            <Link href="/studies/new" className="font-medium text-accent underline-offset-2 hover:underline">
-              Bring a study on board →
-            </Link>
-          }
-        >
-          Drop the signed contract PDFs and the AI will draft the rulebook for you to review.
+      {data?.length === 0 && (
+        <Empty title="No contracts yet" action={<Link href="/studies/new" className={btnCls("primary")}>Add contract</Link>}>
+          Upload a signed sponsor contract. It&apos;s read and checked against the PDF, and you answer only what needs a person.
         </Empty>
       )}
-
-      {queue.length > 0 && (
-        <section aria-labelledby="queue-h" className="mb-8">
-          <h2 id="queue-h" className="mb-2 flex items-center gap-2 text-sm font-semibold">
-            Needs review <Badge tone="warn">{queue.length}</Badge>
-            <span className="font-normal text-muted">· oldest first</span>
-          </h2>
-          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {queue.map((s) => (
-              <li key={s.id}>
-                <Link href={studyHref(s)} className="group block rounded-card border border-line bg-surface p-4 transition-colors hover:border-accent">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium group-hover:text-accent">{s.sponsor ?? "Unnamed study"}</p>
-                      <p className="num truncate text-sm text-muted">{s.protocol ?? "—"}</p>
-                    </div>
-                    <StatusBadge status={s.status} />
-                  </div>
-                  <div className="mt-3 flex items-center justify-between text-sm">
-                    <span className={cx("font-medium", s.openAnomalies ? "text-danger" : "text-ok")}>
-                      {s.openAnomalies ? `${s.openAnomalies} open ${s.openAnomalies === 1 ? "anomaly" : "anomalies"}` : "Ready to sign off"}
-                    </span>
-                    <span className="text-muted" title={formatDateTime(s.updatedAt)}>
-                      waiting {relativeTime(s.updatedAt).replace(" ago", "")}
-                    </span>
-                  </div>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {data && data.length > 0 && (
-        <Card>
-          <div className="flex flex-wrap items-center gap-3 border-b border-line p-3">
-            <input
-              type="search"
-              aria-label="Search studies"
-              placeholder="Search sponsor, protocol, site, PI…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              className={cx(inputCls, "max-w-xs")}
-            />
-            <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-1">
-              {(["all", ...Object.keys(STATUS_LABEL)] as (StudyStatus | "all")[]).map((k) => {
-                const n = k === "all" ? data.length : (counts[k] ?? 0);
-                if (k !== "all" && !n) return null;
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    aria-pressed={status === k}
-                    onClick={() => setStatus(k)}
-                    className={cx("rounded-full border px-2.5 py-1 text-xs", status === k ? "border-accent bg-accent-soft text-accent" : "border-line text-muted hover:text-ink")}
-                  >
-                    {k === "all" ? "All" : STATUS_LABEL[k]} <span className="num">{n}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-sunken text-left text-xs text-muted">
-                <tr>
-                  {["Sponsor", "Protocol", "Site · PI", "Status", "Live version", "Open anomalies", "Updated"].map((h) => (
-                    <th key={h} scope="col" className="px-3 py-2 font-medium">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((s) => (
-                  <tr key={s.id} className="border-t border-line hover:bg-sunken/60">
-                    <td className="px-3 py-2.5">
-                      <Link href={studyHref(s)} className="font-medium hover:text-accent hover:underline">
-                        {s.sponsor ?? "Unnamed study"}
-                      </Link>
-                    </td>
-                    <td className="num px-3 py-2.5">{s.protocol ?? "—"}</td>
-                    <td className="px-3 py-2.5">
-                      {s.siteName ?? "—"} <span className="text-muted">· {s.investigator ?? "—"}</span>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <StatusBadge status={s.status} />
-                    </td>
-                    <td className="num px-3 py-2.5">{s.liveVersion ? `v${s.liveVersion}` : <span className="text-faint">—</span>}</td>
-                    <td className="num px-3 py-2.5">{s.openAnomalies ? <span className="font-medium text-danger">{s.openAnomalies}</span> : <span className="text-faint">0</span>}</td>
-                    <td className="px-3 py-2.5 text-muted" title={formatDateTime(s.updatedAt)}>
-                      {relativeTime(s.updatedAt)}
-                    </td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
+      <div className="flex flex-col gap-5">
+        {[...sites].map(([site, rows]) => (
+          <section key={site} aria-labelledby={`site-${site}`} className="overflow-hidden rounded-card border border-line bg-surface shadow-card">
+            <header className="flex items-center gap-2 border-b border-line px-5 py-3.5">
+              <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className="size-4 text-ink-2">
+                <path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z" />
+                <circle cx="12" cy="9.5" r="2.5" />
+              </svg>
+              <h2 id={`site-${site}`} className="text-lg">
+                {site}
+              </h2>
+              <span className="text-[13px] text-muted">
+                {rows.length} {rows.length === 1 ? "contract" : "contracts"}
+              </span>
+            </header>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[13px]">
+                <thead className="bg-sunken text-left">
                   <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-muted">
-                      No studies match.{" "}
-                      <button type="button" className="text-accent underline" onClick={() => (setQ(""), setStatus("all"))}>
-                        Clear filters
-                      </button>
-                    </td>
+                    {["Study", "Stage", "Needs someone", "Updated"].map((h) => (
+                      <th key={h} scope="col" className="eyebrow px-5 py-2.5">
+                        {h}
+                      </th>
+                    ))}
+                    <th aria-hidden className="w-10" />
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+                </thead>
+                <tbody>
+                  {rows.map((s) => (
+                    <tr key={s.id} className="relative border-t border-line hover:bg-accent-soft">
+                      <td className="px-5 py-3">
+                        {/* The link covers the whole row. */}
+                        <Link href={`/studies/${s.id}`} className="after:absolute after:inset-0">
+                          <span className="font-medium">{s.protocol ?? "New contract"}</span>{" "}
+                          <span className="text-muted">
+                            {s.sponsor ?? "Sponsor not confirmed yet"}
+                            {s.status === "amendment_in_review" && " · new version in progress"}
+                          </span>
+                        </Link>
+                      </td>
+                      <td className="px-5 py-3">
+                        <StagePill state={summaryStage(s)} />
+                      </td>
+                      <td className="px-5 py-3">
+                        <NeedsSomeone s={s} />
+                      </td>
+                      <td className="px-5 py-3 whitespace-nowrap text-muted" title={formatDateTime(s.updatedAt)}>
+                        {relativeTime(s.updatedAt)}
+                      </td>
+                      <td aria-hidden className="pr-5 text-right text-muted">
+                        →
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

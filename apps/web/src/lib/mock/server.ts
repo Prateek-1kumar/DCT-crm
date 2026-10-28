@@ -1,20 +1,47 @@
-import type {
-  AuditEntryDto,
-  ContractAnomaly,
-  DiffEntry,
-  DocumentDto,
-  DocumentKind,
-  JobDto,
-  Rulebook,
-  RulebookVersionDto,
-  SettingsDto,
-  StudyDetailDto,
-  StudyStatus,
-  StudySummaryDto,
+import {
+  AnswerReviewBody,
+  ByHandBody,
+  CorrectValueBody,
+  ReportValueBody,
+  Rulebook as RulebookSchema,
+  settled,
+  type AuditEntryDto,
+  type DiffEntry,
+  type DocumentDto,
+  type DocumentKind,
+  type JobDto,
+  type ReviewItem,
+  type Rulebook,
+  type RulebookVersionDto,
+  type SettingsDto,
+  type StudyDetailDto,
+  type StudyStatus,
+  type StudySummaryDto,
+  type ValueEvidence,
 } from "@dct/shared";
-import { formatValue, ENUM_OPTIONS } from "../format";
-import { findProv, getAt, segments, setAt } from "../pointer";
-import { amendRulebook, anomaly, blankRulebook, makeRulebook, PEOPLE, refsOf, SEEDS } from "./fixtures";
+import { blankRulebook } from "../byhand";
+import { formatValue, labelFor } from "../format";
+import { getAt, segments, setAt } from "../pointer";
+import { needsYou } from "../review";
+import {
+  amendmentSpecs,
+  amendRulebook,
+  askAbout,
+  buildDraft,
+  cobaltSpecs,
+  halcyonV1Specs,
+  makeRulebook,
+  meridianSpecs,
+  newContractSpecs,
+  northwindSpecs,
+  PEOPLE,
+  SEEDS,
+  toItem,
+  toSecret,
+  type Draft,
+  type Secret,
+  type Spec,
+} from "./fixtures";
 
 /**
  * In-browser implementation of the PHASE-1.md HTTP API (NEXT_PUBLIC_API_MOCK=1).
@@ -23,9 +50,10 @@ import { amendRulebook, anomaly, blankRulebook, makeRulebook, PEOPLE, refsOf, SE
 
 type Study = { id: string; sponsor: string | null; protocol: string | null; siteName: string | null; investigator: string | null; status: StudyStatus; updatedAt: string; documentIds: string[] };
 type Job = { id: string; kind: "identify" | "extract"; studyId: string; version: number | null; startedAt: number; durationMs: number; fail: boolean; applied: boolean };
-type Db = { studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; seq: number };
+/** `secrets` is the "server side": right answers keyed `studyId/version/itemId`, never in a response. */
+type Db = { studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number };
 
-const KEY = "dct.mockdb.v1";
+const KEY = "dct.mockdb.v2";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -61,7 +89,7 @@ export function mockReset() {
 // ---------------------------------------------------------------- seed
 
 function seed(): Db {
-  const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: false, people: [...PEOPLE] }, seq: 100 };
+  const d: Db = { studies: [], documents: [], versions: [], jobs: [], audit: [], settings: { makerChecker: false, people: [...PEOPLE] }, secrets: {}, seq: 100 };
   const kinds: Record<string, DocumentKind> = { "doc-hal-am1": "amendment", "doc-sl-wo": "work_order" };
 
   for (const sd of Object.values(SEEDS)) {
@@ -70,116 +98,114 @@ function seed(): Db {
       d.documents.push({ id, filename, sha256: fakeSha(id), kind, pageCount, uploadedAt: daysAgo(30), duplicateOf: null });
     }
   }
-  const version = (studyId: string, v: number, status: RulebookVersionDto["status"], rulebook: Rulebook | null, anomalies: ContractAnomaly[], extra: Partial<RulebookVersionDto> = {}): RulebookVersionDto => ({
-    studyId, version: v, status, rulebook, anomalies, createdAt: daysAgo(10), signedBy: null, signedAt: null, appliesFrom: rulebook?.appliesFrom.value ?? null, editors: [],
-    cost: { usd: 2.84, inputTokens: 182_400, outputTokens: 21_900 }, ...extra,
-  });
-  const study = (id: string, c: { sponsor: string; protocol: string; site: string; pi: string }, status: StudyStatus, docs: string[], updatedAt: string): Study =>
-    ({ id, sponsor: c.sponsor, protocol: c.protocol, siteName: c.site, investigator: c.pi, status, updatedAt, documentIds: docs });
+  const study = (id: string, c: { sponsor: string; protocol: string; site: string; pi: string }, status: StudyStatus, docs: string[], updatedAt: string): Study => {
+    const st: Study = { id, sponsor: c.sponsor, protocol: c.protocol, siteName: c.site, investigator: c.pi, status, updatedAt, documentIds: docs };
+    d.studies.push(st);
+    return st;
+  };
+  const version = (st: Study, v: number, dr: Draft | null, createdAt: string, status: RulebookVersionDto["status"] = "draft") => {
+    const ver = newVersion(st.id, v, status, createdAt);
+    if (dr) setDraft(d, ver, dr);
+    d.versions.push(ver);
+    return ver;
+  };
+  const sign = (st: Study, ver: RulebookVersionDto, by: string, at: string) => {
+    Object.assign(ver, { status: "signed", signedBy: by, signedAt: at, appliesFrom: ver.rulebook?.appliesFrom.value ?? null });
+    log(d, by, st.id, "version.signed", { version: ver.version }, at);
+  };
+  const say = (st: Study, ver: RulebookVersionDto, id: string, body: Record<string, unknown>, at: string) => answer(d, st, ver, id, body, at);
 
-  // Halcyon: live v1 + amendment v2 in review (diff).
+  // Halcyon: live v1, and an amendment v2 with every question answered, waiting for approval.
   {
     const sd = SEEDS.halcyon;
-    const cfg = sd.cfg!;
-    const v1 = makeRulebook(cfg);
-    const am = amendRulebook(v1, { id: "doc-hal-am1", kind: "amendment", title: "Amendment 1 to CTA HAL-2207", date: "2026-09-30" });
-    d.studies.push(study(sd.id, cfg, "amendment_in_review", ["doc-hal-cta", "doc-hal-am1"], daysAgo(2)));
-    const settled = { kind: "accepted_with_note" as const, note: "ET is billed per occurrence as invoiceable; matches §4.4.", by: "Avery Chen", at: daysAgo(41) };
-    d.versions.push(version(sd.id, 1, "signed", v1, [{ ...anomaly("AMBIGUOUS_TERM", "info", "Early termination procedures marked 'as performed'; treated as invoiceable.", "/budgetGrids/0/visits/6", refsOf(v1.budgetGrids[0]!.prov)), resolution: settled }], { createdAt: daysAgo(44), signedBy: "Avery Chen", signedAt: daysAgo(40) }));
-    d.versions.push(version(sd.id, 2, "draft", am.rulebook, am.anomalies, { createdAt: daysAgo(2) }));
+    const st = study(sd.id, sd.cfg!, "amendment_in_review", ["doc-hal-cta", "doc-hal-am1"], daysAgo(1));
+    log(d, "Avery Chen", st.id, "study.created", { documents: 1 }, daysAgo(44));
+    const v1 = version(st, 1, buildDraft(makeRulebook(sd.cfg!), halcyonV1Specs()), daysAgo(44));
+    say(st, v1, "h1", { value: 14200, by: "Avery Chen" }, daysAgo(41));
+    say(st, v1, "h2", { optionId: "invoiceable", by: "Avery Chen" }, daysAgo(41));
+    sign(st, v1, "Avery Chen", daysAgo(40));
+    const am = amendRulebook(v1.rulebook!, { id: "doc-hal-am1", kind: "amendment", title: "Amendment 1 to CTA HAL-2207", date: "2026-09-30" });
+    const v2 = version(st, 2, buildDraft(am, amendmentSpecs("doc-hal-am1", am.invoiceables.length - 1)), daysAgo(2));
+    log(d, "Taylor Brooks", st.id, "amendment.uploaded", { file: "HAL-2207_Amendment-1.pdf", version: 2 }, daysAgo(2));
+    say(st, v2, "a1", { value: "2026-09-01", by: "Taylor Brooks" }, daysAgo(1));
+    say(st, v2, "a2", { value: 42000, by: "Taylor Brooks" }, daysAgo(1));
+    say(st, v2, "a3", { value: 11200, by: "Taylor Brooks" }, daysAgo(1));
+    say(st, v2, "a4", { optionId: "ok", by: "Taylor Brooks" }, daysAgo(1));
+    say(st, v2, "a5", { cantTell: true, by: "Taylor Brooks" }, daysAgo(1));
   }
 
-  // Northwind: draft with conflicting grids, overhead label, missing master, AI disagreements.
+  // Northwind: a text PDF in "Needs you".
   {
     const sd = SEEDS.northwind;
-    const cfg = sd.cfg!;
-    const rb = makeRulebook(cfg);
-    rb.payment.netDays.prov = { ...rb.payment.netDays.prov, crossCheck: "disagree", confidence: 0.74 };
-    rb.invoiceables[0]!.prov = { ...rb.invoiceables[0]!.prov, crossCheck: "disagree", confidence: 0.81 };
-    rb.payment.invoiceAddress.prov = { ...rb.payment.invoiceAddress.prov, confidence: 0.58 };
-    const bad = rb.budgetGrids[1]!.visits[3]!;
-    const expected = bad.totalCents;
-    bad.totalCents += 100; // printed total off by $1.00
-    const [ga, gb] = rb.budgetGrids;
-    d.studies.push(study(sd.id, cfg, "needs_review", ["doc-nw-wo", "doc-nw-bud"], daysAgo(6)));
-    d.versions.push(version(sd.id, 1, "draft", rb, [
-      anomaly("GRID_CONFLICT", "blocker", "Exhibit A and Attachment 2 both price the whole study and disagree on 4 procedures. Choose the governing grid.", "/budgetGrids", [ga!.prov.source!, gb!.prov.source!], { gridIds: [ga!.id, gb!.id] }),
-      anomaly("VISIT_TOTAL_MISMATCH", "blocker", "Attachment 2, Week 12: printed total is $1.00 more than its lines add up to.", "/budgetGrids/1/visits/3/totalCents", refsOf(bad.prov), { expected, actual: bad.totalCents }),
-      anomaly("OVERHEAD_LABEL_MISMATCH", "warning", "Exhibit A says 35% overhead, but the visit math works out to 25%.", "/budgetGrids/0/statedOverheadPct", refsOf(ga!.prov), { stated: 35, computed: 25 }),
-      anomaly("MISSING_REFERENCED_DOC", "warning", "Work order refers to the Master Clinical Trial Agreement (12 Mar 2024), which wasn't uploaded. Terms that depend on it are marked unverified.", "/referencedDocuments/0", refsOf(rb.referencedDocuments[0]!.prov)),
-      anomaly("AI_DISAGREEMENT", "warning", "Net payment days: Claude read 45, OpenAI read 60.", "/payment/netDays/value", refsOf(rb.payment.netDays.prov), { claude: 45, openai: 60 }),
-      anomaly("AI_DISAGREEMENT", "warning", "Unscheduled visit (with overhead): the two reads differ.", "/invoiceables/0/amountWithOverheadCents", refsOf(rb.invoiceables[0]!.prov), { claude: 80000, openai: 77200 }),
-      anomaly("LOW_CONFIDENCE", "info", "Invoice address was hard to read (58% confidence).", "/payment/invoiceAddress/value", refsOf(rb.payment.invoiceAddress.prov), { confidence: 0.58 }),
-    ], { createdAt: daysAgo(6) }));
+    const st = study(sd.id, sd.cfg!, "needs_review", ["doc-nw-wo", "doc-nw-bud"], daysAgo(6));
+    version(st, 1, buildDraft(makeRulebook(sd.cfg!), northwindSpecs()), daysAgo(6));
+    log(d, "system", st.id, "extraction.succeeded", { version: 1 }, daysAgo(6));
   }
 
-  // Cobalt: two arms; Arm B header names another PI/site; duplicate item.
+  // Cobalt: a scan, so every number outside the grids is typed by a person.
   {
     const sd = SEEDS.cobalt;
-    const cfg = sd.cfg!;
-    const rb = makeRulebook(cfg);
-    rb.screenFail!.prov = { ...rb.screenFail!.prov, crossCheck: "disagree", confidence: 0.83 };
-    d.studies.push(study(sd.id, cfg, "needs_review", ["doc-cb-cta"], daysAgo(3)));
-    const ai = anomaly("AI_DISAGREEMENT", "warning", "Screen-fail amount: Claude read $610.00, OpenAI read $660.00.", "/screenFail/amountCents", refsOf(rb.screenFail!.prov), { claude: 61000, openai: 66000 });
-    ai.resolution = { kind: "chosen", note: "Exhibit A §5 clearly says $610.00.", by: "Jordan Patel", at: daysAgo(1) };
-    d.versions.push(version(sd.id, 1, "draft", rb, [
-      anomaly("HEADER_MISMATCH", "blocker", "Arm B grid header names Dr. Owen Pratt at DCT Eastfield; the contract is with Dr. Lena Ortiz at DCT Northgate.", "/budgetGrids/1/header", refsOf(rb.budgetGrids[1]!.prov), { grid: rb.budgetGrids[1]!.header, contract: { investigator: cfg.pi, siteName: cfg.site } }),
-      anomaly("DUPLICATE_ITEM", "warning", "Central lab kit processing is paid inside visits and also listed as an invoiceable.", "/invoiceables/2", [...refsOf(rb.invoiceables[2]!.prov), ...refsOf(rb.budgetGrids[0]!.procedures[6]!.prov)]),
-      ai,
-    ], { createdAt: daysAgo(3), editors: [] }));
+    const st = study(sd.id, sd.cfg!, "needs_review", ["doc-cb-cta"], daysAgo(3));
+    version(st, 1, buildDraft(makeRulebook(sd.cfg!), cobaltSpecs(), { scan: true }), daysAgo(3));
+    log(d, "system", st.id, "extraction.succeeded", { version: 1 }, daysAgo(3));
   }
 
-  // Meridian: live, clean.
+  // Meridian: live.
   {
     const sd = SEEDS.meridian;
-    const cfg = sd.cfg!;
-    d.studies.push(study(sd.id, cfg, "live", ["doc-mx-msa", "doc-mx-wo"], daysAgo(21)));
-    d.versions.push(version(sd.id, 1, "signed", makeRulebook(cfg), [], { createdAt: daysAgo(25), signedBy: "Sam Rivera", signedAt: daysAgo(21) }));
+    const st = study(sd.id, sd.cfg!, "live", ["doc-mx-msa", "doc-mx-wo"], daysAgo(21));
+    const v1 = version(st, 1, buildDraft(makeRulebook(sd.cfg!), meridianSpecs()), daysAgo(25));
+    say(st, v1, "m1", { value: 2500, by: "Jordan Patel" }, daysAgo(22));
+    say(st, v1, "m2", { value: 60, by: "Jordan Patel" }, daysAgo(22));
+    say(st, v1, "m3", { optionId: "procedures_only", by: "Jordan Patel" }, daysAgo(22));
+    sign(st, v1, "Sam Rivera", daysAgo(21));
   }
 
-  // Solace: extraction failed.
+  // Solace: the scan couldn't be read.
   {
-    const id = SEEDS.solace.id;
-    d.studies.push(study(id, { sponsor: "Solace Bio", protocol: "SLB-102", site: "DCT Lakeshore", pi: "Dr. Priya Raman" }, "extraction_failed", ["doc-sl-wo"], daysAgo(1)));
-    d.versions.push(version(id, 1, "failed", null, [], { createdAt: daysAgo(1) }));
-    d.jobs.push({ id: "job-solace-1", kind: "extract", studyId: id, version: 1, startedAt: Date.now() - 86_400_000, durationMs: 1000, fail: true, applied: true });
+    const st = study(SEEDS.solace.id, { sponsor: "Solace Bio", protocol: "SLB-102", site: "DCT Lakeshore", pi: "Dr. Priya Raman" }, "extraction_failed", ["doc-sl-wo"], daysAgo(1));
+    version(st, 1, null, daysAgo(1), "failed");
+    d.jobs.push({ id: "job-solace-1", kind: "extract", studyId: st.id, version: 1, startedAt: Date.now() - 86_400_000, durationMs: 1000, fail: true, applied: true });
+    log(d, "system", st.id, "extraction.failed", { version: 1, error: "Pages 3–7 couldn't be read: the scan is too faint." }, daysAgo(1));
   }
-
-  const log = (at: string, by: string, studyId: string | null, action: string, detail: Record<string, unknown>) =>
-    d.audit.push({ id: `au-${d.audit.length + 1}`, at, by, studyId, action, detail });
-  log(daysAgo(44), "Avery Chen", "st-halcyon", "study.created", { documents: 1 });
-  log(daysAgo(41), "Avery Chen", "st-halcyon", "anomaly.resolved", { version: 1, anomaly: "AMBIGUOUS_TERM", kind: "accepted_with_note", note: "ET is billed per occurrence as invoiceable; matches §4.4." });
-  log(daysAgo(40), "Avery Chen", "st-halcyon", "version.signed", { version: 1 });
-  log(daysAgo(21), "Sam Rivera", "st-meridian", "version.signed", { version: 1 });
-  log(daysAgo(2), "Taylor Brooks", "st-halcyon", "amendment.uploaded", { document: "HAL-2207_Amendment-1.pdf", version: 2 });
-  log(daysAgo(1), "Jordan Patel", "st-cobalt", "anomaly.resolved", { version: 1, anomaly: "AI_DISAGREEMENT", kind: "chosen", note: "Exhibit A §5 clearly says $610.00." });
-  log(daysAgo(1), "system", "st-solace", "extraction.failed", { version: 1, error: "Pages 3–7 unreadable (scan too faint)" });
   return d;
+}
+
+function newVersion(studyId: string, version: number, status: RulebookVersionDto["status"], createdAt = now()): RulebookVersionDto {
+  return {
+    studyId, version, status, createdAt, signedBy: null, signedAt: null, appliesFrom: null, rulebook: null, anomalies: [], editors: [],
+    cost: { usd: 3.12, inputTokens: 201_300, outputTokens: 24_800 }, evidence: [], review: [], pdfCheck: null, byHand: false,
+  };
+}
+
+function setDraft(d: Db, ver: RulebookVersionDto, dr: Draft) {
+  Object.assign(ver, { rulebook: dr.rulebook, review: dr.review, evidence: dr.evidence, pdfCheck: dr.pdfCheck });
+  for (const [id, sec] of Object.entries(dr.secrets)) d.secrets[`${ver.studyId}/${ver.version}/${id}`] = sec;
 }
 
 // ---------------------------------------------------------------- jobs
 
 const EXTRACT_STEPS: [number, string][] = [
-  [0, "Queued"],
-  [5, "Splitting PDFs into pages"],
-  [15, "Reading contract terms (Claude)"],
-  [40, "Extracting the procedure × visit grid"],
-  [62, "Independent second read (OpenAI)"],
-  [84, "Running contract checks"],
+  [0, "Waiting to start"],
+  [5, "Opening the PDFs"],
+  [15, "Reading the contract terms"],
+  [40, "Reading the budget grid"],
+  [62, "Checking every number against the PDF"],
+  [84, "Listing what needs you"],
   [100, "Done"],
 ];
 const IDENTIFY_STEPS: [number, string][] = [
-  [0, "Queued"],
-  [10, "Reading cover pages"],
-  [45, "Sorting documents by kind"],
-  [80, "Suggesting study details"],
+  [0, "Waiting to start"],
+  [10, "Reading the cover pages"],
+  [45, "Sorting the files"],
+  [80, "Filling in the study details"],
   [100, "Done"],
 ];
 
 function jobView(j: Job): JobDto {
   const p = Math.min(100, Math.floor(((Date.now() - j.startedAt) / j.durationMs) * 100));
   const failAt = 55;
-  if (j.fail && p >= failAt) return { id: j.id, state: "failed", progress: failAt, step: "Reading contract terms (Claude)", error: "Pages 3–7 couldn't be read (scan too faint). Retry, or enter the terms manually." };
+  if (j.fail && p >= failAt) return { id: j.id, state: "failed", progress: failAt, step: "Reading the contract terms", error: "Pages 3–7 couldn't be read: the scan is too faint." };
   const steps = j.kind === "extract" ? EXTRACT_STEPS : IDENTIFY_STEPS;
   const step = [...steps].reverse().find(([t]) => p >= t)![1];
   return { id: j.id, state: p >= 100 ? "succeeded" : p > 2 ? "running" : "queued", progress: p, step, error: null };
@@ -210,32 +236,30 @@ function tick(d: Db) {
     }
     if (live?.rulebook) {
       const am = docs.find((x) => x.kind === "amendment" && !live.rulebook!.documents.some((r) => r.id === x.id)) ?? docs[docs.length - 1]!;
-      const r = amendRulebook(live.rulebook, { id: am.id, kind: am.kind, title: am.filename.replace(/\.pdf$/i, ""), date: now().slice(0, 10) });
-      Object.assign(ver, { status: "draft", rulebook: r.rulebook, anomalies: r.anomalies });
+      const rb = amendRulebook(live.rulebook, { id: am.id, kind: am.kind, title: am.filename.replace(/\.pdf$/i, ""), date: now().slice(0, 10) });
+      setDraft(d, ver, buildDraft(rb, amendmentSpecs(am.id, rb.invoiceables.length - 1)));
+      ver.status = "draft";
       st.status = "amendment_in_review";
     } else {
       const rbDocs = docs.map((x) => ({ id: x.id, kind: x.kind, title: x.filename.replace(/\.pdf$/i, ""), date: null }));
       const terms = docs.find((x) => x.kind === "work_order") ?? docs[0]!;
       const hasMaster = docs.some((x) => x.kind === "master_agreement");
+      const gridPage = Math.min(9, terms.pageCount);
       const rb = makeRulebook({
         sponsor: st.sponsor ?? "Unknown sponsor", payingAgent: null, protocol: st.protocol ?? "—", site: st.siteName ?? "—", pi: st.investigator ?? "—",
         effectiveDate: now().slice(0, 10), termsDoc: terms.id, docs: rbDocs,
-        grids: [{ id: `g-${st.id}`, label: "Exhibit A – Budget", arm: null, docId: terms.id, page: Math.min(9, terms.pageCount), overheadPct: 30 }],
+        grids: [{ id: `g-${st.id}`, label: "Exhibit A – Budget", arm: null, docId: terms.id, page: gridPage, overheadPct: 30 }],
         ...(hasMaster ? {} : { missingMaster: { description: "Master Clinical Trial Agreement", date: "2024-01-15" } }),
       });
       // Keep every page reference inside the uploaded documents.
       clampPages(rb, docs);
-      rb.payment.netDays.prov = { ...rb.payment.netDays.prov, crossCheck: "disagree", confidence: 0.76 };
-      const anomalies = [
-        anomaly("AI_DISAGREEMENT", "warning", "Net payment days: Claude read 45, OpenAI read 30.", "/payment/netDays/value", refsOf(rb.payment.netDays.prov), { claude: 45, openai: 30 }),
-        anomaly("LOW_CONFIDENCE", "info", "Spirometry unit price was hard to read (71% confidence).", "/budgetGrids/0/procedures/3/unitCents", refsOf(rb.budgetGrids[0]!.procedures[3]!.prov), { confidence: 0.71 }),
-      ];
-      if (!hasMaster) anomalies.unshift(anomaly("MISSING_REFERENCED_DOC", "warning", "The work order refers to a Master Clinical Trial Agreement that wasn't uploaded. Dependent terms are marked unverified.", "/referencedDocuments/0", refsOf(rb.referencedDocuments[0]!.prov)));
-      Object.assign(ver, { status: "draft", rulebook: rb, anomalies, appliesFrom: null });
+      const scan = docs.some((x) => /scan/i.test(x.filename));
+      setDraft(d, ver, buildDraft(rb, scan ? [] : newContractSpecs({ doc: terms.id, pages: terms.pageCount, gridPage, hasMaster }), { scan }));
+      Object.assign(ver, { status: "draft", appliesFrom: null });
       st.status = "needs_review";
     }
     st.updatedAt = now();
-    log(d, "system", st.id, "extraction.succeeded", { version: ver.version, anomalies: ver.anomalies.length });
+    log(d, "system", st.id, "extraction.succeeded", { version: ver.version, questions: ver.review.length });
   }
 }
 
@@ -253,8 +277,8 @@ function clampPages(rb: Rulebook, docs: DocumentDto[]) {
 
 // ---------------------------------------------------------------- helpers
 
-function log(d: Db, by: string, studyId: string | null, action: string, detail: Record<string, unknown>) {
-  d.audit.push({ id: `au-${++d.seq}`, at: now(), by, studyId, action, detail });
+function log(d: Db, by: string, studyId: string | null, action: string, detail: Record<string, unknown>, at = now()) {
+  d.audit.push({ id: `au-${++d.seq}`, at, by, studyId, action, detail });
 }
 const latestSigned = (d: Db, studyId: string) =>
   d.versions.filter((v) => v.studyId === studyId && v.status === "signed").sort((a, b) => b.version - a.version)[0];
@@ -266,7 +290,9 @@ function summary(d: Db, s: Study): StudySummaryDto {
   return {
     id: s.id, sponsor: s.sponsor, protocol: s.protocol, siteName: s.siteName, investigator: s.investigator, status: s.status,
     liveVersion: latestSigned(d, s.id)?.version ?? null,
-    openAnomalies: draft ? draft.anomalies.filter((a) => !a.resolution).length : 0,
+    openAnomalies: 0,
+    // ponytail: a by-hand draft still being typed counts as 1 (the typing); the summary has no by-hand flag yet.
+    needsYou: !draft ? 0 : draft.byHand && !draft.review.length ? 1 : needsYou(draft.review).length,
     updatedAt: s.updatedAt,
   };
 }
@@ -297,32 +323,6 @@ async function sha256Hex(file: File): Promise<string> {
 
 // ---------------------------------------------------------------- diff
 
-const TOP: Record<string, string> = {
-  study: "Study", payment: "Payment", overhead: "Overhead", budgetGrids: "Budget grid", invoiceables: "Invoiceable", siteFees: "Site fee",
-  deadlines: "Deadline", screenFail: "Screen fail", holdback: "Holdback", overpayment: "Overpayment", rounding: "Rounding",
-  appliesFrom: "Applies from", documents: "Document", referencedDocuments: "Referenced document", governingGridId: "Governing grid",
-};
-const humanize = (k: string) => k.replace(/Cents$/, "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase()).replace(/ ([A-Z])/g, (m) => m.toLowerCase());
-
-export function labelFor(path: string, rb: unknown): string {
-  const segs = segments(path);
-  const parts: string[] = [];
-  let cur: unknown = rb;
-  segs.forEach((seg, i) => {
-    cur = cur && typeof cur === "object" ? (cur as Record<string, unknown>)[seg] : undefined;
-    if (seg === "value" || seg === "cells") return;
-    if (i === 0) return parts.push(TOP[seg] ?? humanize(seg));
-    if (/^\d+$/.test(seg)) {
-      const o = (cur ?? {}) as Record<string, unknown>;
-      const kindLabel = typeof o.kind === "string" ? ENUM_OPTIONS.kind?.[o.kind] : undefined;
-      const name = o.name ?? o.label ?? o.title ?? o.description ?? kindLabel ?? o.code ?? `#${Number(seg) + 1}`;
-      return parts.push(String(name));
-    }
-    parts.push(segs[i - 1] === "cells" ? seg : humanize(seg));
-  });
-  return parts.join(" › ");
-}
-
 export function diffRulebooks(before: Rulebook | null, after: Rulebook | null): DiffEntry[] {
   const out: DiffEntry[] = [];
   const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object";
@@ -340,6 +340,161 @@ export function diffRulebooks(before: Rulebook | null, after: Rulebook | null): 
   return out;
 }
 
+// ---------------------------------------------------------------- answering questions
+
+const same = (a: unknown, b: unknown) =>
+  typeof a === "string" && typeof b === "string" ? a.trim().toLowerCase() === b.trim().toLowerCase() : JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * POST .../review/:itemId. A typed value is compared with the hidden right answer: matched, or differs (then a final
+ * value plus a note settles it as chosen). Options are chosen. Can't tell is left for the approver.
+ */
+function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: unknown, at = now()): Res {
+  if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only a draft takes answers.`);
+  const item = ver.review.find((i) => i.id === itemId);
+  if (!item) return err(404, "Question not found");
+  const parsed = AnswerReviewBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Say who is answering.");
+  const b = parsed.data;
+  if (settled(item)) return err(409, "This question is already settled.");
+  // The blind re-type of hand-typed values must be done by someone who didn't type them.
+  const retype = ver.byHand && item.reason === "spot_check";
+  if (retype && ver.editors.includes(b.by)) return err(409, `${b.by} typed these values, so someone else has to re-type them.`);
+  const secret = d.secrets[`${st.id}/${ver.version}/${item.id}`];
+  const current = item.path ? getAt(ver.rulebook, item.path) : undefined;
+  if (Array.isArray(current) && typeof b.value === "string") b.value = b.value.split(",").map((x) => x.trim()).filter(Boolean);
+  let outcome: NonNullable<ReviewItem["outcome"]>;
+  let set: { path: string; value: unknown } | undefined;
+  if (b.cantTell) outcome = "cant_tell";
+  else if (item.options.length) {
+    if (!item.options.some((o) => o.id === b.optionId)) return err(400, "Pick one of the options.");
+    outcome = "chosen";
+    set = secret?.apply?.[b.optionId!];
+  } else {
+    if (b.value === undefined || b.value === null || b.value === "") return err(400, "Type a value, or say you can't tell.");
+    if (item.outcome === "differs") {
+      if (!b.note?.trim()) return err(400, "Add a short note saying why this is the right value.");
+      outcome = "chosen";
+    } else if (secret?.truth === undefined) outcome = "chosen";
+    else outcome = same(b.value, secret.truth) ? "matched" : "differs";
+    if (outcome !== "differs" && item.path) set = { path: item.path, value: b.value };
+  }
+  const ev = item.path ? ver.evidence.find((e) => e.path === item.path) : undefined;
+  if (outcome === "differs") item.compare = { typed: b.value, read: current ?? null, printed: ev?.printed ?? null };
+  item.answer = { value: b.value, optionId: b.optionId, cantTell: b.cantTell, note: b.note?.trim() || undefined, by: b.by, at };
+  item.outcome = outcome;
+  if (set) ver.rulebook = setAt(ver.rulebook, set.path, set.value);
+  if (ev && (outcome === "matched" || outcome === "chosen")) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
+  if (outcome !== "cant_tell" && !retype && !ver.editors.includes(b.by)) ver.editors.push(b.by);
+  st.updatedAt = at;
+  log(d, b.by, st.id, "review.answered", { version: ver.version, question: item.question, outcome: outcome.replace("_", " "), ...(b.note ? { note: b.note } : {}) }, at);
+  return ok(ver);
+}
+
+// ---------------------------------------------------------------- "This looks wrong" and typing by hand
+
+const leaf = (v: unknown) => v === null || typeof v !== "object" || (Array.isArray(v) && v.every((x) => typeof x !== "object"));
+
+function addQuestion(d: Db, ver: RulebookVersionDto, x: Spec) {
+  ver.review.push(toItem(x));
+  d.secrets[`${ver.studyId}/${ver.version}/${x.id}`] = toSecret(x);
+}
+
+/**
+ * POST .../report. On a draft: a blocking blind question about the value. On the live version: a correction draft
+ * (a copy of it plus that question); the live version stays live until the draft is approved.
+ */
+function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
+  const parsed = ReportValueBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Add a short note and say who is reporting.");
+  const { path, note, by } = parsed.data;
+  if (!ver.rulebook || getAt(ver.rulebook, path) === undefined || !leaf(getAt(ver.rulebook, path))) return err(400, "Pick a single value to report.");
+  let draft = ver;
+  if (ver.status === "signed") {
+    const newest = versionsOf(d, st.id).at(-1)!;
+    if (newest.version !== ver.version) return err(409, `Version ${newest.version} is already in progress. Report it there.`);
+    draft = { ...structuredClone(ver), version: ver.version + 1, status: "draft", createdAt: now(), signedBy: null, signedAt: null, editors: [], review: [], byHand: false };
+    d.versions.push(draft);
+    st.status = "amendment_in_review";
+  } else if (ver.status !== "draft" || ver.byHand) return err(409, `Version ${ver.version} is ${ver.status}; report a value on the live version or a draft.`);
+  if (draft.review.some((i) => i.path === path && !settled(i))) return err(409, "There's already an open question about this value.");
+  const x = askAbout(draft.rulebook!, draft.evidence, path, `r${++d.seq}`, "reported");
+  addQuestion(d, draft, x);
+  st.updatedAt = now();
+  const value = getAt(draft.rulebook!, path);
+  log(d, by, st.id, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, value: labelFor(path, draft.rulebook), note });
+  return ok(draft);
+}
+
+/** POST /studies/:id/versions/by-hand: a blank draft for a contract that couldn't be read. */
+function startByHand(d: Db, st: Study, raw: unknown): Res {
+  const parsed = ByHandBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Say who is typing.");
+  const vs = versionsOf(d, st.id);
+  const newest = vs.at(-1);
+  if (newest && (newest.status === "draft" || newest.status === "extracting")) return err(409, `Version ${newest.version} is already in progress.`);
+  const docs = d.documents.filter((x) => st.documentIds.includes(x.id)).map((x) => ({ id: x.id, kind: x.kind, title: x.filename.replace(/\.pdf$/i, ""), date: null }));
+  const ver = newVersion(st.id, (newest?.version ?? 0) + 1, "draft");
+  Object.assign(ver, { byHand: true, cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, rulebook: blankRulebook(docs, { sponsor: st.sponsor ?? "", protocol: st.protocol ?? "", site: st.siteName ?? "", pi: st.investigator ?? "" }) });
+  d.versions.push(ver);
+  st.status = latestSigned(d, st.id) ? "amendment_in_review" : "needs_review";
+  st.updatedAt = now();
+  log(d, parsed.data.by, st.id, "version.manual_created", { version: ver.version });
+  return ok(ver);
+}
+
+/**
+ * PATCH .../values, by-hand drafts only, until entry is marked done. Every typed value is attested; removing a row or
+ * visit moves the evidence of the ones after it. The result must still be a valid invoicing master.
+ */
+function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
+  if (ver.status !== "draft" || !ver.byHand || !ver.rulebook) return err(409, "Values can only be typed on a contract being typed in by hand. Use “This looks wrong” instead.");
+  if (ver.review.length) return err(409, "Typing is marked done. Use “This looks wrong” to change a value.");
+  const parsed = CorrectValueBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Say who is typing.");
+  const { path, value, by } = parsed.data;
+  const before = getAt(ver.rulebook, path);
+  if (before === undefined && segments(path).at(-2) !== "cells") return err(400, `Unknown field ${path}`);
+  const rb = setAt(ver.rulebook, path, value);
+  if (!RulebookSchema.safeParse(rb).success) return err(400, "That field can't be left empty or take that value.");
+  // Structural edit (rows, visits): a typed value keeps its mark only if it's still there unchanged; after removing one
+  // row or visit, the ones below move up.
+  const removed = Array.isArray(before) && Array.isArray(value) && value.length === before.length - 1
+    ? ((i) => (i === -1 ? value.length : i))(value.findIndex((x, i) => JSON.stringify(x) !== JSON.stringify(before[i])))
+    : -1;
+  const ev: ValueEvidence[] = ver.evidence.flatMap((e) => {
+    if (!e.path.startsWith(`${path}/`)) return [e];
+    const [k, ...tail] = e.path.slice(path.length + 1).split("/");
+    const moved = removed >= 0 && Number(k) > removed ? `${path}/${[Number(k) - 1, ...tail].join("/")}` : e.path;
+    if (removed >= 0 && Number(k) === removed) return [];
+    return JSON.stringify(getAt(ver.rulebook, e.path)) === JSON.stringify(getAt(rb, moved)) ? [{ ...e, path: moved }] : [];
+  }).filter((e) => e.path !== path);
+  if (leaf(value) && value !== null && value !== "" && !(Array.isArray(value) && !value.length))
+    ev.push({ path, status: "attested", where: [], printed: null, note: `Typed by hand by ${by}` });
+  ver.rulebook = rb;
+  ver.evidence = ev.filter((e) => getAt(rb, e.path) !== undefined);
+  if (!ver.editors.includes(by)) ver.editors.push(by);
+  st.updatedAt = now();
+  if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, value: labelFor(path, rb), typed: value });
+  return ok(ver);
+}
+
+/** POST .../by-hand/done: someone else re-types 10 randomly chosen typed values (all of them if fewer), blind. */
+function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
+  const parsed = ByHandBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Say who is typing.");
+  if (ver.status !== "draft" || !ver.byHand) return err(409, "Only a contract typed by hand can be marked done.");
+  if (ver.review.length) return err(409, "Typing is already marked done.");
+  const typed = ver.evidence.filter((e) => e.status === "attested" && ["number", "string"].includes(typeof getAt(ver.rulebook, e.path)));
+  if (!typed.length) return err(400, "Type at least one value first.");
+  // ponytail: Math.random shuffle; a seeded pick if the sample ever needs to be reproducible.
+  const sample = typed.map((e) => [Math.random(), e] as const).sort((a, b) => a[0] - b[0]).slice(0, 10).map(([, e]) => e);
+  for (const e of sample) addQuestion(d, ver, askAbout(ver.rulebook!, ver.evidence, e.path, `t${++d.seq}`, "spot_check"));
+  st.updatedAt = now();
+  log(d, parsed.data.by, st.id, "byhand.done", { version: ver.version, typed: typed.length, "re-type": sample.length });
+  return ok(ver);
+}
+
 // ---------------------------------------------------------------- page images
 
 const BOILER = [
@@ -352,43 +507,64 @@ const BOILER = [
 
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/**
+ * A synthetic contract page. It prints what the contract says: the right answer for every question (at the question's
+ * box, or in the text when only the page is known), and the master's values for everything else.
+ */
 export function mockPageSrc(docId: string, page: number): string {
   const d = load();
   const doc = d.documents.find((x) => x.id === docId);
   const st = d.studies.find((s) => s.documentIds.includes(docId));
   const ver = st && [...versionsOf(d, st.id)].reverse().find((v) => v.rulebook);
+  const scan = !!doc && /scan/i.test(doc.filename);
+  const asked = ver?.review ?? [];
+  const placed: { t: string; x: number; y: number }[] = [];
+  const said: string[] = [];
+  for (const it of asked)
+    it.where.forEach((w, i) => {
+      const t = w.documentId === docId && w.page === page ? d.secrets[`${st!.id}/${ver!.version}/${it.id}`]?.lines[i] : undefined;
+      if (!t) return;
+      if (w.box) placed.push({ t, x: w.box[0] * 850 + 10, y: (w.box[1] + w.box[3] * 0.68) * 1100 });
+      else said.push(t);
+    });
+  const askedPaths = asked.flatMap((i) => (i.path ? [i.path] : []));
   const facts: string[] = [];
   const walk = (o: unknown, path: string) => {
     if (!o || typeof o !== "object") return;
     const r = o as Record<string, unknown>;
-    const prov = r.prov as { source: { documentId: string; page: number; location?: string; quote?: string } | null } | undefined;
-    if (prov?.source?.documentId === docId && prov.source.page === page) {
-      const v = "value" in r ? r.value : r;
-      facts.push(`${prov.source.location ?? labelFor(path, ver?.rulebook)}: ${prov.source.quote ? `“${prov.source.quote}” — ` : ""}${formatValue(path + ("value" in r ? "/value" : ""), v)}`);
+    const src = (r.prov as { source: { documentId: string; page: number; location?: string; quote?: string } | null } | undefined)?.source;
+    if (src?.documentId === docId && src.page === page && !askedPaths.some((p) => p === path || p.startsWith(`${path}/`))) {
+      const text = "value" in r ? formatValue(`${path}/value`, r.value) : typeof r.name === "string" ? formatValue(path, r) : null;
+      if (text || src.quote) facts.push(`${src.location ?? labelFor(path, ver?.rulebook)}: ${src.quote ? `“${src.quote}” ` : ""}${text ?? ""}`);
     }
     for (const [k, v] of Object.entries(r)) if (k !== "prov") walk(v, `${path}/${k}`);
   };
   walk(ver?.rulebook, "");
-  const lines: { t: string; bold?: boolean }[] = [];
-  lines.push({ t: doc ? doc.filename.replace(/\.pdf$/i, "") : docId, bold: true });
-  lines.push({ t: "" });
-  BOILER.slice(0, 2 + (page % 3)).forEach((t) => lines.push({ t }));
-  lines.push({ t: "" });
-  for (const f of [...new Set(facts)].slice(0, 26)) lines.push({ t: f, bold: true });
-  if (!facts.length) BOILER.slice(2).forEach((t) => lines.push({ t }));
+  const flow = [
+    { t: doc ? doc.filename.replace(/\.pdf$/i, "") : docId, bold: true },
+    { t: "" },
+    ...BOILER.slice(0, 2 + (page % 3)).map((t) => ({ t })),
+    { t: "" },
+    ...[...new Set([...said, ...facts])].map((t) => ({ t, bold: true })),
+    ...(facts.length || said.length ? [] : BOILER.slice(2).map((t) => ({ t }))),
+  ];
   const wrap = (t: string) => t.match(/.{1,92}(\s|$)/g) ?? [t];
   let y = 120;
-  const text = lines
+  const text = flow
     .flatMap((l) => wrap(l.t || " ").map((t) => ({ t, bold: l.bold })))
+    .slice(0, placed.length ? 14 : 34)
     .map((l) => `<text x="70" y="${(y += 26)}" font-weight="${l.bold ? 600 : 400}">${esc(l.t.trim())}</text>`)
     .join("");
+  const boxes = placed.map((p) => `<text x="${p.x}" y="${p.y}" font-weight="600">${esc(p.t)}</text>`).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="850" height="1100" viewBox="0 0 850 1100">
-<rect width="850" height="1100" fill="#fbfaf7"/>
-<text x="70" y="70" font-family="Georgia,serif" font-size="13" fill="#666">SYNTHETIC DEMO PAGE — not a real contract</text>
+<rect width="850" height="1100" fill="${scan ? "#ecebe6" : "#fff"}"/>
+<g${scan ? ' transform="rotate(-0.5 425 550)"' : ""}>
+<text x="70" y="70" font-family="Georgia,serif" font-size="13" fill="#666">SAMPLE PAGE: not a real contract${scan ? " · scanned copy" : ""}</text>
 <text x="780" y="70" text-anchor="end" font-family="Georgia,serif" font-size="13" fill="#666">Page ${page} of ${doc?.pageCount ?? "?"}</text>
 <line x1="70" y1="88" x2="780" y2="88" stroke="#ccc"/>
-<g font-family="Georgia,serif" font-size="15" fill="#222">${text}</g>
+<g font-family="Georgia,serif" font-size="15" fill="#222">${text}${boxes}</g>
 <text x="425" y="1060" text-anchor="middle" font-family="Georgia,serif" font-size="12" fill="#888">${esc(st?.protocol ?? "")} · Confidential</text>
+</g>
 </svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
@@ -406,7 +582,8 @@ export async function mockRequest(method: string, fullPath: string, body: unknow
   tick(d);
   const res = await route(d, method, fullPath, body);
   save();
-  return res;
+  // Like the wire: a fresh copy, so cached responses never share objects with the mock's state.
+  return { status: res.status, json: JSON.parse(JSON.stringify(res.json ?? null)) };
 }
 
 async function route(d: Db, method: string, fullPath: string, body: unknown): Promise<Res> {
@@ -442,7 +619,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
       const doc: DocumentDto = { id: `doc-${++d.seq}`, filename: f.name, sha256: sha, kind: guessKind(f.name), pageCount: 4 + (parseInt(sha.slice(0, 2), 16) % 12), uploadedAt: now(), duplicateOf: null };
       d.documents.push(doc);
       out.push(doc);
-      log(d, uploader, null, "document.uploaded", { document: doc.filename });
+      log(d, uploader, null, "document.uploaded", { file: doc.filename });
     }
     return ok(out);
   }
@@ -466,7 +643,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     const before = doc.kind;
     doc.kind = b.kind as DocumentKind;
     const st = d.studies.find((s) => s.documentIds.includes(doc.id));
-    log(d, by, st?.id ?? null, "document.kind_changed", { document: doc.filename, before, after: doc.kind });
+    log(d, by, st?.id ?? null, "document.kind_changed", { file: doc.filename, before, after: doc.kind });
     return ok(doc);
   }
 
@@ -479,18 +656,18 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (rest === "" && method === "PATCH") {
     for (const k of ["sponsor", "protocol", "siteName", "investigator"] as const) if (typeof b[k] === "string") st[k] = b[k] as string;
     st.updatedAt = now();
-    log(d, by, st.id, "study.confirmed", { sponsor: st.sponsor, protocol: st.protocol, siteName: st.siteName, investigator: st.investigator });
+    log(d, by, st.id, "study.confirmed", { sponsor: st.sponsor, protocol: st.protocol, site: st.siteName, investigator: st.investigator });
     return ok(detail(d, st));
   }
   if (rest === "/extract" && method === "POST") {
     const vs = versionsOf(d, st.id);
-    if (vs.some((v) => v.status === "extracting")) return err(409, "An extraction is already running for this study.");
+    if (vs.some((v) => v.status === "extracting")) return err(409, "This contract is already being read.");
     for (const id of (b.documentIds as string[] | undefined) ?? []) if (!st.documentIds.includes(id)) st.documentIds.push(id);
     const version = (vs[vs.length - 1]?.version ?? 0) + 1;
     const attempts = d.jobs.filter((j) => j.studyId === st.id && j.kind === "extract").length;
     const docs = d.documents.filter((x) => st.documentIds.includes(x.id));
     const fail = attempts === 0 && docs.some((x) => /fail|unreadable/i.test(x.filename));
-    d.versions.push({ studyId: st.id, version, status: "extracting", createdAt: now(), signedBy: null, signedAt: null, appliesFrom: null, rulebook: null, anomalies: [], editors: [], cost: { usd: 3.12, inputTokens: 201_300, outputTokens: 24_800 } });
+    d.versions.push(newVersion(st.id, version, "extracting"));
     const job: Job = { id: `job-${++d.seq}`, kind: "extract", studyId: st.id, version, startedAt: Date.now(), durationMs: 7000, fail, applied: false };
     d.jobs.push(job);
     if (!latestSigned(d, st.id)) st.status = "extracting";
@@ -498,23 +675,8 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     log(d, by, st.id, "extraction.queued", { version });
     return ok({ jobId: job.id, version });
   }
-  if (rest === "/versions" && method === "POST") {
-    const vs = versionsOf(d, st.id);
-    const version = (vs[vs.length - 1]?.version ?? 0) + 1;
-    const docs = d.documents.filter((x) => st.documentIds.includes(x.id)).map((x) => ({ id: x.id, kind: x.kind, title: x.filename, date: null }));
-    const rb = blankRulebook(docs, { sponsor: st.sponsor ?? "", protocol: st.protocol ?? "", site: st.siteName ?? "", pi: st.investigator ?? "" });
-    d.versions.push({
-      studyId: st.id, version, status: "draft", createdAt: now(), signedBy: null, signedAt: null, appliesFrom: null, rulebook: rb, editors: [], cost: { usd: 0, inputTokens: 0, outputTokens: 0 },
-      anomalies: [
-        anomaly("REQUIRED_MISSING", "blocker", "Net payment days must be entered.", "/payment/netDays/value", []),
-        anomaly("REQUIRED_MISSING", "warning", "No budget grid. Visit fees can't be checked until a grid is added.", "/budgetGrids", []),
-      ],
-    });
-    st.status = latestSigned(d, st.id) ? "amendment_in_review" : "needs_review";
-    st.updatedAt = now();
-    log(d, by, st.id, "version.manual_created", { version });
-    return ok({ version });
-  }
+
+  if (rest === "/versions/by-hand" && method === "POST") return startByHand(d, st, body);
 
   const vm = /^\/versions\/(\d+)(\/.*)?$/.exec(rest);
   if (!vm) return err(404, `No mock route for ${method} ${path}`);
@@ -528,50 +690,20 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     if (!other) return err(404, "Version to compare against not found");
     return ok(diffRulebooks(other.rulebook, ver.rulebook));
   }
-
-  const isDraft = ver.status === "draft";
-  if (vrest === "/values" && method === "PATCH") {
-    if (!isDraft || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only drafts can be corrected.`);
-    const p = String(b.path);
-    const before = getAt(ver.rulebook, p);
-    if (before === undefined && !p.includes("/cells/")) return err(400, `Unknown path ${p}`);
-    const rb = setAt(ver.rulebook, p, b.value);
-    const prov = findProv(rb, p);
-    if (prov) Object.assign(prov, { method: "manual", confidence: 1 });
-    ver.rulebook = rb;
-    if (!ver.editors.includes(by)) ver.editors.push(by);
-    st.updatedAt = now();
-    log(d, by, st.id, "value.corrected", { version: ver.version, path: p, label: labelFor(p, rb), before, after: b.value, note: b.note });
-    return ok(ver);
-  }
-  if ((r = /^\/anomalies\/([^/]+)\/resolve$/.exec(vrest)) && method === "POST") {
-    if (!isDraft) return err(409, `Version ${ver.version} is ${ver.status}.`);
-    const a = ver.anomalies.find((x) => x.id === decodeURIComponent(r![1]!));
-    if (!a) return err(404, "Anomaly not found");
-    a.resolution = { kind: b.kind as "fixed", note: String(b.note), by, at: now() };
-    st.updatedAt = now();
-    log(d, by, st.id, "anomaly.resolved", { version: ver.version, anomaly: a.code, path: a.path, kind: b.kind, note: b.note });
-    return ok(ver);
-  }
-  if (vrest === "/grid-choice" && method === "POST") {
-    if (!isDraft || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}.`);
-    const g = ver.rulebook.budgetGrids.find((x) => x.id === b.gridId);
-    if (!g) return err(400, "Unknown grid");
-    ver.rulebook.governingGridId = g.id;
-    for (const a of ver.anomalies) if (a.code === "GRID_CONFLICT") a.resolution = { kind: "chosen", note: String(b.note), by, at: now() };
-    log(d, by, st.id, "grid.chosen", { version: ver.version, grid: g.label, note: b.note });
-    return ok(ver);
-  }
+  if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
+  if (vrest === "/report" && method === "POST") return report(d, st, ver, body);
+  if (vrest === "/values" && method === "PATCH") return typeValue(d, st, ver, body);
+  if (vrest === "/by-hand/done" && method === "POST") return finishByHand(d, st, ver, body);
   if (vrest === "/sign-off" && method === "POST") {
-    if (!isDraft) return err(409, `Version ${ver.version} is ${ver.status}; only drafts can be signed off.`);
-    const open = ver.anomalies.filter((a) => !a.resolution).length;
-    if (open) return err(409, `${open} ${open === 1 ? "anomaly is" : "anomalies are"} still open. Settle every anomaly before signing off.`);
-    if (d.settings.makerChecker && ver.editors.includes(by)) return err(409, `Maker-checker is on: ${by} corrected values in this version and can't sign it off.`);
+    if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; only a draft can be approved.`);
+    const open = ver.review.filter((i) => i.blocking && !settled(i)).length;
+    if (open) return err(409, `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`);
+    if (d.settings.makerChecker && ver.editors.includes(by)) return err(409, `Maker-checker is on: ${by} answered questions on this contract, so someone else has to approve it.`);
     for (const v of versionsOf(d, st.id)) if (v.status === "signed") v.status = "superseded";
     Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), appliesFrom: ver.rulebook?.appliesFrom.value ?? null });
     st.status = "live";
     st.updatedAt = now();
-    log(d, by, st.id, "version.signed", { version: ver.version, note: b.note ?? null });
+    log(d, by, st.id, "version.signed", { version: ver.version, ...(b.note ? { note: b.note } : {}) });
     return ok(ver);
   }
   return err(404, `No mock route for ${method} ${path}`);

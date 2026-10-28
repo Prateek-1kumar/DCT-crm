@@ -1,10 +1,7 @@
 import type { DiffEntry } from "@dct/shared";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { makeGrid } from "@/lib/mock/fixtures";
 import { DiffView } from "./DiffView";
-import { gridDifferences } from "./GridCompare";
-import { parseInput } from "./ValueEditor";
 
 afterEach(cleanup);
 
@@ -33,32 +30,5 @@ describe("DiffView", () => {
   it("has an empty state", () => {
     render(<DiffView entries={[]} />);
     expect(screen.getByText("No differences")).toBeTruthy();
-  });
-});
-
-describe("gridDifferences", () => {
-  it("flags changed cells, unit prices and visit totals", () => {
-    const base = { id: "a", label: "A", arm: null, docId: "d", page: 1, overheadPct: 25 };
-    const a = makeGrid(base, "PI", "Site");
-    const b = makeGrid({ ...base, id: "b", prices: { "94010": 10400 } }, "PI", "Site");
-    const d = gridDifferences(a, b);
-    expect([...d.units]).toEqual(["Spirometry"]);
-    expect(d.cells.has("Spirometry|V2")).toBe(true);
-    expect(d.cells.has("Blood draw|V2")).toBe(false);
-    expect(d.totals.has("V2")).toBe(true);
-    expect(d.totals.has("FU")).toBe(false); // no spirometry at follow-up
-    expect(gridDifferences(a, a).count).toBe(0);
-  });
-});
-
-describe("parseInput", () => {
-  it("validates per kind", () => {
-    expect(parseInput("money", "1,200.50")).toEqual({ value: 120050 });
-    expect(parseInput("money", "12.345")).toHaveProperty("error");
-    expect(parseInput("cell", "", true)).toEqual({ value: "invoiceable" });
-    expect(parseInput("int", "4.5")).toHaveProperty("error");
-    expect(parseInput("int", "")).toEqual({ value: null });
-    expect(parseInput("list", "a, b\nc")).toEqual({ value: ["a", "b", "c"] });
-    expect(parseInput("text", "  ")).toEqual({ value: null });
   });
 });

@@ -1,8 +1,10 @@
-import type { BudgetGrid, ContractAnomaly, DocumentKind, Provenance, Rulebook } from "@dct/shared";
+import type { BudgetGrid, DocumentKind, PageBox, Provenance, ReviewItem, Rulebook, RulebookVersionDto, ValueEvidence } from "@dct/shared";
+import { ENUM_OPTIONS, fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
+import { findProv, getAt, segments, setAt } from "../pointer";
 
 /**
  * SYNTHETIC data only: invented sponsors, protocols, sites and people.
- * Shapes follow packages/shared exactly (checked by fixtures.test.ts).
+ * Shapes follow packages/shared exactly (checked by server.test.ts).
  */
 
 type Invoiceable = Rulebook["invoiceables"][number];
@@ -206,14 +208,8 @@ function fee(code: string, name: string, amount: number | null, trigger: Ruleboo
   return { code, name, amountCents: amount, trigger, dueDays, prov: P(doc, page, `Exhibit A §6, '${name}'`) };
 }
 
-export function anomaly(code: ContractAnomaly["code"], severity: ContractAnomaly["severity"], message: string, path: string | null, refs: ContractAnomaly["refs"], detail: Record<string, unknown> = {}): ContractAnomaly {
-  return { id: `${code}:${path ?? ""}`, code, severity, message, path, refs, detail, resolution: null };
-}
-
-const at = (p: Provenance | null) => (p?.source ? [p.source] : []);
-
 /** Amendment: raises spirometry/ECG, adds an invoiceable, shortens net days, retroactive with no date. */
-export function amendRulebook(base: Rulebook, amendDoc: Doc): { rulebook: Rulebook; anomalies: ContractAnomaly[] } {
+export function amendRulebook(base: Rulebook, amendDoc: Doc): Rulebook {
   const rb = structuredClone(base);
   rb.documents.push(amendDoc);
   rb.budgetGrids = rb.budgetGrids.map((g) => {
@@ -222,35 +218,8 @@ export function amendRulebook(base: Rulebook, amendDoc: Doc): { rulebook: Rulebo
   });
   rb.payment.netDays = s(30, P(amendDoc.id, 2, "Amendment 1 §2", { quote: "thirty (30) days" }));
   rb.invoiceables.push(inv("RMV", "Remote monitoring visit", 42000, 58800, "fixed", "per visit", amendDoc.id, 4, true));
-  rb.appliesFrom = s(null, P(amendDoc.id, 1, "Amendment 1 §1", { quote: "shall apply retroactively", confidence: 0.9 }));
-  const anomalies = [
-    anomaly("RETROACTIVE_NO_DATE", "blocker", "Amendment says it applies retroactively but gives no start date.", "/appliesFrom/value", at(rb.appliesFrom.prov)),
-    anomaly("AI_DISAGREEMENT", "warning", "Remote monitoring visit amount read differently by the two AI reads.", `/invoiceables/${rb.invoiceables.length - 1}/amountCents`, [{ documentId: amendDoc.id, page: 4, location: "Amendment 1, Exhibit B" }], { claude: 42000, openai: 48000 }),
-  ];
-  return { rulebook: rb, anomalies };
-}
-
-/** Blank rulebook for manual entry; every value tagged manual. */
-export function blankRulebook(docs: Doc[], info: { sponsor: string; protocol: string; site: string; pi: string }): Rulebook {
-  const m: Provenance = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" };
-  return {
-    schemaVersion: 1,
-    study: { sponsor: s(info.sponsor, m), payingAgent: s(null, m), protocol: s(info.protocol, m), siteName: s(info.site, m), investigator: s(info.pi, m), effectiveDate: s(null, m), currency: "USD" },
-    documents: docs,
-    referencedDocuments: [],
-    overhead: { pct: s(null, m), appliesTo: s("unspecified" as const, m) },
-    payment: { visitPayment: s("unspecified" as const, m), frequency: s("unspecified" as const, m), netDays: s(null, m), netDaysFrom: s(null, m), invoiceAddress: s(null, m), requiredReferences: s([], m), paymentConditions: s([], m) },
-    budgetGrids: [],
-    governingGridId: null,
-    invoiceables: [],
-    screenFail: null,
-    siteFees: [],
-    holdback: null,
-    deadlines: [],
-    overpayment: null,
-    rounding: s("unspecified" as const, m),
-    appliesFrom: s(null, m),
-  };
+  rb.appliesFrom = s(null, P(amendDoc.id, 1, "Amendment 1 §1", { quote: "shall apply retroactively" }));
+  return rb;
 }
 
 export const PEOPLE = ["Avery Chen", "Jordan Patel", "Sam Rivera", "Taylor Brooks", "Morgan Lee"];
@@ -311,7 +280,7 @@ export const SEEDS: Record<"halcyon" | "northwind" | "cobalt" | "meridian" | "so
         { id: "g-cb-b", label: "Exhibit A – Arm B", arm: "Arm B (Extension)", docId: "doc-cb-cta", page: 10, overheadPct: 28, header: { investigator: "Dr. Owen Pratt", siteName: "DCT Eastfield" }, prices: { "94010": 9200 } },
       ],
     },
-    files: { "doc-cb-cta": ["CBL-0931_CTA.pdf", 16] },
+    files: { "doc-cb-cta": ["CBL-0931_CTA_signed-scan.pdf", 16] },
   },
   meridian: {
     id: "st-meridian",
@@ -339,4 +308,284 @@ export const SEEDS: Record<"halcyon" | "northwind" | "cobalt" | "meridian" | "so
   },
 };
 
-export { at as refsOf };
+
+// ---------------------------------------------------------------- review questions and evidence
+
+/** Kept by the mock "server", never sent: the right answer, what the page prints there, what each option changes. */
+export type Secret = { truth?: unknown; lines: string[]; apply?: Record<string, { path: string; value: unknown }> };
+
+/** A review question plus its secret. */
+export type Spec = Pick<ReviewItem, "id" | "kind" | "reason" | "path" | "question" | "where" | "blocking"> & {
+  input?: ReviewItem["input"];
+  options?: ReviewItem["options"];
+  truth?: unknown;
+  /** The tool's misreading, written into the master. */
+  read?: unknown;
+  /** What the page prints, one line per `where`. */
+  lines: string[];
+  apply?: Secret["apply"];
+};
+
+export type Draft = Pick<RulebookVersionDto, "review" | "evidence" | "pdfCheck"> & { rulebook: Rulebook; secrets: Record<string, Secret> };
+
+export const pb = (documentId: string, page: number, box: PageBox["box"] = null): PageBox => ({ documentId, page, box });
+/** Box for the n-th question on a page: full-width lines in the lower half, so they never overlap. */
+export const box = (n: number): [number, number, number, number] => [0.07, 0.5 + (n % 7) * 0.06, 0.86, 0.042];
+
+/** Every number in the master, as JSON pointers. */
+export function numberPaths(rb: Rulebook): string[] {
+  const out: string[] = [];
+  const walk = (o: unknown, path: string) => {
+    if (typeof o === "number") return void out.push(path);
+    if (!o || typeof o !== "object") return;
+    for (const [k, v] of Object.entries(o)) if (k !== "prov" && k !== "order" && k !== "schemaVersion") walk(v, `${path}/${k}`);
+  };
+  walk(rb, "");
+  return out;
+}
+
+const inputFor = (path: string, value?: unknown): NonNullable<ReviewItem["input"]> =>
+  typeof value === "string" || Array.isArray(value)
+    ? /date|appliesFrom/i.test(fieldKey(path)) ? "date" : "text"
+    : isMoneyPath(path) || segments(path).includes("cells") ? "money" : /pct$/i.test(fieldKey(path)) ? "percent" : "number";
+
+/** The DTO side of a question: explicit fields, so nothing secret can reach a response. */
+export const toItem = (x: Spec): ReviewItem => ({
+  id: x.id, kind: x.kind, reason: x.reason, path: x.path, question: x.question, input: x.input ?? null, options: x.options ?? [],
+  where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null,
+});
+export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines, apply: x.apply });
+
+/**
+ * A blind question about one value: "This looks wrong" (reason "reported") and the re-type sample of hand-typed values
+ * (reason "spot_check"). Choices for yes/no and fixed-list values; otherwise an empty input. The right answer is the value we hold.
+ */
+export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): Spec {
+  const value = getAt(rb, path);
+  const label = labelFor(path, rb);
+  const list = typeof value === "string" ? ENUM_OPTIONS[fieldKey(path)] : undefined;
+  const options =
+    typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }] : list ? Object.entries(list).map(([k, l]) => ({ id: k, label: l })) : undefined;
+  const input = options ? undefined : inputFor(path, value);
+  const src = evidence.find((e) => e.path === path)?.where[0] ?? findProv(rb, path)?.source;
+  return {
+    id, kind: "confirm_value", reason, path, blocking: true, input, options,
+    question: `What ${input === "money" ? "amount" : input === "date" ? "date" : "value"} is printed for ${label}?`,
+    where: src ? [pb(src.documentId, src.page)] : [],
+    truth: value,
+    lines: [`${label}: ${formatValue(path, value)}`],
+    apply: options && Object.fromEntries(options.map((o) => [o.id, { path, value: typeof value === "boolean" ? o.id === "true" : o.id }])),
+  };
+}
+
+/** Scan mode: a person types every number the contract's own totals don't confirm (everything outside the grids). */
+function scanSpecs(rb: Rulebook, have: Spec[]): Spec[] {
+  const taken = new Set(have.map((x) => x.path));
+  return numberPaths(rb)
+    .filter((p) => !p.startsWith("/budgetGrids/") && !taken.has(p))
+    .map((path, i) => {
+      const src = findProv(rb, path)?.source;
+      const label = labelFor(path, rb);
+      const value = getAt(rb, path);
+      return {
+        id: `scan-${i + 1}`, kind: "confirm_value", reason: "SCAN_VALUE", path, blocking: true, input: inputFor(path, value),
+        question: `Type what the contract prints for: ${label}`,
+        where: src ? [pb(src.documentId, src.page)] : [], truth: value, lines: [`${label}: ${formatValue(path, value)}`],
+      };
+    });
+}
+
+/** Questions, evidence ledger and PDF check for a draft. Values outside the questions match the PDF (or, on a scan, the grid totals). */
+export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean } = {}): Draft {
+  let rb = structuredClone(base);
+  for (const x of specs) if (x.path && x.read !== undefined) rb = setAt(rb, x.path, x.read);
+  const all = opts.scan ? [...specs, ...scanSpecs(rb, specs)] : specs;
+  const byPath = new Map(all.flatMap((x) => (x.path ? [[x.path, x] as const] : [])));
+  const evidence = numberPaths(rb).map((path): ValueEvidence => {
+    const x = byPath.get(path);
+    const src = findProv(rb, path)?.source;
+    const status = x?.reason === "VALUE_CONFLICT" ? "conflict" : opts.scan && !path.startsWith("/budgetGrids/") ? "ungrounded" : "confirmed";
+    return {
+      path, status, note: null,
+      where: src ? [pb(src.documentId, src.page, x?.where[0]?.box ?? null)] : [],
+      printed: opts.scan ? null : formatValue(path, x?.truth !== undefined ? x.truth : getAt(rb, path)),
+    };
+  });
+  return {
+    rulebook: rb,
+    evidence,
+    review: all.map(toItem),
+    pdfCheck: opts.scan ? null : { values: evidence.length, matched: evidence.filter((e) => e.status === "confirmed").length },
+    secrets: Object.fromEntries(all.map((x) => [x.id, toSecret(x)])),
+  };
+}
+
+const OVERHEAD_OPTIONS = [
+  { id: "procedures_only", label: "Procedures only" },
+  { id: "procedures_and_staff", label: "Procedures and staff time" },
+  { id: "all_per_patient_lines", label: "Every per-patient line, stipends too" },
+];
+const overheadScope = (id: string, doc: string, page: number, n: number): Spec => ({
+  id, kind: "interpretation", reason: "OVERHEAD_SCOPE", path: "/overhead/appliesTo/value", blocking: true,
+  question: "The budget says overhead is “applied to the costs above”. Which lines get overhead?",
+  options: OVERHEAD_OPTIONS, where: [pb(doc, page, box(n))],
+  lines: ["§2 Overhead. Institution overhead shall be applied to the costs above."],
+  apply: Object.fromEntries(OVERHEAD_OPTIONS.map((o) => [o.id, { path: "/overhead/appliesTo/value", value: o.id }])),
+});
+const pharmacyFee = (id: string, doc: string, page: number, n: number): Spec => ({
+  id, kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, blocking: true,
+  question: "This sentence mentions money, but nothing in the invoicing master covers it. What is it?",
+  options: [
+    { id: "bill_by_hand", label: "A payment term: list it to bill by hand" },
+    { id: "not_payment", label: "Not a payment term" },
+    { id: "covered", label: "Already covered by another line" },
+  ],
+  where: [pb(doc, page, box(n))], lines: ["§6.4 Pharmacy. Sponsor shall pay a one-time pharmacy set-up fee of $1,500.00 upon site activation."],
+});
+const parking = (id: string, doc: string, page: number, n: number): Spec => ({
+  id, kind: "unclassified", reason: "UNCLASSIFIED", path: null, blocking: false,
+  question: "“Sponsor will reimburse parking at $12.00 per subject visit.” The invoicing master has no place for this yet, so it goes on the list to bill by hand. OK?",
+  options: [{ id: "ok", label: "OK, bill it by hand" }], where: [pb(doc, page, box(n))],
+  lines: ["§7.2 Parking. Sponsor will reimburse parking at $12.00 per subject visit."],
+});
+const cell = (id: string, reason: string, gi: number, pi: number, visit: string, label: string, cents: number, where: PageBox, read?: number): Spec => {
+  const proc = PROCS[pi]!;
+  const v = VISITS.find((x) => x.code === visit)!;
+  return {
+    id, kind: "confirm_value", reason, path: `/budgetGrids/${gi}/procedures/${pi}/cells/${visit}`, blocking: true, input: "money",
+    question: `What amount does ${label} print for ${proc.name} at ${v.name === "Screening" ? "Screening" : `the ${v.name} visit`}?`,
+    where: [where], truth: cents, read, lines: [`${proc.name}${proc.code ? ` (${proc.code})` : ""}  ·  ${v.name}  ·  ${formatValue("/cells/x", cents)}`],
+  };
+};
+
+/** Northwind: a text PDF in "Needs you", 7 questions. */
+export function northwindSpecs(): Spec[] {
+  const wo = "doc-nw-wo";
+  return [
+    cell("q1", "VALUE_CONFLICT", 0, 3, "V2", "Exhibit A", 9800, pb(wo, 9, box(0)), 9300),
+    {
+      id: "q2", kind: "contract_problem", reason: "GRID_CONFLICT", path: "/governingGridId", blocking: true,
+      question: "Exhibit A and Attachment 2 both price every visit, and they disagree on 4 procedures. Which one should we bill from?",
+      options: [
+        { id: "g-nw-a", label: "Exhibit A – Budget (in the work order)" },
+        { id: "g-nw-b", label: "Attachment 2 – Payment Schedule" },
+      ],
+      where: [pb(wo, 9, box(1)), pb("doc-nw-bud", 2, box(1))],
+      lines: ["EXHIBIT A – BUDGET  ·  Spirometry $98.00  ·  ECG $76.00  ·  Physical exam $142.00", "ATTACHMENT 2 – PAYMENT SCHEDULE  ·  Spirometry $104.00  ·  ECG $81.00  ·  Physical exam $138.00"],
+      apply: { "g-nw-a": { path: "/governingGridId", value: "g-nw-a" }, "g-nw-b": { path: "/governingGridId", value: "g-nw-b" } },
+    },
+    overheadScope("q3", wo, 5, 2),
+    pharmacyFee("q4", wo, 7, 3),
+    cell("q5", "spot_check", 0, 5, "SCR", "Exhibit A", 2500, pb(wo, 9, box(4))),
+    {
+      id: "q6", kind: "confirm_value", reason: "spot_check", path: "/screenFail/amountCents", blocking: true, input: "money",
+      question: "How much does Exhibit A §5 pay for each screen failure?", where: [pb(wo, 6, box(5))], truth: 61000,
+      lines: ["§5 Screen failures. Sponsor will pay $610.00 for each screen failure, up to one (1) per randomized subject."],
+    },
+    parking("q7", wo, 8, 6),
+  ];
+}
+
+/** Cobalt: a scan. One contract problem and one misread; scan mode adds a question for every other number outside the grids. */
+export function cobaltSpecs(): Spec[] {
+  const doc = "doc-cb-cta";
+  return [
+    {
+      id: "c1", kind: "contract_problem", reason: "HEADER_MISMATCH", path: "/budgetGrids/1/header", blocking: true,
+      question: "The Arm B budget names Dr. Owen Pratt at DCT Eastfield, but this contract is with Dr. Lena Ortiz at DCT Northgate. Does Arm B belong to this contract?",
+      options: [
+        { id: "keep", label: "Yes, Arm B belongs to this contract" },
+        { id: "remove", label: "No, it's from another site's contract" },
+      ],
+      where: [pb(doc, 10)], lines: ["EXHIBIT A – ARM B (Extension)  ·  Principal Investigator: Dr. Owen Pratt  ·  Site: DCT Eastfield"],
+    },
+    {
+      id: "c2", kind: "confirm_value", reason: "SCAN_VALUE", path: "/payment/netDays/value", blocking: true, input: "number",
+      question: "Type what the contract prints for: Payment › Net days", where: [pb(doc, 4)], read: 60, truth: 45,
+      lines: ["§4.2 Invoices. Payment is due within forty-five (45) days of receipt of an itemized invoice."],
+    },
+  ];
+}
+
+/** A new contract read in the demo: 6 questions, 7 when the master agreement is missing. */
+export function newContractSpecs(t: { doc: string; pages: number; gridPage: number; hasMaster: boolean }): Spec[] {
+  const p = (n: number) => Math.min(n, t.pages);
+  const out: Spec[] = [
+    cell("n1", "VALUE_CONFLICT", 0, 3, "V3", "Exhibit A", 9800, pb(t.doc, t.gridPage, box(0)), 9300),
+    overheadScope("n2", t.doc, p(5), 1),
+    pharmacyFee("n3", t.doc, p(7), 2),
+    cell("n4", "spot_check", 0, 5, "SCR", "Exhibit A", 2500, pb(t.doc, t.gridPage, box(3))),
+    {
+      id: "n5", kind: "confirm_value", reason: "spot_check", path: "/payment/netDays/value", blocking: true, input: "number",
+      question: "How many days does the sponsor have to pay an invoice (§4.2)?", where: [pb(t.doc, p(4), box(4))], truth: 45,
+      lines: ["§4.2 Invoices. Sponsor shall pay each undisputed invoice within 45 days of receipt."],
+    },
+  ];
+  if (!t.hasMaster)
+    out.push({
+      id: "n6", kind: "contract_problem", reason: "MISSING_REFERENCED_DOC", path: "/referencedDocuments/0", blocking: false,
+      question: "The work order refers to a Master Clinical Trial Agreement that wasn't uploaded, so terms that depend on it can't be checked. How should we go on?",
+      options: [
+        { id: "later", label: "Go ahead; I'll upload it later" },
+        { id: "not_needed", label: "It doesn't affect billing" },
+      ],
+      where: [pb(t.doc, p(2), box(5))], lines: ["This Work Order is entered into pursuant to the Master Clinical Trial Agreement dated January 15, 2024."],
+    });
+  out.push(parking("n7", t.doc, p(8), 6));
+  return out;
+}
+
+/** An amendment: retroactive with no date, a misread new fee, a spot check, a hand-billed term, a total that doesn't add up. */
+export function amendmentSpecs(doc: string, rmvIndex: number): Spec[] {
+  return [
+    {
+      id: "a1", kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", path: "/appliesFrom/value", blocking: true, input: "date",
+      question: "The amendment says its new prices apply retroactively, but gives no start date. From what date do they apply?",
+      where: [pb(doc, 1, box(0))], lines: ["§1 The changes in this Amendment shall apply retroactively."],
+    },
+    {
+      id: "a2", kind: "confirm_value", reason: "VALUE_CONFLICT", path: `/invoiceables/${rmvIndex}/amountCents`, blocking: true, input: "money",
+      question: "What amount does the amendment print for a Remote monitoring visit?", where: [pb(doc, 4, box(1))], read: 48000, truth: 42000,
+      lines: ["Remote monitoring visit (RMV)  ·  per visit  ·  $420.00"],
+    },
+    cell("a3", "spot_check", 0, 3, "V2", "the amended budget", 11200, pb(doc, 3, box(2))),
+    {
+      id: "a4", kind: "unclassified", reason: "UNCLASSIFIED", path: null, blocking: false,
+      question: "“Sponsor will pay $95.00 for each courier pickup of stored samples.” The invoicing master has no place for this yet, so it goes on the list to bill by hand. OK?",
+      options: [{ id: "ok", label: "OK, bill it by hand" }], where: [pb(doc, 5, box(3))],
+      lines: ["§3.4 Courier. Sponsor will pay $95.00 for each courier pickup of stored samples."],
+    },
+    {
+      id: "a5", kind: "contract_problem", reason: "ARITHMETIC_MISMATCH", path: "/budgetGrids/0/visits/5/totalCents", blocking: false,
+      question: "In the amended budget, the Week 52 visit total is printed $5.00 lower than its lines add up to. Which should we bill?",
+      options: [
+        { id: "printed", label: "The printed total" },
+        { id: "sum", label: "The sum of the lines" },
+      ],
+      where: [pb(doc, 3, box(4))], lines: ["Week 52  ·  Visit total (as printed)"],
+    },
+  ];
+}
+
+/** Questions answered before these versions were approved. */
+export const halcyonV1Specs = (): Spec[] => [
+  cell("h1", "spot_check", 0, 1, "SCR", "Exhibit A", 14200, pb("doc-hal-cta", 9, box(0))),
+  {
+    id: "h2", kind: "interpretation", reason: "AMBIGUOUS_TERM", path: null, blocking: true,
+    question: "Early termination procedures are marked “as performed”. How do we bill them?",
+    options: [
+      { id: "invoiceable", label: "Separately, as invoiceable items" },
+      { id: "visit", label: "As part of the Early termination visit" },
+    ],
+    where: [pb("doc-hal-cta", 10, box(1))], lines: ["Early termination: procedures will be paid as performed."],
+  },
+];
+export const meridianSpecs = (): Spec[] => [
+  cell("m1", "spot_check", 0, 5, "SCR", "Exhibit A", 2500, pb("doc-mx-wo", 8, box(0))),
+  {
+    id: "m2", kind: "confirm_value", reason: "spot_check", path: "/payment/netDays/value", blocking: true, input: "number",
+    question: "How many days does the sponsor have to pay an invoice (§4.2)?", where: [pb("doc-mx-wo", 4, box(1))], truth: 60,
+    lines: ["§4.2 Invoices. Sponsor shall pay each undisputed invoice within 60 days of receipt."],
+  },
+  overheadScope("m3", "doc-mx-wo", 5, 2),
+];

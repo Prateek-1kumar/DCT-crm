@@ -6,12 +6,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { NeedsPerson } from "@/components/AppHeader";
 import { DocList, Dropzone } from "@/components/UploadDocs";
-import { Button, Card, ErrorNote, Field, PageTitle, ProgressBar, cx, inputCls } from "@/components/ui";
+import { Button, Card, ErrorNote, Field, PageTitle, pageCls, ProgressBar, Stepper, inputCls } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { keys, useJob, useStudy } from "@/lib/queries";
-
-const STEPS = ["Upload", "Confirm details", "Extract"];
 
 export default function NewStudyPage() {
   const [docs, setDocs] = useState<DocumentDto[]>([]);
@@ -36,22 +34,13 @@ export default function NewStudyPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-5 py-6">
-      <PageTitle title="Bring a study on board" sub="Upload every document for the study. The AI sorts them and suggests the study details." />
-      <ol className="mb-6 flex gap-2 text-sm" aria-label="Progress">
-        {STEPS.map((s, i) => {
-          const at = created ? 1 : 0;
-          return (
-            <li key={s} aria-current={i === at ? "step" : undefined} className={cx("flex items-center gap-2", i === at ? "font-medium text-ink" : "text-faint")}>
-              <span className={cx("grid size-6 place-items-center rounded-full border text-xs", i < at ? "border-ok bg-ok-soft text-ok" : i === at ? "border-accent text-accent" : "border-line")}>
-                {i < at ? "✓" : i + 1}
-              </span>
-              {s}
-              {i < STEPS.length - 1 && <span aria-hidden className="mx-1 text-faint">—</span>}
-            </li>
-          );
-        })}
-      </ol>
+    <div className={`${pageCls} max-w-[860px]`}>
+      <PageTitle
+        eyebrow="Add contract"
+        title="Add a contract"
+        sub={created ? "We sorted the files and filled in the study details from the cover page. Check them, then start reading." : "Upload every file for the study. We sort them and fill in the study details for you to check."}
+      />
+      <Stepper state={{ stage: "Upload" }} className="mb-6" />
 
       {!created ? (
         <div className="flex flex-col gap-4">
@@ -59,13 +48,13 @@ export default function NewStudyPage() {
           {notice && <p className="text-sm text-muted">{notice}</p>}
           <DocList docs={docs} onChange={(d) => setDocs((cur) => cur.map((x) => (x.id === d.id && !x.duplicateOf ? d : x)))} onRemove={(id) => setDocs((cur) => cur.filter((d) => d.id !== id))} />
           {docs.some((d) => d.duplicateOf) && (
-            <p className="text-sm text-warn">Duplicates are already stored (matched by sha256) and won&apos;t be added to this study.</p>
+            <p className="text-sm text-warn">Files marked “Already uploaded” were added before and won&apos;t be added again.</p>
           )}
           <div className="flex items-center justify-end gap-3">
             {!by && <NeedsPerson />}
             <ErrorNote error={create.error} />
             <Button variant="primary" disabled={!usable.length || !by || create.isPending} onClick={() => create.mutate()}>
-              {create.isPending ? "Starting…" : `Identify ${usable.length || ""} document${usable.length === 1 ? "" : "s"} →`}
+              {create.isPending ? "Starting…" : "Next: check the details →"}
             </Button>
           </div>
         </div>
@@ -94,15 +83,15 @@ function Identify({ studyId, jobId, onStarted }: { studyId: string; jobId: strin
   if (job.data?.state === "failed")
     return (
       <div className="flex flex-col gap-4">
-        <ErrorNote>Couldn&apos;t identify the documents: {job.data.error}. You can still enter the details below.</ErrorNote>
+        <ErrorNote>We couldn&apos;t read the cover pages: {job.data.error}. You can still type the details below.</ErrorNote>
         <Confirm studyId={studyId} onStarted={onStarted} />
       </div>
     );
   if (!done)
     return (
       <Card className="p-5">
-        <p className="mb-3 text-sm font-medium">{job.data?.step ?? "Starting"}…</p>
-        <ProgressBar value={job.data?.progress ?? 0} label="Identifying documents" />
+        <p className="mb-3 text-[13px]" aria-live="polite">{job.data?.step ?? "Starting"}…</p>
+        <ProgressBar value={job.data?.progress ?? 0} label="Sorting the files" />
       </Card>
     );
   return <Confirm studyId={studyId} onStarted={onStarted} />;
@@ -114,7 +103,7 @@ function Confirm({ studyId, onStarted }: { studyId: string; onStarted: () => voi
   const router = useRouter();
   const qc = useQueryClient();
   const [edited, setForm] = useState<{ sponsor: string; protocol: string; siteName: string; investigator: string } | null>(null);
-  // Prefilled from the AI's suggestion until the person edits a field.
+  // Prefilled from the cover-page suggestion until the person edits a field.
   const form =
     edited ??
     (study.data && { sponsor: study.data.sponsor ?? "", protocol: study.data.protocol ?? "", siteName: study.data.siteName ?? "", investigator: study.data.investigator ?? "" });
@@ -126,7 +115,7 @@ function Confirm({ studyId, onStarted }: { studyId: string; onStarted: () => voi
     },
     onSuccess: ({ jobId, version }) => {
       void qc.invalidateQueries({ queryKey: keys.studies });
-      router.push(`/studies/${studyId}/extracting?job=${encodeURIComponent(jobId)}&v=${version}`);
+      router.push(`/studies/${studyId}/reading?job=${encodeURIComponent(jobId)}&v=${version}`);
       onStarted();
     },
   });
@@ -150,18 +139,18 @@ function Confirm({ studyId, onStarted }: { studyId: string; onStarted: () => voi
       }}
     >
       <Card className="p-5">
-        <h2 className="mb-1 font-semibold">Documents</h2>
-        <p className="mb-3 text-sm text-muted">Check each detected kind. Fix any that are wrong.</p>
+        <h2 className="mb-1 text-lg">Files</h2>
+        <p className="mb-3 text-[13px] text-muted">Check what kind of file each one is. Fix any that are wrong.</p>
         <DocList docs={study.data.documents} onChange={() => qc.invalidateQueries({ queryKey: keys.study(studyId) })} />
         {!hasMaster && (
           <p className="mt-3 text-sm text-warn">
-            No master agreement in this upload. If the work order refers to one, terms that depend on it will be marked unverified.
+            There&apos;s no master agreement in these files. If the work order refers to one, you&apos;ll be asked about it.
           </p>
         )}
       </Card>
       <Card className="p-5">
-        <h2 className="mb-1 font-semibold">Study details</h2>
-        <p className="mb-4 text-sm text-muted">Suggested from the cover pages. Confirm or correct.</p>
+        <h2 className="mb-1 text-lg">Study details</h2>
+        <p className="mb-4 text-[13px] text-muted">Filled in from the cover page. Correct anything that&apos;s wrong.</p>
         <div className="grid gap-4 sm:grid-cols-2">
           {fields.map(([k, label]) => (
             <Field key={k} label={label} htmlFor={`f-${k}`}>
@@ -174,7 +163,7 @@ function Confirm({ studyId, onStarted }: { studyId: string; onStarted: () => voi
         {!by && <NeedsPerson />}
         <ErrorNote error={start.error} />
         <Button type="submit" variant="primary" disabled={!by || missing.length > 0 || start.isPending}>
-          {start.isPending ? "Starting…" : "Confirm and start extraction →"}
+          {start.isPending ? "Starting…" : "Start reading →"}
         </Button>
       </div>
     </form>

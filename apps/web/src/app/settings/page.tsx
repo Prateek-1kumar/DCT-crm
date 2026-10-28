@@ -4,7 +4,7 @@ import type { SettingsDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NeedsPerson } from "@/components/AppHeader";
-import { Button, Card, ErrorNote, PageTitle, Spinner, cx, inputCls } from "@/components/ui";
+import { Button, Card, ErrorNote, PageTitle, pageCls, Spinner, cx, inputCls } from "@/components/ui";
 import { MOCK, api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { keys, useSettings } from "@/lib/queries";
@@ -25,13 +25,13 @@ export default function SettingsPage() {
   const dupe = people.some((p) => p.toLowerCase() === trimmed.toLowerCase());
 
   return (
-    <div className="mx-auto w-full max-w-2xl px-5 py-6">
-      <PageTitle title="Settings" sub="Shared by everyone in the workspace." />
+    <div className={`${pageCls} max-w-[760px]`}>
+      <PageTitle eyebrow="Workspace" title="Settings" sub="Shared by everyone who uses this workspace." />
       <div className="flex flex-col gap-5">
         <Card className="p-5">
-          <h2 className="font-semibold">People</h2>
+          <h2 className="text-lg">People</h2>
           <p className="mb-3 text-sm text-muted">
-            Names in the “Acting as” list. There is no login yet: everyone can act as anyone, and every action records the chosen name.
+            The names in the “Acting as” list. There is no login yet: anyone can pick any name, and everything done is recorded under the chosen name.
           </p>
           <ul className="mb-3 divide-y divide-line rounded-md border border-line">
             {people.map((p) => (
@@ -67,12 +67,11 @@ export default function SettingsPage() {
         <Card className="p-5">
           <div className="flex items-start gap-4">
             <div className="flex-1">
-              <h2 className="font-semibold" id="mc-h">
+              <h2 className="text-lg" id="mc-h">
                 Maker-checker
               </h2>
               <p className="mt-1 text-sm text-muted">
-                When on, a person who corrected values in a version can&apos;t sign that version off; someone else has to check it. Anomaly notes alone don&apos;t
-                count as corrections. Off by default.
+                When on, a person who answered a contract&apos;s questions can&apos;t also approve it; someone else has to. Off by default.
               </p>
             </div>
             <button
@@ -82,20 +81,20 @@ export default function SettingsPage() {
               aria-labelledby="mc-h"
               disabled={save.isPending}
               onClick={() => save.mutate({ makerChecker: !makerChecker })}
-              className={cx("relative mt-1 h-6 w-11 shrink-0 rounded-full border transition-colors", makerChecker ? "border-accent bg-accent" : "border-line-strong bg-sunken")}
+              className={cx("relative mt-1 h-6 w-11 shrink-0 rounded-full border transition-colors", makerChecker ? "border-ink bg-ink" : "border-line-strong bg-sunken")}
             >
-              <span className={cx("absolute top-0.5 size-4.5 rounded-full shadow transition-all", makerChecker ? "left-[1.375rem] bg-on-accent" : "left-0.5 bg-faint")} />
+              <span className={cx("absolute top-0.5 size-4.5 rounded-full shadow transition-all", makerChecker ? "left-[1.375rem] bg-surface" : "left-0.5 bg-faint")} />
             </button>
           </div>
-          <p className="mt-2 text-sm font-medium">{makerChecker ? "On: corrector and signer must be different people." : "Off: anyone can sign off."}</p>
+          <p className="mt-2 text-sm">{makerChecker ? "On: the person who answers and the person who approves must be different." : "Off: anyone can approve."}</p>
         </Card>
         {!me && <NeedsPerson />}
         <ErrorNote error={save.error} />
 
         {MOCK && (
           <Card className="p-5">
-            <h2 className="font-semibold">Demo data</h2>
-            <p className="mb-3 text-sm text-muted">This build runs on synthetic, in-browser data. Reset it to the starting state.</p>
+            <h2 className="text-lg">Sample data</h2>
+            <p className="mb-3 text-sm text-muted">This build runs on made-up sample data kept in your browser. Reset it to the starting state.</p>
             <Button
               variant="danger"
               onClick={async () => {
@@ -103,7 +102,7 @@ export default function SettingsPage() {
                 await qc.invalidateQueries();
               }}
             >
-              Reset demo data
+              Reset sample data
             </Button>
           </Card>
         )}

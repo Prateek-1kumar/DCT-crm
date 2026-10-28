@@ -61,15 +61,17 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
         onDragLeave={() => setOver(false)}
         onDrop={onDrop}
         className={cx(
-          "flex cursor-pointer flex-col items-center justify-center gap-1 rounded-card border-2 border-dashed text-center transition-colors focus-within:border-focus",
-          compact ? "px-4 py-6" : "px-6 py-14",
-          over ? "border-accent bg-accent-soft" : "border-line-strong bg-surface hover:border-accent",
+          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-[14px] border-[1.5px] border-dashed text-center transition-colors focus-within:border-focus",
+          compact ? "px-4 py-6" : "px-6 py-12",
+          over ? "border-focus bg-accent-soft" : "border-line-strong bg-sunken hover:border-focus hover:bg-accent-soft",
         )}
       >
         <input type="file" accept="application/pdf,.pdf" multiple disabled={!by} className="sr-only" onChange={(e) => (take(e.target.files), (e.target.value = ""))} />
-        <span aria-hidden className="text-2xl text-faint">⇪</span>
-        <span className="font-medium">{!by ? "Choose who you are acting as (top right) to upload" : upload.isPending ? "Uploading…" : "Drop contract PDFs here, or click to choose"}</span>
-        <span className="text-sm text-muted">Master agreement, work order, budget, adoption or amendment. Scans are fine.</span>
+        <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" className="size-6 text-ink-2">
+          <path d="M12 16V4M7 9l5-5 5 5M5 20h14" />
+        </svg>
+        <span className="font-medium">{!by ? "Choose your name under “Acting as” (top right) to upload" : upload.isPending ? "Uploading…" : "Drop the signed contract PDFs here, or click to choose"}</span>
+        <span className="text-xs text-muted">The contract and its budget, plus any master agreement or amendment. The e-signed (DocuSign) PDF is best.</span>
       </label>
       {rejected.length > 0 && <ErrorNote>Only PDFs up to 50 MB can be uploaded. Skipped: {rejected.join(", ")}</ErrorNote>}
       {failed.map((m) => (
@@ -86,14 +88,14 @@ export function KindSelect({ doc, onChanged }: { doc: DocumentDto; onChanged: (d
   return (
     <span className="inline-flex items-center gap-1">
       <select
-        aria-label={`Document kind for ${doc.filename}`}
+        aria-label={`Kind of file: ${doc.filename}`}
         value={doc.kind}
         disabled={!by || m.isPending}
-        title={by ? "Change the detected kind" : "Choose who you are acting as to change this"}
+        title={by ? "Change what kind of file this is" : "Choose your name under “Acting as” to change this"}
         onChange={(e) => m.mutate(e.target.value as DocumentKind)}
         className={cx(
-          "h-7 rounded-full border px-2.5 text-xs font-medium",
-          doc.kind === "other" ? "border-warn bg-warn-soft text-warn" : "border-transparent bg-accent-soft text-accent",
+          "h-7 rounded-full border-0 px-2.5 text-xs",
+          doc.kind === "other" ? "bg-warn-soft text-warn" : "bg-accent-soft text-accent",
         )}
       >
         {Object.entries(DOC_KIND_LABEL).map(([k, l]) => (
@@ -110,19 +112,19 @@ export function KindSelect({ doc, onChanged }: { doc: DocumentDto; onChanged: (d
 export function DocList({ docs, onChange, onRemove }: { docs: DocumentDto[]; onChange: (d: DocumentDto) => void; onRemove?: (id: string) => void }) {
   if (!docs.length) return null;
   return (
-    <ul className="divide-y divide-line rounded-card border border-line bg-surface">
+    <ul className="divide-y divide-line rounded-card border border-line bg-surface shadow-card">
       {docs.map((d) => (
         <li key={d.id + (d.duplicateOf ? "-dup" : "")} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-          <span aria-hidden className="text-faint">▤</span>
+          <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className="size-4 flex-none text-muted">
+            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5" />
+          </svg>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium">{d.filename}</span>
-            <span className="num text-xs text-muted">
-              {d.pageCount} pages · sha256 {d.sha256.slice(0, 10)}…
-            </span>
+            <span className="block truncate text-[13px]">{d.filename}</span>
+            <span className="num text-xs text-muted">{d.pageCount} pages</span>
           </span>
           {d.duplicateOf ? (
-            <Badge tone="warn" title="Same sha256 as a file already stored. It won't be added again.">
-              Duplicate: already uploaded
+            <Badge tone="warn" title="This exact file was uploaded before. It won't be added again.">
+              Already uploaded
             </Badge>
           ) : (
             <KindSelect doc={d} onChanged={onChange} />

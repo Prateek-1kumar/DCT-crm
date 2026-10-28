@@ -92,17 +92,21 @@ export const api = {
   /** `documentIds` adds documents to the study first (amendment journey). */
   extract: (id: string, by: string, documentIds?: string[]) =>
     request<{ jobId: string; version: number }>("POST", `/studies/${q(id)}/extract`, { by, ...(documentIds?.length ? { documentIds } : {}) }),
-  /** Proposed route: blank draft for manual entry after a failed extraction. */
-  createManualVersion: (id: string, by: string) =>
-    request<{ version: number }>("POST", `/studies/${q(id)}/versions`, { manual: true, by }),
   getJob: (jobId: string) => request<JobDto>("GET", `/jobs/${q(jobId)}`),
 
-  correctValue: (id: string, v: number, body: { path: string; value: unknown; note: string; by: string }) =>
-    request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, body),
-  resolveAnomaly: (id: string, v: number, aid: string, body: { kind: "fixed" | "chosen" | "accepted_with_note"; note: string; by: string }) =>
-    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/anomalies/${q(aid)}/resolve`, body),
-  chooseGrid: (id: string, v: number, body: { gridId: string; note: string; by: string }) =>
-    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/grid-choice`, body),
+  /** One answer to one question (AnswerReviewBody). Returns the version with the outcome filled in. */
+  answerReview: (id: string, v: number, itemId: string, body: { value?: unknown; optionId?: string; cantTell?: boolean; note?: string; by: string }) =>
+    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/review/${q(itemId)}`, body),
+  /** "This looks wrong" (ReportValueBody). On a draft: adds a question. On the live version: opens a correction draft. Returns the draft. */
+  reportValue: (id: string, v: number, body: { path: string; note: string; by: string }) =>
+    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/report`, body),
+  /** A blank draft to type a contract in by hand (ByHandBody). */
+  startByHand: (id: string, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/by-hand`, { by }),
+  /** Type one value; by-hand drafts only. */
+  typeValue: (id: string, v: number, body: { path: string; value: unknown; by: string }) =>
+    request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, { ...body, note: "Typed by hand" }),
+  /** Proposed route: typing is done; picks the values someone else re-types blind. */
+  finishByHand: (id: string, v: number, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/by-hand/done`, { by }),
   signOff: (id: string, v: number, body: { by: string; note?: string }) =>
     request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/sign-off`, body),
 

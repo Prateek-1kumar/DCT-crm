@@ -1,16 +1,10 @@
 "use client";
 
 import type { BudgetGrid } from "@dct/shared";
-import { useState } from "react";
-import { formatValue } from "@/lib/format";
+import type { ReactNode } from "react";
 import { formatCents } from "@/lib/money";
-import { findProv, getAt } from "@/lib/pointer";
-import { ProvChips } from "./Prov";
-import { isFlagged, useRulebook } from "./review-context";
-import { Badge, Button, cx } from "./ui";
-import { ValueEditor } from "./ValueEditor";
-
-type Sel = { path: string; label: string; prov: BudgetGrid["prov"] };
+import { useRulebook, Val } from "./review-context";
+import { Badge, cx } from "./ui";
 
 const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCents" | "totalCents"; label: string }[] = [
   { key: "procedureSubtotalCents", label: "Procedure subtotal" },
@@ -21,83 +15,45 @@ const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCen
 
 /** Procedure × visit grid: sticky headers and first column, horizontal scroll, invoiceable cells marked. */
 export function GridTable({ index }: { index: number }) {
-  const { rulebook, show, editable, editing, setEditing, save, flagged, focused } = useRulebook();
+  const { rulebook, show, focused, masked } = useRulebook();
   const grid = rulebook.budgetGrids[index]!;
   const base = `/budgetGrids/${index}`;
-  const [sel, setSel] = useState<Sel | null>(null);
   const visits = [...grid.visits].sort((a, b) => a.order - b.order);
   const governing = rulebook.governingGridId === grid.id;
 
-  const pick = (s: Sel) => {
-    setSel(s);
-    show(s.path, s.prov, s.label);
-  };
-  const cellCls = (path: string) =>
-    cx(
-      "num w-full px-2 py-1.5 text-right hover:bg-accent-soft focus-visible:relative",
-      (sel?.path === path || focused === path) && "bg-highlight/70",
-      isFlagged(flagged, path) && "bg-warn-soft font-semibold text-warn",
-    );
+  const cell = (path: string, label: string, prov: BudgetGrid["prov"], text: ReactNode) => (
+    <button
+      type="button"
+      className={cx("num flex w-full justify-end px-2 py-1.5 hover:bg-accent-soft focus-visible:relative", focused === path && "bg-highlight")}
+      onClick={() => show(path, prov, label)}
+    >
+      <Val path={path}>{text}</Val>
+    </button>
+  );
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-[13px]">
         <span className="font-medium">{grid.label}</span>
         {grid.arm && <Badge>{grid.arm}</Badge>}
-        {governing && <Badge tone="ok">Governing grid</Badge>}
+        {governing && <Badge tone="ok">Billed from this grid</Badge>}
         <span className="text-muted">
-          <span className={cx(isFlagged(flagged, `${base}/statedOverheadPct`) && "font-medium text-warn")}>Stated overhead {grid.statedOverheadPct ?? "—"}%</span> ·{" "}
-          <span className={cx(isFlagged(flagged, `${base}/header`) && "font-medium text-warn")}>
-            Header: {grid.header.investigator ?? "—"}, {grid.header.siteName ?? "—"}
-          </span>
+          Stated overhead {grid.statedOverheadPct ?? "—"}% · Header:{" "}
+          {masked.has(`${base}/header`) ? <span className="text-warn">needs you</span> : `${grid.header.investigator ?? "—"}, ${grid.header.siteName ?? "—"}`}
         </span>
         <button type="button" className="text-accent hover:underline" onClick={() => show(base, grid.prov, grid.label)}>
-          Show in contract
+          Show in the contract
         </button>
-        <span className="ml-auto">
-          <ProvChips prov={grid.prov} compact />
-        </span>
       </div>
 
-      {sel && (
-        <div className="rounded-md border border-line bg-sunken px-3 py-2 text-sm">
-          {editing === sel.path ? (
-            <ValueEditor
-              path={sel.path}
-              value={getAt(rulebook, sel.path)}
-              label={sel.label}
-              onCancel={() => setEditing(null)}
-              onSave={async (v, note) => {
-                await save(sel.path, v, note);
-                setEditing(null);
-              }}
-            />
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">{sel.label}</span>
-              <span className="num">{formatValue(sel.path, getAt(rulebook, sel.path))}</span>
-              <ProvChips prov={findProv(rulebook, sel.path)} compact />
-              {editable && (
-                <Button size="sm" className="ml-auto" onClick={() => setEditing(sel.path)}>
-                  Edit
-                </Button>
-              )}
-              <Button size="sm" variant="ghost" onClick={() => setSel(null)} aria-label="Clear selection" className={editable ? "" : "ml-auto"}>
-                ✕
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="max-h-[520px] overflow-auto rounded-md border border-line" tabIndex={0} aria-label={`${grid.label} grid`}>
+      <div className="max-h-[520px] overflow-auto rounded-[10px] border border-line" tabIndex={0} aria-label={`${grid.label} grid`}>
         <table className="min-w-full border-separate border-spacing-0 text-xs">
           <thead>
             <tr>
-              <th scope="col" className="sticky top-0 left-0 z-20 min-w-56 border-b border-line bg-sunken px-2 py-2 text-left font-medium">
+              <th scope="col" className="eyebrow sticky top-0 left-0 z-20 min-w-56 border-b border-line bg-sunken px-2 py-2 text-left">
                 Procedure
               </th>
-              <th scope="col" className="sticky top-0 z-10 border-b border-line bg-sunken px-2 py-2 text-right font-medium">
+              <th scope="col" className="eyebrow sticky top-0 z-10 border-b border-line bg-sunken px-2 py-2 text-right">
                 Unit
               </th>
               {visits.map((v) => (
@@ -116,23 +72,12 @@ export function GridTable({ index }: { index: number }) {
                   <span className="block truncate font-medium">{p.name}</span>
                   <span className="text-muted">
                     {p.code ?? "—"} · {p.category === "procedure" ? "procedure" : "non-procedure"}
-                    {p.overheadApplied ? " · +OH" : ""}
+                    {p.overheadApplied ? " · +overhead" : ""}
                   </span>
-                  {p.prov.crossCheck === "disagree" && <span className="ml-1 text-danger">≠</span>}
                 </th>
-                <td className="border-b border-line p-0">
-                  {(() => {
-                    const path = `${base}/procedures/${pi}/unitCents`;
-                    return (
-                      <button type="button" className={cellCls(path)} onClick={() => pick({ path, label: `${p.name} · unit price`, prov: p.prov })}>
-                        {formatCents(p.unitCents)}
-                      </button>
-                    );
-                  })()}
-                </td>
+                <td className="border-b border-line p-0">{cell(`${base}/procedures/${pi}/unitCents`, `${p.name} · unit price`, p.prov, formatCents(p.unitCents))}</td>
                 {visits.map((v) => {
                   const c = p.cells[v.code];
-                  const path = `${base}/procedures/${pi}/cells/${v.code}`;
                   return (
                     <td key={v.code} className="border-b border-line p-0">
                       {c === undefined ? (
@@ -140,9 +85,7 @@ export function GridTable({ index }: { index: number }) {
                           ·
                         </span>
                       ) : (
-                        <button type="button" className={cellCls(path)} onClick={() => pick({ path, label: `${p.name} × ${v.code} (${v.name})`, prov: p.prov })}>
-                          {c === "invoiceable" ? <Badge tone="info">Inv.</Badge> : formatCents(c)}
-                        </button>
+                        cell(`${base}/procedures/${pi}/cells/${v.code}`, `${p.name} × ${v.name}`, p.prov, c === "invoiceable" ? <Badge tone="info">Inv.</Badge> : formatCents(c))
                       )}
                     </td>
                   );
@@ -152,18 +95,15 @@ export function GridTable({ index }: { index: number }) {
           </tbody>
           <tfoot>
             {FOOT.map((f) => (
-              <tr key={f.key} className={f.key === "totalCents" ? "font-semibold" : ""}>
+              <tr key={f.key} className={f.key === "totalCents" ? "font-medium" : ""}>
                 <th scope="row" colSpan={2} className="sticky left-0 z-10 border-b border-line bg-sunken px-2 py-1.5 text-left font-medium">
                   {f.label}
                 </th>
                 {visits.map((v) => {
                   const vi = grid.visits.indexOf(v);
-                  const path = `${base}/visits/${vi}/${f.key}`;
                   return (
                     <td key={v.code} className="border-b border-line bg-sunken p-0">
-                      <button type="button" className={cellCls(path)} onClick={() => pick({ path, label: `${v.code} ${f.label.toLowerCase()}`, prov: v.prov })}>
-                        {formatCents(v[f.key])}
-                      </button>
+                      {cell(`${base}/visits/${vi}/${f.key}`, `${v.name} · ${f.label.toLowerCase()}`, v.prov, formatCents(v[f.key]))}
                     </td>
                   );
                 })}
@@ -172,13 +112,18 @@ export function GridTable({ index }: { index: number }) {
           </tfoot>
         </table>
       </div>
-      <div className="flex flex-wrap gap-4 text-sm">
-        {grid.perPatientTotals.map((t, i) => (
-          <button key={i} type="button" className="hover:text-accent" onClick={() => show(`${base}/perPatientTotals/${i}/cents`, t.prov, t.label)}>
-            <span className="text-muted">{t.label}: </span>
-            <span className="num font-semibold">{formatCents(t.cents)}</span>
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-4 text-[13px]">
+        {grid.perPatientTotals.map((t, i) => {
+          const path = `${base}/perPatientTotals/${i}/cents`;
+          return (
+            <button key={i} type="button" className="hover:text-accent" onClick={() => show(path, t.prov, t.label)}>
+              <span className="text-muted">{t.label}: </span>
+              <Val path={path}>
+                <span className="num font-medium">{formatCents(t.cents)}</span>
+              </Val>
+            </button>
+          );
+        })}
         <span className="text-muted">
           <Badge tone="info">Inv.</Badge> = invoiceable, billed separately · <span className="text-faint">·</span> = not done at this visit
         </span>

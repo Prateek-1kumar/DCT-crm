@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 
 /** Query keys and hooks: one place so invalidation stays consistent. */
@@ -39,7 +39,7 @@ export const useJob = (jobId: string | null) =>
     enabled: !!jobId,
     refetchInterval: (q) => (q.state.data && (q.state.data.state === "succeeded" || q.state.data.state === "failed") ? false : 700),
   });
-export const useSettings =() => useQuery({ queryKey: keys.settings, queryFn: api.getSettings, staleTime: 60_000 });
+export const useSettings = () => useQuery({ queryKey: keys.settings, queryFn: api.getSettings, staleTime: 60_000 });
 
 /** After any write to a study: refresh everything that summarizes it. */
 export function useInvalidateStudy() {
@@ -52,4 +52,17 @@ export function useInvalidateStudy() {
       qc.invalidateQueries({ queryKey: keys.studies }),
       qc.invalidateQueries({ queryKey: ["audit"] }),
     ]);
+}
+
+/** Answer one review question; the returned version replaces the cached one. */
+export function useAnswerReview(id: string, v: number) {
+  const qc = useQueryClient();
+  const invalidate = useInvalidateStudy();
+  return useMutation({
+    mutationFn: ({ itemId, body }: { itemId: string; body: Parameters<typeof api.answerReview>[3] }) => api.answerReview(id, v, itemId, body),
+    onSuccess: (dto) => {
+      qc.setQueryData(keys.version(id, v), dto);
+      void invalidate(id);
+    },
+  });
 }

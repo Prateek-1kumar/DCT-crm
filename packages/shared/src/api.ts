@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
+import { ReviewItem, ValueEvidence } from "./evidence";
 import { DocumentKind, Rulebook } from "./rulebook";
 
 /** HTTP contract between apps/api and apps/web. All routes are under /api. */
@@ -31,6 +32,8 @@ export const StudySummaryDto = z.object({
   status: StudyStatus,
   liveVersion: z.number().int().nullable(),
   openAnomalies: z.number().int(),
+  /** Unsettled review items on the latest draft: unanswered, differs, or a blocking can't-tell (a non-blocking one waits for the approver). */
+  needsYou: z.number().int(),
   updatedAt: z.string(),
 });
 export type StudySummaryDto = z.infer<typeof StudySummaryDto>;
@@ -58,6 +61,12 @@ export const RulebookVersionDto = VersionSummaryDto.extend({
   /** Names of people who corrected values in this version (for the optional maker-checker rule). */
   editors: z.array(z.string()),
   cost: z.object({ usd: z.number(), inputTokens: z.number().int(), outputTokens: z.number().int() }),
+  evidence: z.array(ValueEvidence),
+  review: z.array(ReviewItem),
+  /** Money values checked against the PDF's own text; null when the PDF has no text (a scan). */
+  pdfCheck: z.object({ values: z.number().int(), matched: z.number().int() }).nullable(),
+  /** Typed in by hand (contract couldn't be read): values are set with PATCH .../values, which only by-hand drafts accept. */
+  byHand: z.boolean(),
 });
 export type RulebookVersionDto = z.infer<typeof RulebookVersionDto>;
 

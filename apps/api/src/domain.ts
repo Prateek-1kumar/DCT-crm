@@ -53,6 +53,11 @@ export const versionDto = (v: VersionRow): RulebookVersionDto => ({
   anomalies: v.anomalies,
   editors: v.editors,
   cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
+  // Filled once the evidence pipeline is wired (ADR-001 build steps 2–5).
+  evidence: [],
+  review: [],
+  pdfCheck: null,
+  byHand: false,
 });
 
 /** `versions` newest first. */
@@ -67,6 +72,8 @@ export function studySummaryDto(s: StudyRow, versions: VersionRow[]): StudySumma
     status: s.status as StudyStatus,
     liveVersion: versions.find((v) => v.status === "signed")?.version ?? null,
     openAnomalies: latest?.status === "draft" ? latest.anomalies.filter((a) => !a.resolution).length : 0,
+    // Until review items are wired (ADR-001 step 5), open anomalies are what needs a person.
+    needsYou: latest?.status === "draft" ? latest.anomalies.filter((a) => !a.resolution).length : 0,
     updatedAt: s.updatedAt.toISOString(),
   };
 }

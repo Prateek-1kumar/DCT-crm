@@ -316,7 +316,7 @@ function amountItems(rb: Rulebook) {
 }
 
 /** Below this many non-space characters a page's text layer is a stamp (e.g. a Docusign envelope ID), not the page. */
-const MIN_PAGE_TEXT = 200;
+export const MIN_PAGE_TEXT = 200;
 
 /**
  * Money-like numbers in a page's text, in cents; undefined when the page has no real text layer.

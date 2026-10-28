@@ -1,71 +1,78 @@
 @import "tailwindcss";
 
 /*
- * Design tokens. Components use only these (bg-surface, text-muted, border-line, ...).
+ * Design tokens, from the DCT prototype. Components use only these (bg-surface, text-muted, border-line, ...).
  * Light values here; dark values override the same variables below.
  */
 @theme {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-sans: var(--font-poppins), system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  /* Poppins is loaded at 300/400/500 only. */
+  --font-weight-semibold: 500;
+  --font-weight-bold: 500;
 
-  --color-canvas: oklch(0.975 0.004 85); /* app background, warm paper */
-  --color-surface: oklch(0.995 0.002 85); /* cards, panels */
-  --color-sunken: oklch(0.955 0.005 85); /* table headers, wells */
-  --color-line: oklch(0.89 0.006 85);
-  --color-line-strong: oklch(0.78 0.008 85);
-  --color-ink: oklch(0.24 0.02 255); /* primary text */
-  --color-muted: oklch(0.48 0.015 255);
-  --color-faint: oklch(0.62 0.01 255);
+  --color-canvas: #f7f8fb; /* paper: app background */
+  --color-surface: #fff;
+  --color-sunken: #f1f3f8; /* table headers, wells */
+  --color-line: #1416311a;
+  --color-line-strong: #1416312e;
+  --color-ink: #141631;
+  --color-ink-2: #141631c2;
+  --color-muted: #1416318f;
+  --color-faint: #14163161;
 
-  --color-accent: oklch(0.46 0.085 190); /* deep teal */
-  --color-accent-hover: oklch(0.40 0.085 190);
-  --color-accent-soft: oklch(0.94 0.03 190);
-  --color-on-accent: oklch(0.99 0 0);
+  --color-accent: #1f6fa8; /* blue ink: links, selection */
+  --color-accent-hover: #185a8a;
+  --color-accent-soft: #4394cd17;
+  --color-on-accent: #fff;
 
-  --color-ok: oklch(0.50 0.11 155);
-  --color-ok-soft: oklch(0.95 0.04 155);
-  --color-warn: oklch(0.52 0.12 70);
-  --color-warn-soft: oklch(0.95 0.05 85);
-  --color-danger: oklch(0.52 0.17 28);
-  --color-danger-soft: oklch(0.95 0.035 28);
-  --color-info: oklch(0.50 0.10 255);
-  --color-info-soft: oklch(0.95 0.025 255);
-  --color-highlight: oklch(0.92 0.11 95); /* "you are here" marker */
+  --color-ok: #2e7d5b;
+  --color-ok-soft: #2e7d5b1a;
+  --color-warn: #b7791f;
+  --color-warn-soft: #b7791f1c;
+  --color-danger: #b42318;
+  --color-danger-soft: #b4231814;
+  --color-info: #1f6fa8;
+  --color-info-soft: #4394cd17;
+  --color-highlight: #4394cd29; /* "look here" on a contract page */
 
-  --color-focus: oklch(0.58 0.14 230);
-  --color-backdrop: oklch(0.2 0.02 255 / 0.45);
+  --color-focus: #4394cd;
+  --color-backdrop: #14163147;
 
-  --radius-card: 0.625rem;
+  --radius-card: 12px;
+  --shadow-card: 0 1px 2px #1416310a, 0 8px 24px #1416310d;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-canvas: oklch(0.17 0.012 255);
-    --color-surface: oklch(0.21 0.014 255);
-    --color-sunken: oklch(0.185 0.012 255);
-    --color-line: oklch(0.30 0.014 255);
-    --color-line-strong: oklch(0.40 0.016 255);
-    --color-ink: oklch(0.94 0.006 85);
-    --color-muted: oklch(0.74 0.012 255);
-    --color-faint: oklch(0.60 0.012 255);
+    --color-canvas: #0e0f1f;
+    --color-surface: #16182c;
+    --color-sunken: #1d2038;
+    --color-line: #ffffff17;
+    --color-line-strong: #ffffff2b;
+    --color-ink: #eceef8;
+    --color-ink-2: #eceef8c2;
+    --color-muted: #eceef894;
+    --color-faint: #eceef866;
 
-    --color-accent: oklch(0.74 0.10 190);
-    --color-accent-hover: oklch(0.80 0.10 190);
-    --color-accent-soft: oklch(0.30 0.05 190);
-    --color-on-accent: oklch(0.17 0.02 255);
+    --color-accent: #7db9e6;
+    --color-accent-hover: #9ccbee;
+    --color-accent-soft: #4394cd26;
+    --color-on-accent: #0e0f1f;
 
-    --color-ok: oklch(0.76 0.13 155);
-    --color-ok-soft: oklch(0.29 0.05 155);
-    --color-warn: oklch(0.80 0.13 80);
-    --color-warn-soft: oklch(0.31 0.06 75);
-    --color-danger: oklch(0.74 0.15 28);
-    --color-danger-soft: oklch(0.31 0.07 28);
-    --color-info: oklch(0.76 0.10 255);
-    --color-info-soft: oklch(0.30 0.05 255);
-    --color-highlight: oklch(0.45 0.09 95);
+    --color-ok: #6cc59a;
+    --color-ok-soft: #2e7d5b33;
+    --color-warn: #e2ad5a;
+    --color-warn-soft: #b7791f33;
+    --color-danger: #f0877d;
+    --color-danger-soft: #b4231833;
+    --color-info: #7db9e6;
+    --color-info-soft: #4394cd26;
+    --color-highlight: #4394cd40;
 
-    --color-focus: oklch(0.72 0.13 230);
-    --color-backdrop: oklch(0.05 0.01 255 / 0.65);
+    --color-focus: #7db9e6;
+    --color-backdrop: #000000a6;
+    --shadow-card: 0 1px 2px #0000004d;
   }
 }
 
@@ -77,7 +84,16 @@ body {
   background: var(--color-canvas);
   color: var(--color-ink);
   font-family: var(--font-sans);
-  font-feature-settings: "cv11", "ss01";
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.1px;
+}
+
+h1 {
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
 
 :focus-visible {
@@ -86,9 +102,16 @@ body {
 }
 
 .num {
-  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+}
+
+/* Small uppercase letter-spaced section label. */
+.eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-muted);
 }
 
 dialog::backdrop {
@@ -96,7 +119,7 @@ dialog::backdrop {
 }
 
 @keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 var(--color-highlight); }
+  0% { box-shadow: 0 0 0 0 var(--color-focus); }
   100% { box-shadow: 0 0 0 10px transparent; }
 }
 .pulse {

@@ -1,4 +1,4 @@
-import type { ContractAnomalyCode, DocumentKind, StudyStatus } from "@dct/shared";
+import type { DocumentKind } from "@dct/shared";
 import { formatCents } from "./money";
 import { segments } from "./pointer";
 
@@ -9,32 +9,6 @@ export const DOC_KIND_LABEL: Record<DocumentKind, string> = {
   amendment: "Amendment",
   budget: "Budget",
   other: "Other",
-};
-
-export const STATUS_LABEL: Record<StudyStatus, string> = {
-  setting_up: "Setting up",
-  extracting: "Extracting",
-  extraction_failed: "Extraction failed",
-  needs_review: "Needs review",
-  live: "Live",
-  amendment_in_review: "Amendment in review",
-};
-
-export const ANOMALY_LABEL: Record<ContractAnomalyCode, string> = {
-  VISIT_TOTAL_MISMATCH: "Visit total doesn't add up",
-  PER_PATIENT_TOTAL_MISMATCH: "Per-patient total doesn't add up",
-  OVERHEAD_LABEL_MISMATCH: "Overhead % doesn't match its label",
-  GRID_CONFLICT: "Two budget grids conflict",
-  DUPLICATE_ITEM: "Item billed twice",
-  MISSING_REFERENCED_DOC: "Referenced document missing",
-  HEADER_MISMATCH: "Grid header doesn't match contract",
-  AI_DISAGREEMENT: "The two AI reads disagree",
-  LOW_CONFIDENCE: "Low confidence",
-  REQUIRED_MISSING: "Required term not found",
-  RETROACTIVE_NO_DATE: "Retroactive with no start date",
-  UNREADABLE_PAGE: "Page couldn't be read",
-  AMBIGUOUS_TERM: "Ambiguous wording",
-  TEXT_LAYER_MISMATCH: "Amount not in the PDF's text",
 };
 
 /** Options for enum-valued fields, keyed by the field name in the rulebook. */
@@ -95,6 +69,7 @@ export function inferKind(path: string, value: unknown): ValueKind {
   if (Array.isArray(value)) return "list";
   if (typeof value === "boolean") return "bool";
   if (/days|value$|^n$|count/i.test(key) && (typeof value === "number" || value === null)) return "int";
+  if (/pct$/i.test(key) && (typeof value === "number" || value === null)) return "number";
   if (typeof value === "number") return "number";
   return "text";
 }
@@ -146,6 +121,31 @@ export function relativeTime(iso: string, now = Date.now()): string {
   return d < 30 ? `${d} d ago` : formatDate(iso);
 }
 
-export function pct(confidence: number): string {
-  return `${Math.round(confidence * 100)}%`;
+const TOP: Record<string, string> = {
+  study: "Study", payment: "Payment", overhead: "Overhead", budgetGrids: "Budget grid", invoiceables: "Invoiceable", siteFees: "Site fee",
+  deadlines: "Deadline", screenFail: "Screen fail", holdback: "Holdback", overpayment: "Overpayment", rounding: "Rounding",
+  appliesFrom: "Applies from", documents: "Document", referencedDocuments: "Referenced document", governingGridId: "Governing grid",
+};
+const FIELD: Record<string, string> = { pct: "Percent", n: "Limit", unitCents: "Unit price", cents: "Amount" };
+const humanize = (k: string) =>
+  FIELD[k] ?? k.replace(/Cents$/, "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase()).replace(/ ([A-Z])/g, (m) => m.toLowerCase());
+
+/** "/invoiceables/0/amountCents" → "Invoiceable › Unscheduled visit › Amount". */
+export function labelFor(path: string, rb: unknown): string {
+  const segs = segments(path);
+  const parts: string[] = [];
+  let cur: unknown = rb;
+  segs.forEach((seg, i) => {
+    cur = cur && typeof cur === "object" ? (cur as Record<string, unknown>)[seg] : undefined;
+    if (seg === "value" || seg === "cells") return;
+    if (i === 0) return parts.push(TOP[seg] ?? humanize(seg));
+    if (/^\d+$/.test(seg)) {
+      const o = (cur ?? {}) as Record<string, unknown>;
+      const kindLabel = typeof o.kind === "string" ? ENUM_OPTIONS.kind?.[o.kind] : undefined;
+      const name = o.name ?? o.label ?? o.title ?? o.description ?? kindLabel ?? o.code ?? `#${Number(seg) + 1}`;
+      return parts.push(String(name));
+    }
+    parts.push(segs[i - 1] === "cells" ? seg : humanize(seg));
+  });
+  return parts.join(" › ");
 }

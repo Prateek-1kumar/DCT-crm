@@ -1,22 +1,19 @@
 "use client";
 
-import type { Provenance, Rulebook } from "@dct/shared";
-import { createContext, useContext } from "react";
+import type { Provenance, Rulebook, ValueEvidence } from "@dct/shared";
+import { createContext, useContext, type ReactNode } from "react";
+import { cx } from "./ui";
 
-/** Shared by the review screen and the read-only rulebook view. */
+/** Shared by everything that shows an invoicing master. */
 export type RulebookCtx = {
   rulebook: Rulebook;
-  /** Inline editing allowed (draft + a person selected). */
-  editable: boolean;
   /** Pointer of the value last shown in the contract. */
   focused: string | null;
   show: (path: string, prov: Provenance | null | undefined, label: string) => void;
-  editing: string | null;
-  setEditing: (path: string | null) => void;
-  /** PATCH /values. Resolves when saved. */
-  save: (path: string, value: unknown, note: string) => Promise<void>;
-  /** Pointers with an open anomaly, to flag in place. */
-  flagged: Set<string>;
+  /** What backs each number. */
+  evidence: Map<string, ValueEvidence["status"]>;
+  /** Values with an open question on a draft: hidden until a person answers (blind entry). */
+  masked: Set<string>;
 };
 
 export const RulebookContext = createContext<RulebookCtx | null>(null);
@@ -27,5 +24,43 @@ export function useRulebook(): RulebookCtx {
   return c;
 }
 
-/** True if `path` or something under it has an open anomaly. */
-export const isFlagged = (flagged: Set<string>, path: string) => [...flagged].some((f) => f === path || f.startsWith(`${path}/`));
+export const EVIDENCE: Record<ValueEvidence["status"], { label: string; cls: string }> = {
+  confirmed: { label: "Matches the PDF", cls: "bg-ok" },
+  attested: { label: "Confirmed by a person", cls: "bg-focus" },
+  conflict: { label: "Needs you", cls: "bg-warn" },
+  ungrounded: { label: "Needs you", cls: "bg-warn" },
+};
+
+export function Dot({ status }: { status: ValueEvidence["status"] }) {
+  const e = EVIDENCE[status];
+  return (
+    <span title={e.label} className={cx("inline-block size-1.5 flex-none rounded-full", e.cls)}>
+      <span className="sr-only">{e.label}</span>
+    </span>
+  );
+}
+
+/** A value with its evidence dot, or "needs you" while its question is open. */
+export function Val({ path, children }: { path: string; children: ReactNode }) {
+  const { evidence, masked } = useRulebook();
+  if (masked.has(path)) return <span className="text-warn">needs you</span>;
+  const status = evidence.get(path);
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {status && <Dot status={status} />}
+      {children}
+    </span>
+  );
+}
+
+export function DotLegend() {
+  return (
+    <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+      {(["confirmed", "attested", "conflict"] as const).map((s) => (
+        <span key={s} className="inline-flex items-center gap-1.5">
+          <Dot status={s} /> {EVIDENCE[s].label}
+        </span>
+      ))}
+    </p>
+  );
+}
