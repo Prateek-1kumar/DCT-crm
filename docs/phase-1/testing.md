@@ -70,5 +70,5 @@ Item 1 and 9 were confirmed to fail the e2e with the fix reverted.
 - Manual entry can't add budget grids, list items or holdback/screen-fail/overpayment blocks in the UI (web.md open issue), so a fully manual contract can only be partly entered.
 - Other TanStack-mutation buttons can still double-send (confirm details, extract, enter manually, settings): all are idempotent or return a harmless 409 now, but the confirm PATCH can log `study.confirmed` twice.
 - Deadline edit buttons are labelled with the raw enum (`Edit invoice_months_after_study_close N`).
-- `renderPage` keeps every opened PDF in memory (mupdf cache, never evicted) — fine for a few studies.
+- ~~`renderPage` keeps every opened PDF in memory (mupdf cache, never evicted) — fine for a few studies.~~ Fixed: mupdf runs in a worker that keeps at most 8 PDFs open (`MAX_DOCS` in `packages/extraction/src/mupdf-worker.mjs`).
 - **Needs the AI keys**: live extraction, real identify (document kinds/study guess from cover pages), real anomaly mix from `runContractChecks` on real reads (HEADER_MISMATCH fix flow, DUPLICATE_ITEM, UNREADABLE_PAGE with page refs), cost recording, and extraction time/progress on 12–24-page scans were not exercised end to end.

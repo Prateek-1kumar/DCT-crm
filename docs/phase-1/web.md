@@ -1,5 +1,7 @@
 # Phase 1 · Workstream C: web UI (`apps/web`)
 
+> **History.** This page records the first build of the web, before the 2026-10-28 redesign and ADR-001. Superseded since: the anomaly panel and "Fix value / Choose reading / Accept with note" (now blind review questions, one at a time, at `/studies/:id/review`); `/studies/:id/extracting` (now `/studies/:id/reading`); "light + dark" (now light mode only, `color-scheme: light` in `src/app/globals.css`); the `resolve` and `grid-choice` calls and `PATCH .../values` on read drafts (removed from the API). The current guide is [apps/web/AGENTS.md](../../apps/web/AGENTS.md); the routes as built are in [api.md](api.md).
+
 ## How to run
 
 ```sh

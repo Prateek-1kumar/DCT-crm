@@ -10,7 +10,7 @@ Since 2026-10-28 the API implements the review workflow of ADR-001 (`docs/phase-
 
 ```sh
 pnpm install
-apps/api/scripts/db.sh start          # Postgres 16 in Apple `container` "dct-postgres", port 5434; creates dct_finance + dct_finance_test
+apps/api/scripts/db.sh start          # Postgres 16 in Apple `container` "dct-postgres", port 5434; creates dct_finance, dct_finance_test, dct_finance_e2e
 pnpm --filter @dct/api db:migrate     # drizzle migrations (DATABASE_URL from repo-root .env)
 EXTRACTION_FAKE=1 pnpm dev:api        # tsx watch: http://127.0.0.1:4100/api/v1
 pnpm --filter @dct/api test           # uses dct_finance_test, temp UPLOAD_DIR, fake extraction
@@ -228,7 +228,7 @@ The questions, in order:
 - **A server error (5xx) never shows its cause**: the response says "Something went wrong on the server… (ref <request id>)". A database error's message is the SQL with every value bound to it, so the log gets the query and the cause only, never the values. Failed jobs say the same for a database error.
 - Request bodies are at most 1 MB (uploads have their own limit). Every response has `X-Content-Type-Options: nosniff`, and JSON is `Cache-Control: no-store`. The request log is the method and the route pattern: no ids, query strings or bodies.
 - **Study details lock once a version is approved**: `PATCH /studies/:id` returns 409. The export is named and headed from the approved version's own study details, never the editable study row.
-- **No login yet: this computer only** (user decision 2026-10-28). The API listens on 127.0.0.1 (`config.listenHost`) and the web app should too (`next dev -H 127.0.0.1`). Every `by` is the name someone picked, so anyone who can reach the app can approve as anyone, mark alerts read for anyone, and turn maker-checker off. **Before it listens anywhere else, or more than one person uses it, add login** and take `by` from the session.
+- **No login yet: this computer only** (user decision 2026-10-28). The API listens on 127.0.0.1 (`config.listenHost`) and so does the web app (`-H 127.0.0.1` in every `apps/web` script). Every `by` is the name someone picked, so anyone who can reach the app can approve as anyone, mark alerts read for anyone, and turn maker-checker off. **Before it listens anywhere else, or more than one person uses it, add login** and take `by` from the session.
 - **Host/Origin guard**. It is an `onRequest` hook in `src/app.ts`, so `fastify.inject` tests exercise it.
   - Any request whose `Host` is not in `ALLOWED_HOSTS` gets 403 (DNS rebinding), and so does one whose `X-Forwarded-Host` isn't: the Next proxy always sends the API's own Host and moves the browser's there, so without it a rebinding attack on the web port would read everything. The default allows `localhost` and `127.0.0.1` on port 4100 and on port 3100.
   - A POST, PATCH, PUT or DELETE whose `Origin` is present but not in `ALLOWED_ORIGINS` gets 403 (CSRF). The default allows `http://localhost:3100` and `http://127.0.0.1:3100`, and `Origin: null` is rejected.
@@ -256,7 +256,7 @@ The questions, in order:
 ## Known gaps
 
 - A yes/no or fixed-list answer is compared with the value held, like a typed one (re-type, "This looks wrong"): a different pick `differs`, a second pick settles it. The sample server in `apps/web` still has them `chosen`.
-- The sample server (`apps/web/src/lib/mock/server.ts`) still answers 400 to sending back a question that isn't answered (the API: 409), and keeps idempotency keys in memory only.
+- The sample server (`apps/web/src/lib/mock/server.ts`) keeps idempotency keys in memory only. (It answers 409 to sending back a question that isn't answered, as the API does, since `16a577d`.)
 - Arithmetic questions are suppressed per grid, not per visit.
 
 ## Proposed changes to `packages/shared` (not made)

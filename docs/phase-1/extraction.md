@@ -2,6 +2,8 @@
 
 Scanned contract PDFs → `Rulebook` (Claude primary read + OpenAI cross-read) → deterministic contract checks → scoring against hand-checked golden files.
 
+> Parts of this page are history. Since 2026-10-28 ([ADR-001](adr-001-extraction-evidence.md)) text PDFs are the expected case and every value is checked against the PDF's own text by the evidence binder; the second read (Haiku, contract terms only, by default) is not evidence; the cost guard is a $20 cap per read on real spend. The current package guide is [packages/extraction/AGENTS.md](../../packages/extraction/AGENTS.md).
+
 ## Status
 
 | Done | |
@@ -12,7 +14,7 @@ Scanned contract PDFs → `Rulebook` (Claude primary read + OpenAI cross-read) �
 | Checks | All 13 `ContractAnomalyCode`s, pure code, unit-tested |
 | Scoring | Field-by-field vs `data/golden/*.json`; golden-vs-golden = 100% (synthetic + all 4 real goldens) |
 | Fake mode | `EXTRACTION_FAKE=1` → synthetic study (`fixtures/fake-extraction.json`, not a real contract) |
-| Live eval | **Not run: `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are empty in `.env`.** Ready to run. |
+| Live eval | **Not run: `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are empty in `.env`.** Ready to run. *Superseded: live reads have been run since (measured costs below; saved runs in `data/extractions/`, ADR-001 §1).* |
 
 ## API (for Workstream A)
 
@@ -44,7 +46,7 @@ pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
 ```
 
 - Repo root (for `.env`, `data/`) defaults to two levels above the package; override with `DCT_ROOT=/path/to/checkout` (needed when running from a git worktree, which has no `data/`).
-- Env: `ANTHROPIC_API_KEY` (required for live), `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `OPENAI_API_KEY` + `OPENAI_MODEL` (both needed for the cross-read; no default model), `OPENAI_PRICE_PER_MTOK="in,out"` (USD per million tokens, for the OpenAI cost line; 0 if unset), `EXTRACTION_GRID_DPI` (default 400, max 600), `EXTRACTION_FAKE=1`.
+- Env: `ANTHROPIC_API_KEY` (required for live), `ANTHROPIC_MODEL` (default `claude-sonnet-5-5` since the 2026-10-26 cost decision; `src/llm.ts`), `ANTHROPIC_FAST_MODEL` (default `claude-haiku-5-5`), `OPENAI_API_KEY` + `OPENAI_MODEL` (both needed for the cross-read; no default model), `OPENAI_PRICE_PER_MTOK="in,out"` (USD per million tokens, for the OpenAI cost line; 0 if unset), `EXTRACTION_GRID_DPI` (default 400, max 600), `EXTRACTION_FAKE=1`.
 - Golden JSON: `data/golden/{copd,mcallen,hcwc,shah}.json`, converted by hand from `EXPECTED.md` (git-ignored). Gaps in EXPECTED.md, so not scored: HCWC protocol number, HCWC telephone-visit count (scored once), HCWC Arm B visit totals, McAllen procedure rows.
 - Golden grids can carry `rows` (every grid row, cells in visit order), scored as one check per row in "grid rows". `python3 -I scripts/golden-grid-from-xlsx.py <budget.xlsx> <golden.json>` fills them from the sponsor's budget spreadsheet, and refuses unless the sheet's visit totals equal a golden grid's (so a draft budget is never written as truth). COPD: 68 rows × 16 visits from `data/contracts/copd-native/EFC18243 Ex A-1 Final 26May25.xlsx`; only its grid sheet matches the signed contract, its conditional-procedure and site-cost sheets are a pre-negotiation draft.
 - `copd-native` golden = COPD against the signed DocuSign original (`data/contracts/copd-native/`), which has a text layer; `copd` is the image-only print of the same 20 pages.
@@ -66,7 +68,7 @@ pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
   - `DUPLICATE_ITEM`: a priced (not "invoiceable") grid cell whose row matches an invoiceable by code, exact name, or a shared word plus the same amount.
   - `GRID_CONFLICT`: ≥2 grids with the same `arm` whose visit totals or per-patient totals differ, while `governingGridId` is null.
   - `AI_DISAGREEMENT`: rulebooks flattened to stable keys (grid arm, visit code, item code+name, deadline kind), compared field by field; an item one read lacks entirely is one anomaly, not one per field.
-  - `TEXT_LAYER_MISMATCH` (digital PDFs only): after the reads, each page's embedded text is parsed (mupdf, no AI) into the money amounts printed on it, stored as `pages[].printed` (cents; digit runs of 8+ without separators are dropped, so account/phone numbers are never kept). Every amount the AI read must be printed on the page its prov cites; one anomaly per item, with the pages where the amount *is* printed. Scans have no text layer, so it stays silent on them. Replayed on the saved COPD read against the signed DocuSign PDF: 788/789 amounts on their cited page; the one flag is a real wrong page reference (admin fee cited on p.4, printed on p.9). Ceiling: a cell misread as another price on the same page passes.
+  - `TEXT_LAYER_MISMATCH` (digital PDFs only): after the reads, each page's embedded text is parsed (mupdf, no AI) into the money amounts printed on it, stored as `pages[].printed` (cents; digit runs of 8+ without separators are dropped, so account/phone numbers are never kept). Every amount the AI read must be printed on the page its prov cites; one anomaly per item, with the pages where the amount *is* printed. Scans have no text layer, so it stays silent on them. Replayed on the saved COPD read against the signed DocuSign PDF: 788/789 amounts on their cited page; the one flag is a real wrong page reference (admin fee cited on p.4, printed on p.9). Ceiling: a cell misread as another price on the same page passes. *Superseded: the binder now checks each value at its own position (ADR-001); `TEXT_LAYER_MISMATCH` is still produced but never asked.*
   - Severity: blocker = GRID_CONFLICT, HEADER_MISMATCH, RETROACTIVE_NO_DATE, UNREADABLE_PAGE; info = LOW_CONFIDENCE; rest warning.
 
 ## Proposed shared-schema changes (not made; `packages/shared` untouched)
@@ -79,6 +81,8 @@ pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
 
 ## Known accuracy
 
+*Written before any live run; kept for the list of weak spots. ADR-001 §1 has measured findings.*
+
 No live numbers yet (no keys). Expected weak spots, in order:
 1. Grid digits in tiny sideways type (cents like 14.2666667, 356.666667 on McAllen). Mitigated by 400 DPI tiles + the cross-read; AI_DISAGREEMENT and VISIT_TOTAL_MISMATCH should surface misreads.
 2. Grids spanning pages or tiles: the model must join rows across tiles/pages; overlap areas can be double-counted.
@@ -86,6 +90,8 @@ No live numbers yet (no keys). Expected weak spots, in order:
 4. Visit codes differ between the two reads → spurious AI_DISAGREEMENT (keyed by visit code).
 
 ## Cost per contract (estimate, not measured)
+
+*Superseded: Opus is no longer used (next section), and ADR-001 §11 has the current estimates.*
 
 Claude Opus 5.5 at $4 / $20 per MTok: ~150–250k input tokens (classification ~1.3k/page, term pages ~4.5k each, ~6 tiles × ~4.7k per grid page) and ~60–100k output tokens (adaptive thinking at `high` effort + JSON). Roughly **$2–3.50 per contract** for the primary read (Shah lowest, McAllen highest); the OpenAI cross-read adds its own model's price. The eval prints measured cost per contract.
 
@@ -106,6 +112,8 @@ All in `CONFIG` (`packages/extraction/src/extract.ts`); render limits are `RENDE
 | `maxImagesPerExtraction` | 300 (classification + term pages + grid overviews + tiles; or one identify call) | `ExtractionLimitError` before the images that would exceed it are rendered |
 
 ## Cost decision (2026-10-26): $1 per contract maximum
+
+*The $1 guard, which refused a read up front from its estimate, was replaced on 2026-10-28 by a $20 runaway cap on real spend, as the Guard bullet below says. The model choices still hold.*
 
 - **No Opus.** Sonnet 5.5 reads terms and grids; Haiku 5.5 sorts pages and identifies documents.
 - **Cross-read:** Haiku re-reads contract terms only (`CROSS_READ=haiku`, the default). Budget grids aren't cross-read (`CROSS_READ_GRIDS=1` turns that back on); they're verified by arithmetic, and a re-read is triggered when a few totals don't add up.

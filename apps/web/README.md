@@ -1,6 +1,6 @@
 # web
 
-The DCT Finance web app (Next.js 16). Design and decisions: `docs/phase-1/web.md`. Running the whole stack: `RUNNING.md`.
+The DCT Finance web app (Next.js 16). Rules and key files: [AGENTS.md](AGENTS.md). Running the whole stack: the [root README](../../README.md).
 
 | Script | What it does |
 |---|---|

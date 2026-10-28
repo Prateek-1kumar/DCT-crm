@@ -7,11 +7,11 @@
 | Topic | Decision |
 |---|---|
 | Users | 4–8 people at DCT. **Everyone can do everything.** No login yet: pick your name from a list when acting. Login must come before any hosting. |
-| AI | Claude Opus 5.5 extracts. OpenAI independently re-reads **all amounts and rules**; disagreements become anomalies. |
+| AI | Claude Opus 5.5 extracts. OpenAI independently re-reads **all amounts and rules**; disagreements become anomalies. *Superseded: Sonnet 5.5 reads and Haiku 5.5 sorts pages (cost decision 2026-10-26, `phase-1/extraction.md`); a second read is not evidence and is never asked about (ADR-001 §4).* |
 | Conflicting budget grids | Accountant picks the governing grid, with a note. Sign-off is blocked until chosen. |
 | Procedure grid | Extract the full procedure × visit grid now. |
 | Missing master agreement | Can go live with a written note; affected terms are marked `unverified`. |
-| Unreadable page / failed extraction | Manual entry allowed, tagged `manual`; it still goes through every check. |
+| Unreadable page / failed extraction | Manual entry allowed, tagged `manual`; it still goes through every check. *Superseded by typing by hand: every typed value is `attested`, and up to 10 are re-typed blind by someone else (`phase-1/api.md`, "Typing by hand").* |
 | Maker-checker | Setting: a person who corrected values can't sign off. **Off by default.** |
 | Workspace | One shared workspace; no role screens yet. |
 
@@ -28,6 +28,7 @@
    - Review screen: contract page on the left, values on the right, anomalies on top. Clicking a value jumps to its page.
    - Each anomaly is settled by **fix value**, **choose**, or **accept with note**.
    - Sign-off is only possible when all anomalies are settled. It records name, time and note.
+   - *Superseded (2026-10-28, ADR-001): a person answers review questions blind, never with free-text "accept", and sign-off is gated on those answers and on every value's evidence. See `phase-1/api.md`, "Review questions" and "Sign-off gate".*
 3. **Amendment.**
    - Upload → new draft version → review **only the diff** → sign off.
    - The old version stays live until the new one is signed.
@@ -112,10 +113,10 @@ All routes are under `/api/v1` (since 2026-10-28; nothing stays on `/api`). Bodi
 | GET | `/studies/:id` | `StudyDetailDto` |
 | GET | `/studies/:id/versions/:v` | `RulebookVersionDto` |
 | GET | `/studies/:id/versions/:v/diff?against=:w` | `DiffEntry[]` |
-| PATCH | `/studies/:id/versions/:v/values` `CorrectValueBody` | Correct a value (draft only); logged; sets `prov.method = "manual"` |
-| POST | `/studies/:id/versions/:v/anomalies/:aid/resolve` `ResolveAnomalyBody` | Settle an anomaly |
-| POST | `/studies/:id/versions/:v/grid-choice` `ChooseGridBody` | Set `governingGridId`; resolves `GRID_CONFLICT` |
-| POST | `/studies/:id/versions/:v/sign-off` `SignOffBody` | 409 if unresolved anomalies (or maker-checker blocks) |
+| PATCH | `/studies/:id/versions/:v/values` `CorrectValueBody` | Correct a value (draft only); logged; sets `prov.method = "manual"`. *Now by-hand drafts only.* |
+| ~~POST~~ | ~~`/studies/:id/versions/:v/anomalies/:aid/resolve`~~ | ~~Settle an anomaly~~. *Removed 2026-10-28 with its body type: it let any blocker be cleared with free text (against ADR-001 I6).* |
+| ~~POST~~ | ~~`/studies/:id/versions/:v/grid-choice`~~ | ~~Set `governingGridId`~~. *Removed 2026-10-28 with its body type: the `GRID_CONFLICT` review question sets it.* |
+| POST | `/studies/:id/versions/:v/sign-off` `SignOffBody` | 409 if unresolved anomalies (or maker-checker blocks). *Now the ADR-001 gate: `phase-1/api.md`, "Sign-off gate".* |
 | GET | `/documents/:id/pages/:n.png` | Page image for the viewer |
 | GET | `/audit?studyId=` | `AuditEntryDto[]` |
 | GET, PATCH | `/settings` `PatchSettingsBody` | `SettingsDto` (people list, makerChecker) |
