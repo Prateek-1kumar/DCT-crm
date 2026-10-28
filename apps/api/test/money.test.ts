@@ -1,5 +1,5 @@
 import { bindEvidence, isoDate, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
-import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type ReviewItem, type Rulebook, type RulebookVersionDto, type StudyPage } from "@dct/shared";
+import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type MasterSearch, type ReviewItem, type Rulebook, type RulebookVersionDto, type StudyPage } from "@dct/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -302,6 +302,44 @@ describe("9. blind entry: a withheld value's neighbouring words never give it aw
     expect((await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).body).not.toMatch(/6 months/);
     await answer(studyId, "confirm:/deadlines/0/value", { value: 6 });
     expect((await version(studyId)).rulebook!.deadlines[0]).toMatchObject({ value: 6, consequence: "not approved if sent more than 6 months after close" });
+  });
+});
+
+describe("9b. blind entry: a term listed to bill by hand from a withheld value's line", () => {
+  it("carries nothing of the value while its question is open (version, diff, log, search), and shows in full once it's answered", async () => {
+    // the fee's line prints its $12,000.00 and an amount the read doesn't hold: which is the fee's can't be told, so it's asked
+    const { studyId } = await newStudy(app, "fee-line", { feeLine: " Plus $250.00 for each amendment." });
+    await extract(app, studyId);
+    const FEE = "/siteFees/0/amountCents";
+    const term = (await storedVersion(built, studyId, 1)).review.find((i) => i.reason === "UNACCOUNTED_TERM" && i.term?.quote.includes("$250.00"))!;
+    expect(term.term!.quote).toMatch(/\$12,000\.00/);
+    await answer(studyId, term.id, { optionId: "not_payment" });
+    await settleAll(built, studyId, 1);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
+
+    // read again: version 2 asks both again; the extra amount is listed to bill by hand, the fee still open
+    expect((await extract(app, studyId)).v).toBe(2);
+    expect((await version(studyId, 2)).review.find((i) => i.id === `confirm:${FEE}`)!.outcome).toBeNull();
+    await answer(studyId, term.id, { optionId: "bill_by_hand", note: "Amendment fee, next to the $12,000.00 admin fee" }, 2);
+    expect((await storedVersion(built, studyId, 2)).rulebook!.unclassified).toMatchObject([{ quote: term.term!.quote, amounts: [25000] }]);
+
+    const leaks = /12,000|1200000/;
+    // ids and times can hold any digits; only what people read counts
+    const words = (body: string) => body.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{4}-\d{2}-\d{2}T[\d:.]+Z/gi, "");
+    const raw = async (url: string) => words((await app.inject({ url: `/api/v1${url}` })).body);
+    const v2 = await version(studyId, 2);
+    expect(v2.rulebook!.unclassified).toEqual([expect.objectContaining({ quote: expect.not.stringMatching(leaks), label: expect.not.stringMatching(leaks), amounts: [] })]);
+    expect(await raw(`/studies/${studyId}/versions/2`)).not.toMatch(leaks);
+    expect(await raw(`/studies/${studyId}/versions/2/diff?against=1`)).not.toMatch(leaks);
+    const log = (await auditOf(studyId)).filter((e) => e.detail.version === 2);
+    expect(log.find((e) => e.detail.itemId === term.id)!.detail).toMatchObject({ billByHand: expect.stringContaining("•••") });
+    expect(words(JSON.stringify(log))).not.toMatch(leaks);
+    for (const q of ["12,000.00", "administrative", "amendment"]) expect(JSON.stringify((await get<MasterSearch>(`/studies/${studyId}/versions/2/search?q=${encodeURIComponent(q)}`)).hits)).not.toMatch(leaks);
+
+    // the fee answered: nothing withheld, the term in full
+    await answer(studyId, `confirm:${FEE}`, { value: 1200000 }, 2);
+    expect((await version(studyId, 2)).rulebook!.unclassified).toMatchObject([{ quote: term.term!.quote, amounts: [25000], note: "Amendment fee, next to the $12,000.00 admin fee" }]);
+    expect((await auditOf(studyId)).find((e) => e.detail.version === 2 && e.detail.itemId === term.id)!.detail).toMatchObject({ question: expect.stringContaining("$12,000.00") });
   });
 });
 

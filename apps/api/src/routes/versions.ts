@@ -92,7 +92,8 @@ export const versionRoutes =
       // Blind entry: a withheld value isn't shown as changed either. Both sides are masked alike, so the words blanked
       // around it on one side don't show up as changed against the other.
       const hidden = [...new Set([...hiddenPaths(before), ...hiddenPaths(after)])];
-      const view = (rb: Rulebook) => (hidden.length ? mask(rb, hidden) : rb);
+      const where = { evidence: [...before.evidence, ...after.evidence], review: [...before.review, ...after.review] };
+      const view = (rb: Rulebook) => (hidden.length ? mask(rb, hidden, where) : rb);
       return diffRulebooks(view(before.rulebook), view(after.rulebook)).filter((e) => !hidden.includes(e.path));
     });
 

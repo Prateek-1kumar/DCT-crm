@@ -89,7 +89,7 @@ describe("blind entry", () => {
     const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
     const rb = manualRulebook(s, []);
     rb.payment.netDays = { value: 45, prov: { source: { documentId: "d", page: 2, quote: "within 45 days" }, confidence: 1, method: "ai", crossCheck: "agree" } };
-    const out = mask(rb, ["/payment/netDays/value", "/budgetGrids/0/header", "/study/sponsor/value"]);
+    const out = mask(rb, ["/payment/netDays/value", "/budgetGrids/0/header", "/study/sponsor/value"], { evidence: [], review: [] });
     expect(out.payment.netDays).toEqual({ value: null, prov: { source: { documentId: "d", page: 2 }, confidence: 1, method: "ai", crossCheck: "agree" } });
     expect(out.study.sponsor.value).toBeNull();
     expect(out.budgetGrids[0]!.header).toEqual(rb.budgetGrids[0]!.header);

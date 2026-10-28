@@ -1,5 +1,6 @@
 import {
   AnswerReviewBody,
+  blindDetail,
   blindReview,
   ByHandBody,
   leaf,
@@ -697,7 +698,7 @@ function view(ver: RulebookVersionDto): RulebookVersionDto {
   if (!hidden.length) return { ...ver, rulebook };
   return {
     ...ver,
-    rulebook: rulebook && mask(rulebook, hidden),
+    rulebook: rulebook && mask(rulebook, hidden, ver),
     anomalies: [],
     evidence: ver.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
     review: blindReview(ver.review, hidden, ver.evidence),
@@ -716,11 +717,8 @@ function listAudit(d: Db, query: URLSearchParams): Res {
   const shown = (e: Entry): AuditEntryDto => {
     const st = d.studies.find((s) => s.id === e.studyId);
     const ver = d.versions.find((v) => v.studyId === e.studyId && v.version === e.detail.version);
-    const hidden = new Set(ver ? withheldPaths(ver) : []);
-    const ids = [e.detail.itemId, ...(Array.isArray(e.detail.itemIds) ? e.detail.itemIds : [])];
-    const about = (typeof e.detail.path === "string" && hidden.has(e.detail.path)) || ver?.review.some((i) => ids.includes(i.id) && i.path && hidden.has(i.path)) || (e.action === "review.sent_back" && !Array.isArray(e.detail.itemIds) && hidden.size > 0);
-    const rest = Object.fromEntries(Object.entries(e.detail).filter(([k]) => k !== "before" && k !== "after"));
-    const detail = !about ? e.detail : typeof rest.note === "string" ? { ...rest, note: blankNumbers(rest.note) } : rest;
+    // the real API's rule, the same code (@dct/shared blindDetail)
+    const detail = blindDetail(e.action, e.detail, ver && { hidden: new Set(withheldPaths(ver)), review: ver.review, evidence: ver.evidence });
     return { ...e, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, detail };
   };
   // newest first; reversed first so that, at the same time, the later entry comes first
@@ -1126,7 +1124,8 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     if (!other) return err(404, "Version to compare against not found");
     // blind entry, as the real API: both sides masked alike, and a withheld value never shown as changed
     const hidden = [...new Set([...withheldPaths(other), ...withheldPaths(ver)])];
-    const shown = (rb: Rulebook | null) => rb && (hidden.length ? mask(upgradeRulebook(rb), hidden) : upgradeRulebook(rb));
+    const where = { evidence: [...other.evidence, ...ver.evidence], review: [...other.review, ...ver.review] };
+    const shown = (rb: Rulebook | null) => rb && (hidden.length ? mask(upgradeRulebook(rb), hidden, where) : upgradeRulebook(rb));
     return ok(diffRulebooks(shown(other.rulebook), shown(ver.rulebook)).filter((e) => !hidden.includes(e.path)));
   }
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);

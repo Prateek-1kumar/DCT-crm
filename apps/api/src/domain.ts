@@ -60,7 +60,7 @@ export const versionDto = (v: VersionRow): RulebookVersionDto => {
   return {
     ...versionSummaryDto(v),
     studyId: v.studyId,
-    rulebook: rulebook && hidden.length ? mask(rulebook, hidden) : rulebook,
+    rulebook: rulebook && hidden.length ? mask(rulebook, hidden, v) : rulebook,
     anomalies: hidden.length ? [] : v.anomalies,
     editors: v.editors,
     cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },

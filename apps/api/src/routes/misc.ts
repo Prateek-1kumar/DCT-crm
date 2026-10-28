@@ -1,4 +1,4 @@
-import { ACTION_LABELS, type AuditEntryDto, AuditListQuery, type AuditPage, auditMatches, blankNumbers, PatchSettingsBody, type ReviewItem, type SettingsDto } from "@dct/shared";
+import { ACTION_LABELS, type AuditEntryDto, AuditListQuery, type AuditPage, auditMatches, blindDetail, PatchSettingsBody, type SettingsDto } from "@dct/shared";
 import { and, desc, eq, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { isDeepStrictEqual } from "node:util";
@@ -7,9 +7,9 @@ import type { Ctx } from "../app.js";
 import type { Tx } from "../db/index.js";
 import { auditLog, rulebookVersions, settings, studies } from "../db/schema.js";
 import { audit } from "../domain.js";
-import { HttpError, isObj, like, parse, wordsOf } from "../lib/http.js";
+import { HttpError, like, parse, wordsOf } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
-import { blindItem, hiddenPaths } from "../review.js";
+import { hiddenPaths } from "../review.js";
 
 /** Keyset cursor: the last entry's id, base64url JSON (ids only grow, so newest first is id order). */
 const Cursor = z.tuple([z.number().int().positive()]);
@@ -30,27 +30,6 @@ const matchesWord = (w: string) => {
   return or(ilike(auditLog.by, like(w)), ilike(auditLog.action, like(w)), named.length ? inArray(auditLog.action, named) : undefined, sql`${detailText} ILIKE ${like(w)}`);
 };
 
-type Open = { hidden: Set<string>; review: ReviewItem[] };
-
-/**
- * Blind entry in the log: while a value's question is open on its draft, an entry about it (its path, or the question it
- * answered or sent back) shows no earlier answer, typed or carried value (`before` / `after`), and its note, and a
- * contract problem's wording, have their numbers blanked. A send-back logged before it named its questions is blanked
- * while anything on its draft is open.
- */
-function blindDetail(action: string, d: Record<string, unknown>, open: Open | undefined): Record<string, unknown> {
-  if (!open?.hidden.size) return d;
-  const h = open.hidden;
-  const about = (x: Record<string, unknown>) => typeof x.path === "string" && h.has(x.path);
-  const strip = ({ before: _b, after: _a, ...x }: Record<string, unknown>) => (typeof x.note === "string" ? { ...x, note: blankNumbers(x.note) } : x);
-  const ids = [d.itemId, ...(Array.isArray(d.itemIds) ? d.itemIds : [])];
-  const blind = about(d) || open.review.some((i) => ids.includes(i.id) && blindItem(i, h)) || (action === "review.sent_back" && !Array.isArray(d.itemIds));
-  const out = blind ? strip(d) : { ...d };
-  for (const k of ["carried", "skipped"]) if (Array.isArray(out[k])) out[k] = (out[k] as unknown[]).map((x) => (isObj(x) && about(x) ? strip(x) : x));
-  if (blind && typeof out.question === "string" && typeof out.itemId === "string" && out.itemId.startsWith("anomaly:")) out.question = blankNumbers(out.question);
-  return out;
-}
-
 export const miscRoutes =
   ({ db }: Ctx): FastifyPluginAsync =>
   async (app) => {
@@ -62,7 +41,8 @@ export const miscRoutes =
       const { studyId, q, cursor, limit } = parse(AuditListQuery, req.query);
       const words = wordsOf(q);
       const where = and(studyId ? eq(auditLog.studyId, studyId) : undefined, ...words.map(matchesWord));
-      const drafts = new Map<string, Open>();
+      // blind entry in the log (@dct/shared blindDetail): each open draft's withheld paths, questions and evidence
+      const drafts = new Map<string, Parameters<typeof blindDetail>[2]>();
       const looked = new Set<string>();
       const items: AuditEntryDto[] = [];
       let after = cursor ? decodeCursor(cursor) : null;
@@ -78,10 +58,10 @@ export const miscRoutes =
         if (unseen.length) {
           for (const s of unseen) looked.add(s);
           const found = await db
-            .select({ studyId: rulebookVersions.studyId, version: rulebookVersions.version, status: rulebookVersions.status, review: rulebookVersions.review })
+            .select({ studyId: rulebookVersions.studyId, version: rulebookVersions.version, status: rulebookVersions.status, review: rulebookVersions.review, evidence: rulebookVersions.evidence })
             .from(rulebookVersions)
             .where(and(eq(rulebookVersions.status, "draft"), inArray(rulebookVersions.studyId, unseen)));
-          for (const v of found) drafts.set(`${v.studyId}/${v.version}`, { hidden: new Set(hiddenPaths(v)), review: v.review });
+          for (const v of found) drafts.set(`${v.studyId}/${v.version}`, { hidden: new Set(hiddenPaths(v)), review: v.review, evidence: v.evidence });
         }
         for (const { e, protocol, sponsor } of rows) {
           const detail = blindDetail(e.action, e.detail, drafts.get(`${e.studyId}/${e.detail.version}`));

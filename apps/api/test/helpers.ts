@@ -50,7 +50,7 @@ export async function makePdf(seed: string, pages = 2): Promise<Buffer> {
  * (revised)" reads its Week 0 total as 8,488.00, which its table doesn't print. Parking at $12.00 is a money term the read
  * doesn't hold. Overhead %, net days and the deadline have no quote, so nothing on the page backs them.
  */
-export async function makeTextPdf(seed: string): Promise<Buffer> {
+export async function makeTextPdf(seed: string, { feeLine = "" } = {}): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle(seed);
   doc.setCreationDate(new Date(0));
@@ -63,7 +63,8 @@ export async function makeTextPdf(seed: string): Promise<Buffer> {
   };
   page([
     [40, 60, "UNSCH Unscheduled visit $572.00 $800.00 per occurrence"],
-    [40, 80, "SC003 Administrative fee $12,000.00 due within 45 days of study initiation."],
+    // `feeLine`: more words on the fee's own line (another amount the read doesn't hold, say)
+    [40, 80, `SC003 Administrative fee $12,000.00 due within 45 days of study initiation.${feeLine}`],
     [40, 100, "Each screen failure is paid at $7,455.00 per subject"],
     [40, 120, "Sponsor will reimburse parking at $12.00 per subject visit."],
     [40, 140, "This Work Order is effective as of August 22, 2025."],
@@ -116,8 +117,8 @@ export async function waitJob(app: App, id: string, timeoutMs = 20_000): Promise
 // ---- the workflow, through the API (fake extraction) ----
 
 /** Uploads one file, creates the study and waits for the documents to be identified. A text PDF unless `scan`. */
-export async function newStudy(app: App, seed: string, { scan = false, name = "Work Order.pdf" } = {}) {
-  const [doc] = (await upload(app, [{ name, data: scan ? await makePdf(seed) : await makeTextPdf(seed) }])).json<DocumentDto[]>();
+export async function newStudy(app: App, seed: string, { scan = false, name = "Work Order.pdf", feeLine = "" } = {}) {
+  const [doc] = (await upload(app, [{ name, data: scan ? await makePdf(seed) : await makeTextPdf(seed, { feeLine }) }])).json<DocumentDto[]>();
   const res = await app.inject({ method: "POST", url: "/api/v1/studies", payload: { documentIds: [doc!.id] } });
   const { studyId, jobId } = res.json<{ studyId: string; jobId: string }>();
   await waitJob(app, jobId);
