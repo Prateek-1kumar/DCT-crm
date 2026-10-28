@@ -42,6 +42,15 @@ export function summaryStage(s: Pick<StudySummaryDto, "status" | "needsYou">): S
   }
 }
 
+/** Shortcuts into the contracts list (`/?view=…`), shown under Contracts in the sidebar. */
+export const VIEWS = [
+  { id: "needs-you", label: "Needs you", test: (s: StageState) => s.stage === "Needs you" },
+  { id: "approval", label: "Waiting for approval", test: (s: StageState) => s.stage === "Approve" },
+  { id: "live", label: "Live", test: (s: StageState) => s.stage === "Live" },
+  { id: "failed", label: "Couldn't read", test: (s: StageState) => !!s.failed },
+] as const;
+export type ViewId = (typeof VIEWS)[number]["id"];
+
 /** For a contract page: from its newest version, and the draft's questions once loaded. */
 export function versionStage(latest: Pick<VersionSummaryDto, "status"> | undefined, draft: Pick<RulebookVersionDto, "review" | "byHand"> | undefined): StageState {
   if (!latest) return { stage: "Upload" };

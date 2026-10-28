@@ -38,3 +38,28 @@ function subscribe(l: () => void) {
 export function useActingAs(): string | null {
   return useSyncExternalStore(subscribe, read, () => null);
 }
+
+/** "Who's working today?" picker: opened from the sidebar, or once per visit by the first action that needs a name. */
+const promptListeners = new Set<() => void>();
+let promptOpen = false;
+let prompted = false;
+
+export function askForPerson(open = true) {
+  promptOpen = open;
+  promptListeners.forEach((l) => l());
+}
+
+export function askForPersonOnce() {
+  if (prompted) return;
+  prompted = true;
+  askForPerson();
+}
+
+const subscribePrompt = (l: () => void) => {
+  promptListeners.add(l);
+  return () => {
+    promptListeners.delete(l);
+  };
+};
+
+export const usePersonPrompt = () => useSyncExternalStore(subscribePrompt, () => promptOpen, () => false);

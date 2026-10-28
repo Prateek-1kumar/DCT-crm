@@ -1,125 +1,131 @@
 @import "tailwindcss";
 
 /*
- * Design tokens, from the DCT prototype. Components use only these (bg-surface, text-muted, border-line, ...).
- * Light values here; dark values override the same variables below.
+ * Design tokens: "soft premium", light mode only (decided 2026-10-28). Components use only these.
+ * Every text color here is at least 4.5:1 on the surface it is used on; /design shows them all.
  */
 @theme {
-  --font-sans: var(--font-poppins), system-ui, sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-  /* Poppins is loaded at 300/400/500 only. */
-  --font-weight-semibold: 500;
-  --font-weight-bold: 500;
 
-  --color-canvas: #f7f8fb; /* paper: app background */
-  --color-surface: #fff;
-  --color-sunken: #f1f3f8; /* table headers, wells */
-  --color-line: #1416311a;
-  --color-line-strong: #1416312e;
-  --color-ink: #141631;
-  --color-ink-2: #141631c2;
-  --color-muted: #1416318f;
-  --color-faint: #14163161;
+  /* Surfaces */
+  --color-canvas: #f3f3f0; /* app background, warm off-white */
+  --color-surface: #ffffff; /* cards */
+  --color-sunken: #f7f7f4; /* wells and table headers inside a card */
+  --color-line: #ecece7;
+  --color-line-strong: #ddddd6;
 
-  --color-accent: #1f6fa8; /* blue ink: links, selection */
-  --color-accent-hover: #185a8a;
-  --color-accent-soft: #4394cd17;
-  --color-on-accent: #fff;
+  /* Text */
+  --color-ink: #161616;
+  --color-ink-2: #3f3f3b;
+  --color-muted: #5e5e5a;
+  --color-faint: #6e6e68;
 
-  --color-ok: #2e7d5b;
-  --color-ok-soft: #2e7d5b1a;
-  --color-warn: #b7791f;
-  --color-warn-soft: #b7791f1c;
-  --color-danger: #b42318;
-  --color-danger-soft: #b4231814;
-  --color-info: #1f6fa8;
-  --color-info-soft: #4394cd17;
-  --color-highlight: #4394cd29; /* "look here" on a contract page */
+  /* Brand: #6487D7 for highlights, active nav, focus and progress; buttons use the deeper shade so white text stays readable. */
+  --color-brand: #6487d7;
+  --color-brand-soft: #eef2fc;
+  --color-primary: #4a6cc4;
+  --color-primary-hover: #3f5fb0;
+  --color-on-primary: #ffffff;
+  --color-accent: #3f5fb0; /* links */
+  --color-accent-hover: #34509a;
+  --color-accent-soft: #eef2fc;
+  --color-on-accent: #ffffff;
+  --color-highlight: #f5c45159; /* "look here" on a contract page */
+  --color-highlight-strong: #f5c451;
 
-  --color-focus: #4394cd;
-  --color-backdrop: #14163147;
+  /* Status: one meaning each. Text colors are the tint's readable ink. */
+  --color-ok: #1e7a50; /* matches the PDF */
+  --color-ok-soft: #e7f6ee;
+  --color-info: #5b3fc4; /* confirmed by a person */
+  --color-info-soft: #efebfc;
+  --color-warn: #9a5b00; /* needs you */
+  --color-warn-soft: #fcf1df;
+  --color-danger: #b3261e; /* problem */
+  --color-danger-soft: #fbe8e6;
 
-  --radius-card: 12px;
-  --shadow-card: 0 1px 2px #1416310a, 0 8px 24px #1416310d;
-}
+  --color-focus: #6487d7;
+  --color-backdrop: #16161647;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-canvas: #0e0f1f;
-    --color-surface: #16182c;
-    --color-sunken: #1d2038;
-    --color-line: #ffffff17;
-    --color-line-strong: #ffffff2b;
-    --color-ink: #eceef8;
-    --color-ink-2: #eceef8c2;
-    --color-muted: #eceef894;
-    --color-faint: #eceef866;
+  /* Shape and depth */
+  --radius-card: 22px;
+  --radius-tile: 16px;
+  --radius-field: 14px;
+  --shadow-card: 0 1px 2px #1616160a, 0 8px 24px #1616160f;
+  --shadow-raised: 0 2px 6px #16161614, 0 24px 48px #1616161f;
+  --shadow-button: 0 1px 2px #16161614;
 
-    --color-accent: #7db9e6;
-    --color-accent-hover: #9ccbee;
-    --color-accent-soft: #4394cd26;
-    --color-on-accent: #0e0f1f;
-
-    --color-ok: #6cc59a;
-    --color-ok-soft: #2e7d5b33;
-    --color-warn: #e2ad5a;
-    --color-warn-soft: #b7791f33;
-    --color-danger: #f0877d;
-    --color-danger-soft: #b4231833;
-    --color-info: #7db9e6;
-    --color-info-soft: #4394cd26;
-    --color-highlight: #4394cd40;
-
-    --color-focus: #7db9e6;
-    --color-backdrop: #000000a6;
-    --shadow-card: 0 1px 2px #0000004d;
-  }
+  /* Type scale (comfortable: 15px body) */
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-small: 13px;
+  --text-small--line-height: 20px;
+  --text-body: 15px;
+  --text-body--line-height: 24px;
+  --text-lead: 17px;
+  --text-lead--line-height: 26px;
+  --text-title: 20px;
+  --text-title--line-height: 28px;
+  --text-heading: 26px;
+  --text-heading--line-height: 32px;
+  --text-display: 32px;
+  --text-display--line-height: 40px;
+  --text-figure: 40px;
+  --text-figure--line-height: 44px;
 }
 
 html {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 body {
   background: var(--color-canvas);
   color: var(--color-ink);
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.5;
-  letter-spacing: -0.1px;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  letter-spacing: -0.006em;
 }
 
 h1 {
-  font-size: 28px;
-  font-weight: 300;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
+  font-size: var(--text-display);
+  line-height: var(--text-display--line-height);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+::selection {
+  background: var(--color-brand-soft);
 }
 
 :focus-visible {
-  outline: 2px solid var(--color-focus);
+  outline: 3px solid color-mix(in srgb, var(--color-focus) 45%, transparent);
   outline-offset: 2px;
 }
 
-.num {
+/* Money and counts: digits line up in columns. */
+.num,
+table {
   font-variant-numeric: tabular-nums;
 }
 
-/* Small uppercase letter-spaced section label. */
+/* Small section label. */
 .eyebrow {
-  font-size: 10.5px;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
   font-weight: 500;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--color-muted);
 }
 
 dialog::backdrop {
   background: var(--color-backdrop);
+  backdrop-filter: blur(2px);
 }
 
 @keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 var(--color-focus); }
+  0% { box-shadow: 0 0 0 0 var(--color-highlight-strong); }
   100% { box-shadow: 0 0 0 10px transparent; }
 }
 .pulse {
