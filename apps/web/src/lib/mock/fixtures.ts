@@ -343,7 +343,7 @@ const inputFor = (path: string, value?: unknown): NonNullable<ReviewItem["input"
 /** The DTO side of a question: explicit fields, so nothing secret can reach a response. */
 export const toItem = (x: Spec): ReviewItem => ({
   id: x.id, kind: x.kind, reason: x.reason, path: x.path, question: x.question, input: x.input ?? null, options: x.options ?? [],
-  where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null,
+  where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null, sentBack: null,
 });
 export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines, apply: x.apply });
 

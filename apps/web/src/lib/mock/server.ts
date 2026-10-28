@@ -4,6 +4,7 @@ import {
   CorrectValueBody,
   ProofreadBody,
   ReportValueBody,
+  SendBackBody,
   Rulebook as RulebookSchema,
   settled,
   type AuditEntryDto,
@@ -388,12 +389,31 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   const changed = settled(item);
   item.compare = outcome === "differs" ? { typed: b.value, read: current ?? null, printed: ev?.printed ?? null } : null;
   item.answer = { value: b.value, optionId: b.optionId, cantTell: b.cantTell, note: b.note?.trim() || undefined, by: b.by, at };
+  item.sentBack = null;
   item.outcome = outcome;
   if (set) ver.rulebook = setAt(ver.rulebook, set.path, set.value);
   if (ev && (outcome === "matched" || outcome === "chosen")) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
   if (outcome !== "cant_tell" && !retype && !ver.editors.includes(b.by)) ver.editors.push(b.by);
   st.updatedAt = at;
   log(d, b.by, st.id, changed ? "review.changed" : "review.answered", { version: ver.version, question: item.question, outcome: outcome.replace("_", " "), ...(b.note ? { note: b.note } : {}) }, at);
+  return ok(ver);
+}
+
+/** POST .../send-back: the approver reopens answered questions with a note; they're answered again, blind. */
+function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = now()): Res {
+  const parsed = SendBackBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Pick the answers to send back and add a note.");
+  if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; only a draft's answers can be sent back.`);
+  const { itemIds, note, by } = parsed.data;
+  const items = itemIds.map((id) => ver.review.find((i) => i.id === id));
+  if (items.some((i) => !i || i.outcome === null)) return err(400, "Only answered questions can be sent back.");
+  for (const i of items as ReviewItem[]) {
+    Object.assign(i, { outcome: null, answer: null, compare: null, sentBack: { by, note, at } });
+    const ev = i.path ? ver.evidence.find((e) => e.path === i.path) : undefined;
+    if (ev?.status === "attested") Object.assign(ev, { status: "conflict", note: `Sent back by ${by}` });
+  }
+  st.updatedAt = at;
+  log(d, by, st.id, "review.sent_back", { version: ver.version, questions: items.length, note }, at);
   return ok(ver);
 }
 
@@ -685,6 +705,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
   if (vrest === "/report" && method === "POST") return report(d, st, ver, body);
   if (vrest === "/proofread" && method === "POST") return proofread(d, st, ver, body);
+  if (vrest === "/send-back" && method === "POST") return sendBack(d, st, ver, body);
   if (vrest === "/values" && method === "PATCH") return typeValue(d, st, ver, body);
   if (vrest === "/by-hand/done" && method === "POST") return finishByHand(d, st, ver, body);
   if (vrest === "/sign-off" && method === "POST") {

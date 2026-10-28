@@ -100,6 +100,8 @@ export const api = {
   /** "This looks wrong" (ReportValueBody). On a draft: adds a question. On the live version: opens a correction draft. Returns the draft. */
   reportValue: (id: string, v: number, body: { path: string; note: string; by: string }) =>
     request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/report`, body),
+  /** The approver reopens answered questions with a note (SendBackBody). */
+  sendBack: (id: string, v: number, body: { itemIds: string[]; note: string; by: string }) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/send-back`, body),
   /** Values that looked right to someone proofreading (ProofreadBody); any version with a master, live ones too. */
   proofread: (id: string, v: number, body: { paths: string[]; by: string }) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/proofread`, body),
   /** A blank draft to type a contract in by hand (ByHandBody). */

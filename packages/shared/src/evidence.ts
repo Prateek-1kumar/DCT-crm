@@ -68,6 +68,8 @@ export const ReviewItem = z.object({
   outcome: z.enum(["matched", "differs", "chosen", "cant_tell"]).nullable(),
   /** Filled only after a typed answer differs from the reading. */
   compare: z.object({ typed: z.unknown(), read: z.unknown(), printed: z.string().nullable() }).nullable(),
+  /** The approver reopened this answer with a note; cleared when it's answered again. */
+  sentBack: z.object({ by: z.string(), note: z.string(), at: z.string() }).nullable(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 
@@ -91,6 +93,9 @@ export const ReportValueBody = z.object({ path: z.string(), note: z.string().min
  * POST /studies/:id/versions/:v/by-hand/done (same body): typing finished; a different person re-types up to 10 random values blind.
  */
 export const ByHandBody = z.object({ by: z.string().min(1) });
+
+/** POST /studies/:id/versions/:v/send-back: the approver reopens answered questions with a note; the contract goes back to Needs you. */
+export const SendBackBody = z.object({ itemIds: z.array(z.string()).min(1), note: z.string().min(1), by: z.string().min(1) });
 
 /** POST /studies/:id/versions/:v/review/:itemId. Also changes an earlier answer while the version is a draft. */
 export const AnswerReviewBody = z.object({

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { approveState, formatAnswer, needsYou, parseAnswer, pdfCheckLine, queueOrder, stepsFor, summaryStage, versionStage } from "./review";
 
 const q = (id: string, blocking: boolean, outcome: ReviewItem["outcome"] = null): ReviewItem => ({
-  id, kind: "confirm_value", reason: "spot_check", path: null, question: "", input: "money", options: [], where: [], blocking, answer: null, outcome, compare: null,
+  id, kind: "confirm_value", reason: "spot_check", path: null, question: "", input: "money", options: [], where: [], blocking, answer: null, outcome, compare: null, sentBack: null,
 });
 const rulebook = {} as never;
 
@@ -54,7 +54,7 @@ describe("approveState", () => {
     expect(s.reasons.join(" ")).toContain("2 questions need an answer first");
   });
   it("needs a person", () => {
-    expect(approveState(draft, { makerChecker: false }, null).reasons.join(" ")).toMatch(/Acting as/);
+    expect(approveState(draft, { makerChecker: false }, null).reasons.join(" ")).toMatch(/Choose your name/);
   });
   it("applies maker-checker only when on", () => {
     expect(approveState(draft, { makerChecker: true }, "Avery").reasons.join(" ")).toMatch(/someone else has to approve/);

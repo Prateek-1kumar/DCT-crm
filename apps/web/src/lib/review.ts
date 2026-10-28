@@ -142,7 +142,7 @@ export function approveState(
   if (!version.rulebook) reasons.push("There is no invoicing master to approve yet.");
   const open = version.review.filter((i) => i.blocking && !settled(i)).length;
   if (open) reasons.push(`${open} ${open === 1 ? "question needs" : "questions need"} an answer first.`);
-  if (!by) reasons.push("Choose your name under “Acting as” (top right).");
+  if (!by) reasons.push("Choose your name first (bottom of the sidebar).");
   else if (settings?.makerChecker && version.editors.includes(by))
     reasons.push(`Maker-checker is on, and ${by} answered questions on this contract, so someone else has to approve it.`);
   return { allowed: reasons.length === 0, reasons };
