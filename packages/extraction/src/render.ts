@@ -43,6 +43,11 @@ export async function pageCount(pdfPath: string): Promise<number> {
   return (await openDoc(pdfPath)).countPages();
 }
 
+/** The page's embedded text layer; empty for a scanned image with no OCR. */
+export async function pageText(pdfPath: string, page: number): Promise<string> {
+  return loadPage(await openDoc(pdfPath), page).toStructuredText("preserve-whitespace").asText();
+}
+
 function loadPage(doc: mupdf.Document, page: number): mupdf.Page {
   const n = doc.countPages();
   if (!Number.isInteger(page) || page < 1 || page > n) throw new RangeError(`page ${page} out of range (1-${n})`);

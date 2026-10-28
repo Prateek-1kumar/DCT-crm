@@ -1,6 +1,6 @@
 import { ContractAnomaly } from "@dct/shared";
 import { describe, expect, it } from "vitest";
-import { compareRulebooks, runContractChecks, sameName } from "../src/checks";
+import { compareRulebooks, printedAmounts, runContractChecks, sameName } from "../src/checks";
 import { makeRulebook, prov } from "./helpers";
 
 const codes = (rb = makeRulebook(), opts = {}) => runContractChecks(rb, opts).map((a) => a.code);
@@ -224,5 +224,39 @@ describe("runContractChecks", () => {
     rb.budgetGrids[0]!.visits[0]!.name = "Screening";
     rb.budgetGrids[0]!.visits[1]!.name = "Week 2";
     expect(compareRulebooks(rb, cross).filter((c) => !c.agree)).toEqual([]);
+  });
+});
+
+describe("TEXT_LAYER_MISMATCH (digital PDFs)", () => {
+  const page = (printed: number[] | undefined) => [{ documentId: "d1", page: 3, kind: "budget_grid" as const, readable: true, printed }, { documentId: "d1", page: 9, kind: "invoiceables" as const, readable: true, printed: [999900] }];
+  const allAmounts = (rb = makeRulebook()) => {
+    const out: number[] = [];
+    JSON.stringify(rb, (k, v) => (typeof v === "number" && /Cents$|^cents$|^V\d$/.test(k) && v ? (out.push(v), v) : v));
+    return out;
+  };
+
+  it("printedAmounts: money-like numbers in cents; no text layer → undefined; long digit runs dropped", () => {
+    expect(printedAmounts("Docusign Envelope ID: 1234")).toBeUndefined();
+    const text = `${"x".repeat(200)} $7,455  $1,234.50  14.2666667  Account 123456789  Phone 2105551234  Total $12,000,000`;
+    expect(printedAmounts(text)).toEqual([1427, 123450, 745500, 1200000000].sort((a, b) => a - b));
+  });
+
+  it("silent when every amount is on its cited page, or the page has no text layer (scan)", () => {
+    expect(codes(makeRulebook(), { pages: page(allAmounts()) })).not.toContain("TEXT_LAYER_MISMATCH");
+    expect(codes(makeRulebook(), { pages: page(undefined) })).not.toContain("TEXT_LAYER_MISMATCH");
+  });
+
+  it("one anomaly per item, saying where the amount is actually printed", () => {
+    const rb = makeRulebook();
+    const printed = allAmounts(rb);
+    const v1 = rb.budgetGrids[0]!.visits[0]!;
+    v1.totalCents = 84100; // misread: printed nowhere
+    v1.overheadCents = 999900; // printed, but on page 9, not the cited page 3
+    const a = runContractChecks(rb, { pages: page(printed) }).filter((x) => x.code === "TEXT_LAYER_MISMATCH");
+    expect(a).toHaveLength(1);
+    expect(a[0]!.detail.missing).toEqual([
+      { path: "/budgetGrids/0/visits/0/overheadCents", cents: 999900, printedOn: [9] },
+      { path: "/budgetGrids/0/visits/0/totalCents", cents: 84100, printedOn: [] },
+    ]);
   });
 });

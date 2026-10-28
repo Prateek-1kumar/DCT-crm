@@ -16,6 +16,7 @@ export const ContractAnomalyCode = z.enum([
   "RETROACTIVE_NO_DATE", // amendment says retroactive but gives no date (Shah)
   "UNREADABLE_PAGE", // page could not be read
   "AMBIGUOUS_TERM", // contract wording is ambiguous (e.g. overhead on site costs)
+  "TEXT_LAYER_MISMATCH", // digital PDF: an amount the AI read isn't printed in the PDF's own text
 ]);
 export type ContractAnomalyCode = z.infer<typeof ContractAnomalyCode>;
 

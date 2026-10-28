@@ -7,6 +7,8 @@ export type PageInfo = {
   page: number;
   kind: "terms" | "budget_grid" | "invoiceables" | "signatures" | "boilerplate";
   readable: boolean;
+  /** Money amounts (cents) printed in the page's embedded text; absent when the page has no text layer (a scan). */
+  printed?: number[];
 };
 
 /**
@@ -23,7 +25,7 @@ export type ExtractionNote = {
 
 export type CheckOptions = {
   crossRead?: Rulebook | null;
-  /** ExtractionOutput.pages: enables UNREADABLE_PAGE. */
+  /** ExtractionOutput.pages: enables UNREADABLE_PAGE and, for digital PDFs, TEXT_LAYER_MISMATCH. */
   pages?: PageInfo[];
   /** ExtractionOutput.notes: enables note-based AMBIGUOUS_TERM / RETROACTIVE_NO_DATE. */
   notes?: ExtractionNote[];
@@ -36,6 +38,7 @@ const SEVERITY: Record<ContractAnomalyCode, ContractAnomaly["severity"]> = {
   HEADER_MISMATCH: "blocker",
   RETROACTIVE_NO_DATE: "blocker",
   UNREADABLE_PAGE: "blocker",
+  TEXT_LAYER_MISMATCH: "warning",
   REQUIRED_MISSING: "warning",
   VISIT_TOTAL_MISMATCH: "warning",
   PER_PATIENT_TOTAL_MISMATCH: "warning",
@@ -253,7 +256,82 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
     }
   }
 
+  // TEXT_LAYER_MISMATCH — digital PDFs carry their own text: every amount read from a page that has a
+  // text layer must be printed on the page its prov cites. Matched per page, not per document: small amounts
+  // recur across a contract ($100 misread as $101 hides behind a $101 hourly rate elsewhere). One anomaly per item.
+  // ponytail: a set of amounts per page, so a grid cell misread as another price on the same page ($34 → $35)
+  // passes. Upgrade: match each grid row to its own text line and compare the cells in order.
+  const textPages = (opts.pages ?? []).filter((p): p is PageInfo & { printed: number[] } => !!p.printed);
+  if (textPages.length) {
+    const onPage = new Map(textPages.map((p) => [`${p.documentId}#${p.page}`, new Set(p.printed)]));
+    for (const it of amountItems(rulebook)) {
+      const src = it.prov.source;
+      const cited = src && onPage.get(`${src.documentId}#${src.page}`);
+      if (!src || !cited) continue;
+      const missing = it.amounts
+        .filter((a) => !cited.has(a.cents))
+        .map((a) => ({ ...a, path: `${it.path}/${a.field}`, printedOn: textPages.filter((p) => p.documentId === src.documentId && p.printed.includes(a.cents)).map((p) => p.page) }));
+      if (!missing.length) continue;
+      const where = (pages: number[]) => (pages.length ? `printed on page ${pages.slice(0, 3).join(", ")}${pages.length > 3 ? ", …" : ""}` : "not printed anywhere in the PDF's text");
+      add(
+        "TEXT_LAYER_MISMATCH",
+        missing[0]!.path,
+        `"${it.name}": ${missing
+          .slice(0, 4)
+          .map((a) => `${a.field.replace("cells/", "")} ${dollars(a.cents)} (${where(a.printedOn)})`)
+          .join("; ")}${missing.length > 4 ? "; …" : ""}, but the cited page ${src.page} doesn't show it`,
+        [src],
+        { missing: missing.map(({ path, cents, printedOn }) => ({ path, cents, printedOn })) },
+      );
+    }
+  }
+
   return out;
+}
+
+/** Every non-zero money amount in the rulebook, grouped by the item (visit, grid row, fee…) whose prov cites it. */
+function amountItems(rb: Rulebook) {
+  const items: { path: string; name: string; prov: Provenance; amounts: { field: string; cents: number }[] }[] = [];
+  const item = (path: string, name: string, prov: Provenance, fields: [string, number | null | "invoiceable"][]) => {
+    const amounts = fields.filter((f): f is [string, number] => typeof f[1] === "number" && f[1] !== 0).map(([field, cents]) => ({ field, cents }));
+    if (amounts.length) items.push({ path, name, prov, amounts });
+  };
+  rb.budgetGrids.forEach((g, gi) => {
+    const gp = `/budgetGrids/${gi}`;
+    g.visits.forEach((v, vi) =>
+      item(`${gp}/visits/${vi}`, `${g.label} ${v.name}`, v.prov, [
+        ["procedureSubtotalCents", v.procedureSubtotalCents],
+        ["overheadCents", v.overheadCents],
+        ["nonProcedureCents", v.nonProcedureCents],
+        ["totalCents", v.totalCents],
+      ]),
+    );
+    g.procedures.forEach((p, pi) => item(`${gp}/procedures/${pi}`, p.name, p.prov, [["unitCents", p.unitCents], ...Object.entries(p.cells).map(([k, c]): [string, number | "invoiceable"] => [`cells/${k}`, c])]));
+    g.perPatientTotals.forEach((t, ti) => item(`${gp}/perPatientTotals/${ti}`, t.label, t.prov, [["cents", t.cents]]));
+  });
+  rb.invoiceables.forEach((x, i) => item(`/invoiceables/${i}`, x.name, x.prov, [["amountCents", x.amountCents], ["amountWithOverheadCents", x.amountWithOverheadCents]]));
+  rb.siteFees.forEach((x, i) => item(`/siteFees/${i}`, x.name, x.prov, [["amountCents", x.amountCents]]));
+  if (rb.screenFail) item("/screenFail", "Screen failure", rb.screenFail.prov, [["amountCents", rb.screenFail.amountCents]]);
+  return items;
+}
+
+/** Below this many non-space characters a page's text layer is a stamp (e.g. a Docusign envelope ID), not the page. */
+const MIN_PAGE_TEXT = 200;
+
+/**
+ * Money-like numbers in a page's text, in cents; undefined when the page has no real text layer.
+ * Digit runs of 8+ without thousands separators (account, routing, phone numbers) are dropped, never kept.
+ */
+export function printedAmounts(text: string): number[] | undefined {
+  if (text.replace(/\s/g, "").length < MIN_PAGE_TEXT) return undefined;
+  const out = new Set<number>();
+  for (const [m] of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
+    const whole = m.split(".")[0]!;
+    if (!whole.includes(",") && whole.length >= 8) continue;
+    const cents = Math.round(Number(m.replace(/,/g, "")) * 100);
+    if (Number.isSafeInteger(cents) && cents > 0) out.add(cents);
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 const fmt = (v: unknown) => (v === undefined ? "(missing)" : JSON.stringify(v));

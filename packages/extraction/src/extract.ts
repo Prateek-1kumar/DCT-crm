@@ -1,10 +1,10 @@
 import { type DocumentKind, Rulebook } from "@dct/shared";
 import type { ZodType } from "zod";
-import { compareRulebooks, type ExtractionNote, type PageInfo, provAt } from "./checks";
+import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient, priceOf } from "./llm";
 import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
-import { dpiToFit, pageCount, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
+import { dpiToFit, pageCount, pageText, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
@@ -274,12 +274,14 @@ export async function extractWith(
 
   // 4. Mark each primary value agree/disagree with the second read.
   if (cross) markCrossCheck(primary.rulebook, cross.rulebook);
+  // 5. Digital PDFs: keep the amounts printed in each page's own text, for TEXT_LAYER_MISMATCH. Free, no AI.
+  const printed = await Promise.all(pages.map((p) => pageText(docOf.get(p.documentId)!.path, p.page).then(printedAmounts)));
   progress(100, "Extraction complete");
 
   return {
     rulebook: primary.rulebook,
     crossRead: cross?.rulebook ?? null,
-    pages: pages.map(({ documentId, page, kind, readable }) => ({ documentId, page, kind, readable })),
+    pages: pages.map(({ documentId, page, kind, readable }, i) => ({ documentId, page, kind, readable, ...(printed[i] && { printed: printed[i] }) })),
     cost: [clients.primary.cost(), ...(clients.fast ? [clients.fast.cost()] : []), ...(clients.cross ? [clients.cross.cost()] : [])],
     notes: primary.notes,
     warnings,

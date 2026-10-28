@@ -9,7 +9,7 @@ export type StudyGuess = { sponsor: string | null; protocol: string | null; site
 export type ExtractionOutput = {
   rulebook: Rulebook;
   crossRead: Rulebook | null;
-  pages: { documentId: string; page: number; kind: "terms" | "budget_grid" | "invoiceables" | "signatures" | "boilerplate"; readable: boolean }[];
+  pages: { documentId: string; page: number; kind: "terms" | "budget_grid" | "invoiceables" | "signatures" | "boilerplate"; readable: boolean; printed?: number[] }[];
   cost: { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number }[];
   /** Ambiguity / retroactive notes the rulebook schema can't hold; stored on the version and passed back to the checks. */
   notes?: ExtractionNote[];

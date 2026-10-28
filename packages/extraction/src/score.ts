@@ -22,7 +22,15 @@ export const Golden = z.object({
   netDays: z.number().nullable().optional(),
   rounding: z.enum(["printed_amounts", "cents", "unspecified"]).optional(),
   appliesFrom: z.string().nullable().optional(),
-  grids: z.array(z.object({ label: z.string(), visitTotals: z.array(z.number().int()), perPatient: z.array(z.number().int()) })),
+  grids: z.array(
+    z.object({
+      label: z.string(),
+      visitTotals: z.array(z.number().int()),
+      perPatient: z.array(z.number().int()),
+      /** Every grid row, cells in visit order (null = empty), e.g. from the sponsor's spreadsheet (scripts/golden-grid-from-xlsx.py). */
+      rows: z.array(z.object({ code: z.string().nullable(), name: z.string(), unitCents: z.number().int().nullable(), cells: z.array(z.number().int().nullable()) })).optional(),
+    }),
+  ),
   procedures: z.array(z.object({ code: z.string().nullable(), name: z.string(), unitCents: z.number().int() })).default([]),
   /** Invoiceables and site fees together (contracts file the same item under either heading). */
   items: z.array(z.object({ code: z.string().nullable(), name: z.string(), cents: z.number().int(), withOverheadCents: z.number().int().optional() })),
@@ -119,6 +127,7 @@ export function scoreExtraction(rb: Rulebook, anomalies: Pick<ContractAnomaly, "
       check("visit totals", i >= 0, `${g.label}: visit total ${t} not found`);
     }
     for (const p of g.perPatient) check("per-patient totals", !!best?.perPatientTotals.some((t) => t.cents === p), `${g.label}: per-patient total ${p} not found`);
+    if (g.rows) scoreRows(g.rows, best, (ok, what) => check("grid rows", ok, `${g.label}: ${what}`));
   }
 
   const procs = rb.budgetGrids.flatMap((g) => g.procedures);
@@ -144,6 +153,34 @@ export function scoreExtraction(rb: Rulebook, anomalies: Pick<ContractAnomaly, "
   const hit = categories.reduce((a, c) => a + c.hit, 0);
   const total = categories.reduce((a, c) => a + c.total, 0);
   return { name: golden.name, pct: total ? Math.round((1000 * hit) / total) / 10 : 100, categories, misses };
+}
+
+type GoldenRow = NonNullable<Golden["grids"][number]["rows"]>[number];
+
+/**
+ * One check per golden row: unit price and every visit cell (by visit order) exactly right, nothing extra.
+ * Each row is paired with the unused extracted row of the same code that matches it best (codes repeat: 99000 ×7).
+ */
+function scoreRows(rows: GoldenRow[], grid: BudgetGrid | null, check: (ok: boolean, what: string) => void) {
+  const codes = grid ? [...grid.visits].sort((a, b) => a.order - b.order).map((v) => v.code) : [];
+  const vector = (p: BudgetGrid["procedures"][number]) => codes.map((c) => p.cells[c] ?? null);
+  const unused = new Set(grid?.procedures ?? []);
+  for (const r of rows) {
+    const label = `${r.code ?? ""} ${r.name.slice(0, 40)}`.trim();
+    const candidates = [...unused].filter((p) => (r.code ? !!p.code && norm(p.code) === norm(r.code) : sharesWord(p.name, r.name)));
+    const hits = (p: BudgetGrid["procedures"][number]) => vector(p).filter((c, i) => c === r.cells[i]).length + (sharesWord(p.name, r.name) ? 0.5 : 0);
+    const best = candidates.sort((a, b) => hits(b) - hits(a))[0];
+    if (!best) {
+      check(false, `row ${label} not found`);
+      continue;
+    }
+    unused.delete(best);
+    const got = vector(best);
+    const wrong = r.cells.flatMap((c, i) => (got[i] === c ? [] : [`${codes[i] ?? `visit ${i + 1}`} ${c ?? "empty"}→${got[i] ?? "empty"}`]));
+    if (codes.length !== r.cells.length) wrong.unshift(`${codes.length} visits, expected ${r.cells.length}`);
+    if (r.unitCents !== null && best.unitCents !== r.unitCents) wrong.unshift(`unit ${r.unitCents}→${best.unitCents}`);
+    check(!wrong.length, `row ${label}: ${wrong.slice(0, 4).join(", ")}${wrong.length > 4 ? `, … (${wrong.length})` : ""}`);
+  }
 }
 
 function multisetHits(want: number[], have: number[]): number {

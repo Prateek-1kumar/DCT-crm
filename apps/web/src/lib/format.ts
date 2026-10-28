@@ -34,6 +34,7 @@ export const ANOMALY_LABEL: Record<ContractAnomalyCode, string> = {
   RETROACTIVE_NO_DATE: "Retroactive with no start date",
   UNREADABLE_PAGE: "Page couldn't be read",
   AMBIGUOUS_TERM: "Ambiguous wording",
+  TEXT_LAYER_MISMATCH: "Amount not in the PDF's text",
 };
 
 /** Options for enum-valued fields, keyed by the field name in the rulebook. */

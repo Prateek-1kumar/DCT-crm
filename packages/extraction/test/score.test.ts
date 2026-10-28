@@ -44,7 +44,18 @@ function rulebookFromGolden(g: Golden): Rulebook {
     label: gg.label,
     visits: gg.visitTotals.map((t, i) => ({ code: `V${i + 1}`, name: `V${i + 1}`, order: i + 1, procedureSubtotalCents: null, overheadCents: null, nonProcedureCents: null, totalCents: t, autopay: true, prov })),
     perPatientTotals: gg.perPatient.map((cents) => ({ label: "Total", cents, prov })),
-    procedures: gi === 0 ? g.procedures.map((p) => ({ code: p.code, name: p.name, unitCents: p.unitCents, overheadApplied: true, category: "procedure" as const, cells: {}, prov })) : [],
+    procedures: [
+      ...(gi === 0 ? g.procedures.map((p) => ({ code: p.code, name: p.name, unitCents: p.unitCents, overheadApplied: true, category: "procedure" as const, cells: {}, prov })) : []),
+      ...(gg.rows ?? []).map((r) => ({
+        code: r.code,
+        name: r.name,
+        unitCents: r.unitCents,
+        overheadApplied: true,
+        category: "procedure" as const,
+        cells: Object.fromEntries(r.cells.flatMap((c, i) => (c === null ? [] : [[`V${i + 1}`, c]]))),
+        prov,
+      })),
+    ],
   }));
   return Rulebook.parse(rb);
 }
@@ -59,7 +70,15 @@ const synthetic: Golden = Golden.parse({
   netDays: 45,
   rounding: "printed_amounts",
   grids: [
-    { label: "Arm A", visitTotals: [84000, 56000, 56000], perPatient: [196000] },
+    {
+      label: "Arm A",
+      visitTotals: [84000, 56000, 56000],
+      perPatient: [196000],
+      rows: [
+        { code: "99000", name: "Hematology handling", unitCents: 5500, cells: [5500, 5500, 5500] },
+        { code: "99000", name: "PK handling", unitCents: 5500, cells: [null, 5500, null] },
+      ],
+    },
     { label: "Arm B", visitTotals: [70000], perPatient: [70000] },
   ],
   procedures: [{ code: "36415", name: "Blood draw", unitCents: 5500 }],
@@ -88,6 +107,17 @@ describe("scoreExtraction", () => {
     const s = scoreExtraction(rb, [{ code: "MISSING_REFERENCED_DOC" }], synthetic);
     expect(s.pct).toBeLessThan(100);
     expect(s.misses.map((m) => m.split(":")[0])).toEqual(["rules", "visit totals", "invoiceables & fees", "anomalies"]);
+  });
+
+  it("grid rows: duplicate codes paired by best match; a wrong or extra cell fails only its row", () => {
+    const rb = rulebookFromGolden(synthetic);
+    const [hema, pk] = rb.budgetGrids[0]!.procedures.filter((p) => p.code === "99000") as [Rulebook["budgetGrids"][0]["procedures"][0], Rulebook["budgetGrids"][0]["procedures"][0]];
+    rb.budgetGrids[0]!.procedures.reverse(); // order of extracted rows doesn't matter
+    pk.cells.V3 = 5500; // extra cell
+    const s = scoreExtraction(rb, anomaliesFor(synthetic), synthetic);
+    expect(s.categories.find((c) => c.name === "grid rows")).toEqual({ name: "grid rows", hit: 1, total: 2 });
+    expect(s.misses).toEqual(["grid rows: Arm A: row 99000 PK handling: V3 empty→5500"]);
+    expect(hema.cells).toEqual({ V1: 5500, V2: 5500, V3: 5500 });
   });
 
   it("real golden files (if present) score 100% against themselves", () => {

@@ -46,6 +46,8 @@ pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
 - Repo root (for `.env`, `data/`) defaults to two levels above the package; override with `DCT_ROOT=/path/to/checkout` (needed when running from a git worktree, which has no `data/`).
 - Env: `ANTHROPIC_API_KEY` (required for live), `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `OPENAI_API_KEY` + `OPENAI_MODEL` (both needed for the cross-read; no default model), `OPENAI_PRICE_PER_MTOK="in,out"` (USD per million tokens, for the OpenAI cost line; 0 if unset), `EXTRACTION_GRID_DPI` (default 400, max 600), `EXTRACTION_FAKE=1`.
 - Golden JSON: `data/golden/{copd,mcallen,hcwc,shah}.json`, converted by hand from `EXPECTED.md` (git-ignored). Gaps in EXPECTED.md, so not scored: HCWC protocol number, HCWC telephone-visit count (scored once), HCWC Arm B visit totals, McAllen procedure rows.
+- Golden grids can carry `rows` (every grid row, cells in visit order), scored as one check per row in "grid rows". `python3 -I scripts/golden-grid-from-xlsx.py <budget.xlsx> <golden.json>` fills them from the sponsor's budget spreadsheet, and refuses unless the sheet's visit totals equal a golden grid's (so a draft budget is never written as truth). COPD: 68 rows × 16 visits from `data/contracts/copd-native/EFC18243 Ex A-1 Final 26May25.xlsx`; only its grid sheet matches the signed contract, its conditional-procedure and site-cost sheets are a pre-negotiation draft.
+- `copd-native` golden = COPD against the signed DocuSign original (`data/contracts/copd-native/`), which has a text layer; `copd` is the image-only print of the same 20 pages.
 - With `DCT_ROOT` set, the unit tests also check every real golden file scores 100% against itself.
 
 ## Decisions
@@ -64,6 +66,7 @@ pnpm --filter @dct/extraction score        # score saved outputs, no AI calls
   - `DUPLICATE_ITEM`: a priced (not "invoiceable") grid cell whose row matches an invoiceable by code, exact name, or a shared word plus the same amount.
   - `GRID_CONFLICT`: ≥2 grids with the same `arm` whose visit totals or per-patient totals differ, while `governingGridId` is null.
   - `AI_DISAGREEMENT`: rulebooks flattened to stable keys (grid arm, visit code, item code+name, deadline kind), compared field by field; an item one read lacks entirely is one anomaly, not one per field.
+  - `TEXT_LAYER_MISMATCH` (digital PDFs only): after the reads, each page's embedded text is parsed (mupdf, no AI) into the money amounts printed on it, stored as `pages[].printed` (cents; digit runs of 8+ without separators are dropped, so account/phone numbers are never kept). Every amount the AI read must be printed on the page its prov cites; one anomaly per item, with the pages where the amount *is* printed. Scans have no text layer, so it stays silent on them. Replayed on the saved COPD read against the signed DocuSign PDF: 788/789 amounts on their cited page; the one flag is a real wrong page reference (admin fee cited on p.4, printed on p.9). Ceiling: a cell misread as another price on the same page passes.
   - Severity: blocker = GRID_CONFLICT, HEADER_MISMATCH, RETROACTIVE_NO_DATE, UNREADABLE_PAGE; info = LOW_CONFIDENCE; rest warning.
 
 ## Proposed shared-schema changes (not made; `packages/shared` untouched)
