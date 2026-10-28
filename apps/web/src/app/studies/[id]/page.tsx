@@ -55,6 +55,11 @@ export default function ContractPage() {
         }
         actions={
           <>
+            {(stage.stage === "Needs you" || stage.stage === "Approve" || stage.stage === "Live") && !stage.byHand && (
+              <Link href={`/studies/${s.id}/proofread`} className={btnCls()}>
+                Proofread
+              </Link>
+            )}
             {stage.stage === "Live" && (
               <Link href={`/studies/${s.id}/amend`} className={btnCls()}>
                 Upload amendment

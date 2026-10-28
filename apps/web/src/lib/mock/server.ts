@@ -2,6 +2,7 @@ import {
   AnswerReviewBody,
   ByHandBody,
   CorrectValueBody,
+  ProofreadBody,
   ReportValueBody,
   Rulebook as RulebookSchema,
   settled,
@@ -20,7 +21,8 @@ import {
   type ValueEvidence,
 } from "@dct/shared";
 import { blankRulebook } from "../byhand";
-import { formatValue, labelFor } from "../format";
+import { labelFor } from "../format";
+import { layoutPage } from "./layout";
 import { getAt, segments, setAt } from "../pointer";
 import { needsYou } from "../review";
 import {
@@ -53,7 +55,7 @@ type Job = { id: string; kind: "identify" | "extract"; studyId: string; version:
 /** `secrets` is the "server side": right answers keyed `studyId/version/itemId`, never in a response. */
 type Db = { studies: Study[]; documents: DocumentDto[]; versions: RulebookVersionDto[]; jobs: Job[]; audit: AuditEntryDto[]; settings: SettingsDto; secrets: Record<string, Secret>; seq: number };
 
-const KEY = "dct.mockdb.v3";
+const KEY = "dct.mockdb.v4";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -177,7 +179,7 @@ function seed(): Db {
 function newVersion(studyId: string, version: number, status: RulebookVersionDto["status"], createdAt = now()): RulebookVersionDto {
   return {
     studyId, version, status, createdAt, signedBy: null, signedAt: null, appliesFrom: null, rulebook: null, anomalies: [], editors: [],
-    cost: { usd: 3.12, inputTokens: 201_300, outputTokens: 24_800 }, evidence: [], review: [], pdfCheck: null, byHand: false,
+    cost: { usd: 3.12, inputTokens: 201_300, outputTokens: 24_800 }, evidence: [], review: [], pdfCheck: null, byHand: false, proofread: [],
   };
 }
 
@@ -395,6 +397,20 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   return ok(ver);
 }
 
+/** POST .../proofread: values that looked right. Any version with a master, live ones too: the marks never change its numbers. */
+function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = now()): Res {
+  const parsed = ProofreadBody.safeParse(raw);
+  if (!parsed.success) return err(400, "Say who is proofreading and which values.");
+  if (!ver.rulebook || ver.status === "superseded") return err(409, `Version ${ver.version} can't be proofread.`);
+  const { paths, by } = parsed.data;
+  if (paths.some((p) => getAt(ver.rulebook, p) === undefined)) return err(400, "One of those values isn't in the invoicing master.");
+  const marks = new Map((ver.proofread ?? []).map((m) => [m.path, m]));
+  for (const path of paths) marks.set(path, { path, by, at });
+  ver.proofread = [...marks.values()];
+  log(d, by, st.id, "values.proofread", { version: ver.version, values: paths.length }, at);
+  return ok(ver);
+}
+
 // ---------------------------------------------------------------- "This looks wrong" and typing by hand
 
 const leaf = (v: unknown) => v === null || typeof v !== "object" || (Array.isArray(v) && v.every((x) => typeof x !== "object"));
@@ -417,7 +433,7 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   if (ver.status === "signed") {
     const newest = versionsOf(d, st.id).at(-1)!;
     if (newest.version !== ver.version) return err(409, `Version ${newest.version} is already in progress. Report it there.`);
-    draft = { ...structuredClone(ver), version: ver.version + 1, status: "draft", createdAt: now(), signedBy: null, signedAt: null, editors: [], review: [], byHand: false };
+    draft = { ...structuredClone(ver), version: ver.version + 1, status: "draft", createdAt: now(), signedBy: null, signedAt: null, editors: [], review: [], byHand: false, proofread: [] };
     d.versions.push(draft);
     st.status = "amendment_in_review";
   } else if (ver.status !== "draft" || ver.byHand) return err(409, `Version ${ver.version} is ${ver.status}; report a value on the live version or a draft.`);
@@ -501,14 +517,6 @@ function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): 
 
 // ---------------------------------------------------------------- page images
 
-const BOILER = [
-  "The parties agree that the following terms govern payment for services performed under the Protocol.",
-  "Amounts are stated in United States dollars and are inclusive of all applicable overhead unless noted.",
-  "Institution shall maintain complete and accurate records supporting each invoice submitted hereunder.",
-  "Nothing in this Exhibit shall be construed to limit the obligations set forth in the Agreement.",
-  "Sponsor shall not be responsible for costs incurred prior to the Effective Date without written approval.",
-];
-
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
@@ -519,54 +527,34 @@ export function mockPageSrc(docId: string, page: number): string {
   const d = load();
   const doc = d.documents.find((x) => x.id === docId);
   const st = d.studies.find((s) => s.documentIds.includes(docId));
-  const ver = st && [...versionsOf(d, st.id)].reverse().find((v) => v.rulebook);
   const scan = !!doc && /scan/i.test(doc.filename);
-  const asked = ver?.review ?? [];
-  const placed: { t: string; x: number; y: number }[] = [];
-  const said: string[] = [];
-  for (const it of asked)
-    it.where.forEach((w, i) => {
-      const t = w.documentId === docId && w.page === page ? d.secrets[`${st!.id}/${ver!.version}/${it.id}`]?.lines[i] : undefined;
-      if (!t) return;
-      if (w.box) placed.push({ t, x: w.box[0] * 850 + 10, y: (w.box[1] + w.box[3] * 0.68) * 1100 });
-      else said.push(t);
+  // Every version's print on this page (an amendment's grid lives on its own document), each span once.
+  const seen = new Set<string>();
+  const spans = (st ? versionsOf(d, st.id) : [])
+    .filter((v) => v.rulebook)
+    .flatMap((v) => {
+      const secret = (id: string) => d.secrets[`${st!.id}/${v.version}/${id}`];
+      const truth = new Map(v.review.flatMap((i) => (i.path && secret(i.id)?.truth !== undefined ? [[i.path, secret(i.id)!.truth] as const] : [])));
+      const items = v.review.map((i) => ({ id: i.id, path: i.path, where: i.where, lines: secret(i.id)?.lines ?? [] }));
+      return layoutPage(v.rulebook!, items, (p) => (truth.has(p) ? truth.get(p) : getAt(v.rulebook, p)), docId, page, doc?.filename.replace(/\.pdf$/i, "") ?? docId);
+    })
+    .filter((s) => {
+      const k = `${s.text}|${s.box.join(",")}`;
+      return !seen.has(k) && !!seen.add(k);
     });
-  const askedPaths = asked.flatMap((i) => (i.path ? [i.path] : []));
-  const facts: string[] = [];
-  const walk = (o: unknown, path: string) => {
-    if (!o || typeof o !== "object") return;
-    const r = o as Record<string, unknown>;
-    const src = (r.prov as { source: { documentId: string; page: number; location?: string; quote?: string } | null } | undefined)?.source;
-    if (src?.documentId === docId && src.page === page && !askedPaths.some((p) => p === path || p.startsWith(`${path}/`))) {
-      const text = "value" in r ? formatValue(`${path}/value`, r.value) : typeof r.name === "string" ? formatValue(path, r) : null;
-      if (text || src.quote) facts.push(`${src.location ?? labelFor(path, ver?.rulebook)}: ${src.quote ? `“${src.quote}” ` : ""}${text ?? ""}`);
-    }
-    for (const [k, v] of Object.entries(r)) if (k !== "prov") walk(v, `${path}/${k}`);
+  const draw = (s: (typeof spans)[number]) => {
+    const [x, y, w, h] = s.box;
+    const size = Math.min(15, Math.max(8.5, h * 1100 * 0.56));
+    const tx = s.anchor === "end" ? (x + w) * 850 : x * 850;
+    return `<text x="${tx.toFixed(1)}" y="${((y + h * 0.74) * 1100).toFixed(1)}" font-size="${size.toFixed(1)}" font-weight="${s.weight ?? 400}"${s.anchor === "end" ? ' text-anchor="end"' : ""}${s.muted ? ' fill="#666"' : ""}>${esc(s.text)}</text>`;
   };
-  walk(ver?.rulebook, "");
-  const flow = [
-    { t: doc ? doc.filename.replace(/\.pdf$/i, "") : docId, bold: true },
-    { t: "" },
-    ...BOILER.slice(0, 2 + (page % 3)).map((t) => ({ t })),
-    { t: "" },
-    ...[...new Set([...said, ...facts])].map((t) => ({ t, bold: true })),
-    ...(facts.length || said.length ? [] : BOILER.slice(2).map((t) => ({ t }))),
-  ];
-  const wrap = (t: string) => t.match(/.{1,92}(\s|$)/g) ?? [t];
-  let y = 120;
-  const text = flow
-    .flatMap((l) => wrap(l.t || " ").map((t) => ({ t, bold: l.bold })))
-    .slice(0, placed.length ? 14 : 34)
-    .map((l) => `<text x="70" y="${(y += 26)}" font-weight="${l.bold ? 600 : 400}">${esc(l.t.trim())}</text>`)
-    .join("");
-  const boxes = placed.map((p) => `<text x="${p.x}" y="${p.y}" font-weight="600">${esc(p.t)}</text>`).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="850" height="1100" viewBox="0 0 850 1100">
 <rect width="850" height="1100" fill="${scan ? "#ecebe6" : "#fff"}"/>
 <g${scan ? ' transform="rotate(-0.5 425 550)"' : ""}>
-<text x="70" y="70" font-family="Georgia,serif" font-size="13" fill="#666">SAMPLE PAGE: not a real contract${scan ? " · scanned copy" : ""}</text>
-<text x="780" y="70" text-anchor="end" font-family="Georgia,serif" font-size="13" fill="#666">Page ${page} of ${doc?.pageCount ?? "?"}</text>
-<line x1="70" y1="88" x2="780" y2="88" stroke="#ccc"/>
-<g font-family="Georgia,serif" font-size="15" fill="#222">${text}${boxes}</g>
+<text x="70" y="62" font-family="Georgia,serif" font-size="12" fill="#666">SAMPLE PAGE: not a real contract${scan ? " · scanned copy" : ""}</text>
+<text x="780" y="62" text-anchor="end" font-family="Georgia,serif" font-size="12" fill="#666">Page ${page} of ${doc?.pageCount ?? "?"}</text>
+<line x1="70" y1="78" x2="780" y2="78" stroke="#ccc"/>
+<g font-family="Georgia,serif" fill="#222">${spans.map(draw).join("")}</g>
 <text x="425" y="1060" text-anchor="middle" font-family="Georgia,serif" font-size="12" fill="#888">${esc(st?.protocol ?? "")} · Confidential</text>
 </g>
 </svg>`;
@@ -696,6 +684,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   }
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
   if (vrest === "/report" && method === "POST") return report(d, st, ver, body);
+  if (vrest === "/proofread" && method === "POST") return proofread(d, st, ver, body);
   if (vrest === "/values" && method === "PATCH") return typeValue(d, st, ver, body);
   if (vrest === "/by-hand/done" && method === "POST") return finishByHand(d, st, ver, body);
   if (vrest === "/sign-off" && method === "POST") {

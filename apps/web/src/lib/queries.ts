@@ -54,6 +54,18 @@ export function useInvalidateStudy() {
     ]);
 }
 
+/** Mark values as proofread; the returned version replaces the cached one. */
+export function useProofread(id: string, v: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { paths: string[]; by: string }) => api.proofread(id, v, body),
+    onSuccess: (dto) => {
+      qc.setQueryData(keys.version(id, v), dto);
+      void qc.invalidateQueries({ queryKey: ["audit"] });
+    },
+  });
+}
+
 /** Answer one review question; the returned version replaces the cached one. */
 export function useAnswerReview(id: string, v: number) {
   const qc = useQueryClient();

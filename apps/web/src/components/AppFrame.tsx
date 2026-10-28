@@ -5,8 +5,8 @@ import { Suspense, type ReactNode } from "react";
 import { Sidebar } from "./Sidebar";
 import { Spinner } from "./ui";
 
-/** Answering questions is focus mode: no sidebar or sheet, the whole window for the contract and the question. */
-const isFocus = (path: string) => /^\/studies\/[^/]+\/review/.test(path);
+/** Answering questions and proofreading are focus mode: no sidebar or sheet, the whole window for the contract and the task. */
+const isFocus = (path: string) => /^\/studies\/[^/]+\/(review|proofread)/.test(path);
 
 export function AppFrame({ children }: { children: ReactNode }) {
   const focus = isFocus(usePathname());

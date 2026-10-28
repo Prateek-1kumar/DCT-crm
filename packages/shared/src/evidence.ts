@@ -73,6 +73,13 @@ export type ReviewItem = z.infer<typeof ReviewItem>;
 
 export const settled = (i: ReviewItem) => i.outcome === "matched" || i.outcome === "chosen";
 
+/** "Looks right" from someone proofreading. Kept next to the version and never changes its numbers, so a live version takes them too. */
+export const ProofreadMark = z.object({ path: z.string(), by: z.string(), at: z.string() });
+export type ProofreadMark = z.infer<typeof ProofreadMark>;
+
+/** POST /studies/:id/versions/:v/proofread: these values looked right to `by`. */
+export const ProofreadBody = z.object({ paths: z.array(z.string()).min(1), by: z.string().min(1) });
+
 /**
  * POST /studies/:id/versions/:v/report: "This looks wrong" on any value. On a draft it adds a blocking confirm_value item;
  * on a live version it opens a correction draft (copy of the live version + that item). Returns the draft.

@@ -30,12 +30,14 @@ export function Workspace({ study, version, children, report }: { study: StudyDe
     () => new Set(version.status === "draft" ? version.review.filter((i) => i.path && !settled(i)).map((i) => i.path!) : []),
     [version.review, version.status],
   );
+  const proofread = useMemo(() => new Map((version.proofread ?? []).map((m) => [m.path, m])), [version.proofread]);
   if (!version.rulebook) return null;
   const ctx: RulebookCtx = {
     rulebook: version.rulebook,
     focused: focused?.path ?? null,
     evidence,
     masked,
+    proofread,
     show: (path, prov, label) => {
       setFocused({ path, label });
       setSent(null);

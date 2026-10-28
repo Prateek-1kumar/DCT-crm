@@ -1,6 +1,9 @@
 import type { BudgetGrid, DocumentKind, PageBox, Provenance, ReviewItem, Rulebook, RulebookVersionDto, ValueEvidence } from "@dct/shared";
 import { ENUM_OPTIONS, fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { findProv, getAt, segments, setAt } from "../pointer";
+import { boxOn, layoutPage, numberPaths, type Span } from "./layout";
+
+export { numberPaths };
 
 /**
  * SYNTHETIC data only: invented sponsors, protocols, sites and people.
@@ -332,18 +335,6 @@ export const pb = (documentId: string, page: number, box: PageBox["box"] = null)
 /** Box for the n-th question on a page: full-width lines in the lower half, so they never overlap. */
 export const box = (n: number): [number, number, number, number] => [0.07, 0.5 + (n % 7) * 0.06, 0.86, 0.042];
 
-/** Every number in the master, as JSON pointers. */
-export function numberPaths(rb: Rulebook): string[] {
-  const out: string[] = [];
-  const walk = (o: unknown, path: string) => {
-    if (typeof o === "number") return void out.push(path);
-    if (!o || typeof o !== "object") return;
-    for (const [k, v] of Object.entries(o)) if (k !== "prov" && k !== "order" && k !== "schemaVersion") walk(v, `${path}/${k}`);
-  };
-  walk(rb, "");
-  return out;
-}
-
 const inputFor = (path: string, value?: unknown): NonNullable<ReviewItem["input"]> =>
   typeof value === "string" || Array.isArray(value)
     ? /date|appliesFrom/i.test(fieldKey(path)) ? "date" : "text"
@@ -401,20 +392,30 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   for (const x of specs) if (x.path && x.read !== undefined) rb = setAt(rb, x.path, x.read);
   const all = opts.scan ? [...specs, ...scanSpecs(rb, specs)] : specs;
   const byPath = new Map(all.flatMap((x) => (x.path ? [[x.path, x] as const] : [])));
+  // What each page prints, and where: the page shows the right answer where the reading got it wrong.
+  const truthOf = (p: string) => (byPath.get(p)?.truth !== undefined ? byPath.get(p)!.truth : getAt(rb, p));
+  const pages = new Map<string, Span[]>();
+  const spansOf = (doc: string, page: number) => {
+    const k = `${doc}#${page}`;
+    if (!pages.has(k)) pages.set(k, layoutPage(rb, all, truthOf, doc, page));
+    return pages.get(k)!;
+  };
+  // Questions point at the exact spot their number, or their own line, is printed.
+  const placed = all.map((x) => ({ ...x, where: x.where.map((w) => pb(w.documentId, w.page, boxOn(spansOf(w.documentId, w.page), { path: x.path, item: x.id }) ?? w.box)) }));
   const evidence = numberPaths(rb).map((path): ValueEvidence => {
     const x = byPath.get(path);
     const src = findProv(rb, path)?.source;
     const status = x?.reason === "VALUE_CONFLICT" ? "conflict" : opts.scan && !path.startsWith("/budgetGrids/") ? "ungrounded" : "confirmed";
     return {
       path, status, note: null,
-      where: src ? [pb(src.documentId, src.page, x?.where[0]?.box ?? null)] : [],
-      printed: opts.scan ? null : formatValue(path, x?.truth !== undefined ? x.truth : getAt(rb, path)),
+      where: src ? [pb(src.documentId, src.page, boxOn(spansOf(src.documentId, src.page), { path }))] : [],
+      printed: opts.scan ? null : formatValue(path, truthOf(path)),
     };
   });
   return {
     rulebook: rb,
     evidence,
-    review: all.map(toItem),
+    review: placed.map(toItem),
     pdfCheck: opts.scan ? null : { values: evidence.length, matched: evidence.filter((e) => e.status === "confirmed").length },
     secrets: Object.fromEntries(all.map((x) => [x.id, toSecret(x)])),
   };

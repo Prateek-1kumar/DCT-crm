@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
-import { ReviewItem, ValueEvidence } from "./evidence";
+import { ProofreadMark, ReviewItem, ValueEvidence } from "./evidence";
 import { DocumentKind, Rulebook } from "./rulebook";
 
 /** HTTP contract between apps/api and apps/web. All routes are under /api. */
@@ -69,6 +69,8 @@ export const RulebookVersionDto = VersionSummaryDto.extend({
   pdfCheck: z.object({ values: z.number().int(), matched: z.number().int() }).nullable(),
   /** Typed in by hand (contract couldn't be read): values are set with PATCH .../values, which only by-hand drafts accept. */
   byHand: z.boolean(),
+  /** Values someone proofread and found right (one mark per value, the latest). */
+  proofread: z.array(ProofreadMark),
 });
 export type RulebookVersionDto = z.infer<typeof RulebookVersionDto>;
 

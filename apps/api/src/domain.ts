@@ -60,6 +60,7 @@ export const versionDto = (v: VersionRow): RulebookVersionDto => ({
   review: [],
   pdfCheck: null,
   byHand: false,
+  proofread: [],
 });
 
 /** `versions` newest first. */

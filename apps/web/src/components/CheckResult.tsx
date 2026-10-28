@@ -56,9 +56,11 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
       <div className="flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6">
         <p className="text-small text-muted">Nothing is billed from this contract until someone approves it.</p>
         <div className="flex flex-wrap gap-2.5">
-          <Link href={`/studies/${studyId}`} className={btnCls()}>
-            See what was checked
-          </Link>
+          {pdf && pdf.matched > 0 && (
+            <Link href={`/studies/${studyId}/proofread`} className={btnCls()}>
+              Proofread the checked numbers
+            </Link>
+          )}
           <Link href={open ? `/studies/${studyId}/review` : `/studies/${studyId}`} className={btnCls("primary", "lg")}>
             {open ? "Start answering" : "Go to approval"}
             <ArrowRight className="size-[18px]" strokeWidth={2} />
