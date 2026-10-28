@@ -14,7 +14,7 @@ export const DOC_KIND_LABEL: Record<DocumentKind, string> = {
 /** Options for enum-valued fields, keyed by the field name in the rulebook (shared with the server-built exports). */
 export const ENUM_OPTIONS = ENUM_LABELS;
 
-export type ValueKind = "money" | "cell" | "int" | "number" | "text" | "date" | "list" | "bool" | "enum";
+type ValueKind = "money" | "cell" | "int" | "number" | "text" | "date" | "list" | "bool" | "enum";
 
 /** Field name a pointer ends at; "/payment/netDays/value" → "netDays", "/deadlines/0/value" → "value". */
 export function fieldKey(path: string): string {

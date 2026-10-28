@@ -7,7 +7,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { DocList, Dropzone } from "@/components/UploadDocs";
-import { Button, ErrorNote, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
+import { Button, ErrorNote, LoadError, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { useInvalidateStudy, useStudy } from "@/lib/queries";
@@ -30,7 +30,7 @@ export default function AmendPage() {
     },
   });
 
-  if (!study.data) return <div className="p-6">{study.error ? <ErrorNote error={study.error} /> : <Spinner />}</div>;
+  if (!study.data) return study.error ? <LoadError error={study.error} retry={() => void study.refetch()} /> : <div className="p-6"><Spinner label="Loading the contract" /></div>;
   const s = study.data;
   return (
     <div className={`${pageCls} max-w-[860px]`}>

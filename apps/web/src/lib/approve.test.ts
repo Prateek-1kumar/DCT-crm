@@ -22,6 +22,13 @@ describe("key terms", () => {
     expect(terms.find((t) => t.id === "holdback")).toMatchObject({ value: "None", where: null });
   });
 
+  it("keeps the value's path when it's empty, so a withheld value isn't shown as missing", async () => {
+    const v = await version("st-meridian");
+    const rb = v.rulebook!;
+    const terms = keyTerms({ ...rb, payment: { ...rb.payment, netDays: { ...rb.payment.netDays, value: null } } }, v.evidence);
+    expect(terms.find((t) => t.id === "payment")).toMatchObject({ value: "Not stated", paths: ["/payment/netDays/value"] });
+  });
+
   it("an approver can send answers back; they reopen blind with the note", async () => {
     const ha = await version("st-halcyon", 2);
     const answered = ha.review.filter((i) => i.outcome !== null).slice(0, 2).map((i) => i.id);

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useRef, type ReactNode } from "react";
 import { formatCap } from "@/components/RulebookView";
-import { Button, ErrorNote, Spinner } from "@/components/ui";
+import { Button, LoadError, Spinner } from "@/components/ui";
 import { keyTerms } from "@/lib/approve";
 import { ENUM_OPTIONS, formatDate, formatValue } from "@/lib/format";
 import { formatCents } from "@/lib/money";
@@ -32,8 +32,9 @@ export default function PrintSummary() {
     return () => clearTimeout(t);
   }, [ready]);
 
-  if (study.error || version.error) return <div className="p-8"><ErrorNote error={study.error ?? version.error} /></div>;
-  if (!study.data || !version.data) return <div className="p-8"><Spinner /></div>;
+  const failed = (!study.data && study.error) || (!version.data && version.error);
+  if (failed) return <LoadError error={failed} retry={() => void (study.error ? study.refetch() : version.refetch())} back={{ href: `/studies/${id}`, label: "Back to the contract" }} />;
+  if (!study.data || !version.data) return <div className="p-8"><Spinner label="Preparing the summary" /></div>;
   if (!ready) return <p className="p-8 text-body text-muted">Only an approved version has a summary to print.</p>;
 
   const s = study.data;

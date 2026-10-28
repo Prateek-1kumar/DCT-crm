@@ -4,7 +4,7 @@ import { settled, type PageBox, type RulebookVersionDto, type StudyDetailDto } f
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { formatDate, formatValue, labelFor } from "@/lib/format";
@@ -31,7 +31,8 @@ export function Workspace({ study, version, children, report, hits, focus }: {
   hits?: Set<string>;
   focus?: { path: string; n: number } | null;
 }) {
-  const [focused, setFocused] = useState<{ path: string; label: string } | null>(null);
+  // `from`: what opened the drawer, so closing it puts keyboard focus back there.
+  const [focused, setFocused] = useState<{ path: string; label: string; from: HTMLElement | null } | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const evidence = useMemo(() => new Map(version.evidence.map((e) => [e.path, e.status])), [version.evidence]);
   const masked = useMemo(
@@ -45,12 +46,13 @@ export function Workspace({ study, version, children, report, hits, focus }: {
   const [opened, setOpened] = useState<typeof focus>(null);
   if (focus && focus !== opened && version.rulebook) {
     setOpened(focus);
-    setFocused({ path: focus.path, label: labelFor(focus.path, version.rulebook).split(" › ").slice(-2).join(" · ") });
+    setFocused({ path: focus.path, label: labelFor(focus.path, version.rulebook).split(" › ").slice(-2).join(" · "), from: null });
   }
   useEffect(() => {
     if (!focus) return;
     // After the tab with the value has rendered.
-    const t = setTimeout(() => document.querySelector(`[data-path="${CSS.escape(focus.path)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+    const smooth = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const t = setTimeout(() => document.querySelector(`[data-path="${CSS.escape(focus.path)}"]`)?.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" }), 60);
     return () => clearTimeout(t);
   }, [focus]);
 
@@ -62,20 +64,36 @@ export function Workspace({ study, version, children, report, hits, focus }: {
     masked,
     proofread,
     hits: hits ?? noHits,
-    show: (path, _prov, label) => setFocused({ path, label }),
+    show: (path, _prov, label) => setFocused({ path, label, from: document.activeElement instanceof HTMLElement ? document.activeElement : null }),
   };
   return (
     <RulebookContext.Provider value={ctx}>
       {/* Room for the drawer, so it never covers what was clicked. */}
       <div className={cx("transition-[padding] duration-200 motion-reduce:transition-none", focused && "lg:pr-[456px]")}>{children}</div>
       {focused && (
-        <ValueDrawer key={focused.path} study={study} version={version} path={focused.path} label={focused.label} report={!!report} zoom={zoom} onZoom={setZoom} onClose={() => setFocused(null)} />
+        <ValueDrawer
+          key={focused.path}
+          study={study}
+          version={version}
+          path={focused.path}
+          label={focused.label}
+          report={!!report}
+          zoom={zoom}
+          onZoom={setZoom}
+          onClose={() => {
+            setFocused(null);
+            if (focused.from?.isConnected) focused.from.focus();
+          }}
+        />
       )}
     </RulebookContext.Provider>
   );
 }
 
-/** The value, the spot in the contract that backs it, and how it was checked. Not modal: the master stays clickable. */
+/**
+ * The value, the spot in the contract that backs it, and how it was checked. Not modal: the master stays clickable.
+ * It takes focus when it opens (Tab moves through it, Escape closes it and returns focus to the value).
+ */
 function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClose }: {
   study: StudyDetailDto; version: RulebookVersionDto; path: string; label: string; report: boolean; zoom: number; onZoom: (z: number) => void; onClose: () => void;
 }) {
@@ -90,6 +108,8 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   const value = getAt(rb, path);
   const reportable = report && (version.status === "signed" || (version.status === "draft" && !version.byHand)) && isLeaf(value) && !masked;
 
+  const self = useRef<HTMLElement>(null);
+  useEffect(() => self.current?.focus({ preventScroll: true }), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !document.querySelector("dialog[open]") && onClose();
     window.addEventListener("keydown", onKey);
@@ -98,6 +118,8 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
 
   return (
     <aside
+      ref={self}
+      tabIndex={-1}
       aria-label={`In the contract: ${label}`}
       className="fixed inset-x-2 bottom-2 z-40 flex h-[78vh] flex-col overflow-hidden rounded-card bg-surface shadow-raised ring-1 ring-ink/[0.08] lg:inset-x-auto lg:top-3 lg:right-3 lg:bottom-3 lg:h-auto lg:w-[480px]"
     >
@@ -116,7 +138,8 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
           <p className="text-warn">Someone types what the contract says here before it&apos;s shown. Answer it in Needs you.</p>
         ) : ev ? (
           <p className="flex items-start gap-2">
-            <span className="mt-1.5">
+            {/* The words follow, so the dot's own label would only repeat them. */}
+            <span aria-hidden className="mt-1.5">
               <Dot status={ev.status} />
             </span>
             <span>
@@ -196,8 +219,12 @@ function ReportDialog({ open, onClose, onSent, study, version, path, label }: {
           Someone will type what the contract says here without seeing the value we have, and it&apos;s settled before approval.
           {live && ` Version ${version.version} stays live until a corrected version ${version.version + 1} is approved.`}
         </p>
-        <Field label="What looks wrong? (required)" htmlFor="rep-note">
-          <textarea id="rep-note" rows={3} autoFocus className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The sponsor's payment for this visit was $10 higher." />
+        <Field
+          label="What looks wrong? (required)"
+          htmlFor="rep-note"
+          hint="Any figures in your note are hidden from whoever answers, so they can't steer them. Say where on the page it looks wrong instead."
+        >
+          <textarea id="rep-note" rows={3} data-autofocus className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The visit total on page 2 doesn't match the rows above it." />
         </Field>
         {!by && <NeedsPerson />}
         <ErrorNote error={send.error} />

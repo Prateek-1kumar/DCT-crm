@@ -11,7 +11,7 @@ const CHANGE: Record<DiffEntry["change"], { tone: Tone; label: string }> = {
 };
 
 /** Section = first part of the label ("Budget grid › Exhibit A › …" → "Budget grid"). */
-export const sectionOf = (e: DiffEntry) => e.label.split(" › ")[0] || "Other";
+const sectionOf = (e: DiffEntry) => e.label.split(" › ")[0] || "Other";
 
 export function DiffView({ entries, onShow, title }: { entries: DiffEntry[]; onShow?: (e: DiffEntry) => void; title?: string }) {
   if (!entries.length) return <Empty title="No differences">The two versions have the same terms.</Empty>;

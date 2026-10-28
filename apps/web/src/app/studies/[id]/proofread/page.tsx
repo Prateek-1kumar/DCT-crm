@@ -10,7 +10,7 @@ import { useMemo, useRef, useState } from "react";
 import { RowCompare } from "@/components/RowCompare";
 import { NeedsPerson } from "@/components/Sidebar";
 import { DEFAULT_ZOOM, SpotView } from "@/components/SpotView";
-import { Badge, Button, btnCls, cx, ErrorNote, ProgressBar, Spinner } from "@/components/ui";
+import { Badge, Button, btnCls, cx, ErrorNote, LoadError, ProgressBar, Sheet, Spinner } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
 import { formatValue, relativeTime } from "@/lib/format";
@@ -26,16 +26,12 @@ export default function ProofreadPage() {
   const pickV = sp.get("v") ? Number(sp.get("v")) : (versions.find((v) => v.status === "draft") ?? versions.find((v) => v.status === "signed"))?.version ?? null;
   const version = useVersion(id, pickV);
 
-  if (study.error || version.error)
-    return (
-      <div className="p-8">
-        <ErrorNote error={study.error ?? version.error} />
-      </div>
-    );
+  const failed = (!study.data && study.error) || (!version.data && version.error);
+  if (failed) return <LoadError error={failed} retry={() => void (study.error ? study.refetch() : version.refetch())} />;
   if (!study.data || (pickV !== null && !version.data))
     return (
       <div className="grid min-h-screen place-items-center">
-        <Spinner />
+        <Spinner label="Loading the contract" />
       </div>
     );
   if (!version.data?.rulebook || version.data.status === "superseded")
@@ -276,19 +272,14 @@ function Proof({ study, version }: { study: StudyDetailDto; version: RulebookVer
         )}
       </div>
 
-      {listOpen && (
-        <div className="fixed inset-0 z-40 xl:hidden">
-          <button type="button" aria-label="Close the list" className="absolute inset-0 bg-backdrop" onClick={() => setListOpen(false)} />
-          <div className="absolute inset-y-0 left-0 w-[320px] max-w-[88vw] overflow-y-auto bg-canvas shadow-raised">
-            <div className="flex justify-end p-2">
-              <Button size="icon" variant="ghost" aria-label="Close the list" onClick={() => setListOpen(false)}>
-                <X className="size-5" strokeWidth={1.75} />
-              </Button>
-            </div>
-            {list}
-          </div>
+      <Sheet open={listOpen} onClose={() => setListOpen(false)} label="What to proofread">
+        <div className="flex justify-end p-2">
+          <Button size="icon" variant="ghost" aria-label="Close the list" onClick={() => setListOpen(false)}>
+            <X className="size-5" strokeWidth={1.75} />
+          </Button>
         </div>
-      )}
+        {list}
+      </Sheet>
 
       {toast && (
         <p role="status" className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-ink px-4 py-2.5 text-small font-medium text-surface shadow-raised">

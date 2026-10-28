@@ -95,7 +95,7 @@ export default function NewStudyPage() {
 function StudyFiles({ studyId }: { studyId: string }) {
   const study = useStudy(studyId);
   const qc = useQueryClient();
-  if (!study.data) return study.error ? <ErrorNote error={study.error} /> : <Spinner />;
+  if (!study.data) return study.error ? <ErrorNote error={study.error} retry={() => void study.refetch()} /> : <Spinner label="Loading the files" />;
   const hasMaster = study.data.documents.some((d) => d.kind === "master_agreement");
   return (
     <div className="flex flex-col gap-3">
@@ -119,11 +119,11 @@ function Identify({ studyId, jobId, onStarted }: { studyId: string; jobId: strin
     if (done) void qc.invalidateQueries({ queryKey: keys.study(studyId) });
   }, [done, qc, studyId]);
 
-  if (job.error) return <ErrorNote error={job.error} />;
+  if (job.error) return <ErrorNote error={job.error} retry={() => void job.refetch()} />;
   if (job.data?.state === "failed")
     return (
       <div className="flex flex-col gap-4">
-        <ErrorNote>We couldn&apos;t read the cover pages ({job.data.error}). You can still type the details below.</ErrorNote>
+        <ErrorNote>We couldn&apos;t read the cover pages. You can still type the details below.</ErrorNote>
         <Confirm studyId={studyId} onStarted={onStarted} />
       </div>
     );
@@ -167,7 +167,7 @@ function Confirm({ studyId, onStarted }: { studyId: string; onStarted: () => voi
     },
   });
 
-  if (!form || !suggested) return <ErrorNote error={study.error} />;
+  if (!form || !suggested) return study.error ? <ErrorNote error={study.error} retry={() => void study.refetch()} /> : <Spinner label="Loading the details" />;
   const missing = FIELDS.filter(([k]) => !form[k].trim());
 
   return (

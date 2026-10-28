@@ -2,7 +2,10 @@ import type { PageBox, Rulebook, ValueEvidence } from "@dct/shared";
 import { ENUM_OPTIONS, formatValue } from "./format";
 import { findProv } from "./pointer";
 
-/** One term the approver ticks: plain words, its quote, and where the contract prints it. */
+/**
+ * One term the approver ticks: plain words, its quote, and where the contract prints it. `paths`: the values it's made of,
+ * so a term whose value is withheld for a blind answer shows "Needs you", not "Not stated".
+ */
 export type KeyTerm = { id: string; label: string; value: string; detail: string; quote: string | null; where: PageBox | null; paths: string[] };
 
 const money = (cents: number | null) => (cents === null ? "No amount" : formatValue("/x/amountCents", cents));
@@ -35,15 +38,15 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[]): KeyTerm[] {
     return s ? { documentId: s.documentId, page: s.page, box: null } : null;
   };
   const quote = (path: string) => findProv(rb, path)?.source?.quote ?? null;
-  const term = (id: string, label: string, value: string, detail: string, path: string | null): KeyTerm => ({
-    id, label, value, detail, quote: path ? quote(path) : null, where: path ? at(path) : null, paths: path ? [path] : [],
+  const term = (id: string, label: string, value: string, detail: string, path: string | null, also: string[] = []): KeyTerm => ({
+    id, label, value, detail, quote: path ? quote(path) : null, where: path ? at(path) : null, paths: [...(path ? [path] : []), ...also],
   });
   const out: KeyTerm[] = [];
 
   const p = rb.payment;
   out.push(
     p.netDays.value === null
-      ? term("payment", "Payment", "Not stated", "The contract doesn't say how many days the sponsor has to pay", null)
+      ? term("payment", "Payment", "Not stated", "The contract doesn't say how many days the sponsor has to pay", null, ["/payment/netDays/value"])
       : term(
           "payment",
           "Payment",
@@ -63,14 +66,14 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[]): KeyTerm[] {
   const o = rb.overhead;
   out.push(
     o.pct.value === null
-      ? term("overhead", "Overhead", "None", "No overhead percentage is stated", null)
+      ? term("overhead", "Overhead", "None", "No overhead percentage is stated", null, ["/overhead/pct/value"])
       : term("overhead", "Overhead", `${o.pct.value}%`, `on ${(ENUM_OPTIONS.appliesTo![o.appliesTo.value] ?? o.appliesTo.value).toLowerCase()}`, "/overhead/pct/value"),
   );
 
   const sf = rb.screenFail;
   out.push(
     sf
-      ? term("screen-fail", "Screen failures", sf.basis === "per_procedure" ? "Per procedure" : `${money(sf.amountCents)} each`, `${capText(sf.cap)} · ${(ENUM_OPTIONS.paidVia![sf.paidVia] ?? sf.paidVia).toLowerCase()}`, "/screenFail/amountCents")
+      ? term("screen-fail", "Screen failures", sf.basis === "per_procedure" ? "Per procedure" : `${money(sf.amountCents)} each`, `${capText(sf.cap)} · ${(ENUM_OPTIONS.paidVia![sf.paidVia] ?? sf.paidVia).toLowerCase()}`, "/screenFail/amountCents", ["/screenFail/cap/n"])
       : term("screen-fail", "Screen failures", "Not paid", "The contract doesn't pay for screen failures", null),
   );
 

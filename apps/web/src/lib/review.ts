@@ -3,7 +3,7 @@ import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
 /** The pipeline every contract goes through. */
-export const STAGES = ["Upload", "Reading", "Checking", "Needs you", "Approve", "Live"] as const;
+const STAGES = ["Upload", "Reading", "Checking", "Needs you", "Approve", "Live"] as const;
 export type Stage = (typeof STAGES)[number];
 /** `byHand`: typed in by hand, so Reading and Checking are one step, "Typed by hand". */
 export type StageState = { stage: Stage; failed?: boolean; needs?: number; byHand?: boolean };

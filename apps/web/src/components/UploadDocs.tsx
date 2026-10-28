@@ -7,7 +7,7 @@ import { useState, type DragEvent } from "react";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
 import { DOC_KIND_LABEL } from "@/lib/format";
-import { Badge, Button, cx, ErrorNote } from "./ui";
+import { Badge, Button, cx, ErrorNote, errorText } from "./ui";
 
 /** Same as the API's per-file limit. */
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -29,7 +29,8 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
         try {
           ok.push(...(await api.upload([f], by!)));
         } catch (e) {
-          errors.push(e instanceof Error ? e.message : `${f.name}: upload failed`);
+          const msg = errorText(e);
+          errors.push(msg.includes(f.name) ? msg : `${f.name}: ${msg}`);
         }
       }
       setProgress(null);
@@ -72,7 +73,7 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
           }
         }}
         className={cx(
-          "group flex cursor-pointer flex-col items-center justify-center rounded-card border-2 border-dashed text-center transition-colors focus-within:border-brand",
+          "group flex cursor-pointer flex-col items-center justify-center rounded-card border-2 border-dashed text-center transition-colors focus-within:border-brand focus-within:ring-4 focus-within:ring-brand/20",
           compact ? "gap-2 px-5 py-7" : "gap-3 px-6 py-14",
           over ? "border-brand bg-brand-soft" : "border-line-strong bg-sunken/60 hover:border-brand/60 hover:bg-brand-soft/40",
         )}
@@ -118,7 +119,7 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
   );
 }
 
-export function KindSelect({ doc, onChanged }: { doc: DocumentDto; onChanged: (d: DocumentDto) => void }) {
+function KindSelect({ doc, onChanged }: { doc: DocumentDto; onChanged: (d: DocumentDto) => void }) {
   const by = useActingAs();
   const m = useMutation({ mutationFn: (kind: DocumentKind) => api.setDocumentKind(doc.id, kind, by!), onSuccess: onChanged });
   return (
@@ -131,7 +132,7 @@ export function KindSelect({ doc, onChanged }: { doc: DocumentDto; onChanged: (d
           title={by ? "Change what kind of file this is" : "Choose your name first to change this"}
           onChange={(e) => m.mutate(e.target.value as DocumentKind)}
           className={cx(
-            "h-8 cursor-pointer appearance-none rounded-full pr-8 pl-3 text-small font-medium transition-colors disabled:cursor-default",
+            "h-8 cursor-pointer appearance-none rounded-full pr-8 pl-3 text-small font-medium transition-colors focus:ring-4 focus:ring-brand/20 focus:outline-none disabled:cursor-default",
             doc.kind === "other" ? "bg-warn-soft text-warn" : "bg-brand-soft text-accent hover:bg-brand/15",
           )}
         >
@@ -143,7 +144,7 @@ export function KindSelect({ doc, onChanged }: { doc: DocumentDto; onChanged: (d
         </select>
         <ChevronDown aria-hidden className="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 opacity-70" strokeWidth={2.25} />
       </label>
-      {m.error && <span className="text-caption text-danger">{m.error.message}</span>}
+      {m.error && <span className="text-caption text-danger">{errorText(m.error)}</span>}
     </span>
   );
 }

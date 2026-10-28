@@ -5,14 +5,14 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, BadgeCheck, ChevronDown, Download, FileSpreadsheet, Printer, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { ByHandForm } from "@/components/ByHandForm";
 import { DiffView } from "@/components/DiffView";
 import { DotLegend, useRulebook } from "@/components/review-context";
 import { RulebookView, type MasterPart } from "@/components/RulebookView";
 import { DocList } from "@/components/UploadDocs";
-import { Badge, Button, Card, ErrorNote, PageTitle, pageCls, Spinner, StagePill, Stepper, btnCls, cx, inputBase } from "@/components/ui";
+import { Badge, Button, Card, ErrorNote, LoadError, onTabKeys, PageTitle, pageCls, Spinner, StagePill, Stepper, btnCls, cx, inputBase } from "@/components/ui";
 import { Workspace } from "@/components/Workspace";
 import { api } from "@/lib/api";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
@@ -58,8 +58,10 @@ export default function ContractPage() {
   const latest = study.data ? [...study.data.versions].sort((a, b) => b.version - a.version)[0] : undefined;
   const draft = useVersion(id, latest?.status === "draft" ? latest.version : null);
 
-  if (study.error) return <div className="p-6"><ErrorNote error={study.error} /></div>;
-  if (!study.data || (latest?.status === "draft" && !draft.data)) return <div className="p-6"><Spinner /></div>;
+  // Only when there's nothing to show: a failed background refresh keeps the page as it was.
+  if (!study.data && study.error) return <LoadError error={study.error} retry={() => void study.refetch()} />;
+  if (!draft.data && draft.error) return <LoadError error={draft.error} retry={() => void draft.refetch()} />;
+  if (!study.data || (latest?.status === "draft" && !draft.data)) return <div className="p-6"><Spinner label="Loading the contract" /></div>;
   const s = study.data;
   const stage = versionStage(latest, draft.data);
   const approved = sp.get("approved");
@@ -282,6 +284,16 @@ function Master({ study }: { study: StudyDetailDto }) {
     const f = sp.get("focus");
     return f ? { path: valueOf(f), n: 0 } : null;
   });
+  // A link to a value on this same page (⌘K, while it's open) changes only the URL: open that version and value then too.
+  const [linked, setLinked] = useState(sp.get("focus"));
+  if (sp.get("focus") !== linked) {
+    const f = sp.get("focus");
+    setLinked(f);
+    if (f) {
+      if (Number(sp.get("v"))) setPicked(Number(sp.get("v")));
+      setWant((w) => ({ path: valueOf(f), n: (w?.n ?? 0) + 1 }));
+    }
+  }
   const tab = (TABS.find(([k]) => k === sp.get("tab"))?.[0] ?? (want ? tabOf(want.path) : "overview")) as Tab;
   const setTab = (t: Tab) => {
     const p = new URLSearchParams(sp);
@@ -317,7 +329,7 @@ function Master({ study }: { study: StudyDetailDto }) {
         </div>
       );
     if (v === null) return <p className="text-small text-muted">The invoicing master appears here once the contract has been read.</p>;
-    if (!version.data) return version.error ? <ErrorNote error={version.error} /> : <Spinner />;
+    if (!version.data) return version.error ? <ErrorNote error={version.error} retry={() => void version.refetch()} /> : <Spinner label="Loading the invoicing master" />;
     if (typing) return <ByHandForm study={study} version={version.data} />;
     if (shown === "overview") return <Overview study={study} version={version.data} />;
     return <RulebookView part={PART[shown]!} />;
@@ -382,13 +394,16 @@ function Master({ study }: { study: StudyDetailDto }) {
         </div>
       )}
 
-      <div role="tablist" aria-label="Invoicing master" className="flex gap-0.5 overflow-x-auto border-b border-line [scrollbar-width:none]">
+      <div role="tablist" aria-label="Invoicing master" onKeyDown={onTabKeys} className="flex gap-0.5 overflow-x-auto border-b border-line [scrollbar-width:none]">
         {tabs.map(([k, l]) => (
           <button
             key={k}
+            id={`tab-${k}`}
             role="tab"
             type="button"
             aria-selected={shown === k}
+            aria-controls="master-panel"
+            tabIndex={shown === k ? 0 : -1}
             onClick={() => setTab(k)}
             className={cx(
               "-mb-px shrink-0 border-b-2 px-3.5 py-2.5 text-body whitespace-nowrap transition-colors",
@@ -402,7 +417,7 @@ function Master({ study }: { study: StudyDetailDto }) {
       </div>
       {PART[shown] && rb && <DotLegend />}
 
-      <div role="tabpanel">
+      <div role="tabpanel" id="master-panel" aria-labelledby={`tab-${shown}`}>
         {version.data?.rulebook ? (
           <Workspace study={study} version={version.data} report hits={hits} focus={want}>
             {body()}
@@ -476,22 +491,44 @@ function Overview({ study, version }: { study: StudyDetailDto; version: Rulebook
   );
 }
 
-/** Excel for billing systems; a printable summary (save as PDF) for people. */
+/**
+ * Excel for billing systems; a printable summary (save as PDF) for people. A menu button: opening it focuses the first
+ * choice, arrow keys move between them, Escape closes it back to the button, Tab leaves it.
+ */
 function ExportMenu({ study, version }: { study: StudyDetailDto; version: number }) {
   const by = useActingAs();
   const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   const xlsx = useMutation({ mutationFn: () => api.exportXlsx(study.id, version, by!) });
-  const item = "flex w-full items-start gap-3 rounded-[10px] px-3 py-2.5 text-left hover:bg-sunken";
+  const item = "flex w-full items-start gap-3 rounded-[10px] px-3 py-2.5 text-left hover:bg-sunken focus-visible:bg-sunken";
+  useEffect(() => {
+    if (open) menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [open]);
+  const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      button.current?.focus();
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    }
+  };
   return (
     <div className="relative" onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setOpen(false)}>
-      <Button aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)}>
+      <Button ref={button} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)} onKeyDown={(e) => e.key === "ArrowDown" && (e.preventDefault(), setOpen(true))}>
         <Download className="size-4" strokeWidth={1.75} /> Export <ChevronDown className="size-4" strokeWidth={2} />
       </Button>
       {open && (
-        <div role="menu" className="absolute top-full right-0 z-30 mt-2 w-72 rounded-tile bg-surface p-1.5 shadow-raised ring-1 ring-ink/[0.08]">
+        <div ref={menu} role="menu" aria-label="Export" onKeyDown={onMenuKey} className="absolute top-full right-0 z-30 mt-2 w-72 rounded-tile bg-surface p-1.5 shadow-raised ring-1 ring-ink/[0.08]">
           <button
             type="button"
             role="menuitem"
+            tabIndex={-1}
             className={item}
             onClick={() => {
               setOpen(false);
@@ -505,7 +542,7 @@ function ExportMenu({ study, version }: { study: StudyDetailDto; version: number
               <span className="block text-small text-muted">Budget grid, fees and terms, one sheet each</span>
             </span>
           </button>
-          <a role="menuitem" href={`/studies/${study.id}/print?v=${version}`} target="_blank" rel="noreferrer" className={item} onClick={() => setOpen(false)}>
+          <a role="menuitem" tabIndex={-1} href={`/studies/${study.id}/print?v=${version}`} target="_blank" rel="noreferrer" className={item} onClick={() => setOpen(false)}>
             <Printer className="mt-0.5 size-[18px] shrink-0 text-muted" strokeWidth={1.75} />
             <span>
               <span className="block text-body font-medium">PDF summary</span>
@@ -583,7 +620,7 @@ function VersionsTab({ study }: { study: StudyDetailDto }) {
             ) : diff.data ? (
               <DiffView entries={diff.data} title={`Version ${from} → ${to}`} />
             ) : diff.error ? (
-              <ErrorNote error={diff.error} />
+              <ErrorNote error={diff.error} retry={() => void diff.refetch()} />
             ) : (
               <Spinner />
             )}

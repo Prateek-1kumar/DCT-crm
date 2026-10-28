@@ -11,10 +11,10 @@ import { api } from "@/lib/api";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { notify, useNotifyPermission } from "@/lib/notify";
 import { useAlerts } from "@/lib/queries";
-import { Button, cx } from "./ui";
+import { Button, cx, ErrorNote } from "./ui";
 
 /** What an alert says, and where it takes you. */
-export function alertText(a: AlertDto): { title: string; sub: string; href: string } {
+function alertText(a: AlertDto): { title: string; sub: string; href: string } {
   const name = a.protocol ?? "A new contract";
   const who = a.by === "system" ? null : a.by;
   switch (a.kind) {
@@ -52,16 +52,26 @@ function useMarkRead() {
 export function AlertBell() {
   const by = useActingAs();
   const alerts = useAlerts(by);
-  const [open, setOpen] = useState(false);
+  // Where the open panel goes: on <body>, as the sticky sidebar is its own stacking context, which would put the panel
+  // under the page; in the small-screen menu (a modal dialog, which makes the rest of the page inert), in that dialog.
+  const [host, setHost] = useState<Element | null>(null);
+  const open = host !== null;
+  const bell = useRef<HTMLButtonElement>(null);
   const unread = alerts.data?.pages[0]?.unread ?? 0;
+  // Escape and the close button hand focus back to the bell; clicking elsewhere or opening an alert leaves it there.
+  const close = (refocus: boolean) => {
+    setHost(null);
+    if (refocus) bell.current?.focus();
+  };
   return (
     <>
       <Button
+        ref={bell}
         variant="ghost"
         size="icon"
         aria-label={unread ? `Alerts, ${unread} unread` : "Alerts"}
         aria-expanded={open}
-        onClick={() => (by ? setOpen(!open) : askForPerson())}
+        onClick={(e) => (!by ? askForPerson() : setHost(open ? null : (e.currentTarget.closest("dialog") ?? document.body)))}
         data-alert-bell
         className="relative shrink-0"
       >
@@ -72,13 +82,13 @@ export function AlertBell() {
           </span>
         )}
       </Button>
-      {/* On <body>: the sticky sidebar is its own stacking context, which would put the panel under the page. */}
-      {open && by && createPortal(<AlertPanel person={by} onClose={() => setOpen(false)} />, document.body)}
+      {host && by && createPortal(<AlertPanel person={by} onClose={close} />, host)}
     </>
   );
 }
 
-function AlertPanel({ person, onClose }: { person: string; onClose: () => void }) {
+/** Not modal: it takes focus when it opens, Tab moves through it, and it closes once focus or a click goes elsewhere. */
+function AlertPanel({ person, onClose }: { person: string; onClose: (refocus: boolean) => void }) {
   const router = useRouter();
   const ref = useRef<HTMLDivElement>(null);
   const alerts = useAlerts(person);
@@ -87,23 +97,19 @@ function AlertPanel({ person, onClose }: { person: string; onClose: () => void }
   const items = alerts.data?.pages.flatMap((p) => p.items) ?? [];
   const unread = alerts.data?.pages[0]?.unread ?? 0;
 
+  useEffect(() => ref.current?.focus(), []);
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       const t = e.target as Element;
-      if (!ref.current?.contains(t) && !t.closest("[data-alert-bell]")) onClose();
+      if (!ref.current?.contains(t) && !t.closest("[data-alert-bell]")) onClose(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("pointerdown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("pointerdown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
+    return () => window.removeEventListener("pointerdown", onDown);
   }, [onClose]);
 
   const go = (a: AlertDto) => {
     if (!a.read) read.mutate([a.id]);
-    onClose();
+    onClose(false);
     router.push(alertText(a).href);
   };
 
@@ -112,6 +118,14 @@ function AlertPanel({ person, onClose }: { person: string; onClose: () => void }
       ref={ref}
       role="dialog"
       aria-label="Alerts"
+      tabIndex={-1}
+      onBlur={(e) => e.relatedTarget && !e.currentTarget.contains(e.relatedTarget) && !e.relatedTarget.closest("[data-alert-bell]") && onClose(false)}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        // Only the panel: not the small-screen menu it may sit in.
+        e.preventDefault();
+        onClose(true);
+      }}
       className="fixed inset-x-2 top-16 z-50 flex max-h-[min(560px,calc(100vh-5rem))] flex-col overflow-hidden rounded-card bg-surface text-ink shadow-raised ring-1 ring-ink/[0.08] lg:inset-x-auto lg:top-[70px] lg:left-[262px] lg:w-[400px]"
     >
       <header className="flex items-center gap-2 border-b border-line px-5 py-3.5">
@@ -121,7 +135,7 @@ function AlertPanel({ person, onClose }: { person: string; onClose: () => void }
             Mark all read
           </Button>
         )}
-        <Button size="icon-sm" variant="ghost" aria-label="Close" onClick={onClose}>
+        <Button size="icon-sm" variant="ghost" aria-label="Close" onClick={() => onClose(true)}>
           <X className="size-4" strokeWidth={2} />
         </Button>
       </header>
@@ -138,6 +152,11 @@ function AlertPanel({ person, onClose }: { person: string; onClose: () => void }
 
       <ul className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {alerts.isPending && <li className="px-4 py-8 text-center text-small text-muted">Loading…</li>}
+        {alerts.error && !alerts.data && (
+          <li className="p-2">
+            <ErrorNote error={alerts.error} retry={() => void alerts.refetch()} />
+          </li>
+        )}
         {alerts.data && !items.length && (
           <li className="px-6 py-10 text-center text-small text-muted">Nothing yet. Alerts show here when a contract needs someone.</li>
         )}

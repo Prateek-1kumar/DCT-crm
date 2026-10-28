@@ -2,7 +2,7 @@ import type { BudgetGrid, Provenance, Rulebook } from "@dct/shared";
 
 /** Blank pieces for typing a contract in by hand. Numbers start null (or 0 where the schema needs one) and show as empty inputs. */
 
-export const MANUAL: Provenance = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" };
+const MANUAL: Provenance = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" };
 const m = <T,>(value: T) => ({ value, prov: MANUAL });
 
 export const blankVisit = (code: string, order: number): BudgetGrid["visits"][number] => ({

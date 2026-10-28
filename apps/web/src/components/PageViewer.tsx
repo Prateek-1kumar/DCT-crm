@@ -8,7 +8,7 @@ import { DOC_KIND_LABEL } from "@/lib/format";
 import { Button, cx } from "./ui";
 
 /** `box`: where on the page to look, as fractions of the page; draws a highlight. */
-export type ViewerTarget = { source: SourceRef; label: string; nonce: number; box?: PageBox["box"] };
+type ViewerTarget = { source: SourceRef; label: string; nonce: number; box?: PageBox["box"] };
 
 /** Contract page viewer. `target` jumps to a page, shows what to look for, and highlights its box. */
 export function PageViewer({ documents, target }: { documents: DocumentDto[]; target: ViewerTarget | null }) {
@@ -60,7 +60,7 @@ export function PageViewer({ documents, target }: { documents: DocumentDto[]; ta
           aria-label="File"
           value={doc.id}
           onChange={(e) => (setDocId(e.target.value), setPage(1))}
-          className="h-8 max-w-[16rem] truncate rounded-[10px] border border-line-strong bg-surface px-2 text-[13px]"
+          className="h-8 max-w-[16rem] truncate rounded-[10px] border border-line-strong bg-surface px-2 text-[13px] focus:border-brand focus:ring-4 focus:ring-brand/20 focus:outline-none"
         >
           {documents.map((d) => (
             <option key={d.id} value={d.id}>
@@ -80,7 +80,7 @@ export function PageViewer({ documents, target }: { documents: DocumentDto[]; ta
               max={pages}
               value={page}
               onChange={(e) => go(Number(e.target.value) || 1)}
-              className="num h-7 w-12 rounded-md border border-line-strong bg-surface text-center"
+              className="num h-7 w-12 rounded-md border border-line-strong bg-surface text-center focus:border-brand focus:ring-4 focus:ring-brand/20 focus:outline-none"
             />
             <span className="text-muted">of {pages}</span>
           </label>

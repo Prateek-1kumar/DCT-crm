@@ -4,12 +4,12 @@ import type { StudySummaryDto } from "@dct/shared";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, CornerDownLeft, FileText, History, ListFilter, Plus, Receipt, Search, Settings, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { formatCents } from "@/lib/money";
 import { keys, useSearch } from "@/lib/queries";
 import { summaryStage, VIEWS } from "@/lib/review";
-import { cx, StagePill } from "./ui";
+import { cx, errorText, StagePill } from "./ui";
 
 type Entry = { id: string; group: string; label: string; sub?: string; icon: LucideIcon; right?: ReactNode; words: string; run: () => void };
 
@@ -24,6 +24,7 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
   // Nothing typed: the top of the list, which the server orders most urgent first.
   const top = useQuery({ queryKey: [...keys.studies, "top", 5], queryFn: () => api.listStudies({ limit: 5 }), enabled: open && !typed });
   const [at, setAt] = useState(0);
+  const listId = useId();
 
   useEffect(() => {
     const d = ref.current;
@@ -120,10 +121,14 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
     >
       {open && (
         <div className="flex max-h-[70vh] flex-col">
-          <label className="flex items-center gap-3 border-b border-line px-5">
+          <label className="flex items-center gap-3 border-b-2 border-line px-5 transition-colors focus-within:border-brand">
             <Search className="size-5 shrink-0 text-muted" strokeWidth={1.75} />
             <input
               autoFocus
+              role="combobox"
+              aria-expanded
+              aria-controls={listId}
+              aria-activedescendant={entries[at] ? `${listId}-${at}` : undefined}
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
@@ -137,7 +142,9 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
             <kbd className="rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">esc</kbd>
           </label>
 
-          <ul ref={list} role="listbox" aria-label="Results" className="flex-1 overflow-y-auto p-2">
+          {typed && found.error && <p role="alert" className="border-b border-line bg-danger-soft px-5 py-2.5 text-small text-danger">Search didn&apos;t work. {errorText(found.error)}</p>}
+
+          <ul ref={list} id={listId} role="listbox" aria-label="Results" className="flex-1 overflow-y-auto p-2">
             {entries.length === 0 && (
               <li className="px-4 py-10 text-center text-body text-muted">
                 {found.isFetching ? "Searching…" : <>Nothing matches “{q}”. Try a protocol number, a sponsor, a procedure like “ECG”, or an amount like 98.00.</>}
@@ -152,6 +159,8 @@ export function CommandPalette({ open, onClose, onGuide }: { open: boolean; onCl
                   <button
                     type="button"
                     role="option"
+                    id={`${listId}-${i}`}
+                    tabIndex={-1}
                     aria-selected={i === at}
                     data-i={i}
                     onMouseMove={() => setAt(i)}

@@ -1,7 +1,9 @@
 "use client";
 
 import { AlertTriangle, Check } from "lucide-react";
-import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import Link from "next/link";
+import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from "react";
+import { ApiError } from "@/lib/api";
 import { stageLabel, stageWords, stepsFor, type StageState } from "@/lib/review";
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
@@ -175,20 +177,72 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
   );
 }
 
-export function ErrorNote({ error, children }: { error?: unknown; children?: ReactNode }) {
+const SERVER_TROUBLE = "Something went wrong on the server. Try again; if it keeps happening, tell the team.";
+
+/**
+ * What a failed request or a crash says on screen, in plain words. The API's 4xx messages are written for people; its
+ * 5xx message carries a reference for the team. Anything else (a proxy error, a bug's message) is never shown as is.
+ */
+export function errorText(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (!(error instanceof ApiError)) return "Something went wrong on this page. Reload it and try again.";
+  if (error.status === 0) return "Can't reach DCT Finance right now. Check your connection, then try again.";
+  if (error.status >= 500) return error.message.startsWith("Something went wrong") ? error.message : SERVER_TROUBLE;
+  if (error.status === 404) return "We couldn't find this. It may have been removed, or the link is out of date.";
+  // A schema error's prettified issues ("✖ … → at note") come from a malformed request, not from anything typed.
+  if (/✖|→ at|\n/.test(error.message)) return "That didn't go through. Check what you entered, then try again.";
+  return error.message;
+}
+
+/** A load that failed with 404, or 400 (a malformed id or version in the URL): the thing isn't there. */
+const isMissing = (e: unknown) => e instanceof ApiError && (e.status === 404 || e.status === 400);
+
+/** `retry`: for a failed load inside a screen, a "Try again" after the message. */
+export function ErrorNote({ error, children, retry }: { error?: unknown; children?: ReactNode; retry?: () => void }) {
   if (!error && !children) return null;
-  const msg = children ?? (error instanceof Error ? error.message : String(error));
   return (
     <p role="alert" className="rounded-field bg-danger-soft px-4 py-3 text-body text-danger">
-      {msg}
+      {children ?? errorText(error)}
+      {retry && (
+        <button type="button" onClick={retry} className="ml-3 font-medium underline underline-offset-2">
+          Try again
+        </button>
+      )}
     </p>
+  );
+}
+
+/**
+ * A screen whose data couldn't load: what happened and a way on. Missing things lead back to the list; anything else
+ * can be tried again.
+ */
+export function LoadError({ error, retry, what = "this contract", back = { href: "/", label: "Back to contracts" } }: { error: unknown; retry?: () => void; what?: string; back?: { href: string; label: string } }) {
+  const missing = isMissing(error);
+  return (
+    <div role="alert" className="mx-auto flex max-w-[560px] flex-col items-center gap-3 px-6 py-16 text-center">
+      <span className="grid size-12 place-items-center rounded-full bg-danger-soft text-danger">
+        <AlertTriangle aria-hidden className="size-5" strokeWidth={2} />
+      </span>
+      <h1 className="text-title font-semibold tracking-tight">{missing ? `We can't find ${what}` : `${what[0]!.toUpperCase()}${what.slice(1)} didn't load`}</h1>
+      <p className="text-body text-muted">{missing ? "The link may be wrong, or it was removed." : errorText(error)}</p>
+      <div className="mt-3 flex flex-wrap justify-center gap-2.5">
+        <Link href={back.href} className={btnCls(missing ? "primary" : "secondary")}>
+          {back.label}
+        </Link>
+        {!missing && retry && (
+          <Button variant="primary" onClick={retry}>
+            Try again
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex flex-col items-center gap-2 rounded-card bg-surface px-6 py-16 text-center shadow-card">
-      <p className="text-title font-semibold tracking-tight">{title}</p>
+      <h2 className="text-title font-semibold tracking-tight">{title}</h2>
       {children && <p className="max-w-md text-body text-muted">{children}</p>}
       {action && <div className="mt-3">{action}</div>}
     </div>
@@ -221,22 +275,32 @@ export function Field({ label, hint, children, htmlFor }: { label: string; hint?
 }
 
 /**
- * Native modal <dialog>. Closes itself when the route is hidden by Next's <Activity>
- * (cacheComponents), otherwise a top-layer modal would stay on screen.
+ * A native modal <dialog>: the browser keeps focus inside it, closes it on Escape and puts focus back where it was.
+ * Showing it focuses its first control, or the one marked `data-autofocus` (React's autoFocus runs while the dialog is
+ * still closed). It closes itself when the route is hidden by Next's <Activity> (cacheComponents), otherwise a top-layer
+ * modal would stay on screen.
  */
-export function Dialog({ open, onClose, title, children, wide, width }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean; width?: string }) {
+function useModal(open: boolean) {
   const ref = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
-    if (open && !d.open) d.showModal();
+    if (open && !d.open) {
+      d.showModal();
+      d.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    }
     if (!open && d.open) d.close();
   }, [open]);
   useLayoutEffect(() => {
     const d = ref.current;
     return () => d?.close();
   }, []);
+  return ref;
+}
+
+export function Dialog({ open, onClose, title, children, wide, width }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean; width?: string }) {
+  const ref = useModal(open);
+  const titleId = useId();
   return (
     <dialog
       ref={ref}
@@ -260,6 +324,37 @@ export function Dialog({ open, onClose, title, children, wide, width }: { open: 
       )}
     </dialog>
   );
+}
+
+/** A panel sliding over the left edge on small screens (the menu, a list of questions): a modal <dialog> like Dialog. */
+export function Sheet({ open, onClose, label, children, width = "w-[320px] max-w-[88vw]" }: { open: boolean; onClose: () => void; label: string; children: ReactNode; width?: string }) {
+  const ref = useModal(open);
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      onClick={(e) => e.target === ref.current && onClose()}
+      aria-label={label}
+      className={cx("fixed inset-y-0 left-0 m-0 h-full max-h-none overflow-y-auto bg-canvas p-0 text-ink shadow-raised", width)}
+    >
+      {open && children}
+    </dialog>
+  );
+}
+
+/**
+ * Keyboard for a role="tablist": arrow keys, Home and End move to a tab and select it. Each tab sets
+ * tabIndex={selected ? 0 : -1}, so Tab enters the list once and moves on to the panel.
+ */
+export function onTabKeys(e: KeyboardEvent<HTMLElement>) {
+  const tabs = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
+  const i = tabs.indexOf(document.activeElement as HTMLElement);
+  const to = ({ ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 } as Record<string, number>)[e.key];
+  if (i < 0 || to === undefined) return;
+  e.preventDefault();
+  const tab = tabs[(to + tabs.length) % tabs.length]!;
+  tab.focus();
+  tab.click();
 }
 
 export function ProgressBar({ value, label }: { value: number; label: string }) {

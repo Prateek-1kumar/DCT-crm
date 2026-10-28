@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "NEXT_PUBLIC_API_MOCK=1 next dev -H 127.0.0.1 -p 3100",
     "dev:api": "next dev -H 127.0.0.1 -p 3100",
-    "build": "next build",
+    "build": "NEXT_PUBLIC_API_MOCK= next build",
+    "build:sample": "NEXT_PUBLIC_API_MOCK=1 next build",
     "start": "next start -H 127.0.0.1 -p 3100",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",

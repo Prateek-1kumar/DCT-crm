@@ -136,8 +136,11 @@ export default function ContractsPage() {
         }
       />
 
-      {(counts.isPending || list.isPending) && <Spinner />}
-      <ErrorNote error={counts.error ?? list.error} />
+      {counts.error || list.error ? (
+        <ErrorNote error={counts.error ?? list.error} retry={() => void Promise.all([counts.refetch(), list.refetch()])} />
+      ) : (
+        (counts.isPending || list.isPending) && <Spinner label="Loading the contracts" />
+      )}
 
       {none && (
         <Empty title="No contracts yet" action={<Link href="/studies/new" className={btnCls("primary")}>Add your first contract</Link>}>

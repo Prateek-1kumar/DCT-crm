@@ -12,7 +12,7 @@ import { VIEWS, type ViewId } from "@/lib/review";
 import { AlertBell, AlertWatcher } from "./Alerts";
 import { CommandPalette } from "./CommandPalette";
 import { HowItWorks } from "./HowItWorks";
-import { Button, cx, Dialog } from "./ui";
+import { Button, cx, Dialog, Sheet } from "./ui";
 
 const VIEW_BADGE: Record<ViewId, string> = {
   "needs-you": "bg-warn-soft text-warn",
@@ -215,7 +215,7 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="flex items-start justify-between gap-2">
         <Link href="/" onClick={onNavigate} className="flex flex-col gap-1.5 px-2 pt-2">
-          <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} priority />
+          <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} preload />
           <span className="pl-0.5 text-caption font-semibold tracking-[0.22em] text-accent uppercase">Finance</span>
         </Link>
         {onClose && (
@@ -310,14 +310,9 @@ export function Sidebar({ bare }: { bare?: boolean }) {
           <Menu className="size-5" strokeWidth={1.75} />
         </Button>
       </header>
-      {menu && (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <button type="button" aria-label="Close menu" className="absolute inset-0 bg-backdrop" onClick={() => setMenu(false)} />
-          <div className="absolute inset-y-0 left-0 w-[288px] max-w-[85vw] overflow-y-auto bg-canvas shadow-raised">
-            {body(() => setMenu(false))}
-          </div>
-        </div>
-      )}
+      <Sheet open={menu} onClose={() => setMenu(false)} label="Menu" width="w-[288px] max-w-[85vw]">
+        {body(() => setMenu(false))}
+      </Sheet>
 
       {dialogs}
     </>

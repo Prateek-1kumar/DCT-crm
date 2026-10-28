@@ -10,7 +10,7 @@ import { PageViewer } from "./PageViewer";
 import { Button, cx, Dialog } from "./ui";
 
 /** Page images for close-ups are rendered sharper than the default 150 DPI: budget print can be ~3pt. */
-export const SPOT_DPI = 300;
+const SPOT_DPI = 300;
 /** How much of the page width the close-up shows at each zoom step. */
 const SPANS = [1, 0.72, 0.52, 0.38, 0.28, 0.2];
 export const DEFAULT_ZOOM = 2;

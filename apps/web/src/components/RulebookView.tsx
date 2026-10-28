@@ -7,7 +7,7 @@ import { formatCents } from "@/lib/money";
 import { findProv, getAt } from "@/lib/pointer";
 import { GridTable } from "./GridTable";
 import { isHit, useRulebook, Val } from "./review-context";
-import { Badge, cx } from "./ui";
+import { Badge, cx, onTabKeys } from "./ui";
 
 /** Which part of the invoicing master a contract page tab shows. */
 export type MasterPart = "grid" | "fees" | "terms" | "details";
@@ -177,20 +177,23 @@ export function RulebookView({ part }: { part: MasterPart }) {
 
 function Grids() {
   const { rulebook: rb, focused } = useRulebook();
-  // A grid picked by hand, until a value in another grid is shown (search, ⌘K).
-  const [picked, setPicked] = useState<{ i: number; at: string | null }>({ i: 0, at: null });
+  // Opens on the grid billing uses; then a grid picked by hand, until a value in another grid is shown (search, ⌘K).
+  const [picked, setPicked] = useState<{ i: number; at: string | null }>(() => ({ i: Math.max(0, rb.budgetGrids.findIndex((g) => g.id === rb.governingGridId)), at: null }));
   if (rb.budgetGrids.length === 1) return <GridTable index={0} />;
   const m = /^\/budgetGrids\/(\d+)/.exec(focused ?? "");
   const i = Math.min(m && picked.at !== focused ? Number(m[1]) : picked.i, rb.budgetGrids.length - 1);
   return (
     <div className="flex flex-col gap-3">
-      <div role="tablist" aria-label="Budget grids" className="flex flex-wrap gap-0.5 self-start rounded-full border border-line-strong p-0.5">
+      <div role="tablist" aria-label="Budget grids" onKeyDown={onTabKeys} className="flex flex-wrap gap-0.5 self-start rounded-full border border-line-strong p-0.5">
         {rb.budgetGrids.map((g, gi) => (
           <button
             key={g.id}
+            id={`grid-tab-${gi}`}
             role="tab"
             type="button"
             aria-selected={gi === i}
+            aria-controls="grid-panel"
+            tabIndex={gi === i ? 0 : -1}
             onClick={() => setPicked({ i: gi, at: focused })}
             className={cx("rounded-full px-3 py-1.5 text-[13px]", gi === i ? "bg-ink text-surface" : "text-ink-2 hover:bg-sunken")}
           >
@@ -200,7 +203,7 @@ function Grids() {
           </button>
         ))}
       </div>
-      <div role="tabpanel">
+      <div role="tabpanel" id="grid-panel" aria-labelledby={`grid-tab-${i}`}>
         <GridTable key={i} index={i} />
       </div>
     </div>

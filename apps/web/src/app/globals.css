@@ -131,6 +131,14 @@ dialog::backdrop {
   animation: pulse-ring 0.9s ease-out 2;
 }
 
+/* Reduced motion: nothing slides, pulses or spins (a spinner keeps its "Loading…" words). */
 @media (prefers-reduced-motion: reduce) {
-  .pulse { animation: none; }
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

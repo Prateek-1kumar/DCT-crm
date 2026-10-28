@@ -3,7 +3,7 @@ import { isMoneyPath, labelFor } from "./format";
 import { getAt } from "./pointer";
 
 type Box = NonNullable<PageBox["box"]>;
-export type ProofCell = { path: string; label: string; value: unknown; box: Box | null };
+type ProofCell = { path: string; label: string; value: unknown; box: Box | null };
 export type ProofSection = "terms" | "totals" | "rows";
 /** One thing to proofread: a budget-grid row, a row of visit totals, or a single fee or term. */
 export type ProofUnit = { id: string; section: ProofSection; title: string; sub: string; doc: string; page: number; cells: ProofCell[]; money: number };
