@@ -6,7 +6,7 @@ It's used by DCT's accountants, who aren't technical, so every screen and messag
 
 ## Quick start
 
-You need Node 24, pnpm 10, and Apple [`container`](https://github.com/apple/container) (not Docker). Postgres 16 runs in a container named `dct-postgres` on port 5434. Google Chrome is needed only for the browser tests.
+You need Node 24 (`.nvmrc`; `engines` asks for 24 or later), pnpm 10, and Apple [`container`](https://github.com/apple/container) (not Docker). Postgres 16 runs in a container named `dct-postgres` on port 5434. Google Chrome is needed only for the browser tests.
 
 ### First time
 
@@ -15,7 +15,7 @@ cp .env.example .env    # fill in ANTHROPIC_API_KEY, or set EXTRACTION_FAKE=1 to
 pnpm run setup          # install, start Postgres, apply the migrations
 ```
 
-Use `pnpm run setup`: `pnpm setup` runs pnpm's own setup command instead. The migration step checks the API's settings, so it stops with a settings error until `.env` has either `ANTHROPIC_API_KEY` or `EXTRACTION_FAKE=1`.
+Use `pnpm run setup`: `pnpm setup` runs pnpm's own setup command instead. Only starting the server needs `ANTHROPIC_API_KEY` or `EXTRACTION_FAKE=1`; the migration step doesn't.
 
 ### Every day
 
@@ -47,7 +47,7 @@ No database or API is needed. The sample data lives in the browser; Settings →
 | `pnpm --filter @dct/api db:migrate` | Apply new migrations to the database in `DATABASE_URL` |
 | `pnpm test` | Every package's unit tests (the API's need Postgres) |
 | `pnpm e2e` | The browser journey on production builds, on its own ports and database |
-| `pnpm -r typecheck` · `pnpm --filter web lint` | TypeScript and ESLint |
+| `pnpm -r typecheck` · `pnpm lint` | TypeScript, and ESLint in every package |
 | `pnpm eval [name]` | Live reads of the real contracts in `data/contracts/`, scored against `data/golden/` (costs money) |
 | `pnpm probe` | Checks every AI schema against the live APIs (a few cents) |
 

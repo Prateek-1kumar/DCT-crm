@@ -8,7 +8,7 @@ How to run DCT Finance, day to day and as a production build, and what to do whe
 |---|---|---|
 | API (`apps/api`), with the job workers in the same process | `127.0.0.1:4100` (`PORT`) | Postgres; PDFs and page images in `UPLOAD_DIR` |
 | Web (`apps/web`) | `127.0.0.1:3100` | none; `/api/*` is proxied to `API_URL` |
-| Postgres 16 | `localhost:5434`, Apple `container` named `dct-postgres` (`apps/api/scripts/db.sh`) | databases `dct_finance` (dev), `dct_finance_test` (API tests), `dct_finance_e2e` (e2e) |
+| Postgres 16 | `127.0.0.1:5434`, Apple `container` named `dct-postgres` (`apps/api/scripts/db.sh`; a container created before `d496a1f` listens on every interface until it's [recreated](#recreating-the-dev-database-container)) | databases `dct_finance` (dev), `dct_finance_test` (API tests), `dct_finance_e2e` (e2e) |
 
 Both servers bind to 127.0.0.1 only and there is no login: one computer, one team. Read [security.md](security.md) before changing that.
 
@@ -19,7 +19,7 @@ Every setting is an environment variable, listed with its default in [`.env.exam
 - The API reads the repo-root `.env` at startup; variables already set in the environment win, and an empty value counts as unset. It checks every setting with zod (`apps/api/src/config.ts`) before it listens or connects, and exits naming each bad one, never printing a value.
 - Anything that imports the API's config runs the same check: the server, `db:migrate`, `db:migrate:dist`, `scripts/e2e-reset.ts`. So the migration step needs the server's settings too, except `ANTHROPIC_API_KEY`: only the server checks for it (or `EXTRACTION_FAKE=1`) when it starts, since only the server reads contracts.
 - The web does not read the repo-root `.env`. Next.js reads `apps/web/.env*` and the shell. `API_URL` is baked into the proxy when the web is **built**.
-- Outside the repo checkout, `UPLOAD_DIR` (absolute) is required and `DATABASE_URL` must be set: the defaults point at the local dev database and `<repo>/data/uploads`.
+- Outside the repo checkout, the API (and `db:migrate:dist`) refuses to start without `DATABASE_URL` and an absolute `UPLOAD_DIR`: inside it they default to the local dev database and `<repo>/data/uploads`, which must never be what a deployed API uses.
 
 ## Build and start (production)
 
@@ -88,7 +88,7 @@ The API writes JSON lines (pino) to stdout at `LOG_LEVEL` (default `info`):
 - A request is logged as its method and route pattern only: no ids, query strings, bodies, contract text or amounts. Probes log warnings only.
 - Every response carries `X-Request-Id`, the `reqId` of its log lines.
 - A 5xx response never shows its cause. It says "Something went wrong on the server. Try again; if it keeps happening, tell the team (ref <request id>)." Search the logs for that id: the `request failed` line has the database error code, its message and the SQL, without the values bound to it.
-- Levels: 30 info, 40 warn, 50 error. Lines worth an alert: `request failed`, `pg-boss error`, `job failed`, `idle database connection failed`, `the database is behind this build…`, `jobs not started: the database is behind this build`, `shutdown took too long: exiting`. Warnings worth reading: `a job had ended without finishing; marked failed`, `a read had no job; marked failed`, `write rolled back by a concurrent one`.
+- Levels: 30 info, 40 warn, 50 error. Lines worth an alert: `request failed`, `pg-boss error`, `job failed`, `idle database connection failed`, `the database is behind this build…`, `jobs not started: the database is behind this build`, `shutdown took too long: exiting`. Warnings worth reading: `a job had ended without finishing; marked failed`, `a read had no job; marked failed`, `write rolled back by a concurrent one`, and `pg-boss warning` (pg-boss's own message, such as a slow query; its data is never logged, since it can hold job data).
 
 ## Shutdown
 
@@ -110,6 +110,7 @@ Past `SHUTDOWN_TIMEOUT_MS` (30 s), or on a second signal, it exits 1 at once.
 | A read running, crash or `kill -9` | Its heartbeats stop. pg-boss fails it once 60 s pass without one (it checks every minute) and copies it to `stranded`. With one server, that happens within a minute or two of the next start. |
 | An `identify` job running | Retried up to twice, 5 s apart; only one run writes. Out of retries, it's failed like a read. |
 | A read past 2 hours | Failed by pg-boss ("took more than two hours"). |
+| A read pg-boss gives up on while it runs (past its time, its claim lost, a shutdown) | The read is abandoned: it starts no further AI call, cancels the one in flight, and never writes its result. The stranded queue fails it in plain words, as above. |
 
 A failed read shows "Couldn't read" on the contract, raises the "couldn't read" alert and writes `extraction.failed` with a plain message and a technical detail. Nothing is half-saved: a read's result is written in one transaction, and only while its job is still running. Startup maintenance (and every 10 minutes after) fails anything a stranded job couldn't handle, and any version left `extracting` with no job.
 
@@ -125,7 +126,7 @@ In development, `pnpm dev` runs the API under `tsx watch`: saving an API file re
 
 ### A stranded read
 
-- **Symptom:** a contract shows "Couldn't read" with "The server stopped while reading this contract, so the reading didn't finish. Read it again, or type it in by hand." (or "Reading this contract took more than two hours…"). The `extraction.failed` entry's detail is `pg-boss: job heartbeat timeout`, `pg-boss: job timed out`, `pg-boss: the queued job is missing` or `no job was reading this version`.
+- **Symptom:** a contract shows "Couldn't read" with "The server stopped while reading this contract, so the reading didn't finish. Read it again, or type it in by hand." (or "Reading this contract took more than two hours…"). The `extraction.failed` entry's detail is `pg-boss: job heartbeat timeout`, `pg-boss: job timed out` or `pg-boss: handler execution exceeded 7200s` (both time-outs, so the message says "took more than two hours"), `pg-boss: the queued job is missing` or `no job was reading this version`.
 - **Cause:** the API stopped or crashed during the read (in dev, a `tsx watch` restart counts), or the read ran past 2 hours.
 - **Fix:** nothing to repair: nothing was half-saved. A person chooses "Read it again" on the contract page (a new paid read, same version number) or types it in by hand. If reads keep timing out, look at the contract's size (pages, grids). To see live jobs: `SELECT id, kind, state, step, updated_at FROM jobs WHERE state IN ('queued', 'running');` (read only).
 
@@ -134,9 +135,10 @@ In development, `pnpm dev` runs the API under `tsx watch`: saving an API file re
 | Status | Message | Cause | Fix |
 |---|---|---|---|
 | 415 | `<file> is not a PDF` | The file doesn't start with `%PDF-` | Upload the PDF itself, not a Word file or image |
-| 400 | `<file> could not be read as a PDF` | pdf-lib can't load it (damaged) | Get a fresh copy |
+| 400 | `<file> could not be read as a PDF` | mupdf, which counts its pages in a worker, can't open it (damaged) | Get a fresh copy |
+| 422 | `<file> took too long to open, so it wasn't uploaded. It may be damaged or unusually complex: save it again as a PDF, or upload a fresh copy.` | mupdf didn't open it and count its pages within 30 s | Save it again as a PDF (print to PDF), or get a fresh copy |
 | 422 | `<file> has <n> pages; the limit is 100 per document…` | Over 100 pages | Split it into smaller PDFs |
-| 413 | `This file is bigger than the 50 MB limit. Split it into smaller PDFs and upload those.` / `Upload at most 50 files at once.` | Over 50 MB, or over 50 files in one request | Split the file; the web sends one file per request and refuses files over 50 MB before sending |
+| 413 | `This file is bigger than the 50 MB limit. Split it into smaller PDFs and upload those.` / `Upload at most 50 files at once.` / `This upload has too many parts…` / `This upload has too many fields…` | Over 50 MB, over 50 files, or over 60 parts or 10 fields in one request | Split the file; the web sends one file per request and refuses files over 50 MB before sending |
 | 403 | `Host not allowed` / `Origin not allowed` | The request came through a host or origin not in `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Use the app's own address, or add it to those settings |
 
 A password-protected or unusual PDF can pass the upload and fail at reading instead, with "This PDF couldn't be read…".
@@ -180,5 +182,19 @@ A password-protected or unusual PDF can pass the upload and fail at reading inst
 | Start or stop Postgres | `pnpm db:start` / `pnpm db:stop` |
 | Delete and recreate the dev container (all local data, without asking: check with the owner first) | `pnpm --filter @dct/api db:reset` |
 | Apply migrations to the dev database | `pnpm --filter @dct/api db:migrate` |
+| Check the migrations match `schema.ts` (no database needed) | `pnpm --filter @dct/api db:check` |
+| Lint every package | `pnpm lint` |
 | Check whether the dev database holds data | `psql postgres://dct:dct@localhost:5434/dct_finance -tAc "SELECT count(*) FROM studies"` |
 | Open a SQL prompt | `psql postgres://dct:dct@localhost:5434/dct_finance` (or `container exec -it dct-postgres psql -U dct -d dct_finance`) |
+
+## Recreating the dev database container
+
+`db.sh` publishes Postgres on 127.0.0.1 only since `d496a1f`. A `dct-postgres` container created before that keeps its old binding, on every network interface, with the password `dct`, until it's deleted and created again. Recreating it deletes everything in it, so it's the owner's call, and the data is dumped first. The steps (nothing here runs by itself):
+
+1. **Check whether it's needed.** `container inspect dct-postgres` shows `publishedPorts`: a `hostAddress` of `0.0.0.0` is the old binding; `127.0.0.1` needs nothing.
+2. **Stop the API** (Ctrl-C on `pnpm dev` or `pnpm dev:api`), so no read or write is running when the database goes away. Leave the container running.
+3. **Note what's there:** `psql postgres://dct:dct@localhost:5434/dct_finance -tAc "SELECT (SELECT count(*) FROM studies), (SELECT count(*) FROM audit_log)"`.
+4. **Dump the dev database**, unless step 3 shows nothing to keep: `pg_dump postgres://dct:dct@localhost:5434/dct_finance -Fc -f dct-finance-$(date +%F).dump`, with a `pg_dump` of version 16 or later (`pg_dump --version`), run on this computer so the file outside the container survives. `dct_finance_test` and `dct_finance_e2e` hold nothing to keep: their test runs wipe them.
+5. **Recreate it:** `pnpm --filter @dct/api db:reset` stops and deletes the container, then runs a new one on 127.0.0.1:5434 and creates the three databases, empty.
+6. **Put the data back:** `pg_restore --no-owner -d postgres://dct:dct@localhost:5434/dct_finance dct-finance-<date>.dump`. It should report no errors; if it does, stop there and keep the dump. The restore brings the migrations table and the `pgboss` schema with it. With nothing to keep, run `pnpm --filter @dct/api db:migrate` instead.
+7. **Check:** `container inspect dct-postgres` shows `hostAddress` `127.0.0.1`; the counts of step 3 are the same; start the API and `/readyz` shows `schema: "ok"`. The uploads in `data/uploads` are outside the container and aren't touched.
