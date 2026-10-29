@@ -578,6 +578,35 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const visits = new Set(g.visits.map((v) => v.code));
     const theirs = (o: (typeof options)[number]) => claimed.some((c) => c.row === o.row && c.header === o.header && [...c.visits].some((v) => visits.has(v)));
     for (const o of options.sort((a, b) => b.score - a.score)) if (!rowOf.has(o.pi) && !procRows.has(o.row) && !theirs(o)) (rowOf.set(o.pi, o), procRows.add(o.row));
+    // A row whose name the page prints differently (the read words it its own way): the one printed line that holds every
+    // price of the row, two at least, and a word of its name on or beside it (owner, 2026-10-29). A misread price is on no
+    // line, so the row stays unfound and asked; each cell is still checked in its own visit's column.
+    g.procedures.forEach((p, pi) => {
+      const c = ctx(p.prov.source);
+      if (rowOf.has(pi) || !c) return;
+      const want = [...Object.values(p.cells).filter((v): v is number => typeof v === "number"), ...(p.unitCents !== null ? [p.unitCents] : [])];
+      if (want.length < 2) return;
+      const name = tokens(p.name);
+      const labelled = (l: Line) =>
+        c.lines
+          .filter((x) => x.dir === l.dir && Math.abs(x.v - l.v) <= 2 * Math.max(x.h, l.h))
+          .flatMap((x) => x.words.filter((w) => frame(w)[2] <= c.cols.left).map((w) => norm(w.text)))
+          .some((t) => name.some((n) => sameToken(n, t)));
+      const fits = c.cands.filter((l) => {
+        const have = l.words.filter(priceLike).map((w) => cents(w.text));
+        return want.every((v) => {
+          const i = have.indexOf(v);
+          return i >= 0 && have.splice(i, 1);
+        });
+      });
+      const row = fits.length === 1 ? fits[0]! : null;
+      if (!row || procRows.has(row) || !labelled(row)) return;
+      const o = { row, code: null, score: 0, pi, header: c.cols.line };
+      if (theirs(o)) return;
+      rowOf.set(pi, o);
+      procRows.add(row);
+      options.push(o);
+    });
     for (const o of options) if (rowOf.get(o.pi) === o) claimed.push({ row: o.row, header: o.header, visits });
     g.procedures.forEach((p, pi) => {
       const pp = `${gp}/procedures/${pi}`;
