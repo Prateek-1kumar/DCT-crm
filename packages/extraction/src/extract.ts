@@ -107,10 +107,13 @@ function envClients(): Clients {
 
 const label = (documentId: string, page: number, extra = "") => `documentId ${documentId}, page ${page}${extra ? `, ${extra}` : ""}`;
 
-/** Bank details on each text page (documentId#page → areas), painted over in every image a model gets (ADR-001 §9). */
+/**
+ * Bank details on each text page (documentId#page → areas), painted over in every image a model gets (ADR-001 §9).
+ * `ocr`: scans too, from our OCR's words (the read; identifying documents sees a few first pages and stays fast).
+ */
 type Masks = Map<string, PageRect[]>;
-async function bankMasks(documents: InputDoc[]): Promise<Masks> {
-  const pages = (await Promise.all(documents.map((d) => readTextLayer(d.path, d.id)))).flat();
+async function bankMasks(documents: InputDoc[], ocr = false): Promise<Masks> {
+  const pages = (await Promise.all(documents.map((d) => readTextLayer(d.path, d.id, { ocr })))).flat();
   return new Map(pages.map((p) => [`${p.documentId}#${p.page}`, bankRects(p)]));
 }
 
@@ -190,7 +193,7 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   const images = budget(CONFIG.maxImagesPerExtraction, "page images");
   const tiles = budget(CONFIG.maxTilesPerExtraction, "grid image tiles");
   images.take(counts.reduce((a, b) => a + b, 0));
-  const masks = await bankMasks(documents);
+  const masks = await bankMasks(documents, true);
 
   // 1. Classify every page (low-res, upright or not).
   progress(2, "Rendering pages");

@@ -78,7 +78,7 @@ function printedTotal(v: AnswerDraft, item: ReviewItem): number | undefined {
 }
 
 /** Answers that list a page or a sentence to bill by hand (ADR-001 §7): the term goes on the master's unclassified list. */
-const BILL_BY_HAND = new Set(["UNACCOUNTED_TERM", "SCAN_PAGE", "PICTURE_PAGE", "CORRECTION_LOST"]);
+const BILL_BY_HAND = new Set(["UNACCOUNTED_TERM", "SCAN_PAGE", "SCAN_REGION", "PICTURE_PAGE", "CORRECTION_LOST"]);
 
 /** A few words for a term on the bill-by-hand list: its sentence, cut at a word. */
 const shortLabel = (quote: string) => {

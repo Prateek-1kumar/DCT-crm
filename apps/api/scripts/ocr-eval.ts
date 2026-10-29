@@ -8,20 +8,18 @@
  *   shifted one visit over; each must come out unconfirmed. The gate: all caught.
  * - questions per contract, today (no OCR) and with OCR, by reason.
  *
- * OCR comes from OCR_DIR: <contract>.jsonl, one line per page image the worker read ({path, ms, words}; the image is
- * "<page>.png", or "<page>r.png" turned 90° clockwise). Repo root = DCT_ROOT, else three levels above this file.
- * Prints counts only; never contract text or amounts.
+ * The OCR is the app's own (readTextLayer with ocr, packages/extraction/ocr; install it with `pnpm run setup`), cached
+ * beside each PDF after the first run. Repo root = DCT_ROOT, else three levels above this file. Prints counts only;
+ * never contract text or amounts.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bindEvidence, norm, ocrPage, type OcrWord, readTextLayer, reviewFromEvidence, runContractChecks, sameName, sharesWord, type TextPage } from "@dct/extraction";
+import { bindEvidence, norm, readTextLayer, reviewFromEvidence, runContractChecks, sameName, sharesWord } from "@dct/extraction";
 import { Rulebook, type ValueEvidence } from "@dct/shared";
 import { reviewDraft } from "../src/review.js";
 
 const root = process.env.DCT_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const ocrDir = process.env.OCR_DIR;
-if (!ocrDir) throw new Error("Set OCR_DIR to the folder of OCR readings (<contract>.jsonl)");
 const CONTRACTS = { copd: "COPD", hcwc: "HCWC", mcallen: "McAllen", shah: "Shah" } as const;
 const port = { bindEvidence, reviewFromEvidence };
 
@@ -34,23 +32,6 @@ const set = (o: unknown, path: string, v: unknown) => {
 };
 const tally = (xs: string[]) => xs.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
 const isCents = (rb: Rulebook, p: string) => /Cents$|\/cents$|\/cells\//.test(p) || (p.endsWith("/cap/n") && get(rb, p.replace(/\/n$/, "/kind")) === "amount");
-
-/** The OCR'd pages: per page the reading with more confident words, when the worker read it both ways. */
-function ocrPages(name: string, scan: TextPage[]): { pages: TextPage[]; ms: number[] } {
-  type Line = { path: string; ms: number; words: OcrWord[]; dpi?: number };
-  const all = readFileSync(join(ocrDir!, `${name}.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Line);
-  const good = (o: Line) => o.words.filter((w) => w.conf >= 0.8).length;
-  const best = new Map<number, Line>();
-  for (const o of all) {
-    const n = Number(/(\d+)r?\.png$/.exec(o.path)![1]);
-    if (!best.has(n) || good(o) > good(best.get(n)!)) best.set(n, o);
-  }
-  const pages = scan.map((p) => {
-    const o = best.get(p.page);
-    return o ? ocrPage(p, { words: o.words, dpi: o.dpi ?? 300, turned: /r\.png$/.test(o.path) ? 90 : 0 }) : p;
-  });
-  return { pages, ms: all.map((o) => o.ms) };
-}
 
 type Golden = {
   grids: { visitTotals: number[]; perPatient: number[]; rows?: { code: string | null; name: string; cells: (number | null)[]; unitCents: number | null }[] }[];
@@ -144,7 +125,7 @@ const confirmedIn = (ev: ValueEvidence[]) => new Set(ev.filter((e) => e.status =
 
 const files = readdirSync(join(root, "data/contracts")).filter((f) => f.endsWith(".pdf"));
 const report: Record<string, unknown> = {};
-const allMs: number[] = [];
+const seconds: number[] = [];
 for (const [name, label] of Object.entries(CONTRACTS)) {
   const read = JSON.parse(readFileSync(join(root, "data/extractions", `${name}.json`), "utf8")) as { rulebook: unknown };
   const rb = Rulebook.parse(read.rulebook);
@@ -153,8 +134,11 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const pdf = join(root, "data/contracts", files.find((f) => f.includes(label))!);
   const docs = [{ id: docId, filename: "contract.pdf" }];
   const scan = await readTextLayer(pdf, docId);
-  const { pages, ms } = ocrPages(name, scan);
-  allMs.push(...ms);
+  const t0 = Date.now();
+  const pages = await readTextLayer(pdf, docId, { ocr: true });
+  const ocred = pages.filter((p) => p.source === "ocr").length;
+  if (!ocred) throw new Error("The OCR didn't run: install it with pnpm run setup (packages/extraction/ocr/setup.sh)");
+  seconds.push((Date.now() - t0) / 1000 / ocred);
   const anomalies = runContractChecks(rb);
   const today = reviewDraft(port, rb, anomalies, scan, docs);
   const withOcr = reviewDraft(port, rb, anomalies, pages, docs);
@@ -226,11 +210,13 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const status = (ev: ValueEvidence[]) => tally(ev.map((e) => e.status));
   report[label] = {
     values: withOcr.evidence.length,
+    pages: { ocr: ocred, unclear: withOcr.review.filter((i) => i.reason === "SCAN_PAGE").length, regions: withOcr.review.filter((i) => i.reason === "SCAN_REGION").length },
     today: { status: status(today.evidence), questions: today.review.length },
     withOcr: { status: status(withOcr.evidence), questions: withOcr.review.length, byReason: tally(withOcr.review.map((i) => i.reason)) },
     key: { keyed: key.size, aiWrong, wrongConfirmed },
     planted: Object.fromEntries(Object.entries(planted).map(([k, [tried, caught]]) => [k, `${caught}/${tried}`])),
   };
 }
-report.secondsPerPage = +(allMs.reduce((a, b) => a + b, 0) / allMs.length / 1000).toFixed(2);
+// a cached run reads nothing: this is the time per page of the first run only
+report.secondsPerPage = seconds.map((s) => +s.toFixed(2));
 console.log(JSON.stringify(report, null, 1));

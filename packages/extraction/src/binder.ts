@@ -561,7 +561,8 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       // value is unfound (the totals or a person decide), not contradicted. A PDF's own blank cell is a real blank.
       // "Invoiceable" is how the read says a cell is billed, not a number the OCR can check: it decides nothing there either.
       const unread = c.pg.p.source === "ocr" && !ok && (value === "invoiceable" || printed === null || cents(printed) === null || ws.some((w) => (w.conf ?? 1) < MIN_OCR_CONF));
-      if (unread) return put(path, "ungrounded", [boxOf(c.pg.p, ws.length ? ws : row.words)], null, "the scan is unclear here");
+      // what the cell prints belongs to a row the master holds, and its value is asked: it isn't another money term too
+      if (unread) return put(path, "ungrounded", [boxOf(c.pg.p, ws.length ? ws : row.words)], null, "the scan is unclear here", ws);
       put(path, ok ? "confirmed" : "conflict", [boxOf(c.pg.p, ws.length ? ws : row.words)], printed, null, [...ws, ...used]);
     };
 

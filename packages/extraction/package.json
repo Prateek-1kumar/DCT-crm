@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./mupdf-worker": "./src/mupdf-worker.mjs"
+    "./mupdf-worker": "./src/mupdf-worker.mjs",
+    "./ocr-worker": "./ocr/worker.py"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

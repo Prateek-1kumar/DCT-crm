@@ -100,15 +100,26 @@ const PAGE_OPTIONS = [
   { id: "bill_by_hand", label: "Yes: list this page to bill by hand", note: "What on this page is billed by hand? Name each term and its amount." },
 ];
 
+/** Our OCR read under this share of a page's words with confidence: the page is unclear, so a person attests all of it. */
+const CLEAR_PAGE = 0.7;
+const clear = (p: TextPage) => p.words.length > 0 && p.words.filter((w) => (w.conf ?? 1) >= 0.8).length >= CLEAR_PAGE * p.words.length;
+
 /**
  * Scan pages can't be swept for money terms, so a person attests each one (ADR-001 §3, I5), and so does a text page with a
- * picture big enough to hold prices (a budget pasted in as an image: `largePicture`, from the text layer). Hidden text is
+ * picture big enough to hold prices (a budget pasted in as an image: `largePicture`, from the text layer). A scan our OCR
+ * read clearly is swept like text: only the areas it couldn't read (`unread`) are asked, each at its spot. Hidden text is
  * shown to a person.
  */
 function pageItems(pages: TextPage[], docs: { id: string; filename: string }[]): ReviewItem[] {
   const name = (id: string) => `“${docs.find((d) => d.id === id)?.filename ?? "the contract"}”`;
   return pages.flatMap((p): ReviewItem[] => {
     const base = { ...BLANK, path: null, blocking: true, input: null, where: [box(p.documentId, p.page)] };
+    if (p.source === "ocr" && clear(p))
+      return (p.unread ?? []).map((where, i) => ({
+        ...base, where: [where], id: `region:${p.documentId}:${p.page}:${i}`, kind: "unaccounted", reason: "SCAN_REGION",
+        question: `Part of page ${p.page} of ${name(p.documentId)} couldn't be read (it's marked). Does it have any money terms that the invoicing master doesn't hold?`,
+        options: PAGE_OPTIONS,
+      }));
     if (p.source !== "text")
       return [{
         ...base, id: `page:${p.documentId}:${p.page}`, kind: "unaccounted", reason: "SCAN_PAGE",

@@ -1,5 +1,6 @@
 import { type PageBox, parseCents } from "@dct/shared";
 import { MIN_PAGE_TEXT } from "./checks";
+import { withOcr } from "./ocr";
 import { pageCount, textPage } from "./render";
 
 /** The PDF's own text (mupdf structured text), no AI: words with boxes, each page's text source, hidden text. */
@@ -40,16 +41,22 @@ export type TextPage = {
    * Always false on scans and OCR layers, which are attested whole.
    */
   largePicture: boolean;
+  /** Our OCR's page (source "ocr"): areas with ink no word it read covers, each asked about (ocr.ts). */
+  unread?: PageBox[];
 };
 
 /** COPD's signed budget grid is set in 3.2 pt type, so the ADR's "under 4 pt" would hide a real grid. */
 const MIN_VISIBLE_PT = 2;
 
-/** Every page's text, read in the mupdf worker (render.ts), one page at a time: a page that hangs fails the read, it can't hang the server. */
-export async function readTextLayer(pdfPath: string, documentId: string): Promise<TextPage[]> {
+/**
+ * Every page's text, read in the mupdf worker (render.ts), one page at a time: a page that hangs fails the read, it can't
+ * hang the server. `ocr`: pages with no text of their own get our OCR's words (ocr.ts), where it's installed and works;
+ * otherwise they stay scans.
+ */
+export async function readTextLayer(pdfPath: string, documentId: string, opts: { ocr?: boolean } = {}): Promise<TextPage[]> {
   const out: TextPage[] = [];
   for (let i = 1, n = await pageCount(pdfPath); i <= n; i++) out.push(await textPage(pdfPath, i, documentId, MIN_VISIBLE_PT, MIN_PAGE_TEXT));
-  return out;
+  return (opts.ocr && (await withOcr(pdfPath, out))) || out;
 }
 
 const union = (rs: Rect[]): Rect => [Math.min(...rs.map((r) => r[0])), Math.min(...rs.map((r) => r[1])), Math.max(...rs.map((r) => r[2])), Math.max(...rs.map((r) => r[3]))];
@@ -201,7 +208,7 @@ const accountNo = (w: Word) => {
  * ponytail: up to 2 lines below a label, each within 2.5 line heights; a number further down isn't masked. Upgrade: the label's own block.
  */
 function bankWords(p: TextPage): Word[] {
-  if (p.source !== "text") return [];
+  if (p.source !== "text" && p.source !== "ocr") return [];
   const out = new Set(sentences(p).filter(bankSentence).flatMap((s) => s.filter((w) => digits(w) >= 3 || /^[A-Z]{2}\d{2}/.test(w.text))));
   const lines = visualLines(p.words);
   const v = (l: Word[]) => (frame(l[0]!)[1] + frame(l[0]!)[3]) / 2;
@@ -226,7 +233,7 @@ export const bankRects = (p: TextPage): Rect[] => bankWords(p).map((w) => w.rect
  */
 export function inventory(pages: TextPage[]): Span[] {
   const out: Span[] = [];
-  for (const p of pages.filter((x) => x.source === "text")) {
+  for (const p of pages.filter((x) => x.source === "text" || x.source === "ocr")) {
     const taken = new Set<Word>();
     const add = (kind: SpanKind, ws: Word[], ctx: Word[], cents?: number) => {
       if (!ws.length || ws.some((w) => taken.has(w))) return;

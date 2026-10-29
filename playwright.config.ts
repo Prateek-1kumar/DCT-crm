@@ -13,6 +13,7 @@ const api = {
   DATABASE_URL: "postgres://dct:dct@localhost:5434/dct_finance_e2e",
   UPLOAD_DIR: path.join(os.tmpdir(), "dct-e2e-uploads"),
   EXTRACTION_FAKE: "1",
+  SCAN_OCR: "0",
   // The web proxy forwards the browser's Host and Origin, which are the e2e web port's.
   ALLOWED_HOSTS: [...hosts(API), ...hosts(WEB)].join(","),
   ALLOWED_ORIGINS: hosts(WEB).map((h) => `http://${h}`).join(","),

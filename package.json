@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "setup": "pnpm install && apps/api/scripts/db.sh start && pnpm --filter @dct/api db:migrate",
+    "setup": "pnpm install && apps/api/scripts/db.sh start && pnpm --filter @dct/api db:migrate && packages/extraction/ocr/setup.sh",
     "db:start": "apps/api/scripts/db.sh start",
     "db:stop": "apps/api/scripts/db.sh stop",
     "dev": "apps/api/scripts/db.sh start && (pnpm dev:api & pnpm dev:web; wait)",

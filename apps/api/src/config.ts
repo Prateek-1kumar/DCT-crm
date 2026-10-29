@@ -35,6 +35,8 @@ const Env = z.object({
   ALLOWED_HOSTS: list.optional(),
   ALLOWED_ORIGINS: list.pipe(z.array(z.url({ protocol: /^https?$/, error: "must be a comma-separated list of origins, e.g. http://localhost:3100" }))).optional(),
   EXTRACTION_FAKE: flag.default(false),
+  /** Our own OCR of scanned pages (packages/extraction/ocr): on unless 0, as in the automated tests, which don't install it. */
+  SCAN_OCR: flag.default(true),
   LOG_LEVEL: z.enum(LOG_LEVELS, { error: `must be one of ${LOG_LEVELS.join(", ")}` }).default("info"),
   DB_POOL_MAX: whole(1, 100, "a whole number from 1 to 100").default(10),
   JOBS_DB_POOL_MAX: whole(2, 50, "a whole number from 2 to 50").default(5),
@@ -106,6 +108,7 @@ export function parseConfig(env: NodeJS.ProcessEnv) {
     /** Origins allowed on mutating requests (CSRF guard). */
     allowedOrigins: e.ALLOWED_ORIGINS ?? local(3100).map((h) => `http://${h}`),
     extractionFake: e.EXTRACTION_FAKE,
+    scanOcr: e.SCAN_OCR,
     /**
      * This computer only (user decision 2026-10-28). There's no login: every write's `by` is whatever name was picked. Login
      * must come before this listens anywhere else, or before more than one person uses it (docs/phase-1/api.md).

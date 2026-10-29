@@ -110,6 +110,9 @@ function plainWarning(w: ReadWarning): string | null {
   }
 }
 
+/** When our OCR couldn't run (not installed, no sandbox here, or it failed its self-test), a scan is checked as before. */
+const SCAN_NOT_READ = "The scan couldn't be read by the text reader on this server, so its numbers are checked only by the contract's own totals and by you. Tell the team: the OCR needs setting up (pnpm run setup).";
+
 export const plainWarnings = (warnings: ReadWarning[] = []): string[] => [...new Set(warnings.flatMap((w) => plainWarning(w) ?? []))];
 
 /** What a failed job says on screen: its own message, never a database error's (the SQL and every value bound to it). */
@@ -290,7 +293,9 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
     }
     const anomalies = port.runContractChecks(rulebook, { crossRead, pages: out.pages, notes });
     // Every value checked against the PDF's own text, and what's left for a person (ADR-001). No AI.
-    const textByDoc = await Promise.all(docs.map((d) => port.readTextLayer(d.path, d.id)));
+    // Scans get our own OCR's words (no AI; run once per document and cached beside it, while masking bank details for the read)
+    const textByDoc = await Promise.all(docs.map((d) => port.readTextLayer(d.path, d.id, { ocr: true })));
+    const unread = textByDoc.flat().some((p) => p.source === "image_only" || p.source === "ocr_layer");
     const checked = reviewDraft(port, rulebook, anomalies, textByDoc.flat(), docs, {
       amendment: !!live || docs.some((d) => d.kind === "amendment"),
       carried: carried && live ? { from: live.version, live: carried.liveRb, skipped: carried.skipped } : null,
@@ -320,7 +325,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
           pages: out.pages,
           notes,
           // what made the reading weaker, and corrections from the live version it couldn't carry over
-          warnings: [...plainWarnings(out.warnings), ...checked.warnings],
+          warnings: [...plainWarnings(out.warnings), ...(unread && config.scanOcr ? [SCAN_NOT_READ] : []), ...checked.warnings],
           cost: out.cost,
           costUsd: sum("usd"),
           inputTokens: sum("inputTokens"),

@@ -148,6 +148,27 @@ describe("scan pages", () => {
   });
 });
 
+describe("pages our OCR read", () => {
+  const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
+  const words = (n: number, conf: number) => Array.from({ length: n }, (_, i) => ({ text: `word${i}`, rect: [40 + (i % 10) * 50, 100 + Math.floor(i / 10) * 14, 80 + (i % 10) * 50, 110 + Math.floor(i / 10) * 14] as [number, number, number, number], dir: 0 as const, block: 0, line: i, hidden: false, conf }));
+  const ocr = (page: number, conf: number, unread: [number, number, number, number][] = []): TextPage => ({
+    documentId: "d", page, width: 612, height: 792, source: "ocr", words: words(40, conf), hidden: 0, largePicture: false,
+    unread: unread.map((box) => ({ documentId: "d", page, box })),
+  });
+  const pageQuestions = (pages: TextPage[]) =>
+    reviewDraft({ bindEvidence, reviewFromEvidence }, manualRulebook(s, []), [], pages, [{ id: "d", filename: "scan.pdf" }])
+      .review.filter((i) => i.kind === "unaccounted")
+      .map((i) => `${i.reason} p${i.where[0]!.page} ${i.where[0]!.box ? "marked" : "whole page"}`);
+
+  it("a page read clearly asks only about the areas it couldn't read, each marked; an unclear page is asked about whole", () => {
+    expect(pageQuestions([ocr(1, 0.99), ocr(2, 0.99, [[0.1, 0.5, 0.3, 0.1], [0.6, 0.8, 0.3, 0.1]]), ocr(3, 0.5)])).toEqual([
+      "SCAN_REGION p2 marked",
+      "SCAN_REGION p2 marked",
+      "SCAN_PAGE p3 whole page",
+    ]);
+  });
+});
+
 describe("picked answers", () => {
   it("an interpretation is picked from the field's own list and written; a yes/no question writes a boolean", () => {
     const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
