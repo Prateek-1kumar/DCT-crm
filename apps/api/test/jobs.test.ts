@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { maintain, plainWarnings, recover, runExtract, runIdentify } from "../src/jobs.js";
-import { type Built, makeTextPdf, resetDb, storedVersion, testApp, upload, waitJob } from "./helpers.js";
+import { type Built, cause, makeTextPdf, resetDb, storedVersion, testApp, until, upload, waitJob } from "./helpers.js";
 
 // Jobs run twice write once, and a job whose server died is found and failed in plain words, never left "running".
 // `idle` has no workers, so these tests run (or strand) its jobs themselves; `live` (started when a test needs it) runs
@@ -33,7 +33,6 @@ beforeEach(async () => {
 
 const STOPPED = "The server stopped while reading this contract, so the reading didn't finish. Read it again, or type it in by hand.";
 const TIMED_OUT = "Reading this contract took more than two hours, so it was stopped. Read it again; if that happens again, type it in by hand.";
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const q = <T>(text: ReturnType<typeof sql>) => idle.ctx.db.execute<T & Record<string, unknown>>(text).then((r) => r.rows);
 const count = async (action: string, studyId: string) => (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM audit_log WHERE action = ${action} AND study_id = ${studyId}`))[0]!.n;
 const alertKinds = async (studyId: string) => (await idle.app.inject({ url: "/api/v1/alerts?for=Zed" })).json<AlertPage>().items.filter((a) => a.studyId === studyId).map((a) => a.kind);
@@ -76,7 +75,7 @@ describe("a job run twice writes once", () => {
 
   it("only one read of a version can be live, by the database's own rule", async () => {
     const { studyId, version } = await queued();
-    await expect(idle.ctx.db.execute(sql`INSERT INTO jobs (id, kind, study_id, version) VALUES (gen_random_uuid(), 'extract', ${studyId}, ${version})`)).rejects.toThrow();
+    expect(await cause(idle.ctx.db.execute(sql`INSERT INTO jobs (id, kind, study_id, version) VALUES (gen_random_uuid(), 'extract', ${studyId}, ${version})`))).toMatch(/jobs_one_live_read_idx/);
   });
 });
 
@@ -86,7 +85,7 @@ describe("a job whose server died is failed in plain words", () => {
     let go!: () => void;
     fakeControls.hold = new Promise((r) => (go = r));
     const running = runExtract(idle.ctx, { jobId, studyId, version });
-    while ((await job(jobId)).state !== "running") await new Promise((r) => setTimeout(r, 20));
+    await until(async () => (await job(jobId)).state === "running", "the read to start");
     await recover(idle.ctx, jobId, { value: { message: "job heartbeat timeout" } });
     go();
     await running;
@@ -154,7 +153,7 @@ describe("a read pg-boss gave up on (past its time, its claim lost, a shutdown)"
       fakeControls.failNext = throws ? 1 : 0;
       const stop = new AbortController();
       const running = runExtract(idle.ctx, { jobId, studyId, version }, stop.signal);
-      while ((await job(jobId)).state !== "running") await sleep(20);
+      await until(async () => (await job(jobId)).state === "running", "the read to start");
       stop.abort();
       go();
       await running;

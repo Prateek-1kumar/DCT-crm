@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
+import { type App, type Built, cause, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 // Regression tests for the security review (backend-audit.md): one block per finding.
 
@@ -101,14 +101,30 @@ describe("H7: blind entry has no side doors", () => {
 });
 
 describe("M1: a signed version can't be changed or removed, even in the database", () => {
+  // the trigger's own refusal (drizzle/0006_signed_versions_locked.sql), not just any error
+  const refused = async (q: ReturnType<typeof sql>) => expect(await cause(built.ctx.db.execute(q))).toMatch(/immutable/);
+
   it("refuses any change but superseding and proofread marks, and refuses delete", async () => {
     const { studyId } = await liveStudy(built);
-    const refused = async (q: ReturnType<typeof sql>) => expect(built.ctx.db.execute(q)).rejects.toThrow();
     await refused(sql`UPDATE rulebook_versions SET version = 7 WHERE study_id = ${studyId}`);
     await refused(sql`UPDATE rulebook_versions SET sign_note = 'tampered' WHERE study_id = ${studyId}`);
     await refused(sql`UPDATE rulebook_versions SET cost_usd = 0 WHERE study_id = ${studyId}`);
     await refused(sql`DELETE FROM rulebook_versions WHERE study_id = ${studyId}`);
+    // un-signed back into a draft, it could take answers and be approved again with other numbers
+    await refused(sql`UPDATE rulebook_versions SET status = 'draft' WHERE study_id = ${studyId}`);
     await built.ctx.db.execute(sql`UPDATE rulebook_versions SET proofread = '[]', updated_at = now() WHERE study_id = ${studyId}`);
+  });
+
+  it("a superseded version is as locked: its content, live again, or deleted", async () => {
+    const { studyId } = await liveStudy(built);
+    expect((await post(`/studies/${studyId}/versions/1/report`, { path: "/siteFees/0/amountCents", note: "check", by: "Sam" })).statusCode).toBe(200);
+    await settleAll(built, studyId, 2);
+    expect((await signOff(app, studyId, 2, { by: "Ben" })).statusCode).toBe(200);
+    const old = sql`study_id = ${studyId} AND status = 'superseded'`;
+    for (const set of [sql`rulebook = '{}'::jsonb`, sql`evidence = '[]'`, sql`review = '[]'`, sql`editors = '[]'`, sql`signed_by = 'mallory'`, sql`applies_from = '1999-01-01'`, sql`status = 'signed'`, sql`status = 'draft'`])
+      await refused(sql`UPDATE rulebook_versions SET ${set} WHERE ${old}`);
+    await refused(sql`DELETE FROM rulebook_versions WHERE ${old}`);
+    expect((await storedVersion(built, studyId, 1)).status).toBe("superseded");
   });
 });
 

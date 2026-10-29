@@ -154,6 +154,12 @@ describe("blind entry", () => {
     // the fee the amendment adds is shown; its due days and the new applies-from date are asked (nothing prints them)
     expect(await diff()).toContain("/siteFees/0");
     expect(await diff()).not.toContain("/appliesFrom/value");
+    // nor inside the entry that adds the fee: its due days (30 in the read) are withheld there too
+    const res = await app.inject({ url: `/api/v1/studies/${studyId}/versions/2/diff?against=1` });
+    const added = res.json<DiffEntry[]>().find((e) => e.path === "/siteFees/0")!;
+    expect(added).toMatchObject({ change: "added", after: { name: "Start-up fee", dueDays: null } });
+    expect(res.body).not.toMatch(/"dueDays":30\b/);
+    expect(res.body.replace(/"(?:id|documentId)":"[^"]*"/g, "")).not.toMatch(/\b30\b/);
 
     // Answered, sent back: the earlier answer stays out of the log while the question is open again.
     const item = `confirm:${unsched}`;

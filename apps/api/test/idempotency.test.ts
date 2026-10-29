@@ -31,17 +31,18 @@ const quoted = () => `"${randomUUID()}"`; // a structured-field string, as the w
 /** Version 1 as the approver last saw it, as the approve page sends it with the approval. */
 const asOf = async (studyId: string) => (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).json<RulebookVersionDto>().updatedAt;
 
-/** Everything a write can leave behind. */
+/**
+ * Everything a write can leave behind: every row of every table it writes, each column (a version's evidence, editors and
+ * `updated_at` too, which approval's `asOf` compares), and how many audit entries, alerts, reads and saved keys there are.
+ */
 async function effects() {
+  const every = (table: string, order: string) => sql.raw(`(SELECT coalesce(json_agg(t ORDER BY ${order}), '[]') FROM ${table} t)::text`);
   const { rows } = await built.ctx.db.execute(sql`SELECT
-    (SELECT count(*) FROM documents)::int AS documents, (SELECT count(*) FROM studies)::int AS studies,
-    (SELECT count(*) FROM study_documents)::int AS links, (SELECT count(*) FROM rulebook_versions)::int AS versions,
-    (SELECT count(*) FROM jobs)::int AS jobs, (SELECT count(*) FROM pgboss.job WHERE name IN ('identify', 'extract'))::int AS queued,
+    ${every("documents", "id")} AS documents, ${every("studies", "id")} AS studies, ${every("study_documents", "study_id, document_id")} AS links,
+    ${every("rulebook_versions", "study_id, version")} AS versions, ${every("jobs", "id")} AS jobs, ${every("settings", "id")} AS settings,
+    (SELECT count(*) FROM pgboss.job WHERE name IN ('identify', 'extract'))::int AS queued,
     (SELECT count(*) FROM audit_log)::int AS audit, (SELECT count(*) FROM alerts)::int AS alerts,
-    (SELECT count(*) FROM alert_reads)::int AS reads, (SELECT count(*) FROM idempotency_keys)::int AS keys,
-    (SELECT coalesce(json_agg(json_build_object('v', version, 's', status, 'r', review, 'p', proofread, 'u', rulebook->'unclassified') ORDER BY study_id, version), '[]') FROM rulebook_versions)::text AS state,
-    (SELECT coalesce(json_agg(json_build_object('s', status, 'n', needs_you, 'p', sponsor) ORDER BY id), '[]') FROM studies)::text AS studyState,
-    (SELECT coalesce(json_agg(people), '[]') FROM settings)::text AS settings`);
+    (SELECT count(*) FROM alert_reads)::int AS reads, (SELECT count(*) FROM idempotency_keys)::int AS keys`);
   return rows[0]!;
 }
 

@@ -37,32 +37,35 @@ async function failInsert(table: "audit_log" | "alerts" | "idempotency_keys", co
   await built.ctx.db.execute(sql.raw(`CREATE TRIGGER test_fail BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION test_fail('${column}', '${value}')`));
 }
 
-/** What a write could change: every version, study, job, alert and audit entry. */
+/** What a write could change: every version, study, document, job, alert (and who read it), audit entry and setting. */
 async function state() {
   const { rows } = await built.ctx.db.execute(sql`SELECT
-    (SELECT coalesce(json_agg(v ORDER BY study_id, version), '[]') FROM (SELECT study_id, version, status, rulebook, review, evidence, editors, signed_by FROM rulebook_versions) v)::text AS versions,
-    (SELECT coalesce(json_agg(s ORDER BY id), '[]') FROM (SELECT id, status, needs_you, stage, sponsor FROM studies) s)::text AS studies,
+    (SELECT coalesce(json_agg(v ORDER BY study_id, version), '[]') FROM (SELECT study_id, version, status, by_hand, rulebook, review, evidence, anomalies, editors, proofread, applies_from, signed_by, updated_at FROM rulebook_versions) v)::text AS versions,
+    (SELECT coalesce(json_agg(s ORDER BY id), '[]') FROM (SELECT id, status, needs_you, stage, sponsor, protocol, site_name, investigator, updated_at FROM studies) s)::text AS studies,
+    (SELECT coalesce(json_agg(d ORDER BY id), '[]') FROM (SELECT id, kind FROM documents) d)::text AS kinds,
     (SELECT coalesce(json_agg(j ORDER BY id), '[]') FROM (SELECT id, state, error FROM jobs) j)::text AS jobs,
+    (SELECT coalesce(json_agg(c), '[]') FROM (SELECT people, maker_checker FROM settings) c)::text AS settings,
     (SELECT count(*) FROM pgboss.job WHERE name IN ('identify', 'extract'))::int AS queued,
-    (SELECT count(*) FROM alerts)::int AS alerts, (SELECT count(*) FROM audit_log)::int AS audit,
+    (SELECT count(*) FROM alerts)::int AS alerts, (SELECT count(*) FROM alert_reads)::int AS reads, (SELECT count(*) FROM audit_log)::int AS audit,
     (SELECT count(*) FROM study_documents)::int AS links, (SELECT count(*) FROM documents)::int AS documents,
     (SELECT count(*) FROM idempotency_keys)::int AS keys`);
   return rows[0]!;
 }
 
-const post = (url: string, payload: object, key?: string) =>
-  app.inject({ method: "POST", url: `/api/v1${url}`, payload, headers: key ? { "idempotency-key": key } : {} });
+const send = (method: "POST" | "PATCH", url: string, payload: object, key?: string) =>
+  app.inject({ method, url: `/api/v1${url}`, payload, headers: key ? { "idempotency-key": key } : {} });
+const post = (url: string, payload: object, key?: string) => send("POST", url, payload, key);
 
 /** The write fails with a 500 and leaves everything as it was; then, the failure gone, the same key applies it once. */
-async function noTrace(fail: () => Promise<void>, url: string, payload: object) {
+async function noTrace(fail: () => Promise<void>, url: string, payload: object, method: "POST" | "PATCH" = "POST") {
   const before = await state();
   await fail();
   const key = randomUUID();
-  const res = await post(url, payload, key);
+  const res = await send(method, url, payload, key);
   expect(res.statusCode, res.body).toBe(500);
   expect(await state()).toEqual(before);
   for (const t of ["audit_log", "alerts", "idempotency_keys"]) await built.ctx.db.execute(sql.raw(`DROP TRIGGER IF EXISTS test_fail ON ${t}`));
-  const ok = await post(url, payload, key);
+  const ok = await send(method, url, payload, key);
   expect(ok.statusCode, ok.body).toBeLessThan(300);
   expect(await state()).not.toEqual(before);
   return ok;
@@ -133,6 +136,69 @@ describe("a write that fails at its last insert leaves nothing half-saved", () =
     await post(`/studies/${studyId}/versions/by-hand`, { by: "Avery" });
     await app.inject({ method: "PATCH", url: `/api/v1/studies/${studyId}/versions/1/values`, payload: { path: "/payment/netDays/value", value: 45, note: "x", by: "Avery" } });
     await noTrace(() => failInsert("audit_log", "action", "byhand.done"), `/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" });
+  });
+
+  it("a file's kind on a file two studies share: logged on each, or changed on neither (the last study's entry fails)", async () => {
+    const { studyId: one, doc } = await newStudy(app, "kind");
+    const [other] = (await upload(app, [{ name: "b.pdf", data: await makeTextPdf("kind-b") }])).json<DocumentDto[]>();
+    const two = (await post("/studies", { documentIds: [doc.id, other!.id] })).json<{ studyId: string; jobId: string }>();
+    await waitJob(app, two.jobId);
+    // the route logs one entry per study, in study id order: the first is written before the last one fails
+    const last = [one, two.studyId].sort().at(-1)!;
+    await noTrace(() => failInsert("audit_log", "study_id", last), `/documents/${doc.id}`, { kind: "master_agreement", by: "Asha" }, "PATCH");
+    const kinds = (await built.ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM audit_log WHERE action = 'document.kind_set'`)).rows[0]!.n;
+    expect(kinds).toBe(2);
+  });
+
+  it("confirming a study's details: the details as they were", async () => {
+    const { studyId } = await newStudy(app, "confirm");
+    await noTrace(() => failInsert("audit_log", "action", "study.confirmed"), `/studies/${studyId}`, { sponsor: "Other Pharma", protocol: "OTH-1", siteName: "Site B", investigator: "Dr. Other", by: "Asha" }, "PATCH");
+  });
+
+  it("starting to type by hand, typing a value, typing done: no blank draft, no value, no re-type questions", async () => {
+    const { studyId } = await newStudy(app, "hand-all", { scan: true });
+    fakeControls.failNext = 1;
+    await extract(app, studyId);
+    await noTrace(() => failInsert("audit_log", "action", "version.manual_created"), `/studies/${studyId}/versions/by-hand`, { by: "Avery" });
+    expect((await storedVersion(built, studyId, 1)).byHand).toBe(true);
+    await noTrace(() => failInsert("audit_log", "action", "value.typed"), `/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 45, note: "x", by: "Avery" }, "PATCH");
+  });
+
+  it("proofreading: no marks", async () => {
+    const { studyId } = await newStudy(app, "proof");
+    await extract(app, studyId);
+    await noTrace(() => failInsert("audit_log", "action", "values.proofread"), `/studies/${studyId}/versions/1/proofread`, { paths: ["/siteFees/0/amountCents"], by: "Sam" });
+  });
+
+  it("'This looks wrong' on a draft: no question added, the study's count as it was", async () => {
+    const { studyId } = await newStudy(app, "report-draft");
+    await extract(app, studyId);
+    await settleAll(built, studyId, 1);
+    await noTrace(() => failInsert("audit_log", "action", "number.reported"), `/studies/${studyId}/versions/1/report`, { path: "/siteFees/0/amountCents", note: "check", by: "Sam" });
+    expect((await storedVersion(built, studyId, 1)).review.at(-1)!.reason).toBe("reported");
+  });
+
+  it("an answer that asks a settled total again: neither the answer nor the total reopened without its log entry", async () => {
+    const { studyId } = await newStudy(app, "reopen");
+    await extract(app, studyId);
+    await settleAll(built, studyId, 1);
+    const part = "/budgetGrids/0/visits/1/overheadCents"; // printed 2,425.00; its visit's total was settled as printed
+    const item = (await post(`/studies/${studyId}/versions/1/report`, { path: part, note: "check", by: "Sam" })).json<RulebookVersionDto>().review.at(-1)!.id;
+    const url = `/studies/${studyId}/versions/1/review/${encodeURIComponent(item)}`;
+    expect((await post(url, { value: 242700, by: "Sam" })).statusCode).toBe(200);
+    await noTrace(() => failInsert("audit_log", "action", "review.reopened"), url, { value: 242700, note: "corrected in ink", by: "Sam" });
+    expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === "anomaly:VISIT_TOTAL_MISMATCH:/budgetGrids/0/visits/1/totalCents")!.outcome).toBeNull();
+  });
+
+  it("alerts marked read: none marked", async () => {
+    const { studyId } = await newStudy(app, "alerts");
+    await extract(app, studyId); // questions are ready: an alert
+    // reading alerts logs nothing, so the response's saved key is the last insert
+    await noTrace(() => failInsert("idempotency_keys", "status", "200"), "/alerts/read", { by: "Ben" });
+  });
+
+  it("settings: as they were", async () => {
+    await noTrace(() => failInsert("audit_log", "action", "settings.updated"), "/settings", { people: ["Asha", "Ben"], makerChecker: true, by: "Asha" }, "PATCH");
   });
 
   it("creating a study and starting a read: no study, version or job row, and no queued job, without the other", async () => {

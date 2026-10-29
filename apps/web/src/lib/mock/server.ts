@@ -4,6 +4,8 @@ import {
   blindDetail,
   BODY_WORDS,
   bodyProblem,
+  calendarDay,
+  dateField,
   followUps,
   isoDate,
   labelFor,
@@ -555,10 +557,11 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
     d.secrets[`${st.id}/${ver.version}/${id}`] = toSecret(x);
     return toItem(x);
   };
-  followUps(draft, r, mockChecks, ask);
+  const reopened = followUps(draft, r, mockChecks, ask);
   Object.assign(ver, { rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: touched(ver.updatedAt, at) });
   st.updatedAt = at;
   log(d, r.log.by, st.id, r.log.action, r.log.detail, at);
+  for (const x of reopened) log(d, r.log.by, st.id, x.action, x.detail, at);
   if (r.incident) {
     log(d, r.log.by, st.id, "sample.missed", r.incident.detail, at);
     raiseAlert(d, { kind: "sample_missed", studyId: st.id, version: ver.version, by: r.log.by, count: r.incident.count, note: null, at });
@@ -725,6 +728,8 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   const { path, value, by } = parsed.data;
   const before = getAt(ver.rulebook, path);
   if (before === undefined && segments(path).at(-2) !== "cells") return err(400, `Unknown field ${path}`);
+  // a date is a day of the calendar, as the API checks it
+  if (dateField(path) && value !== null && leaf(value) && !calendarDay(value)) return err(400, "That isn't a date. Pick the day the contract gives.");
   const rb = setAt(ver.rulebook, path, value);
   if (!RulebookSchema.safeParse(rb).success) return err(400, "That field can't be left empty or take that value.");
   // Structural edit (rows, visits): a typed value keeps its mark only if it's still there unchanged; after removing one

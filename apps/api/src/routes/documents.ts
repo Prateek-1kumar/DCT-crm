@@ -67,7 +67,7 @@ async function textSource(file: string): Promise<"text" | "scan" | null> {
 
 const DPI_STEPS = [72, 150, 220, 300, 400];
 /** Each upload's files, one advisory-lock key space (two-int form) per sha256. */
-const FILE_LOCKS = 7102;
+export const FILE_LOCKS = 7102;
 
 type Staged = { filename: string; sha256: string; pages: number; tmp: string | null; text: "text" | "scan" | null };
 

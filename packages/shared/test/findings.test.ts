@@ -169,10 +169,11 @@ describe("4. a settled total is asked again once its answer no longer holds", ()
 
   it("'the sum' after one of its parts is corrected", () => {
     const { d, q } = setUp();
-    answerAndFollow(d, q.id, { optionId: "sum", note: "Ask the sponsor" });
+    expect(answerAndFollow(d, q.id, { optionId: "sum", note: "Ask the sponsor" })).toEqual([]);
     expect(d.review.find((i) => i.id === q.id)!.outcome).toBe("chosen");
-    answerAndFollow(d, "reported:1", { value: 5000 });
-    answerAndFollow(d, "reported:1", { value: 5000, note: "the page prints $50.00" });
+    expect(answerAndFollow(d, "reported:1", { value: 5000 })).toEqual([]);
+    // asked again, and said so: the runtime logs what followUps returns
+    expect(answerAndFollow(d, "reported:1", { value: 5000, note: "the page prints $50.00" })).toEqual([{ action: "review.reopened", detail: { version: 1, itemId: q.id, path: TOTAL, question: q.question } }]);
     const again = d.review.find((i) => i.id === q.id)!;
     expect(again).toMatchObject({ outcome: null, answer: null, asPrinted: 15100 });
     expect(openItems(d.review).map((i) => i.id)).toEqual([q.id]);
@@ -194,7 +195,7 @@ describe("4. a settled total is asked again once its answer no longer holds", ()
   it("nothing asked again while the answer still holds", () => {
     const { d, q } = setUp();
     answerAndFollow(d, q.id, { optionId: "printed", note: "Ask the sponsor" });
-    answerAndFollow(d, "reported:1", { value: 4000 });
+    expect(answerAndFollow(d, "reported:1", { value: 4000 })).toEqual([]);
     expect(d.review.find((i) => i.id === q.id)!.outcome).toBe("chosen");
   });
 });

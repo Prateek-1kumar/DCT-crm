@@ -42,7 +42,7 @@ function parsePrinted(input: ReviewItem["input"], printed: string | null, isoDat
 }
 
 /** A typed date: a day of the calendar, written YYYY-MM-DD (what the web's date picker sends, and what the master holds). */
-const calendarDay = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && calendarDate(v) === v;
+export const calendarDay = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && calendarDate(v) === v;
 
 /**
  * What picking an option writes: the arm's governing grid (the other arms' picks stay); for a total that doesn't add up,
@@ -264,16 +264,19 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
 /**
  * What an answer asks next, added to `v.review`: the grid's held-back totals, checked on the typed numbers once its last
  * one is answered (recheck, with the runtime's `checks`; a settled total whose answer no longer holds is asked again),
- * and a cap's limit once its kind is known (capFollowUps, worded by `ask`).
+ * and a cap's limit once its kind is known (capFollowUps, worded by `ask`). Returns the log entries of the totals asked
+ * again: an answer undone by another is logged, as the answer that settled it was.
  */
 export function followUps(
-  v: Pick<AnswerDraft, "rulebook" | "review" | "evidence"> & { anomalies: ContractAnomaly[] },
+  v: Pick<AnswerDraft, "version" | "rulebook" | "review" | "evidence"> & { anomalies: ContractAnomaly[] },
   a: { item: ReviewItem; set?: { path: string; before: unknown; after: unknown } },
   checks: (rb: Rulebook) => ContractAnomaly[],
   ask: (path: string, id: string, reason: string) => ReviewItem,
-): void {
+): { action: string; detail: Record<string, unknown> }[] {
+  const answered = new Set(v.review.filter(settled).map((i) => i.id));
   if (a.set) v.review.push(...recheck(checks, v, a.set.path));
   v.review.push(...capFollowUps(v, a.item, !!a.set && !deepEqual(a.set.before, a.set.after), ask));
+  return v.review.filter((i) => answered.has(i.id) && !settled(i)).map((i) => ({ action: "review.reopened", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question } }));
 }
 
 /**

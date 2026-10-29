@@ -108,6 +108,18 @@ export async function upload(app: App, files: { name: string; data: Buffer }[], 
   return app.inject({ method: "POST", url: "/api/v1/uploads", payload, headers });
 }
 
+/** What a rejected query says: the database's own message (drizzle wraps it as the error's cause), or "no error". */
+export const cause = (p: Promise<unknown>) => p.then(() => "no error", (e: { cause?: { message?: string }; message: string }) => e.cause?.message ?? e.message);
+
+/** Polls `ok` until it holds, at most `ms`: a wait that can't spin past its test (and on into the next one). */
+export async function until(ok: () => Promise<boolean>, what: string, ms = 10_000) {
+  const end = Date.now() + ms;
+  while (!(await ok())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 export async function waitJob(app: App, id: string, timeoutMs = 20_000): Promise<JobDto> {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {

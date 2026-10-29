@@ -188,9 +188,11 @@ export const fieldKey = (path: string) => {
 };
 /** A cap's limit is cents when its kind says it caps an amount; every other value's unit is in its own name. */
 const amountCap = (rb: Rulebook, path: string) => /\/cap\/n$/.test(path) && at(rb, path.replace(/n$/, "kind")) === "amount";
+/** A field the master holds a date in, YYYY-MM-DD (the web's by-hand form gives it a date picker by the same rule). */
+export const dateField = (path: string) => /date|appliesFrom/i.test(fieldKey(path));
 const inputFor = (rb: Rulebook, path: string, value: unknown): NonNullable<ReviewItem["input"]> => {
   const key = fieldKey(path);
-  if (/date|appliesFrom/i.test(key)) return "date";
+  if (dateField(path)) return "date";
   if (/cents$/i.test(key) || path.includes("/cells/") || amountCap(rb, path)) return "money";
   if (/pct$/i.test(key)) return "percent";
   if (typeof value === "number" || (value === null && /days|value$|^n$|count|ratio/i.test(key))) return "number";

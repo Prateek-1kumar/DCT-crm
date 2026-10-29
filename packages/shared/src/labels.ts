@@ -57,6 +57,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "review.answered": "Question answered",
   "review.changed": "Answer changed",
   "review.sent_back": "Answers sent back",
+  "review.reopened": "Total asked again",
   "sample.missed": "Spot check found a wrong number",
   "value.corrected": "Value corrected",
   "anomaly.resolved": "Problem settled",

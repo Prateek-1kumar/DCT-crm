@@ -3,7 +3,9 @@ import {
   BODY_WORDS,
   bodyProblem,
   ByHandBody,
+  calendarDay,
   CorrectValueBody,
+  dateField,
   followUps,
   labelFor,
   type MasterSearch,
@@ -111,6 +113,8 @@ export const versionRoutes =
         const tokens = parsePointer(path);
         const before = at(row.rulebook, path);
         if (before === undefined && tokens.at(-2) !== "cells") throw new HttpError(400, `Unknown field ${path}`);
+        // a date is a day of the calendar, as a typed answer's is (31 June isn't one)
+        if (dateField(path) && value !== null && leaf(value) && !calendarDay(value)) throw new HttpError(400, "That isn't a date. Pick the day the contract gives.");
         const next = structuredClone(row.rulebook);
         setAt(next, tokens, value);
         const checked = Rulebook.safeParse(next);
@@ -181,7 +185,7 @@ export const versionRoutes =
         // a repeat that changes nothing writes nothing and logs nothing
         if (answered.unchanged) return versionDto(row);
         const { by, action, detail } = answered.log;
-        followUps(draft, answered, (rb) => port.runContractChecks(rb), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason));
+        const reopened = followUps(draft, answered, (rb) => port.runContractChecks(rb), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason));
         const [updated] = await tx
           .update(rulebookVersions)
           .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: touched(row.updatedAt) })
@@ -189,6 +193,7 @@ export const versionRoutes =
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
         await audit(tx, by, row.studyId, action, detail);
+        for (const r of reopened) await audit(tx, by, row.studyId, r.action, r.detail);
         // a sample miss, an incident: in the log and told to everyone
         if (answered.incident) {
           await audit(tx, by, row.studyId, "sample.missed", answered.incident.detail);

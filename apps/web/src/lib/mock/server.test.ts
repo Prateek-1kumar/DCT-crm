@@ -340,6 +340,13 @@ describe("mock API", () => {
     expect(v.editors).toEqual(["Avery Chen", "Sam Rivera"]);
   }, 30_000); // many requests, each with the mock's simulated network delay
 
+  it("a typed date is a day of the calendar, as the API checks it", async () => {
+    await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
+    const type = (value: unknown) => mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/study/effectiveDate/value", value, note: "x", by: "Avery Chen" });
+    for (const bad of ["2025-06-31", "2025-02-29", "June 30, 2025"]) expect((await type(bad)).json, bad).toMatchObject({ message: "That isn't a date. Pick the day the contract gives." });
+    expect((await type("2024-02-29")).status).toBe(200);
+  });
+
   it("re-types at most 10 hand-typed values", async () => {
     await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
     const patch = async (path: string, value: unknown) =>
@@ -546,6 +553,16 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
     expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/autopay")!.options.map((o) => o.id)).toEqual(["true", "false"]);
   });
 
+  it("refuses approval while a number nothing backs has no question (the gate's backstop), as the API", async () => {
+    const v = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    for (const i of v.review) await settle("st-northwind", i);
+    // as a lost question would leave it: every question settled, one value still only the reading's
+    const request = await reloadWith((s) => void (versionIn(s, "st-northwind", 1).evidence.find((e) => e.status === "confirmed" || e.status === "attested")!.status = "ungrounded"));
+    const asOf = RulebookVersionDto.parse((await request("GET", "/studies/st-northwind/versions/1", undefined)).json).updatedAt;
+    const res = await request("POST", "/studies/st-northwind/versions/1/sign-off", { by: "Morgan Lee", asOf });
+    expect([res.status, (res.json as { message: string }).message]).toEqual([409, "1 number isn't confirmed by the PDF or a person yet."]);
+  }, 30_000);
+
   it("asks a total that doesn't add up once its grid's typed numbers are re-typed (recheck)", async () => {
     await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
     const v0 = "/budgetGrids/0/visits/0";
@@ -558,8 +575,19 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
     const typedAt = { [`${v0}/procedureSubtotalCents`]: 10000, [`${v0}/overheadCents`]: 4000, [`${v0}/totalCents`]: 15000 } as Record<string, number>;
     const blank = (p: string) => (/autopay$/.test(p) ? "true" : /overheadApplied$/.test(p) ? "false" : /category$/.test(p) ? "procedure" : "unspecified");
     for (const i of v.review) v = await answer("st-solace", i.id, i.reason === "spot_check" ? { value: typedAt[i.path!] } : { optionId: blank(i.path!) });
-    expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")).toMatchObject({ id: `anomaly:VISIT_TOTAL_MISMATCH:${v0}/totalCents`, kind: "contract_problem", outcome: null });
-  });
+    const total = `anomaly:VISIT_TOTAL_MISMATCH:${v0}/totalCents`;
+    expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")).toMatchObject({ id: total, kind: "contract_problem", outcome: null });
+
+    // settled, then a part corrected so it adds up differently again: asked again, and logged, as the API does
+    await answer("st-solace", total, { optionId: "printed", note: "Ask the sponsor" });
+    v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/report", { path: `${v0}/overheadCents`, note: "check", by: "Sam Rivera" })).json);
+    const part = v.review.at(-1)!.id;
+    await answer("st-solace", part, { value: 6000 });
+    v = await answer("st-solace", part, { value: 6000, note: "page 2, Screening" });
+    expect(v.review.find((i) => i.id === total)).toMatchObject({ outcome: null, answer: null });
+    const [entry] = AuditPage.parse(await get("/audit?studyId=st-solace&limit=5")).items;
+    expect(entry).toMatchObject({ action: "review.reopened", by: "Sam Rivera", detail: { version: 1, itemId: total, path: `${v0}/totalCents` } });
+  }, 30_000);
 
   it("diffs array items by identity and escapes a key in the path, as the API", async () => {
     const request = await reloadWith((s) => {

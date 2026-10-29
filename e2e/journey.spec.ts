@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { type Browser, expect, type Page, test } from "@playwright/test";
+import type { RulebookVersionDto } from "../packages/shared/src/api";
+import { askAbout, SAMPLE } from "../packages/shared/src/questions";
 
 /**
  * Today's journey, against the real API (EXTRACTION_FAKE=1 fakes only the AI) and a production build of the web in real
@@ -143,14 +145,19 @@ async function answer(page: Page, question: string) {
 
 const questionHeading = (page: Page) => page.getByRole("region", { name: "Question" }).getByRole("heading", { level: 1 });
 
-/** Answers every open question on the review page with `reply`, one at a time, until the finished screen. */
-async function answerAll(page: Page, reply: (question: string) => Promise<void>) {
+/**
+ * Answers every open question on the review page with `reply`, one at a time, until the finished screen. `reply` gets the
+ * question's words and its id (the heading's `q-<id>`), read together, so a branch on what kind of question it is never
+ * reads one question's words and another's kind.
+ */
+async function answerAll(page: Page, reply: (question: string, id: string) => Promise<void>) {
   const finished = page.getByRole("heading", { name: /Every question has an answer|Almost done/ });
   const region = page.getByRole("region", { name: "Question" });
   for (let n = 0; n < 60 && !(await finished.isVisible()); n++) {
     // Two questions can read the same (one per grid), so "moved on" is judged by the whole panel, its "n of m" included.
     const before = await region.textContent();
-    await reply((await questionHeading(page).textContent())!);
+    const [question, id] = await questionHeading(page).evaluate((h) => [h.textContent ?? "", h.id.replace(/^q-/, "")]);
+    await reply(question, id);
     await expect
       .poll(async () => {
         if (await finished.isVisible()) return true;
@@ -232,6 +239,20 @@ test("add a contract → answer → proofread → approve → live → search �
     await expect(page.getByRole("heading", { name: "Read and checked" })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText("numbers match the contract PDF")).toBeVisible();
     studyUrl = new URL(page.url()).pathname.replace(/\/reading$/, "");
+  });
+
+  await test.step("ANSWERS can answer whatever the blind sample draws", async () => {
+    // The sample is drawn at random each run, from every value the PDF check confirmed: one that ANSWERS doesn't cover
+    // would fail only the runs that draw it. So every value it could draw is checked, on every run, by the question the
+    // API would ask about it (askAbout, as the API words it; checked against the questions this run did draw).
+    const v1: RulebookVersionDto = await (await request.get(`/api/v1${studyUrl}/versions/1`)).json();
+    const sampleQuestion = (path: string) => askAbout(v1.rulebook!, v1.evidence, path, `sample:${path}`, SAMPLE).question;
+    const drawn = v1.review.filter((i) => i.reason === SAMPLE);
+    expect(drawn.length).toBeGreaterThan(0);
+    for (const i of drawn) expect(sampleQuestion(i.path!)).toBe(i.question);
+    const confirmed = v1.evidence.filter((e) => e.status === "confirmed").map((e) => e.path);
+    expect(confirmed.length).toBeGreaterThanOrEqual(drawn.length);
+    expect(confirmed.map(sampleQuestion).filter((q) => !ANSWERS.some(([re]) => re.test(q)))).toEqual([]);
     await page.getByRole("link", { name: "Start answering" }).click();
     await page.waitForURL(/\/review/);
   });
@@ -287,7 +308,8 @@ test("add a contract → answer → proofread → approve → live → search �
     // Every question is answered, so it opens on the key terms.
     await expect(page.getByRole("heading", { name: "Check the key terms" })).toBeVisible();
     const terms = page.getByRole("checkbox");
-    for (let i = 0; i < (await terms.count()); i++) await terms.nth(i).click();
+    // check(), not click(): a click on a term already ticked would untick it
+    for (let i = 0; i < (await terms.count()); i++) await terms.nth(i).check();
     await page.getByRole("button", { name: "Next: approve" }).click();
     const sign = page.getByRole("button", { name: "Approve invoicing master" });
     await expect(sign).toBeDisabled();
@@ -332,7 +354,9 @@ test("add a contract → answer → proofread → approve → live → search �
     await palette.getByRole("combobox", { name: "Search" }).fill("blood draw");
     const rate = palette.getByRole("option", { name: /Blood draw/ }).first();
     await expect(rate).toBeVisible();
-    while ((await rate.getAttribute("aria-selected")) !== "true") await page.keyboard.press("ArrowDown");
+    // down to the rate, a few options at most: bounded, so a list that never selects it fails here, not at the time limit
+    for (let n = 0; n < 10 && (await rate.getAttribute("aria-selected")) !== "true"; n++) await page.keyboard.press("ArrowDown");
+    await expect(rate).toHaveAttribute("aria-selected", "true");
     await page.keyboard.press("Enter");
     await expect(palette).toBeHidden();
     await expect(page.getByRole("complementary", { name: /Blood draw/ })).toBeVisible();
@@ -413,9 +437,9 @@ test("add a contract → answer → proofread → approve → live → search �
   await test.step("answer version 2 (a random spot check misses), then the approver sends one answer back", async () => {
     await page.goto(`${studyUrl}/review`);
     let missed = false;
-    await answerAll(page, async (q) => {
+    await answerAll(page, async (q, id) => {
       if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
-      if (!missed && (await page.getByRole("region", { name: "Question" }).getByText("Random spot check", { exact: true }).isVisible())) {
+      if (!missed && id.startsWith("sample:")) {
         // The sample misses: a value the PDF check confirmed, typed otherwise, and typed otherwise again, blind: nothing
         // of what the check found is shown between the two.
         await page.getByLabel("What the contract says").fill("1");

@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
+import { type App, type Built, cause, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -122,7 +122,7 @@ describe("sign-off", () => {
     for (const w of writes) expect(w.statusCode, w.body).toBe(409);
     expect(writes.at(-1)!.json().message).toMatch(/immutable/);
     for (const col of ["rulebook", "review", "evidence"])
-      await expect(built.ctx.db.execute(sql.raw(`UPDATE rulebook_versions SET ${col} = '[]' WHERE status = 'signed'`))).rejects.toThrow();
+      expect(await cause(built.ctx.db.execute(sql.raw(`UPDATE rulebook_versions SET ${col} = '[]' WHERE status = 'signed'`)))).toMatch(/immutable/);
     await built.ctx.db.execute(sql`UPDATE rulebook_versions SET proofread = '[]' WHERE status = 'signed'`);
   });
 });
@@ -163,6 +163,36 @@ describe("amendment", () => {
       [2, "signed"],
       [1, "superseded"],
     ]);
+  });
+});
+
+describe("the journey with maker-checker on, as a new database has it (the other tests turn it off)", () => {
+  it("whoever answered never approves: upload, confirm, read, answer, proofread, approve, correct, approve again", async () => {
+    expect((await patch("/api/v1/settings", { makerChecker: true, by: "Morgan" })).json()).toMatchObject({ makerChecker: true });
+    const { studyId } = await newStudy(app, "maker-checker");
+    expect((await patch(`/api/v1/studies/${studyId}`, { sponsor: "Synthetic Pharma", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" })).statusCode).toBe(200);
+    expect((await extract(app, studyId, { by: "Asha" })).job.state).toBe("succeeded");
+    await settleAll(built, studyId, 1, "Asha");
+    expect((await post(`/api/v1/studies/${studyId}/versions/1/proofread`, { paths: ["/siteFees/0/amountCents"], by: "Asha" })).statusCode).toBe(200);
+    // Asha answered, however her name is typed; Ben didn't
+    for (const by of ["Asha", " asha "])
+      expect((await signOff(app, studyId, 1, { by })).json(), by).toMatchObject({ statusCode: 409, message: `Maker-checker is on: ${by.trim()} answered questions on this contract, so someone else has to approve it.` });
+    expect((await version(studyId, 1)).status).toBe("draft");
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
+    expect(await study(studyId)).toMatchObject({ status: "live", liveVersion: 1 });
+
+    // "This looks wrong" on the live version: Sam answers the correction, so Sam can't approve it; Asha, who answered
+    // version 1 but nothing on this one, can
+    const v2 = (await post(`/api/v1/studies/${studyId}/versions/1/report`, { path: "/siteFees/0/amountCents", note: "check the fee", by: "Sam" })).json<RulebookVersionDto>();
+    expect(v2).toMatchObject({ version: 2, status: "draft", editors: [] });
+    await settleAll(built, studyId, 2, "Sam");
+    expect((await signOff(app, studyId, 2, { by: "Sam" })).json()).toMatchObject({ statusCode: 409, message: "Maker-checker is on: Sam answered questions on this contract, so someone else has to approve it." });
+    expect((await signOff(app, studyId, 2, { by: "Asha" })).statusCode).toBe(200);
+    expect((await study(studyId)).versions.map((x) => [x.version, x.status])).toEqual([
+      [2, "signed"],
+      [1, "superseded"],
+    ]);
+    expect((await auditOf(studyId)).filter((e) => e.action === "version.signed").map((e) => e.by)).toEqual(["Asha", "Ben"]);
   });
 });
 
@@ -226,8 +256,8 @@ describe("audit log", () => {
     const { studyId } = await newStudy(app, "s");
     const entries = await auditOf(studyId);
     expect(entries.length).toBeGreaterThan(0);
-    await expect(built.ctx.db.execute(sql`UPDATE audit_log SET by = 'mallory'`)).rejects.toThrow();
-    await expect(built.ctx.db.execute(sql`DELETE FROM audit_log`)).rejects.toThrow();
+    expect(await cause(built.ctx.db.execute(sql`UPDATE audit_log SET by = 'mallory'`))).toMatch(/append-only/);
+    expect(await cause(built.ctx.db.execute(sql`DELETE FROM audit_log`))).toMatch(/append-only/);
     expect(await auditOf(studyId)).toEqual(entries);
   });
 });

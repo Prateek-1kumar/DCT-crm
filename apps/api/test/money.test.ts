@@ -10,10 +10,11 @@ import { config } from "../src/config.js";
 import { rulebookVersions } from "../src/db/schema.js";
 import { runMigrations } from "../src/db/migrate.js";
 import { carryGrid } from "../src/domain.js";
+import { FILE_LOCKS } from "../src/routes/documents.js";
 import { fakeControls, fakeExtraction } from "../src/extraction/fake.js";
 import { plainWarnings } from "../src/jobs.js";
 import { answer as answerDraft, at, recheck, reviewDraft } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload, waitJob } from "./helpers.js";
+import { type App, type Built, cause, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, until, upload, waitJob } from "./helpers.js";
 
 // Regressions for the review of money paths: each `it` failed before its fix.
 
@@ -177,7 +178,7 @@ describe("4. maker-checker", () => {
     expect((await signOff(app, studyId, 1, { by: "Dana" })).statusCode).toBe(200);
   });
 
-  it("is on in a new database", async () => {
+  it("is on in a new database, which has every guard from the start: the log append-only, approved versions locked, TRUNCATE refused", async () => {
     const name = `dct_finance_test_fresh_${process.pid}`;
     await built.ctx.db.execute(sql.raw(`DROP DATABASE IF EXISTS ${name}`));
     await built.ctx.db.execute(sql.raw(`CREATE DATABASE ${name}`));
@@ -188,6 +189,21 @@ describe("4. maker-checker", () => {
       await client.connect();
       try {
         expect((await client.query("SELECT maker_checker FROM settings")).rows).toEqual([{ maker_checker: true }]);
+        // the guards as the migrations leave them, enabled (resetDb turns two off only inside its own transaction)
+        const { rows } = await client.query("SELECT tgname, tgenabled FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname");
+        expect(rows).toEqual(["audit_log_no_truncate", "audit_log_no_update_delete", "rulebook_versions_immutable", "rulebook_versions_no_delete", "rulebook_versions_no_truncate"].map((tgname) => ({ tgname, tgenabled: "O" })));
+        // and they refuse, each in its own words
+        const said = (q: string) => client.query(q).then(() => "no error", (e: Error) => e.message);
+        await client.query("INSERT INTO studies (id) VALUES ('00000000-0000-4000-8000-000000000001')");
+        await client.query("INSERT INTO audit_log (by, study_id, action) VALUES ('Asha', '00000000-0000-4000-8000-000000000001', 'study.created')");
+        await client.query("INSERT INTO rulebook_versions (study_id, version, status, signed_by) VALUES ('00000000-0000-4000-8000-000000000001', 1, 'signed', 'Ben')");
+        expect(await said("UPDATE audit_log SET by = 'mallory'")).toBe("audit_log is append-only");
+        expect(await said("DELETE FROM audit_log")).toBe("audit_log is append-only");
+        expect(await said("TRUNCATE audit_log")).toBe("audit_log is append-only");
+        expect(await said("UPDATE rulebook_versions SET status = 'draft'")).toBe("signed rulebook versions are immutable");
+        expect(await said("DELETE FROM rulebook_versions")).toBe("signed rulebook versions are immutable");
+        expect(await said("TRUNCATE rulebook_versions")).toBe("signed rulebook versions are immutable");
+        expect(await said("TRUNCATE studies CASCADE")).toMatch(/append-only|immutable/);
       } finally {
         await client.end();
       }
@@ -225,6 +241,21 @@ describe("5. every question holds approval; a Review question clears by a choice
     await answer(studyId, id, { optionId: "sum", note: "Query the Week 0 total" });
     expect(at((await storedVersion(built, studyId, 1)).rulebook, G1_TOTAL)).toBe(848800);
     expect((await auditOf(studyId)).find((e) => e.detail.itemId === id && "after" in e.detail)!.detail).toMatchObject({ path: G1_TOTAL, before: 848900, after: 848800 });
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("a number nothing backs holds approval even with no question about it (the gate's backstop)", async () => {
+    const { studyId } = await draft();
+    await settleAll(built, studyId, 1);
+    // as a lost question would leave it: every question settled, one value still only the AI's reading
+    const row = await storedVersion(built, studyId, 1);
+    const FEE = "/siteFees/0/amountCents";
+    expect(row.evidence.find((e) => e.path === FEE)!.status).toBe("confirmed");
+    const set = (evidence: typeof row.evidence) => built.ctx.db.update(rulebookVersions).set({ evidence }).where(eq(rulebookVersions.id, row.id));
+    await set(row.evidence.map((e) => (e.path === FEE ? { ...e, status: "ungrounded" as const } : e)));
+    expect((await version(studyId)).review.every((i) => i.outcome !== null && i.outcome !== "differs" && i.outcome !== "cant_tell")).toBe(true);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).json()).toMatchObject({ statusCode: 409, message: "1 number isn't confirmed by the PDF or a person yet." });
+    await set(row.evidence);
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
   });
 
@@ -291,6 +322,22 @@ describe("8. a contract typed by hand is checked, and nothing nobody typed is ap
     await settleAll(built, studyId, 1, "Bob", done.review.length);
     const v = await storedVersion(built, studyId, 1);
     expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")).toMatchObject({ id: `anomaly:VISIT_TOTAL_MISMATCH:${v0}/totalCents`, outcome: null });
+  });
+});
+
+describe("8b. typing by hand: a date is a day of the calendar", () => {
+  it("refuses a day that doesn't exist or isn't written YYYY-MM-DD, as an answer does; takes a real one, and none", async () => {
+    const { studyId } = await newStudy(app, "dates", { scan: true });
+    fakeControls.failNext = 1;
+    await extract(app, studyId);
+    await post(`/studies/${studyId}/versions/by-hand`, { by: "Asha" });
+    const type = (path: string, value: unknown) => patch(`/studies/${studyId}/versions/1/values`, { path, value, note: "x", by: "Asha" });
+    for (const [path, value] of [["/study/effectiveDate/value", "2025-06-31"], ["/study/effectiveDate/value", "2025-02-29"], ["/study/effectiveDate/value", "June 30, 2025"], ["/appliesFrom/value", "2025-13-01"], ["/documents/0/date", "next week"]] as const)
+      expect((await type(path, value)).json(), `${path} ${value}`).toMatchObject({ statusCode: 400, message: "That isn't a date. Pick the day the contract gives." });
+    expect(at((await storedVersion(built, studyId, 1)).rulebook, "/study/effectiveDate/value")).toBeNull();
+    expect((await type("/study/effectiveDate/value", "2024-02-29")).statusCode).toBe(200);
+    expect(at((await storedVersion(built, studyId, 1)).rulebook, "/study/effectiveDate/value")).toBe("2024-02-29");
+    expect((await type("/study/effectiveDate/value", null)).statusCode).toBe(200);
   });
 });
 
@@ -361,8 +408,6 @@ describe("approval: the version as the approver saw it", () => {
 });
 
 describe("10. lows", () => {
-  const cause = (p: Promise<unknown>) => p.then(() => "no error", (e: { cause?: { message?: string }; message: string }) => e.cause?.message ?? e.message);
-
   it("the audit log and signed versions refuse TRUNCATE, directly and through CASCADE", async () => {
     await liveStudy(built);
     const count = async () => (await built.ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM audit_log`)).rows[0]!.n;
@@ -382,16 +427,13 @@ describe("10. lows", () => {
     await other.connect();
     try {
       await other.query("BEGIN");
-      await other.query("SELECT pg_advisory_xact_lock(7102, hashtext($1))", [sha(low)]);
+      await other.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [FILE_LOCKS, sha(low)]);
       // the higher file comes first in this upload
       const sent = upload(app, [{ name: "high.pdf", data: high }, { name: "low.pdf", data: low }]);
-      for (let i = 0; i < 100; i++) {
-        const { rows } = await other.query("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = 7102 AND NOT granted");
-        if (rows[0].n) break;
-        await new Promise((r) => setTimeout(r, 50));
-      }
+      // the upload is stuck on a file lock (else the check below would pass on an upload that took none)
+      await until(async () => (await other.query("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND NOT granted", [FILE_LOCKS])).rows[0].n === 1, "the upload to wait for a file's lock");
       // it waits for the lower one without having taken the higher one
-      expect((await other.query("SELECT pg_try_advisory_xact_lock(7102, hashtext($1)) AS ok", [sha(high)])).rows[0].ok).toBe(true);
+      expect((await other.query("SELECT pg_try_advisory_xact_lock($1, hashtext($2)) AS ok", [FILE_LOCKS, sha(high)])).rows[0].ok).toBe(true);
       await other.query("ROLLBACK");
       expect((await sent).statusCode).toBe(201);
     } finally {
@@ -435,6 +477,26 @@ describe("11. a text page with a picture big enough to hold prices is attested l
     expect(d.rulebook.unclassified).toMatchObject([{ label: "Page 3 of “Work Order.pdf”", page: 3, note: "Pharmacy fee table, $1,500 set-up", itemId: picture.id }]);
     // no picture, no question
     expect(reviewDraft(port, rb, [], [{ ...pages[0]!, largePicture: false }], docs).review.map((i) => i.reason)).not.toContain("PICTURE_PAGE");
+  });
+});
+
+describe("a total asked again", () => {
+  it("is logged when a corrected part undoes its answer, with nothing of the total while it's asked", async () => {
+    const { studyId } = await draft();
+    await settleAll(built, studyId, 1);
+    const total = "anomaly:VISIT_TOTAL_MISMATCH:/budgetGrids/0/visits/1/totalCents"; // settled: the total as printed
+    const part = "/budgetGrids/0/visits/1/overheadCents"; // printed 2,425.00
+    const item = (await post(`/studies/${studyId}/versions/1/report`, { path: part, note: "check", by: "Sam" })).json<RulebookVersionDto>().review.at(-1)!.id;
+    await answer(studyId, item, { value: 242700 });
+    expect((await auditOf(studyId)).map((e) => e.action)).not.toContain("review.reopened");
+    await answer(studyId, item, { value: 242700, note: "Corrected in ink on page 2" });
+    expect((await version(studyId)).review.find((i) => i.id === total)).toMatchObject({ outcome: null, answer: null });
+    const [reopened, answered] = await auditOf(studyId);
+    expect(answered).toMatchObject({ action: "review.answered", detail: { itemId: item } });
+    expect(reopened).toMatchObject({ action: "review.reopened", by: "Sam", detail: { version: 1, itemId: total, path: "/budgetGrids/0/visits/1/totalCents" } });
+    // its wording names the grid's numbers, blanked while it's open (as an answer's entry is)
+    expect(reopened!.detail.question).toMatch(/•••/);
+    expect(reopened!.detail.question).not.toMatch(/8,489|8,490/);
   });
 });
 

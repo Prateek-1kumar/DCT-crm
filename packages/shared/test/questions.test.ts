@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   blindDetail,
+  calendarDay,
+  dateField,
   familyOf,
   interpretations,
   mask,
@@ -92,6 +94,15 @@ describe("interpretations", () => {
     expect(item).toMatchObject({ reason: "AMBIGUOUS_TERM", where: [{ documentId: "d1", page: 3, box: null }, { documentId: "d1", page: 7, box: null }] });
     expect(item!.question).toMatch(/^Ambiguous: whether •••% covers stipends\. Which lines/);
     expect(item!.options.map((o) => o.id)).not.toContain("unspecified");
+  });
+});
+
+describe("a typed date", () => {
+  it("in a date field, is a day of the calendar written YYYY-MM-DD (an answer and typing by hand check it alike)", () => {
+    expect(["/study/effectiveDate/value", "/appliesFrom/value", "/documents/0/date", "/referencedDocuments/2/date"].every(dateField)).toBe(true);
+    expect(["/overhead/appliesTo/value", "/payment/netDays/value", "/deadlines/0/value", "/study/sponsor/value"].some(dateField)).toBe(false);
+    expect(["2024-02-29", "2025-12-31"].every(calendarDay)).toBe(true);
+    expect(["2025-02-29", "2025-06-31", "2025-13-01", "2025-8-22", "August 22, 2025", "", null, 20250822].some(calendarDay)).toBe(false);
   });
 });
 
