@@ -344,6 +344,20 @@ function headerColumns(pg: Page, visits: BudgetGrid["visits"], taken: Line[] = [
   return { dir: h.dir, at, unit: unitWord ? span([unitWord]) : null, left, pitch: gaps[Math.floor(gaps.length / 2)] ?? Infinity, line: h, numbers };
 }
 
+/** Of a row's prices left of the visit columns, the one equal to the price its visit cells print most often; null unless exactly one. */
+function unitOnRow(cols: Cols, row: Line): Word | null {
+  const printed = [...cols.at.keys()].flatMap((k) => {
+    const v = cents(txt(cellWords(cols, row, k)));
+    return v === null ? [] : [v];
+  });
+  const counts = new Map<number, number>();
+  for (const v of printed) counts.set(v, (counts.get(v) ?? 0) + 1);
+  const [top, next] = [...counts].sort((a, b) => b[1] - a[1]);
+  if (!top || (next && next[1] === top[1])) return null;
+  const left = row.words.filter((w) => priceLike(w) && frame(w)[2] <= cols.left && cents(w.text) === top[0]);
+  return left.length === 1 ? left[0]! : null;
+}
+
 /** Column of a cell word: most overlap with a header, else (among the visits) the nearest header within half a column. */
 function columnOf(cols: Cols, w: Word): string | null {
   const [u0, u1] = span([w]);
@@ -622,8 +636,13 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       if (c && found) for (const w of found.row.words) if (NUMBER.test(bare(w.text)) && frame(w)[2] <= c.cols.left && !columnOf(c.cols, w)) bound.add(w);
       const entries: [string, string, number | "invoiceable"][] = Object.entries(p.cells).map(([k, v]) => [`${pp}/cells/${ptr(k)}`, k, v]);
       if (p.unitCents !== null) entries.push([`${pp}/unitCents`, "#unit", p.unitCents]);
+      // The unit price, where a table prints more than one cost before its visits (with and without overhead, say): of the
+      // row's prices left of the visit columns, the one equal to the price its own visit cells print most often. The page
+      // agreeing with itself, not with the read; with no single such price, the unit column as headed.
+      const unit = c && found ? unitOnRow(c.cols, found.row) : null;
       for (const [path, key, value] of entries) {
-        if (!c || !found || (key === "#unit" ? !c.cols.unit : !c.cols.at.has(key))) put(path, "ungrounded", found && c ? [boxOf(c.pg.p, found.row.words)] : nowhere(p.prov.source), null);
+        if (key === "#unit" && unit && typeof value === "number") put(path, cents(unit.text) === value ? "confirmed" : "conflict", [boxOf(c!.pg.p, [unit])], unit.text, null, [unit]);
+        else if (!c || !found || (key === "#unit" ? !c.cols.unit : !c.cols.at.has(key))) put(path, "ungrounded", found && c ? [boxOf(c.pg.p, found.row.words)] : nowhere(p.prov.source), null);
         else cell(path, c, found.row, key, value, found.code ? [found.code] : [], p.unitCents);
       }
     });

@@ -205,3 +205,15 @@ describe("an invoiceable cell on a scan", () => {
     expect(["V1", "V2", "V3", "V4"].map((v) => cellStatus(ev, 0, v))).toEqual(["confirmed", "confirmed", "ungrounded", "ungrounded"]);
   });
 });
+
+describe("a table that prints two costs before its visits", () => {
+  it("takes as the unit price the one its own visit cells print, wherever the unit column's header is", async () => {
+    // "Cost" heads the right-hand column too (cost with overhead): the row's visit cells print the left one
+    const p = asOcr(await page([[X.name, 100, "Procedure"], [160, 100, "Cost"], [X.unit, 100, "Cost with OH"], [X.c1, 100, "V1"], [X.c2, 100, "V2"], [X.c3, 100, "V3"], [X.name, 120, "Imaging"], [160, 120, "400.00"], [X.unit, 120, "532.00"], [X.c1, 120, "400.00"], [X.c3, 120, "400.00"]]));
+    const rb = grid([["V1", "Screening"], ["V2", "Week 2"], ["V3", "Week 4"]], [["Imaging", 400, { V1: 400, V3: 400 }]]);
+    const unit = () => bindEvidence(rb, [p]).evidence.find((e) => e.path === "/budgetGrids/0/procedures/0/unitCents")?.status;
+    expect(unit()).toBe("confirmed");
+    rb.budgetGrids[0]!.procedures[0]!.unitCents = 53200;
+    expect(unit()).toBe("conflict");
+  });
+});
