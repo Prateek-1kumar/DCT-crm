@@ -85,7 +85,11 @@ function byTotals(rb: Rulebook) {
     if (sub === "perPatientTotals") return g.visits.every(exact) && g.perPatientTotals[Number(i)]?.cents === sum(g.visits.map((v) => v.totalCents));
     const p = sub === "procedures" ? g.procedures[Number(i)] : undefined;
     if (!p) return false;
-    if (field === "cells") return visit(key!.replace(/~1/g, "/").replace(/~0/g, "~"));
+    // an "invoiceable" cell isn't in the sum, so the totals say nothing about it
+    if (field === "cells") {
+      const code = key!.replace(/~1/g, "/").replace(/~0/g, "~");
+      return typeof p.cells[code] === "number" && visit(code);
+    }
     return field === "unitCents" && Object.entries(p.cells).some(([k, c]) => c === p.unitCents && visit(k));
   };
 }

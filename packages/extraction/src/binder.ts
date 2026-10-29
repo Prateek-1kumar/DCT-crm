@@ -9,7 +9,8 @@ import { amounts, bare, boxOf, centsOf, frame, inventory, NUMBER, sentences, typ
 type Line = { words: Word[]; dir: Word["dir"]; v: number; h: number };
 /** `before`: the word printed ahead of one, in the text's own order. `sentence`: the text of the sentence a word is in. */
 type Page = { p: TextPage; lines: Line[]; orders: Word[][]; before: (w: Word) => Word | undefined; sentence: (w: Word) => string };
-type Cols = { dir: Word["dir"]; at: Map<string, [number, number]>; unit: [number, number] | null; left: number; pitch: number; line: Line };
+/** `numbers`: the number columns of the table under the header, to find the same columns on a continuation page. */
+type Cols = { dir: Word["dir"]; at: Map<string, [number, number]>; unit: [number, number] | null; left: number; pitch: number; line: Line; numbers: [number, number][] };
 
 const norm = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
 const ptr = (s: string) => s.replace(/~/g, "~0").replace(/\//g, "~1");
@@ -267,6 +268,34 @@ function fillBetween(at: Map<string, Span2>, visits: BudgetGrid["visits"], cols:
 }
 
 /**
+ * The columns of a continuation page that prints no header, from the page before. A scan sits a little differently on
+ * each page: the shift that lines up most of that page's number columns with this page's (within a quarter column) moves
+ * each visit to its column here; a visit whose column this page doesn't print has none (its cells are asked). With no
+ * clear shift (fewer than 3 or 60% lined up, or two shifts as good), the positions carry over as they are (a PDF's pages
+ * line up).
+ */
+function carried(prev: Cols, pg: Page): Cols {
+  const nums = numberColumns(pg.lines.filter((l) => l.dir === prev.dir));
+  if (nums.length < 2 || prev.numbers.length < 2 || !Number.isFinite(prev.pitch)) return prev;
+  const tol = prev.pitch / 4;
+  const near = (c: number, t: number) => nums.findIndex((n) => Math.abs(mid2(n) - (c + t)) <= tol);
+  const score = (t: number) => prev.numbers.filter((c) => near(mid2(c), t) >= 0).length;
+  const shifts = [...new Set(prev.numbers.flatMap((c) => nums.map((n) => Math.round((mid2(n) - mid2(c)) * 10) / 10)))].map((t) => ({ t, n: score(t) })).sort((a, b) => b.n - a.n);
+  const [best, next] = shifts;
+  if (!best || best.n < Math.max(3, 0.6 * prev.numbers.length) || (next && next.n === best.n && Math.abs(next.t - best.t) > tol)) return prev;
+  const move = (s: Span2): Span2 | null => {
+    const k = near(mid2(s), best.t);
+    return k < 0 ? null : nums[k]!;
+  };
+  const at = new Map([...prev.at].flatMap(([code, s]): [string, Span2][] => {
+    const m = move(s);
+    return m ? [[code, m]] : [];
+  }));
+  if (!at.size) return prev;
+  return { ...prev, at, unit: prev.unit && move(prev.unit), left: Math.min(...[...at.values()].map((c) => c[0])), numbers: nums };
+}
+
+/**
  * Visit columns from the header line that names the most visits (code or name, on one line or stacked), in the text's
  * own direction. `taken`: header lines other grids on this page already use; a grid whose visits head another table just
  * as well takes that one.
@@ -309,7 +338,7 @@ function headerColumns(pg: Page, visits: BudgetGrid["visits"], taken: Line[] = [
   const median = (xs: number[]) => xs[Math.floor(xs.length / 2)] ?? Infinity;
   const gaps = [Math.min(median(gapsOf([...at.values()].map(mid2).sort((a, b) => a - b))), median(gapsOf(numbers.map(mid2))))];
   const unitWord = pg.lines.filter((l) => near(l, h)).flatMap((l) => l.words.filter((w) => UNIT.test(w.text) && frame(w)[2] <= left)).sort((a, b) => frame(b)[0] - frame(a)[0])[0];
-  return { dir: h.dir, at, unit: unitWord ? span([unitWord]) : null, left, pitch: gaps[Math.floor(gaps.length / 2)] ?? Infinity, line: h };
+  return { dir: h.dir, at, unit: unitWord ? span([unitWord]) : null, left, pitch: gaps[Math.floor(gaps.length / 2)] ?? Infinity, line: h, numbers };
 }
 
 /** Column of a cell word: most overlap with a header, else (among the visits) the nearest header within half a column. */
@@ -500,7 +529,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const pg = data.get(k);
       const own = pg && headerColumns(pg, g.visits, headersOn.get(k));
       if (own) headersOn.set(k, [...(headersOn.get(k) ?? []), own.line]);
-      last = own || last;
+      last = own || (pg && last ? carried(last, pg) : last);
       colsOn.set(k, pg ? last : null);
     }
     return { pagesOf, colsOn };
@@ -525,6 +554,8 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = []) => {
       const ws = cellWords(c.cols, row, key);
       const printed = ws.length ? txt(ws) : null;
+      // ponytail: a price printed in an "invoiceable" cell doesn't confirm it: invoiceable rows can print their price under
+      // visits that don't apply (planted wrong-visit errors were confirmed that way). Upgrade: ask once per row (meanings).
       const ok = value === "invoiceable" ? /invoic/i.test(printed ?? "") : cents(printed) === value;
       // On a scan, a blank or garbled cell is as likely the OCR's miss as the page's: it says nothing either way, so the
       // value is unfound (the totals or a person decide), not contradicted. A PDF's own blank cell is a real blank.

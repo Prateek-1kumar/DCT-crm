@@ -17,15 +17,16 @@ import { makeRulebook } from "./helpers";
 type Text = [x: number, y: number, s: string];
 const at = ([x, y, s]: Text) => `BT /F1 8 Tf ${x} ${792 - y} Td (${s}) Tj ET\n`;
 
-async function page(texts: Text[]): Promise<TextPage> {
+async function pages(...each: Text[][]): Promise<TextPage[]> {
   const doc = new mupdf.PDFDocument();
   const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
   const filler: Text[] = [[40, 700, "This page continues the agreement between the parties and the site, as set out in full above."], [40, 720, "A second line of ordinary words keeps the page well above the threshold for a real text layer."], [40, 740, "A third line, because a page with fewer than two hundred characters of text is treated as a scan."]];
-  doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, [...texts, ...filler].map(at).join("")));
+  for (const texts of each) doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, [...texts, ...filler].map(at).join("")));
   const path = join(mkdtempSync(join(tmpdir(), "dct-scan-")), "table.pdf");
   writeFileSync(path, doc.saveToBuffer("").asUint8Array());
-  return (await readTextLayer(path, "d1"))[0]!;
+  return readTextLayer(path, "d1");
 }
+const page = async (texts: Text[]) => (await pages(texts))[0]!;
 
 /** The page as our OCR would give it: every word with a confidence; `edit` changes words by their text. */
 const asOcr = (p: TextPage, edit: (w: TextPage["words"][number]) => Partial<TextPage["words"][number]> = () => ({})): TextPage => ({
@@ -173,5 +174,33 @@ describe("our OCR's reading of a cell", () => {
       m.budgetGrids[0]!.procedures[0]!.cells.V1 = d;
       expect(cellStatus(bindEvidence(m, [p]).evidence, 0, "V1")).not.toBe("confirmed");
     }
+  });
+});
+
+describe("a continuation page that prints no header", () => {
+  it("takes the columns of the page before, moved by the shift that lines them up (a scan sits differently on each page)", async () => {
+    const visits: [string, string][] = [["V1", "Screening"], ["V2", "Week 2"], ["V3", "Week 4"]];
+    const head: Text[] = [[X.name, 100, "Procedure"], [X.c1, 100, "V1"], [X.c2, 100, "V2"], [X.c3, 100, "V3"]];
+    // page 2 sits 30 points to the right (half a column), and its rows print nothing under V2
+    const moved = (y: number, name: string, cells: (string | null)[]): Text[] => rowAt(y, name, "100.00", cells).map(([x, yy, s]): Text => [x + 30, yy, s]);
+    const [p1, p2] = await pages([...head, ...rowAt(120, "Physical exam", "300.00", ["300.00", "300.00", "300.00"])], [...moved(120, "Blood draw", ["100.00", null, "100.00"]), ...moved(134, "Urine test", ["100.00", null, "100.00"])]);
+    const rb = grid(visits, [["Physical exam", 300, { V1: 300, V2: 300, V3: 300 }], ["Blood draw", 100, { V1: 100, V3: 100 }], ["Urine test", 100, { V1: 100, V3: 100 }]]);
+    for (const pr of [rb.budgetGrids[0]!.procedures[1]!, rb.budgetGrids[0]!.procedures[2]!]) pr.prov = { ...on, source: { documentId: "d1", page: 2 } };
+    const ev = bindEvidence(rb, [asOcr(p1!), asOcr(p2!)]).evidence;
+    expect(["V1", "V3"].map((v) => cellStatus(ev, 1, v))).toEqual(["confirmed", "confirmed"]);
+    // a price put under V2, which this page leaves blank, is never confirmed
+    const wrong = structuredClone(rb);
+    wrong.budgetGrids[0]!.procedures[1]!.cells.V2 = 10000;
+    expect(cellStatus(bindEvidence(wrong, [asOcr(p1!), asOcr(p2!)]).evidence, 1, "V2")).not.toBe("confirmed");
+  });
+});
+
+describe("an invoiceable cell on a scan", () => {
+  it("is confirmed only by the word, never by a price printed in it: how a row is billed is a meaning, not a number", async () => {
+    const p = asOcr(await page([[X.name, 100, "Procedure"], [X.c1, 100, "V1"], [X.c2, 100, "V2"], [X.c3, 100, "V3"], ...rowAt(120, "Imaging", "400.00", ["400.00", "Invoiceable", "400.00"])]));
+    const rb = grid([["V1", "Screening"], ["V2", "Week 2"], ["V3", "Week 4"]], [["Imaging", 400, {}]]);
+    rb.budgetGrids[0]!.procedures[0]!.cells = { V1: "invoiceable", V2: "invoiceable" };
+    const ev = bindEvidence(rb, [p]).evidence;
+    expect([cellStatus(ev, 0, "V1"), cellStatus(ev, 0, "V2")]).toEqual(["ungrounded", "confirmed"]);
   });
 });

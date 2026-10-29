@@ -118,6 +118,8 @@ describe("scan pages", () => {
     g.procedures = [
       { code: null, name: "Exam", unitCents: 10000, overheadApplied: true, category: "procedure", cells: { V1: 10000, V2: 10000 }, prov },
       { code: null, name: "Stipend", unitCents: 2000, overheadApplied: false, category: "non_procedure", cells: { V1: 2000 }, prov },
+      // not in the visit's sum, so its totals adding up says nothing about it
+      { code: null, name: "Imaging", unitCents: 40000, overheadApplied: false, category: "procedure", cells: { V1: "invoiceable" }, prov },
     ];
     g.perPatientTotals = [{ label: "Total", cents: 28100, prov }];
     rb.siteFees = [{ code: null, name: "Start-up", amountCents: 500000, trigger: "one_time", dueDays: null, prov }];
@@ -133,6 +135,8 @@ describe("scan pages", () => {
     expect(pdfCheck).toBeNull();
     expect(review.filter((i) => i.reason !== "SAMPLE").map((i) => `${i.reason} ${i.path ?? i.where[0]!.page}`)).toEqual([
       "SCAN_VALUE /budgetGrids/0/procedures/0/cells/V2",
+      "SCAN_VALUE /budgetGrids/0/procedures/2/cells/V1",
+      "SCAN_VALUE /budgetGrids/0/procedures/2/unitCents",
       ...["totalCents", "procedureSubtotalCents", "overheadCents"].map((f) => `SCAN_VALUE /budgetGrids/0/visits/1/${f}`),
       "SCAN_VALUE /budgetGrids/0/perPatientTotals/0/cents",
       "SCAN_VALUE /siteFees/0/amountCents",
