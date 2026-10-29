@@ -87,7 +87,7 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
       : term("screen-fail", "Screen failures", "Not paid", "The contract doesn't pay for screen failures", null),
   );
 
-  // Each arm's chosen grid, and every grid of an arm with no choice.
+  // The grids billing uses (billedGrids): each arm's chosen grid, or its only one, never two for one arm.
   const billed = new Set(billedGrids(rb));
   rb.budgetGrids.forEach((g, gi) => {
     if (!billed.has(g)) return;

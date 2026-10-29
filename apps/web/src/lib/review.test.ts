@@ -13,7 +13,8 @@ describe("queue", () => {
   });
   it("counts what still needs a person", () => {
     const items = [q("1", true, "matched"), q("2", true, "differs"), q("3", true, "cant_tell"), q("4", false, "cant_tell"), q("5", false), q("6", true, "chosen")];
-    expect(needsYou(items).map((i) => i.id)).toEqual(["2", "3", "5"]);
+    // a "can't tell" on a question not needed to approve too: approval waits for it (openItems)
+    expect(needsYou(items).map((i) => i.id)).toEqual(["2", "3", "4", "5"]);
   });
 });
 
@@ -29,7 +30,8 @@ describe("stages", () => {
     expect(versionStage(undefined, undefined).stage).toBe("Upload");
     expect(versionStage({ status: "extracting" }, undefined).stage).toBe("Reading");
     expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", true), q("2", false, "matched")] })).toEqual({ stage: "Needs you", needs: 1 });
-    expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", false, "cant_tell")] })).toEqual({ stage: "Approve" });
+    expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", false, "cant_tell")] })).toEqual({ stage: "Needs you", needs: 1 });
+    expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", false, "chosen")] })).toEqual({ stage: "Approve" });
     // Typed by hand: still typing, then the blind re-type questions.
     expect(versionStage({ status: "draft" }, { byHand: true, review: [] })).toEqual({ stage: "Reading", byHand: true });
     expect(versionStage({ status: "draft" }, { byHand: true, review: [q("1", true)] })).toEqual({ stage: "Needs you", needs: 1, byHand: true });

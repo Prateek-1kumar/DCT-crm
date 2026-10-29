@@ -85,12 +85,17 @@ export function studySummaryDto(s: StudyRow, liveVersion: number | null): StudyS
     investigator: s.investigator,
     status: s.status as StudyStatus,
     liveVersion,
-    // ponytail: kept for the web, which reads needsYou; the same count. Give it its own column if anything ever needs it apart.
-    openAnomalies: s.needsYou,
     needsYou: s.needsYou,
     updatedAt: s.updatedAt.toISOString(),
   };
 }
+
+/**
+ * A version's `updatedAt` for a write that changes it: now, and always after the last one, by a millisecond at least.
+ * Approval compares it with what the approver saw (`asOf`, to the millisecond), so two writes in one millisecond must
+ * never read the same. Writes to a study are serialised by its lock, so `prev` is the latest.
+ */
+export const touched = (prev: Date) => new Date(Math.max(Date.now(), prev.getTime() + 1));
 
 /** Status changes raise theirs in refreshStudyStatus; sent_back is raised by the send-back write (which passes alert: false). */
 export function raiseAlert(tx: Tx, a: typeof alerts.$inferInsert) {

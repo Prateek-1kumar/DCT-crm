@@ -17,6 +17,8 @@ import {
   leaf,
   openItems,
   type PageBox,
+  parseCents,
+  parsePercent,
   pickSample,
   provOf,
   type ReviewItem,
@@ -28,7 +30,7 @@ import {
 } from "@dct/shared";
 import { isDeepStrictEqual } from "node:util";
 import type { ExtractionPort } from "./extraction/port.js";
-import { HttpError, isObj } from "./lib/http.js";
+import { HttpError } from "./lib/http.js";
 import { getAt, parsePointer } from "./lib/pointer.js";
 
 /**
@@ -126,20 +128,26 @@ function pageItems(pages: TextPage[], docs: { id: string; filename: string }[]):
 }
 
 const whereKey = (w: PageBox) => JSON.stringify([w.documentId, w.page, w.box]);
-const cents = (t: string) => Math.round(Number(t.replace(/[^\d.]/g, "")) * 100);
 
-/** The words and figures of a money term the master doesn't hold, from the PDF's text: what a "bill by hand" answer lists. */
+/**
+ * The words and figures of a money term the master doesn't hold, from the PDF's text: what a "bill by hand" answer lists.
+ * Amounts and percentages are read as everywhere else (parseCents, parsePercent): "$7,455.00." with its full stop, a
+ * bracketed credit below zero; one that doesn't read as a number is left out, never NaN.
+ */
 function termOf(spans: Span[]): NonNullable<ReviewItem["term"]> | undefined {
   if (!spans.length) return undefined;
   const text = (s: Span) => s.words.map((w) => w.text).join("");
   // a number in a table row is an amount only when it's printed like one
-  const amounts = spans.filter((s) => s.kind === "amount" || (s.kind === "grid_number" && /\$|\d,\d{3}|\.\d{2}\)?$/.test(text(s)))).map((s) => cents(text(s)));
-  const pct = spans.find((s) => s.kind === "percent");
+  const amounts = spans.flatMap((s) => {
+    const c = s.kind === "amount" ? (s.cents ?? parseCents(text(s))) : s.kind === "grid_number" && /\$|\d,\d{3}|\.\d{2}\)?$/.test(text(s).replace(/[.,;:]+$/, "")) ? parseCents(text(s)) : null;
+    return c === null ? [] : [c];
+  });
+  const pct = spans.flatMap((s) => (s.kind === "percent" ? [parsePercent(s.words.map((w) => w.text).join(" "))] : [])).find((p) => p !== null);
   const days = spans.map((s) => (s.kind === "days" ? /(\d+)\)?[\s-]*(?:calendar|business|working)?\s*days?\b/i.exec(s.words.map((w) => w.text).join(" ")) : null)).find(Boolean);
   return {
     quote: spans[0]!.text,
-    amounts: amounts.filter((c) => Number.isSafeInteger(c)),
-    ...(pct ? { pct: Number(text(pct).replace(/[^\d.]/g, "")) } : {}),
+    amounts,
+    ...(typeof pct === "number" ? { pct } : {}),
     ...(days ? { days: Number(days[1]) } : {}),
   };
 }
@@ -304,35 +312,6 @@ function uncarried(rb: Rulebook, evidence: ValueEvidence[], c: Carried, asked: S
     }
   }
   return { items, warnings, skipped };
-}
-
-/**
- * Placeholders in a contract typed by hand: the blank form (manualRulebook, and the web's blank pieces) has to put a number
- * where the schema allows no empty (a visit's total 0, a holdback's % 0), and the form shows every number nobody typed as
- * an empty box. So any number in it that nobody typed (no evidence row at its path) was never seen by a person and must
- * be asked like a missing value. Not numbers that only order or describe the master (schemaVersion, a visit's order,
- * provenance).
- */
-export function placeholders(rb: Rulebook, evidence: ValueEvidence[]): string[] {
-  const typed = new Set(evidence.map((e) => e.path));
-  const out: string[] = [];
-  const walk = (node: unknown, path: string, key: string) => {
-    if (key === "prov" || key === "schemaVersion" || key === "order") return;
-    if (typeof node === "number") return void (typed.has(path) || out.push(path));
-    if (Array.isArray(node)) node.forEach((x, i) => walk(x, `${path}/${i}`, String(i)));
-    else if (isObj(node)) for (const [k, x] of Object.entries(node)) walk(x, `${path}/${k.replace(/~/g, "~0").replace(/\//g, "~1")}`, k);
-  };
-  walk(rb, "", "");
-  return out;
-}
-
-/**
- * When typing by hand is marked done: the contract's checks run on what was typed, as they do after a read, and each
- * placeholder is asked as a missing value. `asked`: the re-typed sample's paths, which hold back checks about them.
- */
-export function byHandQuestions(rb: Rulebook, evidence: ValueEvidence[], anomalies: ContractAnomaly[], asked: Set<string>): ReviewItem[] {
-  const missing = placeholders(rb, evidence).map((p) => askAbout(rb, evidence, p, `missing:${p}`, "REQUIRED_MISSING"));
-  return [...missing, ...fromAnomalies(anomalies, rb, new Set([...asked, ...missing.map((i) => i.path!)]))];
 }
 
 // ---------- answering ----------

@@ -238,7 +238,8 @@ describe("TEXT_LAYER_MISMATCH (digital PDFs)", () => {
   it("printedAmounts: money-like numbers in cents; no text layer → undefined; long digit runs dropped", () => {
     expect(printedAmounts("Docusign Envelope ID: 1234")).toBeUndefined();
     const text = `${"x".repeat(200)} $7,455  $1,234.50  14.2666667  Account 123456789  Phone 2105551234  Total $12,000,000`;
-    expect(printedAmounts(text)).toEqual([1427, 123450, 745500, 1200000000].sort((a, b) => a - b));
+    // a number with more than two decimals isn't an amount (no amount is a fraction of a cent): dropped, never rounded
+    expect(printedAmounts(text)).toEqual([123450, 745500, 1200000000]);
   });
 
   it("silent when every amount is on its cited page, or the page has no text layer (scan)", () => {

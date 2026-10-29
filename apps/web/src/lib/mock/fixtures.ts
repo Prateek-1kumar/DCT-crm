@@ -1,5 +1,5 @@
-import { alsoWithheld, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
-import { ENUM_OPTIONS, fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
+import { alsoWithheld, askAbout as ask, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
+import { fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
 import { boxOn, layoutPage, numberPaths, type Span } from "./layout";
@@ -325,6 +325,7 @@ export type Spec = Pick<ReviewItem, "id" | "kind" | "reason" | "path" | "questio
   input?: ReviewItem["input"];
   options?: ReviewItem["options"];
   term?: ReviewItem["term"];
+  asPrinted?: ReviewItem["asPrinted"];
   truth?: unknown;
   /** The tool's misreading, written into the master. */
   read?: unknown;
@@ -350,28 +351,17 @@ const inputFor = (rb: Rulebook, path: string, value?: unknown): NonNullable<Revi
 export const toItem = (x: Spec): ReviewItem => ({
   id: x.id, kind: x.kind, reason: x.reason, path: x.path, question: x.question, input: x.input ?? null, options: x.options ?? [],
   where: x.where, blocking: x.blocking, answer: null, outcome: null, compare: null, sentBack: null, ...(x.term ? { term: x.term } : {}),
+  ...(x.asPrinted !== undefined ? { asPrinted: x.asPrinted } : {}),
 });
 export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines });
 
 /**
- * A blind question about one value: "This looks wrong" (reason "reported") and the re-type sample of hand-typed values
- * (reason "spot_check"). Choices for yes/no and fixed-list values; otherwise an empty input. The right answer is the value we hold.
+ * A blind question about one value, asked as the real API asks it (askAbout, @dct/shared), with its secret: the right
+ * answer is the value we hold, and the page prints it on a line of its own.
  */
 export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): Spec {
   const value = getAt(rb, path);
-  const label = labelFor(path, rb);
-  const list = typeof value === "string" ? ENUM_OPTIONS[fieldKey(path)] : undefined;
-  const options =
-    typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }] : list ? Object.entries(list).map(([k, l]) => ({ id: k, label: l })) : undefined;
-  const input = options ? undefined : inputFor(rb, path, value);
-  const src = evidence.find((e) => e.path === path)?.where[0] ?? findProv(rb, path)?.source;
-  return {
-    id, kind: "confirm_value", reason, path, blocking: true, input, options,
-    question: `What ${input === "money" ? "amount" : input === "date" ? "date" : "value"} is printed for ${label}?`,
-    where: src ? [pb(src.documentId, src.page)] : [],
-    truth: value,
-    lines: [`${label}: ${formatValue(path, value)}`],
-  };
+  return { ...ask(rb, evidence, path, id, reason), truth: value, lines: [`${labelFor(path, rb)}: ${formatValue(path, value)}`] };
 }
 
 /** Scan mode: a person types every number the contract's own totals don't confirm (everything outside the grids). */
@@ -454,8 +444,9 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
     if (!pages.has(k)) pages.set(k, layoutPage(rb, all, truthOf, doc, page));
     return pages.get(k)!;
   };
-  // Questions point at the exact spot their number, or their own line, is printed.
-  const placed = all.map((x) => ({ ...x, where: x.where.map((w) => pb(w.documentId, w.page, boxOn(spansOf(w.documentId, w.page), { path: x.path, item: x.id }) ?? w.box)) }));
+  // Questions point at the exact spot their number, or their own line, is printed; the blind sample at its page only,
+  // as the real API (askAbout): a spot from the check would show the person where the check looked.
+  const placed = all.map((x) => (x.reason === SAMPLE ? x : { ...x, where: x.where.map((w) => pb(w.documentId, w.page, boxOn(spansOf(w.documentId, w.page), { path: x.path, item: x.id }) ?? w.box)) }));
   const evidence = numberPaths(rb).map((path): ValueEvidence => {
     const src = findProv(rb, path)?.source;
     return {
@@ -584,7 +575,7 @@ export function amendmentSpecs(doc: string, rmvIndex: number, week52: number): S
         { id: "printed", label: "The visit total as printed", note: "What should we ask the sponsor?" },
         { id: "sum", label: "Its subtotal, overhead and non-procedure amounts added up", note: "What should we ask the sponsor?" },
       ],
-      where: [pb(doc, 3, box(4))], read: week52 - 500, lines: ["Week 52  ·  Visit total (as printed)"],
+      where: [pb(doc, 3, box(4))], read: week52 - 500, asPrinted: week52 - 500, lines: ["Week 52  ·  Visit total (as printed)"],
     },
   ];
 }

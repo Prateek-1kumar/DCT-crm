@@ -172,7 +172,9 @@ describe("4. maker-checker", () => {
     );
     await settleAll(built, studyId, 1, "Carol");
     expect((await signOff(app, studyId, 1, { by: "bob" })).json().message).toBe("Maker-checker is on: bob answered questions on this contract, so someone else has to approve it.");
-    expect((await signOff(app, studyId, 1, { by: "Carol" })).statusCode).toBe(200);
+    // Carol also picked what nobody typed (how the visit is paid, the row's kind…): decisions, so she's an editor too
+    expect((await signOff(app, studyId, 1, { by: "Carol" })).statusCode).toBe(409);
+    expect((await signOff(app, studyId, 1, { by: "Dana" })).statusCode).toBe(200);
   });
 
   it("is on in a new database", async () => {
@@ -280,9 +282,13 @@ describe("8. a contract typed by hand is checked, and nothing nobody typed is ap
     for (const [p, value] of [[`${v0}/procedureSubtotalCents`, 10000], [`${v0}/overheadCents`, 4000], [`${v0}/totalCents`, 15000]] as const)
       expect((await patch(`/studies/${studyId}/versions/1/values`, { path: p, value, note: "x", by: "Asha" })).statusCode).toBe(200);
     const done = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" })).json<RulebookVersionDto>();
-    // the re-typed numbers hold the check back (one flag per root cause); it was found, and is asked after
-    expect(done.review.map((i) => i.reason)).toEqual(["spot_check", "spot_check", "spot_check"]);
-    await settleAll(built, studyId, 1, "Bob", 3);
+    // the re-typed numbers hold the check back (one flag per root cause); it was found, and is asked after. What nobody
+    // typed or picked is asked too: the row's kind holds the check back with them (it decides what the subtotal sums)
+    expect(done.review.map((i) => i.reason)).toEqual([...Array(3).fill("spot_check"), ...Array(7).fill("REQUIRED_MISSING")]);
+    expect(done.review.filter((i) => i.reason === "REQUIRED_MISSING").map((i) => i.path).sort()).toEqual([
+      "/budgetGrids/0/procedures/0/category", "/budgetGrids/0/procedures/0/overheadApplied", `${v0}/autopay`, "/overhead/appliesTo/value", "/payment/frequency/value", "/payment/visitPayment/value", "/rounding/value",
+    ]);
+    await settleAll(built, studyId, 1, "Bob", done.review.length);
     const v = await storedVersion(built, studyId, 1);
     expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")).toMatchObject({ id: `anomaly:VISIT_TOTAL_MISMATCH:${v0}/totalCents`, outcome: null });
   });
@@ -336,10 +342,8 @@ describe("9b. blind entry: a term listed to bill by hand from a withheld value's
     expect(words(JSON.stringify(log))).not.toMatch(leaks);
     for (const q of ["12,000.00", "administrative", "amendment"]) expect(JSON.stringify((await get<MasterSearch>(`/studies/${studyId}/versions/2/search?q=${encodeURIComponent(q)}`)).hits)).not.toMatch(leaks);
 
-    // the fee answered, and its due days on the same line (the blind sample's): nothing withheld, the term in full
+    // the fee answered: nothing on its line is withheld any more (its due days aren't in this draw of the sample), the term in full
     await answer(studyId, `confirm:${FEE}`, { value: 1200000 }, 2);
-    expect((await version(studyId, 2)).rulebook!.unclassified[0]!.amounts).toEqual([]);
-    await answer(studyId, "sample:/siteFees/0/dueDays", { value: 45 }, 2);
     expect((await version(studyId, 2)).rulebook!.unclassified).toMatchObject([{ quote: term.term!.quote, amounts: [25000], note: "Amendment fee, next to the $12,000.00 admin fee" }]);
     expect((await auditOf(studyId)).find((e) => e.detail.version === 2 && e.detail.itemId === term.id)!.detail).toMatchObject({ question: expect.stringContaining("$12,000.00") });
   });

@@ -39,7 +39,9 @@ export function GridTable({ index }: { index: number }) {
         <span className="font-medium">{grid.label}</span>
         {grid.arm && <Badge>{grid.arm}</Badge>}
         {choice?.billed === true && <Badge tone="ok">Billed from this grid</Badge>}
-        {choice?.billed === false && <Badge tone="warn">Not billed: {choice.instead.label} is billed instead</Badge>}
+        {choice?.billed === false && (
+          <Badge tone="warn">{choice.instead ? `Not billed: ${choice.instead.label} is billed instead${choice.same ? ", it prices every visit the same" : ""}` : "Not billed until a grid is chosen for this arm"}</Badge>
+        )}
         <span className="text-muted">
           Stated overhead <Val path={`${base}/statedOverheadPct`}>{grid.statedOverheadPct ?? "—"}%</Val> · Header:{" "}
           {masked.has(`${base}/header`) ? <span className="text-warn">needs you</span> : `${grid.header.investigator ?? "—"}, ${grid.header.siteName ?? "—"}`}
@@ -67,7 +69,8 @@ export function GridTable({ index }: { index: number }) {
                 >
                   <span className="block">{v.code}</span>
                   <span className="block font-normal text-muted">{v.name}</span>
-                  {!v.autopay && <span className="block font-normal text-warn">invoice</span>}
+                  {/* withheld (null) while how visits are paid is asked blind */}
+                  {v.autopay === false && <span className="block font-normal text-warn">invoice</span>}
                 </th>
               ))}
             </tr>
@@ -85,7 +88,7 @@ export function GridTable({ index }: { index: number }) {
                   <span className="block truncate font-medium">{p.name}</span>
                   <span className="text-muted">
                     {p.code ?? "—"} · {p.category === "procedure" ? "procedure" : "non-procedure"}
-                    {p.overheadApplied ? " · +overhead" : ""}
+                    {p.overheadApplied === true ? " · +overhead" : ""}
                   </span>
                 </th>
                 <td className="border-b border-line p-0">{cell(`${base}/procedures/${pi}/unitCents`, `${p.name} · unit price`, p.prov, formatCents(p.unitCents))}</td>

@@ -395,7 +395,17 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.getByRole("combobox", { name: /^Version/ }).selectOption("2");
     // On the draft, a value still waiting for its blind answer shows as such, not as missing.
     await expect(page.getByRole("button", { name: /^Payment Needs you/ })).toBeVisible();
-    await report(/^Per patient/);
+    // A number of the billed grid that nothing asks yet: the blind sample is random, and a value it drew is asked
+    // already, so it can't be reported.
+    const v2: { review: { path: string | null; outcome: string | null }[] } = await (await request.get(`/api/v1${studyUrl}/versions/2`)).json();
+    const asked = new Set(v2.review.flatMap((i) => (i.path && i.outcome === null ? [i.path] : [])));
+    const free = ["procedures/0/cells/V1", "procedures/0/cells/V2", "procedures/0/unitCents", "visits/0/totalCents", "visits/1/procedureSubtotalCents", "visits/0/overheadCents"].map((p) => `/budgetGrids/1/${p}`).find((p) => !asked.has(p))!;
+    await page.getByRole("tab", { name: "Budget grid" }).click();
+    await page.locator(`[data-path="${free}"]`).click();
+    await page.getByRole("complementary", { name: /In the contract/ }).getByRole("button", { name: "This looks wrong" }).click();
+    const dialog = page.getByRole("dialog", { name: "This looks wrong" });
+    await dialog.getByLabel("What looks wrong? (required)").fill("This doesn't match the visits above it.");
+    await dialog.getByRole("button", { name: "Report it" }).click();
     await expect(page.getByText("Added to Needs you. Someone will type what the contract says.")).toBeVisible();
   });
 
@@ -406,12 +416,13 @@ test("add a contract → answer → proofread → approve → live → search �
     await answerAll(page, async (q) => {
       if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
       if (!missed && (await page.getByRole("region", { name: "Question" }).getByText("Random spot check", { exact: true }).isVisible())) {
-        // The sample misses: a value the PDF check confirmed, typed otherwise, and kept after looking again.
+        // The sample misses: a value the PDF check confirmed, typed otherwise, and typed otherwise again, blind: nothing
+        // of what the check found is shown between the two.
         await page.getByLabel("What the contract says").fill("1");
         await send(page, "Save and next");
-        await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
-        await page.getByRole("radio", { name: /You typed/ }).click();
-        await page.getByLabel("Why is the PDF text wrong here?").fill("The page clearly prints a different figure here.");
+        await expect(page.getByText(/^Look at the page again and type it once more\./)).toBeVisible();
+        await expect(page.getByRole("region", { name: "Question" }).getByRole("radio")).toHaveCount(0);
+        await page.getByLabel("What the contract says").fill("1");
         await send(page, "Save and next");
         missed = true;
         return;

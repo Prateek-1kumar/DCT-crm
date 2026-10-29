@@ -79,6 +79,16 @@ export const ReviewItem = z.object({
    */
   term: z.object({ quote: z.string(), amounts: z.array(z.number().int()), pct: z.number().optional(), days: z.number().int().optional() }).optional(),
   where: z.array(PageBox),
+  /**
+   * Where the words a money term quotes are printed, one box per line: its whole sentence, which can run over lines its
+   * figures (`where`) aren't on. Blind entry blanks the quote when any of them holds a withheld value. Absent: `where`.
+   */
+  quoted: z.array(PageBox).optional(),
+  /**
+   * A total that doesn't add up (VISIT_TOTAL_MISMATCH, PER_PATIENT_TOTAL_MISMATCH): the total as it stood when asked,
+   * what "the total as printed" puts back after "the sum" was picked. Never shown while the total is withheld.
+   */
+  asPrinted: z.number().int().optional(),
   /** Must be settled before approval. */
   blocking: z.boolean(),
   answer: ReviewAnswer.nullable(),
@@ -102,11 +112,10 @@ export type ReviewItem = z.infer<typeof ReviewItem>;
 export const settled = (i: ReviewItem) => i.outcome === "matched" || i.outcome === "chosen";
 
 /**
- * Still needs a person: unanswered, answered differently, or a blocking "can't tell" (apps/web/src/lib/review.ts needsYou).
- * A "can't tell" on a question not needed to approve waits for the approver, who still has to settle it: approval takes
- * every question settled (ADR-001 §6).
+ * Still needs a person ("needs you", in the API and the web alike): anything not settled, a "can't tell" too, on any
+ * question. Approval takes every question settled (ADR-001 §6), so a contract with one left isn't waiting for approval.
  */
-export const openItems = (items: ReviewItem[]) => items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));
+export const openItems = (items: ReviewItem[]) => items.filter((i) => !settled(i));
 
 /** "Looks right" from someone proofreading. Kept next to the version and never changes its numbers, so a live version takes them too. */
 export const ProofreadMark = z.object({ path: z.string(), by: z.string(), at: z.string() });
@@ -150,6 +159,22 @@ export const AnswerReviewBody = z.object({
   note: z.string().optional(),
   by: Person,
 });
+
+/** What each review body's fields need, in plain words: a 400 names what's wrong (bodyProblem), in the API and the sample server alike. */
+export const BODY_WORDS = {
+  answer: { by: "Say who is answering.", optionId: "Pick one of the options.", cantTell: "Say whether you can tell.", note: "Write the note as text." },
+  values: { path: "Say which value you're typing.", note: "Add a short note about the value.", by: "Say who is typing." },
+  report: { path: "Pick a single value to report.", note: "Add a short note saying what looks wrong.", by: "Say who is reporting." },
+  proofread: { paths: "Say which values you proofread.", by: "Say who is proofreading." },
+  sendBack: { itemIds: "Pick the answers to send back.", note: "Add a note saying what to look at again.", by: "Say who is sending them back." },
+  byHand: { by: "Say who is typing." },
+} satisfies Record<string, { by: string } & Record<string, string>>;
+
+/** A body's first problem as BODY_WORDS says it; one that isn't a body at all asks who it's from, as every body needs that. */
+export function bodyProblem(error: z.ZodError, words: { by: string } & Record<string, string>): string {
+  const field = error.issues[0]?.path[0];
+  return (typeof field === "string" && words[field]) || words.by;
+}
 
 // ---- Notes never give a withheld value away ----
 

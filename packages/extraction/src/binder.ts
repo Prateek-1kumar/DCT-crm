@@ -1,4 +1,4 @@
-import type { BudgetGrid, PageBox, Provenance, ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
+import { AMOUNT_IN_NAME, type BudgetGrid, type PageBox, type Provenance, type ReviewItem, type Rulebook, type ValueEvidence } from "@dct/shared";
 import { amounts, bare, boxOf, centsOf, frame, inventory, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
 /**
@@ -566,7 +566,7 @@ const VISIT_FIELD: Record<string, string> = { totalCents: "total", procedureSubt
 
 /** The question for one value, never the value itself (blind entry): amounts and % inside a name are blanked too. */
 function ask(rb: Rulebook, path: string): Pick<ReviewItem, "question" | "input"> {
-  const q = (s: string) => `"${s.replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…").trim()}"`;
+  const q = (s: string) => `"${s.replace(AMOUNT_IN_NAME, "…").trim()}"`;
   const [, top, i, sub, j, field, key] = path.split("/").map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"));
   const money = (question: string) => ({ question, input: "money" as const });
   const number = (question: string) => ({ question, input: "number" as const });
@@ -641,6 +641,8 @@ export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[
       input: null,
       options: UNACCOUNTED_OPTIONS,
       where: ss.map((s) => s.where),
+      // the quote is the whole line or sentence: blind entry checks every line it's printed on (quotesWithheld)
+      quoted: [...new Map(ss.flatMap((s) => s.lines).map((l) => [JSON.stringify(l), l])).values()],
     };
   });
   return [...confirm, ...terms];

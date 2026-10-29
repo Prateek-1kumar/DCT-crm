@@ -1,5 +1,5 @@
 import { AlertListQuery, type AlertPage, blankNumbers, ReadAlertsBody } from "@dct/shared";
-import { count, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { count, desc, eq, inArray, not, type SQL, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
@@ -8,9 +8,10 @@ import { alertReads, alerts, studies } from "../db/schema.js";
 import { HttpError, parse } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
 
-/** Read for `person`: they marked it, or they caused it. */
+/** Read for `person`: they marked it, or they caused it. Names compared as samePerson (@dct/shared) compares them: trimmed, ignoring case. */
+const same = (a: SQL, person: string) => sql`lower(btrim(${a})) = lower(btrim(${person}))`;
 const readBy = (person: string) =>
-  sql<boolean>`(${alerts.by} = ${person} OR EXISTS (SELECT 1 FROM alert_reads r WHERE r.alert_id = ${alerts.id} AND r.person = ${person}))`;
+  sql<boolean>`(${same(sql`${alerts.by}`, person)} OR EXISTS (SELECT 1 FROM alert_reads r WHERE r.alert_id = ${alerts.id} AND ${same(sql`r.person`, person)}))`;
 
 /** created_at in whole microseconds: exact in a JS number, where a Date keeps only milliseconds. */
 const micros = sql<number>`(extract(epoch FROM ${alerts.createdAt}) * 1000000)::float8`;

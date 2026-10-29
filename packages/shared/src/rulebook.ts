@@ -273,15 +273,39 @@ export function governingGrids(rb: Pick<Rulebook, "budgetGrids" | "governingGrid
   return out;
 }
 
-/** The grids billing uses: an arm's chosen grid, or every grid of an arm with no choice. */
-export function billedGrids(rb: Parameters<typeof governingGrids>[0]): BudgetGrid[] {
-  const chosen = governingGrids(rb);
-  return rb.budgetGrids.filter((g) => (chosen.get(armKey(g)) ?? g.id) === g.id);
+/**
+ * What a grid bills, and nothing else: every visit's amounts and how it's paid, every row's prices, overhead and cells,
+ * the per-patient totals; not its id, label, arm, header, stated overhead % or provenance. Two grids for one arm with the
+ * same prices bill the same whichever is used; any other difference, a single cell, is GRID_CONFLICT (checks.ts).
+ */
+export function gridPrices(g: BudgetGrid): string {
+  const visits = [...g.visits].sort((a, b) => a.order - b.order).map(({ code, procedureSubtotalCents, overheadCents, nonProcedureCents, totalCents, autopay }) => [code, procedureSubtotalCents, overheadCents, nonProcedureCents, totalCents, autopay]);
+  const rows = g.procedures.map((p) => JSON.stringify([p.code, p.name.trim().toLowerCase(), p.unitCents, p.overheadApplied, p.category, Object.entries(p.cells).sort(([a], [b]) => (a < b ? -1 : 1))])).sort();
+  return JSON.stringify([visits, rows, g.perPatientTotals.map((t) => t.cents).sort((a, b) => a - b)]);
 }
 
-/** For a grid: billed from (chosen for its arm), not billed (another grid was chosen, which is named), or null (no choice). */
-export function gridChoice(rb: Parameters<typeof governingGrids>[0], g: BudgetGrid): { billed: true } | { billed: false; instead: BudgetGrid } | null {
-  const id = governingGrids(rb).get(armKey(g));
-  if (!id) return null;
-  return id === g.id ? { billed: true } : { billed: false, instead: rb.budgetGrids.find((x) => x.id === id)! };
+/**
+ * The grids billing uses, never two for one arm: an arm's chosen grid; with no choice, its only grid, or the first of
+ * grids that price it the same (gridPrices). An arm whose grids differ and that has no choice bills none: its
+ * GRID_CONFLICT is asked, and approval waits for it.
+ */
+export function billedGrids(rb: Parameters<typeof governingGrids>[0]): BudgetGrid[] {
+  const chosen = governingGrids(rb);
+  return rb.budgetGrids.filter((g) => {
+    const arm = rb.budgetGrids.filter((x) => armKey(x) === armKey(g));
+    const id = chosen.get(armKey(g)) ?? (arm.every((x) => gridPrices(x) === gridPrices(arm[0]!)) ? arm[0]!.id : undefined);
+    return id === g.id;
+  });
+}
+
+/**
+ * For a grid of an arm that has more than one: billed from (chosen, or the first of grids that price the same), or not
+ * billed: another is (`instead`, `same` when it prices the same), or none is until one is chosen (`instead` null). null
+ * for an arm's only grid.
+ */
+export function gridChoice(rb: Parameters<typeof governingGrids>[0], g: BudgetGrid): { billed: true } | { billed: false; instead: BudgetGrid | null; same: boolean } | null {
+  const arm = rb.budgetGrids.filter((x) => armKey(x) === armKey(g));
+  if (arm.length < 2 && !governingGrids(rb).has(armKey(g))) return null;
+  const billed = billedGrids(rb).find((x) => armKey(x) === armKey(g)) ?? null;
+  return billed?.id === g.id ? { billed: true } : { billed: false, instead: billed, same: !!billed && gridPrices(billed) === gridPrices(g) };
 }

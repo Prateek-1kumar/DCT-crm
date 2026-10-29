@@ -8,6 +8,7 @@ export * from "./problems";
 export * from "./answer";
 export * from "./diff";
 export * from "./dates";
+export * from "./money";
 export { at } from "./pointer";
 export * from "./labels";
 export * from "./search";

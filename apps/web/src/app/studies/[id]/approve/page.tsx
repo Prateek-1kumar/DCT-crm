@@ -275,6 +275,8 @@ const outcomeText = (i: ReviewItem) => {
 
 function Answers({ study, version, order, open, onNext }: { study: StudyDetailDto; version: RulebookVersionDto; order: ReviewItem[]; open: ReviewItem[]; onNext: () => void }) {
   const by = useActingAs();
+  // with maker-checker on, an approver who answers becomes an editor and can't approve it themselves
+  const makerChecker = useSettings().data?.makerChecker ?? true;
   const qc = useQueryClient();
   const invalidate = useInvalidateStudy();
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -322,7 +324,13 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
               <li key={i.id} className="flex flex-wrap items-center justify-between gap-3 text-small">
                 <span className="max-w-[60ch] text-ink-2">
                   {i.question}
-                  {i.outcome === "cant_tell" && <span className="block text-faint">Left for the approver: answer it, or send it back with a note.</span>}
+                  {i.outcome === "cant_tell" && (
+                    <span className="block text-faint">
+                      {makerChecker
+                        ? "Left for the approver: send it back with a note so someone else answers it. If you answer it yourself, someone else has to approve."
+                        : "Left for the approver: answer it, or send it back with a note."}
+                    </span>
+                  )}
                   {i.outcome === "differs" && <span className="block text-faint">Waiting for a pick between two values.</span>}
                 </span>
                 <Link href={review(i)} className={btnCls("primary", "sm")}>

@@ -47,10 +47,11 @@ afterEach(() => {
 });
 
 describe("answering on the review page", () => {
-  it("an amendment's start date: real radios, nothing picked; 'prospective only' sends the pick, a date the typed value", async () => {
+  it("an amendment's start date: real radios, nothing picked; 'prospective only' sends the pick with the amendment's date typed, a date the typed value", async () => {
     await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: [START], note: "Check §1", by: "Morgan Lee" });
     let sent = renderPage("st-halcyon", START);
-    const prospective = await screen.findByRole("radio", { name: /^Prospective only: from the amendment.s own date, September 30, 2026$/ }, { timeout: 10_000 });
+    // the read's date of the amendment isn't shown: it's typed, blind
+    const prospective = await screen.findByRole("radio", { name: /^Prospective only: from the amendment.s own date$/ }, { timeout: 10_000 });
     const typed = screen.getByRole("radio", { name: "From a date the contract gives" });
     expect([prospective, typed].map((r) => (r as HTMLInputElement).checked)).toEqual([false, false]);
     fireEvent.click(typed);
@@ -66,8 +67,9 @@ describe("answering on the review page", () => {
     await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: [START], note: "Again", by: "Morgan Lee" });
     sent = renderPage("st-halcyon", START);
     fireEvent.click(await screen.findByRole("radio", { name: /^Prospective only/ }, { timeout: 10_000 }));
+    fireEvent.change(screen.getByLabelText("The amendment's own date, as printed on it"), { target: { value: "2026-09-30" } });
     fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
-    await waitFor(() => expect(sent).toHaveBeenCalledWith("st-halcyon", 2, START, expect.objectContaining({ optionId: "prospective" })));
+    await waitFor(() => expect(sent).toHaveBeenCalledWith("st-halcyon", 2, START, expect.objectContaining({ optionId: "prospective", value: "2026-09-30" })));
     await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-halcyon/versions/2")).rulebook!.appliesFrom.value).toBe("2026-09-30"), { timeout: 10_000 });
   }, 60_000); // many requests, each with the sample server's network delay
 

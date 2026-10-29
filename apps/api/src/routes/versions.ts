@@ -1,13 +1,12 @@
 import {
-  amountOf,
   appliesFromOf,
+  BODY_WORDS,
+  bodyProblem,
   ByHandBody,
   CorrectValueBody,
-  diffRulebooks,
   followUps,
   labelFor,
   type MasterSearch,
-  pickRetype,
   ProofreadBody,
   proofreadMarks,
   ReportValueBody,
@@ -15,9 +14,11 @@ import {
   Rulebook,
   SendBackBody,
   SignOffBody,
-  searchMaster,
+  searchVersion,
   signOffRefusal,
+  typingDone,
   type ValueEvidence,
+  versionDiff,
 } from "@dct/shared";
 import { buildWorkbook } from "@dct/shared/xlsx";
 import { and, desc, eq } from "drizzle-orm";
@@ -25,12 +26,12 @@ import type { FastifyPluginAsync } from "fastify";
 import { isDeepStrictEqual } from "node:util";
 import type { Ctx } from "../app.js";
 import { rulebookVersions, settings } from "../db/schema.js";
-import { audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, versionDto } from "../domain.js";
+import { audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, touched, versionDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
-import { answer, askAbout, at, byHandQuestions, empty, hiddenPaths, leaf, mask, sampling } from "../review.js";
+import { answer, askAbout, at, empty, hiddenPaths, leaf, sampling } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
 const versionNo = (v: unknown) => {
@@ -54,13 +55,8 @@ export const versionRoutes =
     app.get<P & { Querystring: { q?: string } }>("/studies/:id/versions/:v/search", async (req): Promise<MasterSearch> => {
       const row = await withRulebook(req.params.id, req.params.v);
       const q = text(req.query.q);
-      // On a draft, a value still hidden for someone to type blind must not be findable: amounts match values, and a
-      // term's words include its values. Names and codes of grid rows and fees don't, so those still match.
-      // A row's fixed-list words (a fee's trigger) can be withheld too, so the search reads the master as it's shown.
-      const hidden = hiddenPaths(row);
-      const byValue = (h: MasterSearch["hits"][number]) => amountOf(q) !== null || h.section === "terms";
-      const shown = hidden.length ? mask(row.rulebook, hidden, row) : row.rulebook;
-      return { q, hits: searchMaster(shown, q).filter((h) => !(byValue(h) && hidden.some((p) => p === h.path || p.startsWith(`${h.path}/`)))) };
+      // blind entry: never a withheld value, by amount or by a term's words (searchVersion, as the sample server)
+      return { q, hits: searchVersion(row, q) };
     });
 
     app.get<P & { Querystring: { by?: string } }>("/studies/:id/versions/:v/export.xlsx", async (req, reply) => {
@@ -94,13 +90,10 @@ export const versionRoutes =
       const [v, a] = [versionNo(req.params.v), versionNo(against)];
       const after = await loadVersion(db, req.params.id, v);
       const before = await loadVersion(db, req.params.id, a);
-      if (!after.rulebook || !before.rulebook) throw new HttpError(409, "Both versions need an extracted rulebook to diff");
-      // Blind entry: a withheld value isn't shown as changed either. Both sides are masked alike, so the words blanked
-      // around it on one side don't show up as changed against the other.
-      const hidden = [...new Set([...hiddenPaths(before), ...hiddenPaths(after)])];
-      const where = { evidence: [...before.evidence, ...after.evidence], review: [...before.review, ...after.review] };
-      const view = (rb: Rulebook) => (hidden.length ? mask(rb, hidden, where) : rb);
-      return diffRulebooks(view(before.rulebook), view(after.rulebook)).filter((e) => !hidden.includes(e.path));
+      // blind entry: a withheld value isn't shown as changed either (versionDiff, as the sample server)
+      const diff = versionDiff(before, after);
+      if ("refusal" in diff) throw new HttpError(diff.refusal.status, diff.refusal.message);
+      return diff;
     });
 
     /**
@@ -113,7 +106,7 @@ export const versionRoutes =
         if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Values can only be typed on a contract being typed in by hand. Use “This looks wrong” instead.");
         if (row.review.length) throw new HttpError(409, "Typing is marked done. Use “This looks wrong” to change a value.");
         const body = CorrectValueBody.safeParse(req.body);
-        if (!body.success) throw new HttpError(400, "Say who is typing.");
+        if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.values));
         const { path, value, by } = body.data;
         const tokens = parsePointer(path);
         const before = at(row.rulebook, path);
@@ -144,7 +137,7 @@ export const versionRoutes =
         const editors = row.editors.includes(by) ? row.editors : [...row.editors, by];
         const [updated] = await tx
           .update(rulebookVersions)
-          .set({ rulebook: rb, evidence, editors, appliesFrom: appliesFromOf(rb), updatedAt: new Date() })
+          .set({ rulebook: rb, evidence, editors, appliesFrom: appliesFromOf(rb), updatedAt: touched(row.updatedAt) })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
@@ -155,27 +148,21 @@ export const versionRoutes =
     );
 
     /**
-     * Typing is done: someone else re-types up to 10 randomly chosen typed values (all of them if fewer), blind. The
-     * contract's checks run on what was typed, as after a read, and every number nobody typed (a placeholder of the blank
-     * form) is asked as a missing value.
+     * Typing is done (typingDone, @dct/shared, as the sample server): someone else re-types up to 10 randomly chosen
+     * typed values (all of them if fewer), blind. The contract's checks run on what was typed, as after a read, and
+     * everything nobody typed or picked (a placeholder of the blank form) is asked as a missing value.
      */
     app.post<P>("/studies/:id/versions/:v/by-hand/done", async (req, reply) => {
       const body = ByHandBody.safeParse(req.body);
-      if (!body.success) throw new HttpError(400, "Say who is typing.");
+      if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.byHand));
       const port = await getExtraction();
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
-        if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Only a contract typed by hand can be marked done.");
-        if (row.review.length) throw new HttpError(409, "Typing is already marked done.");
-        const rb = row.rulebook;
-        const { typed, sample } = pickRetype(rb, row.evidence, sampling.random);
-        if (!typed.length) throw new HttpError(400, "Type at least one value first.");
-        const spots = sample.map((p) => askAbout(rb, row.evidence, p, `spot:${p}`, "spot_check"));
-        const anomalies = port.runContractChecks(rb);
-        const review = [...spots, ...byHandQuestions(rb, row.evidence, anomalies, new Set(sample))];
-        const [updated] = await tx.update(rulebookVersions).set({ review, anomalies, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
+        const done = typingDone(row, { random: sampling.random, checks: (rb) => port.runContractChecks(rb) });
+        if ("refusal" in done) throw new HttpError(done.refusal.status, done.refusal.message);
+        const [updated] = await tx.update(rulebookVersions).set({ review: done.review, anomalies: done.anomalies, updatedAt: touched(row.updatedAt) }).where(eq(rulebookVersions.id, row.id)).returning();
         await refreshStudyStatus(tx, row.studyId, body.data.by);
-        await audit(tx, body.data.by, row.studyId, "byhand.done", { version: row.version, typed: typed.length, "re-type": sample.length, questions: review.length - spots.length });
+        await audit(tx, body.data.by, row.studyId, "byhand.done", done.detail);
         return versionDto(updated!);
       });
     });
@@ -197,7 +184,7 @@ export const versionRoutes =
         followUps(draft, answered, (rb) => port.runContractChecks(rb), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason));
         const [updated] = await tx
           .update(rulebookVersions)
-          .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: new Date() })
+          .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: touched(row.updatedAt) })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
@@ -212,12 +199,13 @@ export const versionRoutes =
     });
 
     /**
-     * "This looks wrong". On a draft: a blocking blind question about the value. On the live version: a correction draft
-     * (a copy of it plus that question); the live version stays live until the draft is approved.
+     * "This looks wrong". On a draft (one typed by hand once typing is marked done, as values can't be typed any more):
+     * a blocking blind question about the value. On the live version: a correction draft (a copy of it plus that
+     * question); the live version stays live until the draft is approved.
      */
     app.post<P>("/studies/:id/versions/:v/report", async (req, reply) => {
       const body = ReportValueBody.safeParse(req.body);
-      if (!body.success) throw new HttpError(400, "Add a short note and say who is reporting.");
+      if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.report));
       const { path, note, by } = body.data;
       return write(db, req, reply, async (tx) => {
         // the study's lock (taken first, by loadVersion) also serialises version creation
@@ -240,12 +228,13 @@ export const versionRoutes =
             .returning()
           )[0]!;
           await audit(tx, by, row.studyId, CORRECTION_OPENED, { version: draft.version, seededFromVersion: row.version });
-        } else if (row.status !== "draft" || row.byHand) throw new HttpError(409, `Version ${row.version} is ${row.status}; report a value on the live version or a draft.`);
+        } else if (row.status !== "draft") throw new HttpError(409, `Version ${row.version} is ${row.status}; report a value on the live version or a draft.`);
+        else if (row.byHand && !row.review.length) throw new HttpError(409, "Typing isn't marked done yet: change the value in the form instead.");
         // asked already, or withheld with a question (a cap's limit while its kind is asked: its question would name the kind)
         if (hiddenPaths(draft).includes(path)) throw new HttpError(409, "There's already an open question about this value.");
         // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
         const item = { ...askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported"), reported: { by, note, at: new Date().toISOString() } };
-        const [updated] = await tx.update(rulebookVersions).set({ review: [...draft.review, item], updatedAt: new Date() }).where(eq(rulebookVersions.id, draft.id)).returning();
+        const [updated] = await tx.update(rulebookVersions).set({ review: [...draft.review, item], updatedAt: touched(draft.updatedAt) }).where(eq(rulebookVersions.id, draft.id)).returning();
         await refreshStudyStatus(tx, row.studyId, by);
         await audit(tx, by, row.studyId, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, path, value: labelFor(draft.rulebook, path), note });
         return versionDto(updated!);
@@ -255,7 +244,7 @@ export const versionRoutes =
     /** Values that looked right to someone proofreading. Any version with a master, live ones too: marks never change its numbers. */
     app.post<P>("/studies/:id/versions/:v/proofread", async (req, reply) => {
       const body = ProofreadBody.safeParse(req.body);
-      if (!body.success) throw new HttpError(400, "Say who is proofreading and which values.");
+      if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.proofread));
       const { paths, by } = body.data;
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
@@ -265,7 +254,7 @@ export const versionRoutes =
         const proofread = proofreadMarks(row.proofread, paths, by, new Date().toISOString());
         // marked by them already: nothing changes, nothing is logged
         if (!proofread) return versionDto(row);
-        const [updated] = await tx.update(rulebookVersions).set({ proofread, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
+        const [updated] = await tx.update(rulebookVersions).set({ proofread, updatedAt: touched(row.updatedAt) }).where(eq(rulebookVersions.id, row.id)).returning();
         await audit(tx, by, row.studyId, "values.proofread", { version: row.version, values: paths.length });
         return versionDto(updated!);
       });
@@ -274,7 +263,7 @@ export const versionRoutes =
     /** The approver reopens answered questions with a note; they're answered again, blind, and the contract goes back to Needs you. */
     app.post<P>("/studies/:id/versions/:v/send-back", async (req, reply) => {
       const body = SendBackBody.safeParse(req.body);
-      if (!body.success) throw new HttpError(400, "Pick the answers to send back and add a note.");
+      if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.sendBack));
       const { note, by } = body.data;
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
@@ -294,7 +283,7 @@ export const versionRoutes =
         // a term listed to bill by hand comes off the list while its answer is reopened
         const reopened = new Set(items.map((i) => i!.id));
         const rulebook = row.rulebook && { ...row.rulebook, unclassified: row.rulebook.unclassified.filter((u) => !u.itemId || !reopened.has(u.itemId)) };
-        const [updated] = await tx.update(rulebookVersions).set({ review, evidence, rulebook, updatedAt: new Date() }).where(eq(rulebookVersions.id, row.id)).returning();
+        const [updated] = await tx.update(rulebookVersions).set({ review, evidence, rulebook, updatedAt: touched(row.updatedAt) }).where(eq(rulebookVersions.id, row.id)).returning();
         // Its own alert, with the note; no "questions ready" on top.
         await refreshStudyStatus(tx, row.studyId, by, { alert: false });
         await raiseAlert(tx, { kind: "sent_back", studyId: row.studyId, version: row.version, by, count: items.length, note });
@@ -319,7 +308,7 @@ export const versionRoutes =
           .where(and(eq(rulebookVersions.studyId, row.studyId), eq(rulebookVersions.status, "signed")));
         const [updated] = await tx
           .update(rulebookVersions)
-          .set({ status: "signed", signedBy: body.by, signedAt: new Date(), signNote: body.note ?? null, updatedAt: new Date() })
+          .set({ status: "signed", signedBy: body.by, signedAt: new Date(), signNote: body.note ?? null, updatedAt: touched(row.updatedAt) })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId, body.by);

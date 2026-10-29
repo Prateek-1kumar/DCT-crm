@@ -104,7 +104,11 @@ export async function buildWorkbook(stored: Rulebook, meta: WorkbookMeta): Promi
   for (const grid of rb.budgetGrids) {
     const visits = [...grid.visits].sort((a, b) => a.order - b.order);
     const choice = gridChoice(rb, grid);
-    const billed = !choice ? "" : choice.billed ? " · BILLED FROM THIS GRID" : ` · NOT BILLED: ${choice.instead.label} is billed instead`;
+    const billed =
+      !choice ? ""
+      : choice.billed ? " · BILLED FROM THIS GRID"
+      : choice.instead ? ` · NOT BILLED: ${choice.instead.label} is billed instead${choice.same ? " (it prices every visit the same)" : ""}`
+      : " · NOT BILLED: no grid was chosen for this arm";
     heading(g, `${grid.label}${grid.arm ? ` · ${grid.arm}` : ""}${grid.statedOverheadPct !== null ? ` · overhead ${grid.statedOverheadPct}%` : ""}${billed}`);
     const head = g.addRow(["Procedure", "Code", "Unit", "Overhead added", ...visits.map((v) => `${v.code} · ${v.name}`)]);
     head.font = { bold: true };

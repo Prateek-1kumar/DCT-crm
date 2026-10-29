@@ -28,7 +28,8 @@ describe("key terms", () => {
 
   it("a withheld value shows as hidden, never as missing; a withheld per-patient total isn't replaced by the visits added up", async () => {
     const nw = await version("st-northwind");
-    const rb = nw.rulebook!;
+    // its two grids differ, so neither is billed until one is chosen (billedGrids): Exhibit A is, here
+    const rb = { ...nw.rulebook!, governingGridIds: ["g-nw-a"] };
     const paths = ["/screenFail/amountCents", "/budgetGrids/0/perPatientTotals/0/cents"];
     const terms = keyTerms(rb, nw.evidence, new Set(paths));
     expect(terms.find((t) => t.id === "screen-fail")).toMatchObject({ value: "Hidden until answered", quote: null });

@@ -1,6 +1,6 @@
 import type { ContractAnomaly } from "./anomaly";
 import { leaf } from "./blind";
-import { openItems, type PageBox, type ReviewItem } from "./evidence";
+import { openItems, type PageBox, type ReviewItem, settled } from "./evidence";
 import { at } from "./pointer";
 import { askAbout } from "./questions";
 import { armKey, governingGrids, type Rulebook } from "./rulebook";
@@ -37,8 +37,13 @@ function heldBack(a: ContractAnomaly, asked: Set<string>): boolean {
   if (a.code === "OVERHEAD_LABEL_MISMATCH") return false;
   if (a.path && asked.has(a.path)) return true;
   const grid = gridOf(a.path);
-  return ARITHMETIC.has(a.code) && !!grid && [...asked].some((p) => p.startsWith(grid) && /^(visits|procedures|perPatientTotals)\//.test(p.slice(grid.length)));
+  return ARITHMETIC.has(a.code) && !!grid && [...asked].some((p) => totalledIn(p, grid));
 }
+/**
+ * What a grid's totals are made of: its visits', rows' and per-patient totals' values, a row's kind (procedure or not)
+ * included; not its stated overhead %, nor how a visit is paid or whether a row takes overhead.
+ */
+const totalledIn = (path: string, grid: string) => path.startsWith(grid) && /^(visits|procedures|perPatientTotals)\//.test(path.slice(grid.length)) && !/\/(?:autopay|overheadApplied)$/.test(path);
 
 type Visit = Rulebook["budgetGrids"][number]["visits"][number];
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
@@ -106,7 +111,8 @@ export function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked:
     if (ARITHMETIC.has(a.code) && a.path) {
       const words = ARITHMETIC_WORDS(a.path);
       const options = [{ id: "printed", label: words.printed, note: SPONSOR }, ...(sumAt(rb, a.path) !== undefined ? [{ id: "sum", label: words.sum, note: SPONSOR }] : [])];
-      return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} Which should we bill?`, options }];
+      // the total as it stands now: what "as printed" puts back if "the sum" is picked first
+      return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} Which should we bill?`, options, ...(typeof value === "number" ? { asPrinted: value } : {}) }];
     }
     if (a.code === "OVERHEAD_LABEL_MISMATCH")
       return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} Which governs?`, options: [{ id: "amounts", label: "The printed amounts: the label is wrong" }, ASK_SPONSOR] }];
@@ -123,6 +129,13 @@ export function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked:
 /** Checks whose truth depends on numbers a person may type: held back while they're open (heldBack), then run again. */
 const RECHECKED = new Set<ContractAnomaly["code"]>(["VISIT_TOTAL_MISMATCH", "PER_PATIENT_TOTAL_MISMATCH", "OVERHEAD_LABEL_MISMATCH"]);
 
+/** Whether a settled "which should we bill" answer still says what the master holds: the sum of the parts as they are now, or the total as printed. */
+function holds(rb: Rulebook, i: ReviewItem): boolean {
+  const now = at(rb, i.path!);
+  if (i.answer?.optionId === "sum") return now === sumAt(rb, i.path!);
+  return i.answer?.optionId !== "printed" || i.asPrinted === undefined || now === i.asPrinted;
+}
+
 /**
  * The checks don't run again by themselves, so a total held back while its grid's numbers were typed would never be
  * asked. Once the last number of a grid is answered, its arithmetic checks (`checks`: the API's real ones, the sample
@@ -130,17 +143,33 @@ const RECHECKED = new Set<ContractAnomaly["code"]>(["VISIT_TOTAL_MISMATCH", "PER
  * found it on the same numbers and asked it then (a correction draft's checks were settled on the live version). New
  * findings (typed numbers that no longer add up) are asked too. A contract typed by hand ran its checks when typing was
  * marked done (`anomalies`), so the same holds for it.
+ * A total already settled is asked again, in place (`v.review` changes), once its answer no longer holds: a number it
+ * adds up from changed (the finding reads differently, or "the sum" isn't the sum any more), or another answer wrote
+ * the total itself (then that answer is what's printed). Otherwise billing would take a sum of numbers since corrected.
  */
 export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: { rulebook: Rulebook; review: ReviewItem[]; anomalies: ContractAnomaly[] }, path: string): ReviewItem[] {
   const grid = gridOf(path);
-  if (!grid || openItems(v.review).some((i) => i.kind === "confirm_value" && i.path?.startsWith(grid))) return [];
+  if (!grid || openItems(v.review).some((i) => i.kind === "confirm_value" && !!i.path && totalledIn(i.path, grid))) return [];
   // what the read asked: its value questions, and the checks it didn't hold back
   const readAsked = new Set(v.review.flatMap((i) => (/^(confirm|spot|missing):/.test(i.id) && i.path ? [i.path] : [])));
   const askedAtRead = new Set(v.anomalies.filter((a) => !SUPERSEDED.has(a.code) && !heldBack(a, readAsked)).map((a) => a.id));
   const read = new Map(v.anomalies.map((a) => [a.id, a.message]));
+  const findings = checks(v.rulebook).filter((a) => RECHECKED.has(a.code) && gridOf(a.path) === grid);
+  const now = new Map(fromAnomalies(findings, v.rulebook, new Set()).map((i) => [i.id, i]));
+  for (const i of v.review) {
+    if (!ARITHMETIC.has(i.reason) || !i.path || gridOf(i.path) !== grid) continue;
+    const f = now.get(i.id);
+    const reworded = !!f && f.question !== i.question;
+    if (!settled(i)) {
+      if (reworded) Object.assign(i, { question: f.question, options: f.options });
+    } else if (reworded || !holds(v.rulebook, i))
+      Object.assign(i, {
+        question: f?.question ?? i.question,
+        options: f?.options ?? i.options,
+        ...(path === i.path ? { asPrinted: at(v.rulebook, path) } : {}),
+        answer: null, outcome: null, compare: null, sentBack: null,
+      });
+  }
   const have = new Set(v.review.map((i) => i.id));
-  const found = checks(v.rulebook).filter(
-    (a) => RECHECKED.has(a.code) && gridOf(a.path) === grid && !have.has(`anomaly:${a.id}`) && !(read.get(a.id) === a.message && askedAtRead.has(a.id)),
-  );
-  return fromAnomalies(found, v.rulebook, new Set());
+  return fromAnomalies(findings.filter((a) => !have.has(`anomaly:${a.id}`) && !(read.get(a.id) === a.message && askedAtRead.has(a.id))), v.rulebook, new Set());
 }

@@ -12,6 +12,7 @@ export const ENUM_LABELS: Record<string, Record<string, string>> = {
   rounding: { printed_amounts: "Use printed amounts", cents: "Round to cents", unspecified: "Not stated" },
   basis: { fixed: "Fixed", actual_cost: "Actual cost", per_procedure: "Per procedure", per_hour: "Per hour", per_mile: "Per mile" },
   paidVia: { auto_edc: "Automatic (from EDC)", invoice: "By invoice" },
+  category: { procedure: "A procedure", non_procedure: "Not a procedure (staff time, stipends)" },
   trigger: {
     agreement_execution: "On agreement execution",
     study_initiation: "On study initiation",

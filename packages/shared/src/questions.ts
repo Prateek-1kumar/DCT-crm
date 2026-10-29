@@ -1,5 +1,5 @@
 import type { ContractAnomaly } from "./anomaly";
-import { leaf } from "./blind";
+import { AMOUNT_IN_NAME, leaf } from "./blind";
 import { labelFor } from "./diff";
 import { blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
@@ -22,14 +22,16 @@ export const PROSPECTIVE = "prospective";
 const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as const;
 const sentence = (s: string) => (/[.?!]$/.test(s) ? s : `${s}.`);
 // An amount or % in a name would give a value away, as the value questions blank them.
-const named = (name: string) => `“${name.replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…").trim()}”`;
+const named = (name: string) => `“${name.replace(AMOUNT_IN_NAME, "…").trim()}”`;
 const listOf = (values: readonly string[], labels: Record<string, string> | undefined) => values.map((id) => ({ id, label: labels?.[id] ?? id }));
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
-/** The newest amendment's own date, as the read gives it (ISO only): what "prospective only" writes. */
+/**
+ * The newest amendment's own date, as the read gives it (ISO only): what a "prospective only" answer's typed date is
+ * checked against. Nothing checks it against the PDF, so it's never written as it is.
+ */
 export const amendmentDate = (rb: Pick<Rulebook, "documents">): string | null =>
   rb.documents.flatMap((d) => (d.kind === "amendment" && d.date && ISO.test(d.date) ? [d.date] : [])).sort().at(-1) ?? null;
-const longDate = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "long", day: "numeric" });
 
 type Field = { path: string; question: string; prov: Provenance | null | undefined; options?: { id: string; label: string }[]; input?: "text" | "date"; kind?: ReviewItem["kind"]; reason?: string };
 
@@ -62,11 +64,11 @@ function fields(rb: Rulebook, amendment: boolean, retroactive: boolean): Field[]
 
   // From when the terms apply. With no date on an amendment, billing would fall back to the contract's effective date,
   // which can be the base contract's: retroactive to the start. That's a blocker (RETROACTIVE_NO_DATE): typed, or
-  // "prospective only", which writes the amendment's own date, shown so the person checks it.
+  // "prospective only", where the person also types the amendment's own date, blind: the read's date of a document is
+  // checked by nothing, so it's never written as theirs.
   const af = rb.appliesFrom.value;
   if (amendment || retroactive || af !== null) {
-    const d = amendmentDate(rb);
-    const options = d ? [{ id: PROSPECTIVE, label: `Prospective only: from the amendment's own date, ${longDate(d)}` }] : [];
+    const options = amendment || retroactive ? [{ id: PROSPECTIVE, label: "Prospective only: from the amendment's own date" }] : [];
     const base = { path: "/appliesFrom/value", input: "date" as const, options, prov: rb.appliesFrom.prov };
     out.push(
       af === null
@@ -123,18 +125,32 @@ export const askedAsInterpretation = (a: Pick<ContractAnomaly, "code" | "path">,
 
 /**
  * Values whose meaning an open question decides, withheld with it: a cap's limit and ratio while its kind is asked (the
- * limit is cents for an amount cap, a count otherwise, so a figure or its question would give the kind away).
+ * limit is cents for an amount cap, a count otherwise, so a figure or its question would give the kind away); every
+ * visit's "paid automatically" while how visits are paid is asked, and every grid row's "overhead added" while what the
+ * overhead applies to is (`rb`'s grids): row by row, they restate the answer.
+ * Not a withheld cell's visit subtotal and total, though the cell could be worked out from them and the row's other
+ * cells: the person answering reads the page, which prints that subtotal too, and what blind entry guards against is
+ * anchoring on a value shown, not sums done on purpose. Withholding them would hide numbers the PDF confirmed, and blank
+ * most of a grid while a few of its cells are asked.
  */
-export const alsoWithheld = (path: string): string[] => (/\/cap\/kind$/.test(path) ? [path.replace(/kind$/, "n"), path.replace(/kind$/, "ratio")] : []);
+export function alsoWithheld(path: string, rb?: unknown): string[] {
+  if (/\/cap\/kind$/.test(path)) return [path.replace(/kind$/, "n"), path.replace(/kind$/, "ratio")];
+  const grids = (rb as Partial<Rulebook> | null | undefined)?.budgetGrids ?? [];
+  if (path === "/payment/visitPayment/value") return grids.flatMap((g, gi) => g.visits.map((_, vi) => `/budgetGrids/${gi}/visits/${vi}/autopay`));
+  if (path === "/overhead/appliesTo/value") return grids.flatMap((g, gi) => g.procedures.map((_, pi) => `/budgetGrids/${gi}/procedures/${pi}/overheadApplied`));
+  return [];
+}
 
 const valueAt = (root: unknown, path: string) =>
   path.slice(1).split("/").map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~")).reduce<unknown>((n, t) => (n !== null && typeof n === "object" ? (n as Record<string, unknown>)[t] : undefined), root);
 
 /**
  * A cap's limit and ratio once its kind is answered (`ask` words the question): asked if the read's figure isn't
- * confirmed (its question waited for the kind, as its wording names the kind), or if the person's kind isn't the read's
+ * confirmed (its question waited for the kind, as its wording names the kind), if the person's kind isn't the read's
  * (`kindChanged`): the limit is cents for an amount cap and a count otherwise, so the read's figure means something else
- * now, and a ratio cap needs its ratio. Not while one is open already; asked anew if an earlier one was settled.
+ * now, and a ratio cap needs its ratio; or if the kind needs a figure the master doesn't have (a limit for a count, an
+ * amount or blocks, a ratio for a ratio cap), which would be approved as "at most ?". Not while one is open already;
+ * asked anew if an earlier one was settled.
  */
 export function capFollowUps(
   v: { rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[] },
@@ -149,10 +165,13 @@ export function capFollowUps(
     const path = item.path!.replace(/kind$/, f);
     const ev = v.evidence.find((e) => e.path === path);
     const waited = !!ev && ev.status !== "confirmed" && ev.status !== "attested";
-    const needed = kindChanged && (f === "n" ? kind !== "ratio_to_randomized" || valueAt(v.rulebook, path) !== null : kind === "ratio_to_randomized");
-    if (!(waited || needed) || v.review.some((i) => i.path === path && !settled(i))) return [];
+    const needs = f === "n" ? kind !== "ratio_to_randomized" : kind === "ratio_to_randomized";
+    const missing = needs && valueAt(v.rulebook, path) === null;
+    const needed = kindChanged && (needs || (f === "n" && valueAt(v.rulebook, path) !== null));
+    if (!(waited || needed || missing) || v.review.some((i) => i.path === path && !settled(i))) return [];
     const earlier = v.review.filter((i) => i.id.startsWith(`cap:${path}`)).length;
-    return [ask(path, `cap:${path}${earlier ? `:${earlier + 1}` : ""}`, waited ? (ev.status === "conflict" ? "VALUE_CONFLICT" : "UNGROUNDED_VALUE") : "CAP_KIND_CHANGED")];
+    const reason = waited ? (ev.status === "conflict" ? "VALUE_CONFLICT" : "UNGROUNDED_VALUE") : needed ? "CAP_KIND_CHANGED" : "REQUIRED_MISSING";
+    return [ask(path, `cap:${path}${earlier ? `:${earlier + 1}` : ""}`, reason)];
   });
 }
 
@@ -179,7 +198,7 @@ const inputFor = (rb: Rulebook, path: string, value: unknown): NonNullable<Revie
 };
 
 /** A value's label with any amount or % in its names blanked: they would give the answer away (as the binder's questions do). */
-export const blindLabel = (rb: unknown, path: string) => labelFor(rb, path).replace(/\$\s?\d[\d,.]*|\d+(?:\.\d+)?\s?%/g, "…");
+export const blindLabel = (rb: unknown, path: string) => labelFor(rb, path).replace(AMOUNT_IN_NAME, "…");
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 /** Provenance of the nearest item on the path that carries one ("/payment/netDays/value" → payment.netDays.prov). */
@@ -193,15 +212,20 @@ export function provOf(rb: Rulebook, path: string): Provenance | null {
   return found;
 }
 
+/** The plain words of a fixed-list value's choices: a cap's kind has its own (its field is `kind`, like a deadline's). */
+export const choicesOf = (path: string) => ENUM_LABELS[/\/cap\/kind$/.test(path) ? "capKind" : fieldKey(path)];
+
 /**
  * A blind question about one value: "This looks wrong" (reason "reported"), the re-type sample of hand-typed values
  * ("spot_check") and of a read's confirmed values (SAMPLE), a required value the read didn't find. Yes/no and fixed-list
- * values are picked; the rest typed.
+ * values are picked; the rest typed. The read's sample shows its page, never the spot the PDF check bound the value to:
+ * a wrong binding would point at the wrong cell, and the person would type what's printed there, so a binder's mistake
+ * would pass as confirmed. The question names the row and column (or the term) in words instead.
  */
 export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): ReviewItem {
   const value = at(rb, path);
   const label = blindLabel(rb, path);
-  const list = typeof value === "string" ? ENUM_LABELS[fieldKey(path)] : undefined;
+  const list = typeof value === "string" ? choicesOf(path) : undefined;
   const options =
     typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }]
     : list && (value as string) in list ? Object.entries(list).map(([k, l]) => ({ id: k, label: l }))
@@ -212,7 +236,7 @@ export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, 
   return {
     ...BLANK, id, kind: "confirm_value", reason, path, blocking: true, input, options,
     question: `What ${input === "money" ? "amount" : input === "date" ? "date" : "value"} is printed for ${label}?`,
-    where: ev ? [ev] : src ? [pageOf(src)] : [],
+    where: ev && reason !== SAMPLE ? [ev] : ev || src ? [pageOf((ev ?? src)!)] : [],
   };
 }
 
@@ -229,7 +253,8 @@ export const FAMILY_LABEL: Record<Family, string> = {
 
 export function familyOf(path: string): Family {
   if (/^\/budgetGrids\/\d+\/procedures\/\d+\/(?:cells\/|unitCents$)/.test(path)) return "cells";
-  if (path.startsWith("/budgetGrids/")) return "totals";
+  // a grid's stated overhead is a percentage, checked with the rules, not a total
+  if (path.startsWith("/budgetGrids/") && !path.endsWith("/statedOverheadPct")) return "totals";
   if (/^\/(?:siteFees|invoiceables)\/\d+\/amount(?:WithOverhead)?Cents$|^\/screenFail\/amountCents$/.test(path)) return "fees";
   return "rules";
 }
@@ -268,6 +293,28 @@ export function pickSample(evidence: ValueEvidence[], skip: ReadonlySet<string>,
 export function pickRetype(rb: Rulebook, evidence: ValueEvidence[], random: () => number = cryptoRandom, n = SAMPLE_SIZE): { typed: string[]; sample: string[] } {
   const typed = evidence.filter((e) => e.status === "attested" && leaf(at(rb, e.path)) && !empty(at(rb, e.path))).map((e) => e.path);
   return { typed, sample: shuffle(typed, random).slice(0, n) };
+}
+
+/**
+ * What nobody decided in a contract typed by hand (no evidence row at its path): the blank form has to fill what the
+ * schema allows no empty for. A number (a visit's total 0, a holdback's % 0: the form shows an empty box), a yes/no or
+ * a fixed-list value (a visit paid automatically, no overhead on a row, a fee billed "one time", screen failures "by
+ * invoice", "not stated"), and what the holdback is taken from. Each is asked like a missing value when typing is marked
+ * done: typed, or picked blind. Not what only orders or describes the master: schemaVersion, a visit's order, provenance,
+ * the documents.
+ */
+export function placeholders(rb: Rulebook, evidence: ValueEvidence[]): string[] {
+  const typed = new Set(evidence.map((e) => e.path));
+  const out: string[] = [];
+  const decides = (path: string, x: unknown) => typeof x === "number" || typeof x === "boolean" || (typeof x === "string" && (!!choicesOf(path)?.[x] || path === "/holdback/appliesTo"));
+  const walk = (node: unknown, path: string, key: string) => {
+    if (key === "prov" || key === "schemaVersion" || key === "order" || path === "/documents") return;
+    if (decides(path, node)) return void (typed.has(path) || out.push(path));
+    if (Array.isArray(node)) node.forEach((x, i) => walk(x, `${path}/${i}`, String(i)));
+    else if (isObj(node)) for (const [k, x] of Object.entries(node)) walk(x, `${path}/${k.replace(/~/g, "~0").replace(/\//g, "~1")}`, k);
+  };
+  walk(rb, "", "");
+  return out;
 }
 
 export type SampleMiss = { family: Family; label: string; total: number; left: string[] };

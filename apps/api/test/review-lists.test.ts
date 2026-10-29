@@ -176,7 +176,7 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     return rb;
   };
 
-  it("no date: a blocker, typed or 'prospective only' (the amendment's own date, shown), never the contract's effective date", () => {
+  it("no date: a blocker, typed or 'prospective only' (the amendment's own date, typed blind), never the contract's effective date", () => {
     const rb = amended();
     expect(appliesFromOf(rb)).toBe("2025-01-10"); // what billing would use unasked: retroactive to the base contract
     const { review } = reviewDraft({ bindEvidence, reviewFromEvidence }, rb, runContractChecks(rb), [], [], { amendment: true });
@@ -184,10 +184,11 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     const q = review.find((i) => i.path === "/appliesFrom/value")!;
     expect(q).toMatchObject({ id: "interpret:/appliesFrom/value", kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", blocking: true, input: "date", where: [{ documentId: "d2", page: 1, box: null }] });
     expect(q.question).toMatch(/^The amendment says its new prices apply retroactively, but gives no start date/);
-    expect(q.options).toEqual([{ id: "prospective", label: "Prospective only: from the amendment's own date, March 1, 2026" }]);
+    // the read's date of the amendment isn't shown: nothing checked it, so the person types it from the amendment
+    expect(q.options).toEqual([{ id: "prospective", label: "Prospective only: from the amendment's own date" }]);
 
     const pick = { version: 1, byHand: false, rulebook: structuredClone(rb), review: structuredClone(review), evidence: [], editors: [] };
-    expect(answerDraft(pick, q.id, { optionId: "prospective", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen", set: { path: "/appliesFrom/value", before: null, after: "2026-03-01" } });
+    expect(answerDraft(pick, q.id, { optionId: "prospective", value: "2026-03-01", by: "Sam" }, isoDate)).toMatchObject({ outcome: "matched", set: { path: "/appliesFrom/value", before: null, after: "2026-03-01" } });
     expect(appliesFromOf(pick.rulebook)).toBe("2026-03-01");
     const typed = { version: 1, byHand: false, rulebook: structuredClone(rb), review: structuredClone(review), evidence: [], editors: [] };
     expect(answerDraft(typed, q.id, { value: "2025-11-01", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen", set: { after: "2025-11-01" } });
@@ -205,7 +206,7 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     q = review.find((i) => i.path === "/appliesFrom/value")!;
     expect(q).toMatchObject({ kind: "interpretation", reason: "INTERPRETATION", input: "date" });
     const d = { version: 1, byHand: false, rulebook: rb, review, evidence: [], editors: [] };
-    expect(answerDraft(d, q.id, { optionId: "prospective", by: "Sam" }, isoDate)).toMatchObject({ outcome: "differs" }); // March 1 isn't the read's February 1
+    expect(answerDraft(d, q.id, { optionId: "prospective", value: "2026-03-01", by: "Sam" }, isoDate)).toMatchObject({ outcome: "differs" }); // March 1 isn't the read's February 1
     expect(answerDraft(d, q.id, { value: "2026-02-01", note: "§1 says February 1", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen" });
     // a contract that isn't an amendment and gives no date asks nothing
     const base = manualRulebook({ sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0], []);
@@ -236,7 +237,8 @@ describe("the blind sample of confirmed values (ADR-001 §6)", () => {
     const v = await version(studyId);
     const sample = v.review.filter((i) => i.reason === SAMPLE);
     expect(sample).toHaveLength(10);
-    expect(new Set(sample.map((i) => i.path!.split("/")[1]))).toEqual(new Set(["budgetGrids", "invoiceables", "study", "siteFees"]));
+    // the rules family's first values with the draw pinned are the grids' stated overhead percentages
+    expect(new Set(sample.map((i) => i.path!.split("/")[1]))).toEqual(new Set(["budgetGrids", "invoiceables"]));
     expect(sample.every((i) => i.kind === "confirm_value" && i.blocking && at(v.rulebook, i.path!) === null)).toBe(true);
     // stored: a reload reads the same questions; nothing draws again
     expect((await version(studyId)).review.filter((i) => i.reason === SAMPLE).map((i) => i.id)).toEqual(sample.map((i) => i.id));
@@ -252,13 +254,13 @@ describe("the blind sample of confirmed values (ADR-001 §6)", () => {
   it("a miss: kept after looking again, it blocks approval until its kind of value is proofread, is logged as an incident and alerted", async () => {
     const { studyId } = await draft();
     const id = `sample:${CELL}`;
-    // first "Look at the close-up again": the PDF's own text says otherwise; nothing has missed yet
-    expect(await answer(studyId, id, { value: 5600 })).toMatchObject({ outcome: "differs", compare: { typed: 5600, read: 5500, printed: "55.00" } });
+    // the first answer differs: typed again blind, with nothing shown of what the check confirmed; nothing has missed yet
+    expect(await answer(studyId, id, { value: 5600 })).toMatchObject({ outcome: "differs", compare: null });
     expect((await auditOf(studyId)).map((e) => e.action)).not.toContain("sample.missed");
-    // picking the PDF's text after looking again isn't a miss
+    // the confirmed value typed the second time was a typo, not a miss
     const other = `sample:/budgetGrids/0/procedures/0/cells/V2`;
     await answer(studyId, other, { value: 5700 });
-    expect(await answer(studyId, other, { value: 5500 })).toMatchObject({ outcome: "chosen" });
+    expect(await answer(studyId, other, { value: 5500 })).toMatchObject({ outcome: "matched" });
     expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === other)!.missed).toBeUndefined();
     // kept: the sample missed
     expect(await answer(studyId, id, { value: 5600, note: "The page prints $56.00; the text layer is off" })).toMatchObject({ outcome: "chosen", missed: true });

@@ -1,6 +1,6 @@
 "use client";
 
-import { settled, type PageBox, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { type PageBox, type RulebookVersionDto, type StudyDetailDto, withheldPaths } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -35,10 +35,8 @@ export function Workspace({ study, version, children, report, hits, focus }: {
   const [focused, setFocused] = useState<{ path: string; label: string; from: HTMLElement | null } | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const evidence = useMemo(() => new Map(version.evidence.map((e) => [e.path, e.status])), [version.evidence]);
-  const masked = useMemo(
-    () => new Set(version.status === "draft" ? version.review.filter((i) => i.path && !settled(i)).map((i) => i.path!) : []),
-    [version.review, version.status],
-  );
+  // the paths the server withholds (with what an open answer decides, as a cap's limit or each visit's "paid automatically")
+  const masked = useMemo(() => new Set(withheldPaths(version)), [version]);
   const proofread = useMemo(() => new Map((version.proofread ?? []).map((m) => [m.path, m])), [version.proofread]);
   const noHits = useMemo(() => new Set<string>(), []);
 
@@ -101,13 +99,14 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   const [sent, setSent] = useState<string | null>(null);
   const rb = version.rulebook!;
   // a value, or one it's made of (a cap's limit), withheld for a blind answer
-  const masked = version.status === "draft" && version.review.some((i) => !!i.path && (i.path === path || i.path.startsWith(`${path}/`)) && !settled(i));
+  const masked = withheldPaths(version).some((p) => p === path || p.startsWith(`${path}/`));
   const ev = version.evidence.find((e) => e.path === path);
   const prov = findProv(rb, path);
   const mark = version.proofread?.find((m) => m.path === path);
   const spot: PageBox | null = ev?.where[0] ?? (prov?.source ? { documentId: prov.source.documentId, page: prov.source.page, box: null } : null);
   const value = getAt(rb, path);
-  const reportable = report && (version.status === "signed" || (version.status === "draft" && !version.byHand)) && isLeaf(value) && !masked;
+  // typed by hand: reported once typing is marked done (before, the value is changed in the form)
+  const reportable = report && (version.status === "signed" || (version.status === "draft" && (!version.byHand || version.review.length > 0))) && isLeaf(value) && !masked;
 
   const self = useRef<HTMLElement>(null);
   useEffect(() => self.current?.focus({ preventScroll: true }), []);

@@ -1,4 +1,4 @@
-import type { PageBox } from "@dct/shared";
+import { type PageBox, parseCents } from "@dct/shared";
 import { MIN_PAGE_TEXT } from "./checks";
 import { pageCount, textPage } from "./render";
 
@@ -111,7 +111,17 @@ const RULES: [SpanKind, RegExp][] = [
 ];
 
 export type SpanKind = "amount" | "grid_number" | "percent" | "days" | "ratio" | "limit" | "absence";
-export type Span = { kind: SpanKind; where: PageBox; words: Word[]; /** The line or sentence it sits in. */ text: string };
+export type Span = {
+  kind: SpanKind;
+  where: PageBox;
+  words: Word[];
+  /** The line or sentence it sits in. */
+  text: string;
+  /** Where that line or sentence is printed, one box per line: a sentence can run over lines the span isn't on. */
+  lines: PageBox[];
+  /** An amount's cents, read with the word before it (centsOf: brackets restating words aren't a credit). */
+  cents?: number;
+};
 
 export const NUMBER = /^\(?(?:US)?\$?\d[\d,]*(?:\.\d+)?\)?%?$/;
 /** A number as printed without the sentence punctuation after it: "$7,455.00." → "$7,455.00". Test NUMBER on this. */
@@ -123,13 +133,11 @@ const UNITS = "one|two|three|four|five|six|seven|eight|nine";
 const RESTATES = new RegExp(`^(?:dollars?|usd|u\\.?s\\.?|\\d+/100|zero|${UNITS}|ten|eleven|twelve|(?:thir|four|fif|six|seven|eigh|nine)teen|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:-(?:${UNITS}))?|hundred|thousand|million)$`, "i");
 
 /**
- * The cents an amount prints. In brackets, "(1,500.00)" is a credit and comes out below zero, so it can't back a
- * positive value; unless the brackets restate the words before them (`before`, the word printed just ahead).
+ * The cents an amount prints (parseCents, @dct/shared: one reading of amounts everywhere). In brackets, "(1,500.00)" is a
+ * credit and comes out below zero, so it can't back a positive value; unless the brackets restate the words before them
+ * (`before`, the word printed just ahead). null when it isn't an amount (a fraction of a cent, say).
  */
-export function centsOf(t: string, before = ""): number {
-  const n = Math.round(Number(t.replace(/[^\d.]/g, "")) * 100);
-  return /^\(.*\)$/.test(t) && !RESTATES.test(before.replace(/[.,;:]+$/, "")) ? -n : n;
-}
+export const centsOf = (t: string, before = ""): number | null => parseCents(t, { restates: RESTATES.test(before.replace(/[.,;:]+$/, "")) });
 
 /**
  * Dollar amounts in reading order; a lone "$" joins the number after it. `currencyOnly`: only those with a sign.
@@ -143,7 +151,8 @@ export function amounts(ws: Word[], currencyOnly = false, before?: (w: Word) => 
     if (CURRENCY.test(ws[i - 1]?.text ?? "") || !NUMBER.test(t) || t.endsWith("%")) return;
     const money = /\$|USD/.test(t) || (!currencyOnly && /\d,\d{3}|\.\d{2}\)?$/.test(t));
     const whole = t.replace(/[^\d.]/g, "").split(".")[0]!;
-    if (money && !(whole.length >= 8 && !t.includes(","))) out.push({ words: pair ? [w, ws[i + 1]!] : [w], cents: centsOf(t, (before ? before(w) : ws[i - 1])?.text) });
+    const cents = centsOf(t, (before ? before(w) : ws[i - 1])?.text);
+    if (money && cents !== null && !(whole.length >= 8 && !t.includes(","))) out.push({ words: pair ? [w, ws[i + 1]!] : [w], cents });
   });
   return out;
 }
@@ -211,10 +220,11 @@ export function inventory(pages: TextPage[]): Span[] {
   const out: Span[] = [];
   for (const p of pages.filter((x) => x.source === "text")) {
     const taken = new Set<Word>();
-    const add = (kind: SpanKind, ws: Word[], ctx: Word[]) => {
+    const add = (kind: SpanKind, ws: Word[], ctx: Word[], cents?: number) => {
       if (!ws.length || ws.some((w) => taken.has(w))) return;
       ws.forEach((w) => taken.add(w));
-      out.push({ kind, where: boxOf(p, ws), words: ws, text: ctx.map((w) => (bank.has(w) ? "…" : w.text)).join(" ").slice(0, 240) });
+      const text = ctx.map((w) => (bank.has(w) ? "…" : w.text)).join(" ").slice(0, 240);
+      out.push({ kind, where: boxOf(p, ws), words: ws, text, lines: visualLines(ctx).map((l) => boxOf(p, l)), ...(cents !== undefined ? { cents } : {}) });
     };
     const sents = sentences(p);
     for (const s of sents) if (bankSentence(s)) s.forEach((w) => taken.add(w));
@@ -225,7 +235,7 @@ export function inventory(pages: TextPage[]): Span[] {
     const secret = new Set([...bank].filter((w) => taken.has(w) || digits(w) >= 6 || /^[A-Z]{2}\d{2}/.test(w.text)));
     secret.forEach((w) => taken.add(w));
     const lines = visualLines(p.words.filter((w) => !w.hidden));
-    for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l);
+    for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l, a.cents);
     for (const l of lines) {
       // Table row ("grid row band"): 2+ numbers, each set off from the word before it by a column gap.
       const cells = l.filter((w, i) => NUMBER.test(bare(w.text)) && (i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1]));

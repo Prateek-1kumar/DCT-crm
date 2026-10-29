@@ -38,12 +38,12 @@ const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value",
 const SAMPLED = [
   "/budgetGrids/0/procedures/0/cells/V1",
   "/budgetGrids/0/visits/0/totalCents",
+  "/budgetGrids/0/statedOverheadPct",
   "/invoiceables/0/amountCents",
-  "/study/effectiveDate/value",
   "/budgetGrids/0/procedures/0/cells/V2",
   "/budgetGrids/0/visits/0/procedureSubtotalCents",
+  "/budgetGrids/1/statedOverheadPct",
   "/invoiceables/0/amountWithOverheadCents",
-  "/siteFees/0/dueDays",
   "/budgetGrids/0/procedures/0/unitCents",
   "/budgetGrids/0/visits/0/nonProcedureCents",
 ];
@@ -313,9 +313,9 @@ describe("answering", () => {
     const { studyId } = await draft();
     const path = "/study/effectiveDate/value";
     expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === path)).toMatchObject({ status: "confirmed", printed: "August 22, 2025" });
-    // the read's blind sample re-types it (the draw pinned); "This looks wrong" on it asks nothing more
-    expect((await post(`/studies/${studyId}/versions/1/report`, { path, note: "check the date", by: "Ben" })).statusCode).toBe(409);
-    const id = `sample:${path}`;
+    // "This looks wrong" on it asks it blind (the blind sample, which never shows the check's value, didn't draw it)
+    expect((await post(`/studies/${studyId}/versions/1/report`, { path, note: "check the date", by: "Ben" })).statusCode).toBe(200);
+    const id = (await version(studyId)).review.find((i) => i.reason === "reported" && i.path === path)!.id;
     expect((await version(studyId)).review.find((i) => i.id === id)!.input).toBe("date");
     // a day off: the PDF's text says otherwise, so keeping it needs a reason, and it isn't marked as missing from the text
     expect(await answer(studyId, id, { value: "2025-08-23" })).toMatchObject({ outcome: "differs", compare: { typed: "2025-08-23", read: "2025-08-22", printed: "August 22, 2025" } });
@@ -345,14 +345,14 @@ describe("answering", () => {
     const blocked = await approve("Morgan");
     expect(blocked.statusCode).toBe(409);
     expect(blocked.json().message).toBe(`${8 + INTERPRETED.length + SAMPLED.length} questions still need an answer before this can be approved.`);
-    // A "can't tell" holds approval up, a blocking one and one that's not needed to approve alike; the second waits for
-    // the approver (it doesn't count as needing you).
+    // A "can't tell" holds approval up, a blocking one and one that's not needed to approve alike, and both count as
+    // needing you: the contract isn't waiting for approval while one is open.
     await settleAll(built, studyId, 1, "Sam");
     await answer(studyId, "anomaly:GRID_CONFLICT:/budgetGrids/0", { cantTell: true });
     expect((await approve("Morgan")).json().message).toBe("1 question still needs an answer before this can be approved.");
     await answer(studyId, "anomaly:GRID_CONFLICT:/budgetGrids/0", { optionId: "g1" });
     await answer(studyId, "anomaly:MISSING_REFERENCED_DOC:/referencedDocuments/0", { cantTell: true });
-    expect(await summary(studyId)).toMatchObject({ needsYou: 0 });
+    expect(await summary(studyId)).toMatchObject({ needsYou: 1 });
     expect((await approve("Morgan")).json().message).toBe("1 question still needs an answer before this can be approved.");
     await answer(studyId, "anomaly:MISSING_REFERENCED_DOC:/referencedDocuments/0", { optionId: "later" });
 
@@ -382,7 +382,8 @@ describe("“This looks wrong”", () => {
     expect(await summary(studyId)).toMatchObject({ needsYou: 1 });
     expect((await post(url, { path: NET_DAYS, note: "again", by: "Sam" })).statusCode).toBe(409);
     expect((await post(url, { path: "/budgetGrids/0", note: "whole grid", by: "Sam" })).statusCode).toBe(400);
-    expect((await post(url, { path: NET_DAYS, by: "Sam" })).json().message).toBe("Add a short note and say who is reporting.");
+    // what's missing, named: the note here, not who is reporting
+    expect((await post(url, { path: NET_DAYS, by: "Sam" })).json().message).toBe("Add a short note saying what looks wrong.");
   });
 
   it("on the live version opens a correction draft; the live version stays live until it's approved", async () => {
@@ -493,10 +494,11 @@ describe("typing in by hand", () => {
     expect(v.editors).toEqual(["Avery"]);
     expect((await signOff(app, studyId, 1, { by: "Ben" })).json().message).toMatch(/^Typing isn't marked done yet/);
 
-    // 3 typed values → all 3 are re-typed. The visit total nobody typed holds the blank form's 0: asked as missing.
+    // 3 typed values → all 3 are re-typed. The visit total nobody typed holds the blank form's 0, and the form's choices
+    // nobody made their defaults (how the visit is paid, the row's kind and overhead, the terms "not stated"): asked as missing.
     v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
-    expect(v.review.map((i) => i.reason).sort()).toEqual(["REQUIRED_MISSING", "spot_check", "spot_check", "spot_check"]);
-    expect(v.review.find((i) => i.reason === "REQUIRED_MISSING")).toMatchObject({ path: "/budgetGrids/0/visits/0/totalCents", blocking: true, input: "money" });
+    expect(v.review.map((i) => i.reason).sort()).toEqual([...Array(8).fill("REQUIRED_MISSING"), "spot_check", "spot_check", "spot_check"]);
+    expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ reason: "REQUIRED_MISSING", blocking: true, input: "money" });
     expect(v.review.every((i) => i.blocking && i.answer === null)).toBe(true);
     expect(v.review.every((i) => i.path && at(v.rulebook, i.path) === null)).toBe(true); // blind
     expect((await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).statusCode).toBe(409);
@@ -509,6 +511,9 @@ describe("typing in by hand", () => {
     // the missing total is typed by the typist (anyone may: it's not a re-type); nobody can approve $0 that wasn't typed
     expect(await answer(studyId, "missing:/budgetGrids/0/visits/0/totalCents", { value: 18500, by: "Avery" })).toMatchObject({ outcome: "chosen" });
     expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ status: "attested" });
+    // the form's defaults nobody picked are picked now, by the typist: decisions, not re-types
+    const held = await storedVersion(built, studyId, 1);
+    for (const i of held.review.filter((x) => x.reason === "REQUIRED_MISSING" && x.outcome === null)) await answer(studyId, i.id, { optionId: String(at(held.rulebook, i.path!)), by: "Avery" });
     await settleAll(built, studyId, 1, "Sam");
     // Re-typing as typed isn't editing: with maker-checker on, the re-typer may approve and the typist may not.
     await patch("/settings", { makerChecker: true, by: "Morgan" });

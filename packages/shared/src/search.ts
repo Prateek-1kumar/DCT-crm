@@ -1,6 +1,9 @@
 import { z } from "zod";
-import { StudySummaryDto } from "./api";
+import { StudySummaryDto, withheldPaths } from "./api";
+import { mask } from "./blind";
+import type { ReviewItem, ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
+import { parseCents } from "./money";
 import type { Rulebook } from "./rulebook";
 
 /**
@@ -68,11 +71,8 @@ export const MasterSearch = z.object({
 export type MasterSearch = z.infer<typeof MasterSearch>;
 
 const words = (q: string) => q.toLowerCase().split(/\s+/).filter(Boolean);
-/** "98", "$98.00", "1,245.20" → cents; otherwise null. */
-export const amountOf = (q: string): number | null => {
-  const t = q.trim().replace(/^\$/, "").replace(/,/g, "");
-  return /^\d+(\.\d{1,2})?$/.test(t) ? Math.round(Number(t) * 100) : null;
-};
+/** "98", "$98.00", "1,245.20" → cents, as every amount is read (parseCents); otherwise null. */
+export const amountOf = (q: string): number | null => parseCents(q);
 
 /**
  * Items of one invoicing master matching `q`: every word appears in the item's name, code or wording, or `q` is an
@@ -116,4 +116,19 @@ export function searchMaster(rb: Rulebook, q: string): MasterSearch["hits"] {
   ];
   for (const [path, label, hay, amount] of terms) if (has(`${label} ${hay}`) || (cents !== null && amount === cents)) add(path, "terms", label);
   return hits;
+}
+
+/**
+ * GET …/versions/:v/search, for the API and the sample server alike. On a draft, a value still hidden for someone to type
+ * blind must not be findable: amounts match values, and a term's words include its values, so an item that holds one
+ * isn't found by them; names and codes don't, so those still match. The master is searched as it's shown (mask), so a
+ * withheld fixed-list word (a fee's trigger) isn't matched either. A withheld yes/no (how a visit is paid, a row's
+ * overhead) is never matched by an amount, so it doesn't hide its row.
+ */
+export function searchVersion(v: { status: string; review: ReviewItem[]; evidence: ValueEvidence[]; rulebook: Rulebook }, q: string): MasterSearch["hits"] {
+  const hidden = withheldPaths(v);
+  if (!hidden.length) return searchMaster(v.rulebook, q);
+  const values = hidden.filter((p) => !/\/(?:autopay|overheadApplied)$/.test(p));
+  const byValue = (h: MasterSearch["hits"][number]) => amountOf(q) !== null || h.section === "terms";
+  return searchMaster(mask(v.rulebook, hidden, v), q).filter((h) => !(byValue(h) && values.some((p) => p === h.path || p.startsWith(`${h.path}/`))));
 }

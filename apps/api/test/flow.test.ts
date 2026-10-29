@@ -74,7 +74,7 @@ describe("extraction", () => {
     expect(ver.review).toHaveLength(25);
     expect((await storedVersion(built, studyId, 1)).anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "GRID_CONFLICT", "MISSING_REFERENCED_DOC", "VISIT_TOTAL_MISMATCH"]);
     const [summary] = (await get<StudyPage>("/api/v1/studies")).items;
-    expect(summary).toMatchObject({ status: "needs_review", needsYou: 25, openAnomalies: 25, liveVersion: null });
+    expect(summary).toMatchObject({ status: "needs_review", needsYou: 25, liveVersion: null });
     expect((await auditOf(studyId))[0]).toMatchObject({ action: "extraction.completed", detail: { questions: 25, pdfCheck: { values: 36, matched: 32 } } });
     // a draft is under review: no second extraction on top of it
     expect((await post(`/api/v1/studies/${studyId}/extract`, {})).statusCode).toBe(409);

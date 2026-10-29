@@ -1,11 +1,14 @@
 import type { ContractAnomaly } from "./anomaly";
-import { leaf } from "./blind";
-import { deepEqual, itemIds } from "./diff";
-import { AnswerReviewBody, type ProofreadMark, type ReviewItem, samePerson, settled, type ValueEvidence } from "./evidence";
+import { type DiffEntry, withheldPaths } from "./api";
+import { leaf, mask } from "./blind";
+import { isoDate as calendarDate } from "./dates";
+import { deepEqual, diffRulebooks, itemIds } from "./diff";
+import { AnswerReviewBody, BODY_WORDS, bodyProblem, type ProofreadMark, type ReviewItem, samePerson, settled, type ValueEvidence } from "./evidence";
+import { parseCents, parsePercent } from "./money";
 import { at, parsePointer, setAt } from "./pointer";
-import { ARITHMETIC, recheck, sumAt } from "./problems";
-import { alsoWithheld, amendmentDate, capFollowUps, empty, familyOf, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords } from "./questions";
-import { Rulebook, type Unclassified } from "./rulebook";
+import { ARITHMETIC, fromAnomalies, recheck, sumAt } from "./problems";
+import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords } from "./questions";
+import { Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
  * Answering a question and the approval it gates (ADR-001 §6, I1–I6). Pure, so the API and the in-browser sample server
@@ -25,30 +28,26 @@ const same = (a: unknown, b: unknown) =>
   Array.isArray(a) && Array.isArray(b) ? JSON.stringify(a.map(norm).sort()) === JSON.stringify(b.map(norm).sort()) : JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 
 /**
- * The PDF text at the value's spot as the input type, parsed the way the web parses it (lib/review.ts parseAnswer), and a
- * date the way the binder reads it ("August 22, 2025"); undefined when it doesn't parse.
+ * The PDF text at the value's spot as the input type, parsed as every amount and percentage is (money.ts), and a date
+ * the way the binder reads it ("August 22, 2025"); undefined when it doesn't parse.
  */
 function parsePrinted(input: ReviewItem["input"], printed: string | null, isoDate: (text: string) => string | null): unknown {
   // the sentence's full stop or comma after the number isn't part of it ("$7,455.00.")
   const t = printed?.trim().replace(/[.,;:]+$/, "");
   if (!t) return undefined;
-  if (input === "money") {
-    const m = /^(-)?(\d*)(?:\.(\d{0,2}))?$/.exec(t.replace(/[$,\s]/g, ""));
-    if (!m || (m[2] === "" && !m[3])) return undefined;
-    const cents = Number.parseInt(m[2] || "0", 10) * 100 + Number.parseInt((m[3] ?? "").padEnd(2, "0") || "0", 10);
-    return m[1] ? -cents : cents;
-  }
-  if (input === "percent" || input === "number") {
-    const n = Number(t.replace(/[,%\s]/g, ""));
-    return Number.isFinite(n) ? n : undefined;
-  }
+  if (input === "money") return parseCents(t) ?? undefined;
+  if (input === "percent" || input === "number") return parsePercent(t) ?? undefined;
   if (input === "date") return isoDate(t) ?? undefined;
   return t;
 }
 
+/** A typed date: a day of the calendar, written YYYY-MM-DD (what the web's date picker sends, and what the master holds). */
+const calendarDay = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && calendarDate(v) === v;
+
 /**
- * What picking an option writes: the arm's governing grid (the other arms' picks stay), the sum of a total's parts when
- * the sum governs, or the value itself for a yes/no or fixed-list question.
+ * What picking an option writes: the arm's governing grid (the other arms' picks stay); for a total that doesn't add up,
+ * the sum of its parts, or the total as it was printed when asked (`asPrinted`), so either answer, picked after the
+ * other, puts its own number back; or the value itself for a yes/no or fixed-list question.
  */
 function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: unknown): { path: string; value: unknown } | undefined {
   if (item.reason === "GRID_CONFLICT") {
@@ -56,13 +55,8 @@ function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: 
     return { path: "/governingGridIds", value: [...(rb.governingGridIds ?? []).filter((id) => !arm.has(id)), optionId] };
   }
   if (ARITHMETIC.has(item.reason)) {
-    const value = optionId === "sum" && item.path ? sumAt(rb, item.path) : undefined;
+    const value = !item.path ? undefined : optionId === "sum" ? sumAt(rb, item.path) : optionId === "printed" ? item.asPrinted : undefined;
     return value === undefined ? undefined : { path: item.path!, value };
-  }
-  // "prospective only": the amendment's own date, as its label shows it
-  if (optionId === PROSPECTIVE && item.path === "/appliesFrom/value") {
-    const d = amendmentDate(rb);
-    return d ? { path: item.path, value: d } : undefined;
   }
   if (!item.path || (item.kind !== "confirm_value" && item.kind !== "interpretation") || current === undefined || !leaf(current)) return undefined;
   return { path: item.path, value: typeof current === "boolean" ? optionId === "true" : optionId };
@@ -118,16 +112,20 @@ const WHERE = "Add a short note saying where the page prints this value. The PDF
  * `noPdfText` for the approver. Options are chosen; an option with a `note` needs one (a reason, ADR-001 §6). An
  * interpretation's pick is checked against the read's value like a typed one: one that differs is shown with it, and the
  * second pick settles it. A question with options and an input (the start date: typed, or "prospective only") takes
- * either. Can't tell is left for the approver, and doesn't clear anything. "Bill by hand" lists the term on the master;
- * answering it any other way takes it off again. A random spot check (SAMPLE) settled with a value other than the one the
- * PDF check confirmed has missed (`missed`, ADR-001 §6). Returns what was written to the master, the log entry (`log`),
- * and the miss's own entry and alert count (`incident`). `isoDate` reads a printed date as the binder does.
+ * either; "prospective only" takes the amendment's own date typed blind too, checked against the read's. A typed date is
+ * a calendar day. Can't tell is left for the approver, and doesn't clear anything. "Bill by hand" lists the term on the
+ * master, and its note goes with it; answering it any other way takes it off again. A random spot check (SAMPLE) never
+ * shows what the PDF check confirmed: one that differs is typed blind once more, and that answer stands, the confirmed
+ * value again (a typo) or not, so nothing can be tried until it matches. Settled with another value, it has missed
+ * (`missed`, ADR-001 §6). No limit on a cap drops its figures, and their follow-up if it's still open. Returns what was
+ * written to the master, the log entry (`log`), and the miss's own entry and alert count (`incident`). `isoDate` reads a
+ * printed date as the binder does.
  */
 export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { isoDate, now }: { isoDate: (text: string) => string | null; now: string }) {
   const item = v.review.find((i) => i.id === itemId);
   if (!item) return refuse(404, "Question not found");
   const parsed = AnswerReviewBody.safeParse(raw);
-  if (!parsed.success) return refuse(400, "Say who is answering.");
+  if (!parsed.success) return refuse(400, bodyProblem(parsed.error, BODY_WORDS.answer));
   const b = parsed.data;
   // The blind re-type of hand-typed values must be done by someone who didn't type them, nor change any value since.
   const retype = v.byHand && item.reason === "spot_check";
@@ -141,13 +139,19 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   if (Array.isArray(current) && typeof value === "string") value = value.split(",").map((x) => x.trim()).filter(Boolean);
   const ev = item.path ? v.evidence.find((e) => e.path === item.path) : undefined;
   const note = b.note?.trim();
+  const sample = item.reason === SAMPLE;
+  // "prospective only" is a choice of which date, and the date itself is typed: the read's date of the amendment is
+  // nobody's reading of the page
+  const prospective = b.optionId === PROSPECTIVE && item.path === "/appliesFrom/value" && item.options.some((o) => o.id === PROSPECTIVE);
+  // a pick, unless the question also takes a typed value and none was picked
+  const pick = item.options.length > 0 && (b.optionId !== undefined || !item.input) && !prospective;
+  // where the read gave no start date, a "prospective only" date is checked against the read's date of the amendment
+  const amended = prospective && (item.reason === "RETROACTIVE_NO_DATE" || empty(current)) ? (amendmentDate(v.rulebook) ?? undefined) : undefined;
   // The same answer again, from the same person, to a question it settled (a retry, another tab) changes nothing. Checked
   // again, a value kept over the PDF's text would read as differing from it once more, and reopen the question.
   const a = item.answer;
-  if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (b.optionId !== undefined || same(a.value, value)))
+  if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (pick || same(a.value, value)))
     return { item, outcome: item.outcome!, changed: false, set: undefined, listed: undefined, missed: false, unchanged: true as const };
-  // a pick, unless the question also takes a typed value and none was picked
-  const pick = item.options.length > 0 && (b.optionId !== undefined || !item.input);
   let outcome: NonNullable<ReviewItem["outcome"]>;
   let set: { path: string; value: unknown } | undefined;
   let noPdfText = false;
@@ -167,12 +171,16 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     outcome = checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
     if (outcome === "differs") set = undefined;
   } else {
+    if (prospective && (value === undefined || value === null || value === "")) return refuse(400, "Type the amendment's own date, as it's printed on the amendment.");
     if (value === undefined || value === null || value === "") return refuse(400, "Type a value, or say you can't tell.");
+    if (item.input === "date" && !calendarDay(value)) return refuse(400, "That isn't a date. Pick the day the contract gives.");
     if (item.path && !fits(v.rulebook, item.path, value)) return refuse(400, "That value can't go in this field. Check what you typed.");
     const printed = parsePrinted(item.input, ev?.printed ?? null, isoDate);
     // a missing value (or a placeholder of the blank form) holds nothing to compare with
-    const truth = printed ?? (empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current);
-    if (item.outcome === "differs") {
+    const truth = amended ?? (printed ?? (empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current));
+    // the spot check's second blind answer stands: the confirmed value again was a typo, anything else a miss
+    if (sample && item.outcome === "differs") outcome = truth !== undefined && same(value, truth) ? "matched" : "chosen";
+    else if (item.outcome === "differs") {
       if (printed === undefined && !note) return refuse(400, WHERE);
       if (printed !== undefined && !same(value, printed) && !note) return refuse(400, WHY);
       noPdfText = printed === undefined;
@@ -183,7 +191,8 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   }
   const changed = settled(item);
   const picked = pick && !b.cantTell ? optionValue(v.rulebook, item, b.optionId!, current)?.value : undefined;
-  item.compare = outcome === "differs" ? { typed: picked ?? value, read: current ?? null, printed: ev?.printed ?? null } : null;
+  // a spot check's differing answer shows nothing: what it's compared with is the value being measured
+  item.compare = outcome === "differs" && !sample ? { typed: picked ?? value, read: (amended ?? current) ?? null, printed: ev?.printed ?? null } : null;
   // Only what was answered is kept: a value sent along with a pick or "can't tell" isn't stored.
   const typed = !b.cantTell && !pick;
   item.answer = { value: typed ? value : undefined, optionId: b.optionId, cantTell: b.cantTell, note: note || undefined, ...(noPdfText ? { noPdfText } : {}), by: b.by, at: now };
@@ -197,11 +206,14 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     for (const p of alsoWithheld(set.path)) {
       setAt(rb, parsePointer(p), null);
       v.evidence = v.evidence.filter((e) => e.path !== p);
+      // its follow-up, if still open, has nothing left to ask (capFollowUps numbers them, so ids stay unique)
+      v.review = v.review.filter((i) => !i.id.startsWith(`cap:${p}`) || settled(i));
     }
   // the arm's choice replaces a version's single pick from before per-arm choices, if that was one of this arm's grids
   if (item.reason === "GRID_CONFLICT" && set && item.options.some((o) => o.id === rb.governingGridId)) rb.governingGridId = null;
   // the bill-by-hand list follows the answer: on for "bill by hand", off for anything else
   let listed: { added?: string; removed?: string } | undefined;
+  let relisted: string | undefined;
   if (BILL_BY_HAND.has(item.reason)) {
     const had = (rb.unclassified ?? []).find((u) => u.itemId === item.id);
     rb.unclassified = (rb.unclassified ?? []).filter((u) => u.itemId !== item.id);
@@ -209,8 +221,10 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     const is = rb.unclassified.find((u) => u.itemId === item.id);
     if (is && !had) listed = { added: is.label };
     else if (had && !is) listed = { removed: had.label };
+    // listed before and still: its note (what's billed by hand, on a page nothing can search) may have changed
+    if (had && is && !deepEqual(had, is)) relisted = is.label;
   }
-  if (set || listed) v.rulebook = Rulebook.parse(rb);
+  if (set || listed || relisted) v.rulebook = Rulebook.parse(rb);
   if (item.path && settled(item)) {
     // what a person typed or chose is attested; one with no ledger entry yet (a value the read never had) gets one
     if (ev) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });
@@ -231,7 +245,7 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     !written || deepEqual(written.before, written.after) ? {}
     : written.path === "/governingGridIds" ? { gridId: b.optionId }
     : { ...written, items: itemIds(was, parsePointer(written.path)) };
-  const billByHand = listed?.added ? { billByHand: listed.added } : listed?.removed ? { offBillByHand: listed.removed } : {};
+  const billByHand = listed?.added || relisted ? { billByHand: listed?.added ?? relisted } : listed?.removed ? { offBillByHand: listed.removed } : {};
   const log = {
     by: b.by,
     action: changed ? "review.changed" : "review.answered",
@@ -249,8 +263,8 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
 
 /**
  * What an answer asks next, added to `v.review`: the grid's held-back totals, checked on the typed numbers once its last
- * one is answered (recheck, with the runtime's `checks`), and a cap's limit once its kind is known (capFollowUps, worded
- * by `ask`).
+ * one is answered (recheck, with the runtime's `checks`; a settled total whose answer no longer holds is asked again),
+ * and a cap's limit once its kind is known (capFollowUps, worded by `ask`).
  */
 export function followUps(
   v: Pick<AnswerDraft, "rulebook" | "review" | "evidence"> & { anomalies: ContractAnomaly[] },
@@ -260,6 +274,29 @@ export function followUps(
 ): void {
   if (a.set) v.review.push(...recheck(checks, v, a.set.path));
   v.review.push(...capFollowUps(v, a.item, !!a.set && !deepEqual(a.set.before, a.set.after), ask));
+}
+
+/**
+ * POST …/by-hand/done, for the API and the sample server alike: typing is finished. Someone who didn't type re-types up
+ * to 10 typed values blind (`spot:<path>`, drawn with `random`); the contract's checks (`checks`: the API's real ones,
+ * the sample server's own) run on what was typed, as after a read, held back for the values asked; and everything nobody
+ * typed or picked (placeholders: a number of the blank form, a yes/no or fixed-list default) is asked as a missing value.
+ * The questions, the checks' findings and the log entry's details, or a refusal.
+ */
+export function typingDone(
+  v: { version: number; status: string; byHand: boolean; rulebook: Rulebook | null; review: ReviewItem[]; evidence: ValueEvidence[] },
+  { random, checks }: { random: () => number; checks: (rb: Rulebook) => ContractAnomaly[] },
+): Refusal | { review: ReviewItem[]; anomalies: ContractAnomaly[]; detail: Record<string, unknown> } {
+  if (v.status !== "draft" || !v.byHand || !v.rulebook) return refuse(409, "Only a contract typed by hand can be marked done.");
+  if (v.review.length) return refuse(409, "Typing is already marked done.");
+  const rb = v.rulebook;
+  const { typed, sample } = pickRetype(rb, v.evidence, random);
+  if (!typed.length) return refuse(400, "Type at least one value first.");
+  const spots = sample.map((p) => askAbout(rb, v.evidence, p, `spot:${p}`, "spot_check"));
+  const missing = placeholders(rb, v.evidence).map((p) => askAbout(rb, v.evidence, p, `missing:${p}`, "REQUIRED_MISSING"));
+  const anomalies = checks(rb);
+  const review = [...spots, ...missing, ...fromAnomalies(anomalies, rb, new Set([...sample, ...missing.map((i) => i.path!)]))];
+  return { review, anomalies, detail: { version: v.version, typed: typed.length, "re-type": sample.length, questions: review.length - spots.length } };
 }
 
 /**
@@ -286,4 +323,20 @@ export function signOffRefusal(
   if (miss) return sampleMissWords(miss);
   if (makerChecker && v.editors.some((e) => samePerson(e, by))) return `Maker-checker is on: ${by} answered questions on this contract, so someone else has to approve it.`;
   return null;
+}
+
+/**
+ * GET …/diff, for the API and the sample server alike: what changed from `before` to `after`, blind. A value withheld on
+ * either is left out, and both masters are masked alike, so the words blanked around it on one side don't show as
+ * changed against the other. Refused when either has no master.
+ */
+export function versionDiff(
+  before: { status: string; review: ReviewItem[]; evidence: ValueEvidence[]; rulebook: Rulebook | null },
+  after: { status: string; review: ReviewItem[]; evidence: ValueEvidence[]; rulebook: Rulebook | null },
+): Refusal | DiffEntry[] {
+  if (!before.rulebook || !after.rulebook) return refuse(409, "Both versions need an extracted rulebook to diff");
+  const hidden = [...new Set([...withheldPaths(before), ...withheldPaths(after)])];
+  const where = { evidence: [...before.evidence, ...after.evidence], review: [...before.review, ...after.review] };
+  const view = (rb: Rulebook) => (hidden.length ? mask(upgradeRulebook(rb), hidden, where) : upgradeRulebook(rb));
+  return diffRulebooks(view(before.rulebook), view(after.rulebook)).filter((e) => !hidden.includes(e.path));
 }

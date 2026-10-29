@@ -49,7 +49,8 @@ describe("the governing grid, one per arm", () => {
     // arms are grouped as the checks group them: "Arm A" and "arm a" are one arm
     expect(Object.fromEntries(governingGrids(rb))).toEqual({ arma: "gA2", armb: "gB2" });
     expect(billedGrids(rb).map((g) => g.id)).toEqual(["gA2", "gB2"]);
-    expect(billedGrids({ ...rb, governingGridIds: [], governingGridId: null }).map((g) => g.id)).toEqual(["gA1", "gA2", "gB1", "gB2"]);
+    // an arm whose grids differ and has no choice bills none of them until one is chosen (never both)
+    expect(billedGrids({ ...rb, governingGridIds: [], governingGridId: null }).map((g) => g.id)).toEqual([]);
   });
 });
 

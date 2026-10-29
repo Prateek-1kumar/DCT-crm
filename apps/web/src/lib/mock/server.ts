@@ -2,19 +2,20 @@ import {
   answerQuestion,
   appliesFromOf,
   blindDetail,
-  diffRulebooks,
+  BODY_WORDS,
+  bodyProblem,
   followUps,
   isoDate,
-  pickRetype,
+  labelFor,
   proofreadMarks,
   shownAppliesFrom,
   signOffRefusal,
   blindReview,
   ByHandBody,
   leaf,
+  mask,
   ConfirmStudyBody,
   CorrectValueBody,
-  mask,
   PatchSettingsBody,
   ProofreadBody,
   ReportValueBody,
@@ -32,7 +33,7 @@ import {
   withheldPaths,
   type AlertDto,
   searchMaster,
-  amountOf,
+  searchVersion,
   type RateHit,
   type StudyView,
   Rulebook as RulebookSchema,
@@ -49,9 +50,10 @@ import {
   type StudyStatus,
   type StudySummaryDto,
   type ValueEvidence,
+  typingDone,
+  versionDiff,
 } from "@dct/shared";
 import { blankRulebook } from "../byhand";
-import { labelFor } from "../format";
 import { layoutPage } from "./layout";
 import { getAt, segments, setAt } from "../pointer";
 import { needsYou, summaryStage, VIEWS } from "../review";
@@ -95,11 +97,13 @@ type Db = {
   alertReads: Record<string, string[]>;
 };
 
-// v8: drafts keep their read's checks (recheck) and the date their terms apply from
-const KEY = "dct.mockdb.v8";
+// v9: the blind sample at its page only, and a total that doesn't add up keeps its printed value (asPrinted)
+const KEY = "dct.mockdb.v9";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
+/** A version's `updatedAt` for a write that changes it, as the real API's (domain.ts touched): at `at`, and always after the last one. */
+const touched = (prev: string, at = now()) => new Date(Math.max(Date.parse(at), Date.parse(prev) + 1)).toISOString();
 const daysAgo = (d: number, h = 0) => new Date(Date.now() - (d * 24 + h) * 3600_000).toISOString();
 const fakeSha = (seed: string) => Array.from({ length: 64 }, (_, i) => ((seed.charCodeAt(i % seed.length) * (i + 7)) % 16).toString(16)).join("");
 
@@ -360,7 +364,6 @@ function summary(d: Db, s: Study): StudySummaryDto {
   return {
     id: s.id, sponsor: s.sponsor, protocol: s.protocol, siteName: s.siteName, investigator: s.investigator, status: s.status,
     liveVersion: latestSigned(d, s.id)?.version ?? null,
-    openAnomalies: 0,
     // ponytail: a by-hand draft still being typed counts as 1 (the typing); the summary has no by-hand flag yet.
     needsYou: !draft ? 0 : draft.byHand && !draft.review.length ? 1 : needsYou(draft.review).length,
     updatedAt: s.updatedAt,
@@ -553,7 +556,7 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
     return toItem(x);
   };
   followUps(draft, r, mockChecks, ask);
-  Object.assign(ver, { rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: at });
+  Object.assign(ver, { rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: touched(ver.updatedAt, at) });
   st.updatedAt = at;
   log(d, r.log.by, st.id, r.log.action, r.log.detail, at);
   if (r.incident) {
@@ -613,7 +616,7 @@ function listAudit(d: Db, query: URLSearchParams): Res {
 /** POST .../send-back: the approver reopens answered questions with a note; they're answered again, blind. */
 function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = now()): Res {
   const parsed = SendBackBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Pick the answers to send back and add a note.");
+  if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.sendBack));
   if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; only a draft's answers can be sent back.`);
   const { itemIds, note, by } = parsed.data;
   const items = itemIds.map((id) => ver.review.find((i) => i.id === id));
@@ -626,7 +629,7 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
   }
   // a term listed to bill by hand comes off the list while its answer is reopened
   if (ver.rulebook) ver.rulebook = { ...upgradeRulebook(ver.rulebook), unclassified: upgradeRulebook(ver.rulebook).unclassified.filter((u) => !itemIds.includes(u.itemId ?? "")) };
-  ver.updatedAt = at;
+  ver.updatedAt = touched(ver.updatedAt, at);
   st.updatedAt = at;
   log(d, by, st.id, "review.sent_back", { version: ver.version, questions: items.length, itemIds: items.map((i) => i!.id), note }, at);
   raiseAlert(d, { kind: "sent_back", studyId: st.id, version: ver.version, by, count: items.length, note, at });
@@ -636,7 +639,7 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
 /** POST .../proofread: values that looked right. Any version with a master, live ones too: the marks never change its numbers. */
 function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = now()): Res {
   const parsed = ProofreadBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Say who is proofreading and which values.");
+  if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.proofread));
   if (!ver.rulebook || ver.status === "superseded") return err(409, `Version ${ver.version} can't be proofread.`);
   const { paths, by } = parsed.data;
   if (paths.some((p) => getAt(ver.rulebook, p) === undefined)) return err(400, "One of those values isn't in the invoicing master.");
@@ -644,7 +647,7 @@ function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at =
   // marked by them already: nothing changes, nothing is logged (as the API)
   if (!marks) return ok(view(ver));
   ver.proofread = marks;
-  ver.updatedAt = at;
+  ver.updatedAt = touched(ver.updatedAt, at);
   log(d, by, st.id, "values.proofread", { version: ver.version, values: paths.length }, at);
   return ok(view(ver));
 }
@@ -658,12 +661,13 @@ function addQuestion(d: Db, ver: RulebookVersionDto, x: Spec) {
 }
 
 /**
- * POST .../report. On a draft: a blocking blind question about the value. On the live version: a correction draft
- * (a copy of it plus that question); the live version stays live until the draft is approved.
+ * POST .../report. On a draft (one typed by hand once typing is marked done): a blocking blind question about the value.
+ * On the live version: a correction draft (a copy of it plus that question); the live version stays live until the
+ * draft is approved.
  */
 function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   const parsed = ReportValueBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Add a short note and say who is reporting.");
+  if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.report));
   const { path, note, by } = parsed.data;
   if (!ver.rulebook || getAt(ver.rulebook, path) === undefined || !leaf(getAt(ver.rulebook, path))) return err(400, "Pick a single value to report.");
   let draft = ver;
@@ -676,23 +680,24 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
     draft = { ...structuredClone(ver), version: ver.version + 1, status: "draft", createdAt: now(), updatedAt: now(), signedBy: null, signedAt: null, editors: [], review: [], byHand: false, proofread: [], warnings: [] };
     d.versions.push(draft);
     st.status = "amendment_in_review";
-  } else if (ver.status !== "draft" || ver.byHand) return err(409, `Version ${ver.version} is ${ver.status}; report a value on the live version or a draft.`);
+  } else if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; report a value on the live version or a draft.`);
+  else if (ver.byHand && !ver.review.length) return err(409, "Typing isn't marked done yet: change the value in the form instead.");
   if (withheldPaths(draft).includes(path)) return err(409, "There's already an open question about this value.");
-  const x = askAbout(draft.rulebook!, draft.evidence, path, `r${++d.seq}`, "reported");
+  const x = askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported");
   addQuestion(d, draft, x);
   // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
   draft.review.at(-1)!.reported = { by, note, at: now() };
-  draft.updatedAt = now();
+  draft.updatedAt = touched(draft.updatedAt);
   st.updatedAt = now();
   const value = getAt(draft.rulebook!, path);
-  log(d, by, st.id, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, path, value: labelFor(path, draft.rulebook), note });
+  log(d, by, st.id, typeof value === "number" ? "number.reported" : "value.reported", { version: draft.version, path, value: labelFor(draft.rulebook, path), note });
   return ok(view(draft));
 }
 
 /** POST /studies/:id/versions/by-hand: a blank draft for a contract that couldn't be read. */
 function startByHand(d: Db, st: Study, raw: unknown): Res {
   const parsed = ByHandBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Say who is typing.");
+  if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.byHand));
   const vs = versionsOf(d, st.id);
   const newest = vs.at(-1);
   if (newest && (newest.status === "draft" || newest.status === "extracting")) return err(409, `Version ${newest.version} is already in progress.`);
@@ -716,7 +721,7 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   if (ver.status !== "draft" || !ver.byHand || !ver.rulebook) return err(409, "Values can only be typed on a contract being typed in by hand. Use “This looks wrong” instead.");
   if (ver.review.length) return err(409, "Typing is marked done. Use “This looks wrong” to change a value.");
   const parsed = CorrectValueBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Say who is typing.");
+  if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.values));
   const { path, value, by } = parsed.data;
   const before = getAt(ver.rulebook, path);
   if (before === undefined && segments(path).at(-2) !== "cells") return err(400, `Unknown field ${path}`);
@@ -739,43 +744,30 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   ver.rulebook = rb;
   ver.evidence = ev.filter((e) => getAt(rb, e.path) !== undefined);
   ver.appliesFrom = appliesFromOf(rb);
-  ver.updatedAt = now();
+  ver.updatedAt = touched(ver.updatedAt);
   if (!ver.editors.some((e) => samePerson(e, by))) ver.editors.push(by);
   st.updatedAt = now();
-  if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, path, value: labelFor(path, rb), before: before ?? null, after: value });
+  if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, path, value: labelFor(rb, path), before: before ?? null, after: value });
   return ok(view(ver));
 }
 
-/** As the real API's placeholders(): numbers in a hand-typed master nobody typed (not an order, a schema version or provenance). */
-function placeholders(rb: Rulebook, evidence: ValueEvidence[]): string[] {
-  const typed = new Set(evidence.map((e) => e.path));
-  const out: string[] = [];
-  const walk = (node: unknown, path: string, key: string) => {
-    if (key === "prov" || key === "schemaVersion" || key === "order") return;
-    if (typeof node === "number") return void (typed.has(path) || out.push(path));
-    if (Array.isArray(node)) node.forEach((x, i) => walk(x, `${path}/${i}`, String(i)));
-    else if (node && typeof node === "object") for (const [k, x] of Object.entries(node)) walk(x, `${path}/${k.replace(/~/g, "~0").replace(/\//g, "~1")}`, k);
-  };
-  walk(rb, "", "");
-  return out;
-}
-
-/** POST .../by-hand/done: someone else re-types up to 10 typed values drawn at random (all of them if fewer), blind (pickRetype, as the API). */
+/**
+ * POST .../by-hand/done, by the API's own rules (typingDone, @dct/shared): someone else re-types up to 10 typed values
+ * drawn at random, blind; the checks (the sample server's own) run on what was typed; and everything nobody typed or
+ * picked is asked as missing. Each question keeps its right answer on the "server side": a re-typed value's own.
+ */
 function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   const parsed = ByHandBody.safeParse(raw);
-  if (!parsed.success) return err(400, "Say who is typing.");
-  if (ver.status !== "draft" || !ver.byHand) return err(409, "Only a contract typed by hand can be marked done.");
-  if (ver.review.length) return err(409, "Typing is already marked done.");
-  const { typed, sample } = pickRetype(ver.rulebook!, ver.evidence, mockSampling.random);
-  if (!typed.length) return err(400, "Type at least one value first.");
-  for (const p of sample) addQuestion(d, ver, askAbout(ver.rulebook!, ver.evidence, p, `t${++d.seq}`, "spot_check"));
-  // As the real API: a number nobody typed holds the blank form's placeholder (a visit's total 0), never seen by a
-  // person, so it's asked as missing. (The sample server doesn't run its checks here: recheck runs them once a grid's
-  // typed numbers are answered.)
-  for (const p of placeholders(ver.rulebook!, ver.evidence)) addQuestion(d, ver, { ...askAbout(ver.rulebook!, ver.evidence, p, `missing:${p}`, "REQUIRED_MISSING"), truth: undefined, lines: [] });
-  ver.updatedAt = now();
+  if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.byHand));
+  const rb = ver.rulebook && upgradeRulebook(ver.rulebook);
+  const done = typingDone({ ...ver, rulebook: rb }, { random: mockSampling.random, checks: mockChecks });
+  if ("refusal" in done) return err(done.refusal.status, done.refusal.message);
+  ver.review = done.review;
+  ver.anomalies = done.anomalies;
+  for (const i of done.review) d.secrets[`${ver.studyId}/${ver.version}/${i.id}`] = { truth: i.reason === "spot_check" && i.path ? getAt(rb, i.path) : undefined, lines: [] };
+  ver.updatedAt = touched(ver.updatedAt);
   st.updatedAt = now();
-  log(d, parsed.data.by, st.id, "byhand.done", { version: ver.version, typed: typed.length, "re-type": sample.length });
+  log(d, parsed.data.by, st.id, "byhand.done", done.detail);
   return ok(view(ver));
 }
 
@@ -994,24 +986,18 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (vrest === "" && method === "GET") return ok(view(ver));
   if (vrest === "/search" && method === "GET") {
     const q = query.get("q") ?? "";
-    // On a draft, a value still hidden for someone to type blind must not be findable: amounts match values, and a
-    // term's words include its values. Names and codes of grid rows and fees don't, so those still match.
-    // as the real API: the master as it's shown, so a withheld fixed-list word (a fee's trigger) isn't matched either
-    const hidden = withheldPaths(ver);
-    const byValue = (h: { path: string; section: string }) => amountOf(q) !== null || h.section === "terms";
-    const shown = ver.rulebook && (hidden.length ? mask(upgradeRulebook(ver.rulebook), hidden, ver) : ver.rulebook);
-    const hits = shown ? searchMaster(shown, q).filter((h) => !(byValue(h) && hidden.some((p) => p === h.path || p.startsWith(`${h.path}/`)))) : [];
-    return ok({ q, hits });
+    // as the real API: never a value withheld for a blind answer (searchVersion, @dct/shared)
+    return ok({ q, hits: ver.rulebook ? searchVersion({ ...ver, rulebook: upgradeRulebook(ver.rulebook) }, q) : [] });
   }
   if (vrest === "/diff" && method === "GET") {
-    const other = d.versions.find((v) => v.studyId === st.id && v.version === Number(query.get("against")));
-    if (!other) return err(404, "Version to compare against not found");
-    // blind entry, as the real API: both sides masked alike, and a withheld value never shown as changed
-    const hidden = [...new Set([...withheldPaths(other), ...withheldPaths(ver)])];
-    const where = { evidence: [...other.evidence, ...ver.evidence], review: [...other.review, ...ver.review] };
-    const shown = (rb: Rulebook | null) => rb && (hidden.length ? mask(upgradeRulebook(rb), hidden, where) : upgradeRulebook(rb));
-    // the API's diff (@dct/shared): array items matched by identity
-    return ok(diffRulebooks(shown(other.rulebook), shown(ver.rulebook)).filter((e) => !hidden.includes(e.path)));
+    // as the real API: its refusals, and its blind diff (versionDiff, @dct/shared)
+    const against = query.get("against");
+    if (!against) return err(400, "Query parameter `against` (version number) is required");
+    if (!/^[1-9]\d{0,8}$/.test(against)) return err(400, `Invalid version "${against}"`);
+    const other = d.versions.find((v) => v.studyId === st.id && v.version === Number(against));
+    if (!other) return err(404, `Version ${against} of study ${st.id} not found`);
+    const diff = versionDiff(other, ver);
+    return "refusal" in diff ? err(diff.refusal.status, diff.refusal.message) : ok(diff);
   }
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
   if (vrest === "/report" && method === "POST") return report(d, st, ver, body);
@@ -1028,7 +1014,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     const refusal = signOffRefusal(ver, { asOf, by, makerChecker: d.settings.makerChecker });
     if (refusal) return err(409, refusal);
     for (const v of versionsOf(d, st.id)) if (v.status === "signed") v.status = "superseded";
-    Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), updatedAt: now() });
+    Object.assign(ver, { status: "signed", signedBy: by, signedAt: now(), updatedAt: touched(ver.updatedAt) });
     st.status = "live";
     st.updatedAt = now();
     log(d, by, st.id, "version.signed", { version: ver.version, ...(b.note ? { note: b.note } : {}), appliesFrom: ver.appliesFrom });

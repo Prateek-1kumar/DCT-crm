@@ -35,8 +35,7 @@ export const StudySummaryDto = z.object({
   investigator: z.string().nullable(),
   status: StudyStatus,
   liveVersion: z.number().int().nullable(),
-  openAnomalies: z.number().int(),
-  /** Unsettled review items on the latest draft: unanswered, differs, or a blocking can't-tell (a non-blocking one waits for the approver). */
+  /** Unsettled review items on the latest draft: unanswered, differs, or can't tell (openItems): approval waits for every one. */
   needsYou: z.number().int(),
   updatedAt: z.string(),
 });
@@ -61,10 +60,10 @@ export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
 /**
  * Blind entry: on a draft, the value at each open review question's path is withheld from every response until it is
  * answered (the API's versionDto, search, diff and audit), with the values its answer decides the meaning of
- * (alsoWithheld). The web masks the same paths.
+ * (alsoWithheld: some are found in the master, `rulebook`). The web masks the same paths.
  */
-export const withheldPaths = (v: { status: string; review: ReviewItem[] }): string[] =>
-  v.status === "draft" ? [...new Set(v.review.flatMap((i) => (i.path && !settled(i) ? [i.path, ...alsoWithheld(i.path)] : [])))] : [];
+export const withheldPaths = (v: { status: string; review: ReviewItem[]; rulebook?: unknown }): string[] =>
+  v.status === "draft" ? [...new Set(v.review.flatMap((i) => (i.path && !settled(i) ? [i.path, ...alsoWithheld(i.path, v.rulebook)] : [])))] : [];
 
 /** `appliesFrom` as a response shows it: the start date, or the effective date it falls back to, withheld while either is asked blind. */
 export const shownAppliesFrom = (v: { status: string; review: ReviewItem[]; appliesFrom: string | null }) =>
@@ -184,7 +183,7 @@ export const ConfirmStudyBody = z.object({
   investigator: z.string(),
   by: z.string().trim(),
 });
-export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: z.string().trim() });
+export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: Person });
 export const CorrectValueBody = z.object({ path: z.string(), value: z.unknown(), note: z.string().min(1), by: Person });
 /**
  * `asOf`: the version's `updatedAt` as the approver saw it. If anything changed since (an answer in another tab), approval

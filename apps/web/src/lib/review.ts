@@ -1,4 +1,4 @@
-import { signOffRefusal, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
+import { openItems, parsePercent, signOffRefusal, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
 import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
@@ -17,12 +17,12 @@ export const KIND_LABEL: Record<ReviewItem["kind"], string> = {
 };
 
 /** Why a question is here, in one line, without giving away the tool's reading. */
-export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
+export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<ReviewItem, "options">>): string {
   switch (i.reason) {
     case "spot_check":
       return "A random spot check. We pick a few numbers at random and ask a person to type them; it proves the checks are working.";
     case "SAMPLE":
-      return "A random spot check. This number already matched the PDF, but we pick a few at random for a person to type: it's how we prove the checks miss nothing.";
+      return "A random spot check. This number already matched the PDF, but we pick a few at random for a person to type: it's how we prove the checks miss nothing. Find it on the page by the row and column the question names.";
     case "INTERPRETATION":
       return "How the contract words this decides how it's billed. Read the spot and pick what it means; we don't show our reading, so it can't steer you.";
     case "AMBIGUOUS_TERM":
@@ -55,7 +55,9 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
     case "PER_PATIENT_TOTAL_MISMATCH":
       return "The contract's own numbers don't add up, so the contract itself is wrong here. Decide which number to bill, and note what to ask the sponsor.";
     case "REQUIRED_MISSING":
-      return "The invoicing master has nothing typed here yet, so it would be approved empty. Type what the contract says.";
+      return i.options?.length
+        ? "Nobody picked this when the contract was typed in, so it would be approved as the form's default. Pick what the contract says."
+        : "The invoicing master has nothing typed here yet, so it would be approved empty. Type what the contract says.";
     case "HIDDEN_TEXT":
       return "This page has words nobody can see. They're never used as evidence, but someone should check they don't change the money.";
   }
@@ -77,9 +79,8 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind">): string {
 export const itemStatus = (i: ReviewItem): "todo" | "done" | "differs" | "cant_tell" =>
   i.outcome === "matched" || i.outcome === "chosen" ? "done" : i.outcome === "differs" ? "differs" : i.outcome === "cant_tell" ? "cant_tell" : "todo";
 
-/** Still needs a person: unanswered, answered differently, or a blocking "Can't tell". */
-export const needsYou = (items: ReviewItem[]) =>
-  items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));
+/** Still needs a person: anything not settled, a "Can't tell" too (the API's count and its approval gate, openItems). */
+export const needsYou = openItems;
 
 /** Blocking first, otherwise in the order the checks listed them. */
 export const queueOrder = (items: ReviewItem[]) => [...items].sort((a, b) => Number(b.blocking) - Number(a.blocking));
@@ -184,8 +185,8 @@ export function parseAnswer(input: Input, raw: string): { value: unknown } | { e
     }
     case "percent":
     case "number": {
-      const n = Number(t.replace(/[,%\s]/g, ""));
-      return Number.isFinite(n) ? { value: n } : { error: "Type a number" };
+      const n = parsePercent(t);
+      return n !== null ? { value: n } : { error: "Type a number" };
     }
     case "date":
       return /^\d{4}-\d{2}-\d{2}$/.test(t) ? { value: t } : { error: "Pick a date" };

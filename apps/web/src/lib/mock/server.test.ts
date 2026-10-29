@@ -21,12 +21,13 @@ const signOff = async (study: string, v: number, by: string) =>
   post(`/studies/${study}/versions/${v}/sign-off`, { by, asOf: RulebookVersionDto.parse(await get(`/studies/${study}/versions/${v}`)).updatedAt });
 /**
  * Settles a question: the first option (with a note), or a value; on a differs, what was read (shown now), with a note,
- * so nothing is written and no spot check misses.
+ * so nothing is written and no spot check misses. A spot check shows nothing: typed again, it's Northwind's value.
  */
 const settle = async (study: string, i: Pick<ReviewItem, "id" | "options" | "input">, v = 1) => {
   const r = await answer(study, i.id, i.options.length && !i.input ? { optionId: i.options[0]!.id, note: "checked" } : { value: i.input === "date" ? "2026-01-01" : i.input === "text" ? "x" : 1, note: "checked" }, v);
   const it = r.review.find((x) => x.id === i.id)!;
-  if (it.outcome === "differs") await answer(study, i.id, i.input ? { value: it.compare!.read, note: "checked" } : { optionId: String(it.compare!.read), note: "checked" }, v);
+  if (it.outcome === "differs" && !it.compare) await answer(study, i.id, { value: getAt(NW, it.path!) }, v);
+  else if (it.outcome === "differs") await answer(study, i.id, i.input ? { value: it.compare!.read, note: "checked" } : { optionId: String(it.compare!.read), note: "checked" }, v);
 };
 
 describe("mock API", () => {
@@ -134,14 +135,13 @@ describe("mock API", () => {
     expect(v.rulebook!.budgetGrids[0]!.procedures[3]!.cells.V2).toBe(9800);
     expect(v.evidence.find((e) => e.path === "/budgetGrids/0/procedures/3/cells/V2")!.status).toBe("attested");
 
-    // a value of the blind sample: the PDF's text decides it
+    // a value of the blind sample: typed differently, it's typed again blind, nothing shown; the confirmed value again was a typo
     const unit = sampleOf(v, (p) => p.endsWith("/unitCents"));
     const price = getAt(NW, unit.path!) as number;
     v = await answer("st-northwind", unit.id, { value: price + 100 });
-    expect(v.review.find((i) => i.id === unit.id)).toMatchObject({ outcome: "differs", compare: { typed: price + 100, read: price, printed: `$${(price / 100).toFixed(2)}` } });
-    expect((await post(`/studies/st-northwind/versions/1/review/${encodeURIComponent(unit.id)}`, { value: price + 100, by: "Sam Rivera" })).status).toBe(400);
+    expect(v.review.find((i) => i.id === unit.id)).toMatchObject({ outcome: "differs", compare: null });
     v = await answer("st-northwind", unit.id, { value: price });
-    expect(v.review.find((i) => i.id === unit.id)).toMatchObject({ outcome: "chosen", compare: null });
+    expect(v.review.find((i) => i.id === unit.id)).toMatchObject({ outcome: "matched", compare: null });
 
     // Changing an earlier answer while the version is a draft: it is checked again.
     v = await answer("st-northwind", "q1", { value: 9900 });
@@ -323,18 +323,20 @@ describe("mock API", () => {
     expect((await list()).find((s) => s.id === "st-solace")!.needsYou).toBe(1);
     expect(((await signOff("st-solace", 1, "Morgan Lee")).json as { message: string }).message).toBe("Typing isn't marked done yet, so nobody has re-typed the values.");
 
-    // 3 typed values → all 3 are re-typed; the visit total nobody typed holds the blank form's 0, so it's asked as missing
+    // 3 typed values → all 3 are re-typed; the visit total nobody typed holds the blank form's 0, and the form's choices
+    // nobody made their defaults (how the visit is paid, the row's kind and overhead, terms "not stated"): asked as missing
     v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
-    expect(v.review.map((i) => i.reason).sort()).toEqual(["REQUIRED_MISSING", "spot_check", "spot_check", "spot_check"]);
-    expect(v.review.find((i) => i.reason === "REQUIRED_MISSING")).toMatchObject({ path: "/budgetGrids/0/visits/0/totalCents", input: "money", blocking: true });
+    expect(v.review.map((i) => i.reason).sort()).toEqual([...Array(8).fill("REQUIRED_MISSING"), "spot_check", "spot_check", "spot_check"]);
+    expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ reason: "REQUIRED_MISSING", input: "money", blocking: true });
     expect(v.review.every((i) => i.blocking && i.answer === null)).toBe(true);
     expect((await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/payment/netDays/value", value: 30, note: "x", by: "Avery Chen" })).status).toBe(409);
     const days = v.review.find((i) => i.path === "/payment/netDays/value")!;
-    expect((await post(`/studies/st-solace/versions/1/review/${days.id}`, { value: 45, by: "Avery Chen" })).status).toBe(409);
-    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/1/review/${days.id}`, { value: 40, by: "Sam Rivera" })).json);
+    // the API's own ids now (spot:<path>), so the URL encodes them
+    expect((await post(`/studies/st-solace/versions/1/review/${encodeURIComponent(days.id)}`, { value: 45, by: "Avery Chen" })).status).toBe(409);
+    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/1/review/${encodeURIComponent(days.id)}`, { value: 40, by: "Sam Rivera" })).json);
     expect(v.review.find((i) => i.id === days.id)).toMatchObject({ outcome: "differs", compare: { typed: 40, read: 45, printed: null } });
     // keeping a different value is a correction: the re-typer is then an editor, and can't approve alone
-    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/1/review/${days.id}`, { value: 40, note: "page 4, §4.2", by: "Sam Rivera" })).json);
+    v = RulebookVersionDto.parse((await post(`/studies/st-solace/versions/1/review/${encodeURIComponent(days.id)}`, { value: 40, note: "page 4, §4.2", by: "Sam Rivera" })).json);
     expect(v.editors).toEqual(["Avery Chen", "Sam Rivera"]);
   }, 30_000); // many requests, each with the mock's simulated network delay
 
@@ -419,12 +421,12 @@ describe("mock API: in step with the real API's rules", () => {
     expect(after.review.find((i) => i.path === "/screenFail/cap/n")).toMatchObject({ id: "cap:/screenFail/cap/n", reason: "CAP_KIND_CHANGED", input: "number", outcome: null });
   });
 
-  it("an amendment's start date: typed, or prospective only (the amendment's own date, shown)", async () => {
+  it("an amendment's start date: typed, or prospective only (the amendment's own date, typed blind)", async () => {
     await post("/studies/st-halcyon/versions/2/send-back", { itemIds: ["interpret:/appliesFrom/value"], note: "Check §1", by: "Morgan Lee" });
     const q = RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).review.find((i) => i.path === "/appliesFrom/value")!;
-    expect(q).toMatchObject({ kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", input: "date", options: [{ id: "prospective", label: "Prospective only: from the amendment's own date, September 30, 2026" }] });
-    const v = await answer("st-halcyon", q.id, { optionId: "prospective", by: "Taylor Brooks" }, 2);
-    expect([v.review.find((i) => i.id === q.id)!.outcome, v.rulebook!.appliesFrom.value]).toEqual(["chosen", "2026-09-30"]);
+    expect(q).toMatchObject({ kind: "contract_problem", reason: "RETROACTIVE_NO_DATE", input: "date", options: [{ id: "prospective", label: "Prospective only: from the amendment's own date" }] });
+    const v = await answer("st-halcyon", q.id, { optionId: "prospective", value: "2026-09-30", by: "Taylor Brooks" }, 2);
+    expect([v.review.find((i) => i.id === q.id)!.outcome, v.rulebook!.appliesFrom.value]).toEqual(["matched", "2026-09-30"]);
   });
 
   it("a random spot check that misses: logged and alerted, and approval waits until its kind of value is proofread", async () => {
@@ -433,7 +435,8 @@ describe("mock API: in step with the real API's rules", () => {
     const unit = sampleOf(nw, (p) => p.endsWith("/unitCents"));
     const price = getAt(NW, unit.path!) as number;
     await answer("st-northwind", unit.id, { value: price + 100 });
-    await answer("st-northwind", unit.id, { value: price + 100, note: "The page prints a dollar more" });
+    // typed again blind, the same: that answer stands, and the sample missed
+    await answer("st-northwind", unit.id, { value: price + 100 });
     const log = AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items;
     expect(log[0]).toMatchObject({ action: "sample.missed", by: "Sam Rivera", detail: { itemId: unit.id, values: "budget grid prices" } });
     expect(AlertPage.parse(await get("/alerts?for=Morgan%20Lee&limit=50")).items[0]).toMatchObject({ kind: "sample_missed", studyId: "st-northwind" });
@@ -485,9 +488,9 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
    */
   async function reloadWith(edit: (saved: { versions: RulebookVersionDto[] }) => void) {
     await get("/settings"); // saved after every request
-    const saved = JSON.parse(localStorage.getItem("dct.mockdb.v8")!) as { versions: RulebookVersionDto[] };
+    const saved = JSON.parse(localStorage.getItem("dct.mockdb.v9")!) as { versions: RulebookVersionDto[] };
     edit(saved);
-    localStorage.setItem("dct.mockdb.v8", JSON.stringify(saved));
+    localStorage.setItem("dct.mockdb.v9", JSON.stringify(saved));
     vi.resetModules();
     const { mockRequest: request } = await import("./server");
     return request;
@@ -522,7 +525,7 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
     expect(await shown("st-halcyon", 2)).toEqual(["2026-09-01", "2026-09-01"]); // the amendment's start date, answered
     await post("/studies/st-halcyon/versions/2/send-back", { itemIds: ["interpret:/appliesFrom/value"], note: "Check §1", by: "Morgan Lee" });
     expect(await shown("st-halcyon", 2)).toEqual([null, null]); // asked again, blind
-    await answer("st-halcyon", "interpret:/appliesFrom/value", { optionId: "prospective", by: "Taylor Brooks" }, 2);
+    await answer("st-halcyon", "interpret:/appliesFrom/value", { optionId: "prospective", value: "2026-09-30", by: "Taylor Brooks" }, 2);
     expect(await shown("st-halcyon", 2)).toEqual(["2026-09-30", "2026-09-30"]);
   });
 
@@ -550,9 +553,11 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
     for (const [path, value] of [[`${v0}/procedureSubtotalCents`, 10000], [`${v0}/overheadCents`, 4000], [`${v0}/totalCents`, 15000]] as const)
       await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path, value, note: "x", by: "Avery Chen" });
     let v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
-    expect(v.review.map((i) => i.reason)).toEqual(["spot_check", "spot_check", "spot_check"]);
+    // with the form's choices nobody made (asked as missing): the row's kind holds the check back with the typed numbers
+    expect(v.review.map((i) => i.reason)).toEqual([...Array(3).fill("spot_check"), ...Array(7).fill("REQUIRED_MISSING")]);
     const typedAt = { [`${v0}/procedureSubtotalCents`]: 10000, [`${v0}/overheadCents`]: 4000, [`${v0}/totalCents`]: 15000 } as Record<string, number>;
-    for (const i of v.review) v = await answer("st-solace", i.id, { value: typedAt[i.path!] });
+    const blank = (p: string) => (/autopay$/.test(p) ? "true" : /overheadApplied$/.test(p) ? "false" : /category$/.test(p) ? "procedure" : "unspecified");
+    for (const i of v.review) v = await answer("st-solace", i.id, i.reason === "spot_check" ? { value: typedAt[i.path!] } : { optionId: blank(i.path!) });
     expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")).toMatchObject({ id: `anomaly:VISIT_TOTAL_MISMATCH:${v0}/totalCents`, kind: "contract_problem", outcome: null });
   });
 

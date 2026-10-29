@@ -22,6 +22,9 @@ function decodeCursor(c: string) {
   }
 }
 
+/** Batches of `limit + 1` entries one request reads at most while `q` matches only what's blanked (GET /audit). */
+const SCAN_ROUNDS = 10;
+
 /** Every text and number in the details, keys left out (as @dct/shared detailText reads them). */
 const detailText = sql`(SELECT string_agg(x #>> '{}', ' ') FROM jsonb_path_query(${auditLog.detail}, 'strict $.** ? (@.type() == "string" || @.type() == "number")') x)`;
 /** One word of `q`: in the person, the action's code or what it's called, or the details. */
@@ -35,7 +38,9 @@ export const miscRoutes =
   async (app) => {
     /**
      * One page of the log, newest first. `q` is matched in SQL; an entry is returned only if what's shown matches too, so
-     * a withheld value or a blanked number never finds one. Pages can then hold fewer than `limit` entries.
+     * a withheld value or a blanked number never finds one. Pages can then hold fewer than `limit` entries: at most
+     * SCAN_ROUNDS batches are read per request, and the cursor goes on from the last entry read, so a `q` that only
+     * blanked entries match can't keep one request reading the whole log.
      */
     app.get("/audit", async (req): Promise<AuditPage> => {
       const { studyId, q, cursor, limit } = parse(AuditListQuery, req.query);
@@ -46,7 +51,8 @@ export const miscRoutes =
       const looked = new Set<string>();
       const items: AuditEntryDto[] = [];
       let after = cursor ? decodeCursor(cursor) : null;
-      for (;;) {
+      let more = false;
+      for (let round = 0; ; round++) {
         const rows = await db
           .select({ e: auditLog, protocol: studies.protocol, sponsor: studies.sponsor })
           .from(auditLog)
@@ -58,7 +64,7 @@ export const miscRoutes =
         if (unseen.length) {
           for (const s of unseen) looked.add(s);
           const found = await db
-            .select({ studyId: rulebookVersions.studyId, version: rulebookVersions.version, status: rulebookVersions.status, review: rulebookVersions.review, evidence: rulebookVersions.evidence })
+            .select({ studyId: rulebookVersions.studyId, version: rulebookVersions.version, status: rulebookVersions.status, review: rulebookVersions.review, evidence: rulebookVersions.evidence, rulebook: rulebookVersions.rulebook })
             .from(rulebookVersions)
             .where(and(eq(rulebookVersions.status, "draft"), inArray(rulebookVersions.studyId, unseen)));
           for (const v of found) drafts.set(`${v.studyId}/${v.version}`, { hidden: new Set(hiddenPaths(v)), review: v.review, evidence: v.evidence });
@@ -71,9 +77,13 @@ export const miscRoutes =
         }
         if (items.length > limit || rows.length <= limit) break;
         after = rows.at(-1)!.e.id;
+        if (round + 1 >= SCAN_ROUNDS) {
+          more = true;
+          break;
+        }
       }
       const page = items.slice(0, limit);
-      return { items: page, nextCursor: items.length > limit ? encodeCursor(Number(page.at(-1)!.id)) : null };
+      return { items: page, nextCursor: items.length > limit ? encodeCursor(Number(page.at(-1)!.id)) : more ? encodeCursor(after!) : null };
     });
 
     // maker-checker is on unless someone turned it off (ADR-001 §10)

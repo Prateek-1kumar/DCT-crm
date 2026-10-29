@@ -80,10 +80,11 @@ describe("interpretations", () => {
       kind: "contract_problem",
       reason: "RETROACTIVE_NO_DATE",
       input: "date",
-      options: [{ id: "prospective", label: "Prospective only: from the amendment's own date, March 1, 2026" }],
+      // the amendment's own date is typed with it, blind: the read's date of a document is checked by nothing
+      options: [{ id: "prospective", label: "Prospective only: from the amendment's own date" }],
     });
-    rb.documents[1]!.date = "1 March 2026"; // not a date we can write: typed only
-    expect(interpretations(rb, { amendment: false }).find((i) => i.path === "/appliesFrom/value")!.options).toEqual([]);
+    rb.documents[1]!.date = "1 March 2026"; // a date the read gives in words: offered all the same, as the date is typed
+    expect(interpretations(rb, { amendment: false }).find((i) => i.path === "/appliesFrom/value")!.options.map((o) => o.id)).toEqual(["prospective"]);
   });
 
   it("an AMBIGUOUS_TERM about one of them is that question, marked, its figures blanked", () => {

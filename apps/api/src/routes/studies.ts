@@ -1,5 +1,7 @@
 import {
   amountOf,
+  BODY_WORDS,
+  bodyProblem,
   ByHandBody,
   ConfirmStudyBody,
   CreateStudyBody,
@@ -232,7 +234,7 @@ export const studyRoutes =
      */
     app.post<{ Params: { id: string } }>("/studies/:id/versions/by-hand", async (req, reply) => {
       const body = ByHandBody.safeParse(req.body);
-      if (!body.success) throw new HttpError(400, "Say who is typing.");
+      if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.byHand));
       const { by } = body.data;
       const studyId = req.params.id;
       return write(db, req, reply, async (tx) => {

@@ -1,12 +1,12 @@
 "use client";
 
-import type { BudgetGrid, Rulebook, RulebookVersionDto, StudyDetailDto } from "@dct/shared";
+import { type BudgetGrid, choicesOf, parsePercent, type Rulebook, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { blankHoldback, blankInvoiceable, blankProcedure, blankScreenFail, blankSiteFee, blankVisit, nextVisitCode } from "@/lib/byhand";
-import { ENUM_OPTIONS, fieldKey, inferKind } from "@/lib/format";
+import { inferKind } from "@/lib/format";
 import { centsToInput, parseDollars } from "@/lib/money";
 import { getAt } from "@/lib/pointer";
 import { keys } from "@/lib/queries";
@@ -153,8 +153,8 @@ function Input({ form, path, value, empty = undefined, label, commit }: { form: 
       return c === null || Number.isNaN(c) ? { e: "Type a dollar amount, like 1,234.56" } : { v: c };
     }
     if (kind === "int" || kind === "number") {
-      const n = Number(t.replace(/[,%\s]/g, ""));
-      return Number.isFinite(n) && (kind === "number" || Number.isInteger(n)) ? { v: n } : { e: kind === "int" ? "Type a whole number" : "Type a number" };
+      const n = parsePercent(t);
+      return n !== null && (kind === "number" || Number.isInteger(n)) ? { v: n } : { e: kind === "int" ? "Type a whole number" : "Type a number" };
     }
     if (kind === "list") return { v: t.split(",").map((x) => x.trim()).filter(Boolean) };
     return { v: t };
@@ -176,12 +176,28 @@ function Input({ form, path, value, empty = undefined, label, commit }: { form: 
     </span>
   );
 
-  if (kind === "enum")
+  if (kind === "enum" || kind === "bool") {
+    // A choice nobody made shows as one to make: the blank master holds a default there, which is asked when typing is
+    // marked done unless someone picks it here.
+    const picked = form.typed.has(path);
+    const choices = kind === "bool" ? { true: "Yes", false: "No" } : (choicesOf(path) ?? {});
     return (
       <span className="flex flex-col gap-0.5">
         {/* Shows what's saved: a choice that didn't save goes back to it, and says so below. */}
-        <select aria-label={label} {...invalid} disabled={form.disabled} className={cx(inputBase, "w-auto py-1.5", unsaved && "border-danger")} value={String(value)} onChange={(e) => void save(e.target.value)}>
-          {Object.entries(ENUM_OPTIONS[fieldKey(path)] ?? {}).map(([k, l]) => (
+        <select
+          aria-label={label}
+          {...invalid}
+          disabled={form.disabled}
+          className={cx(inputBase, "w-auto py-1.5", unsaved && "border-danger")}
+          value={picked ? String(value) : ""}
+          onChange={(e) => void save(kind === "bool" ? e.target.value === "true" : e.target.value)}
+        >
+          {!picked && (
+            <option value="" disabled>
+              Choose…
+            </option>
+          )}
+          {Object.entries(choices).map(([k, l]) => (
             <option key={k} value={k}>
               {l}
             </option>
@@ -190,6 +206,7 @@ function Input({ form, path, value, empty = undefined, label, commit }: { form: 
         {notSaved}
       </span>
     );
+  }
 
   const money = kind === "money" || kind === "cell";
   return (
@@ -285,6 +302,9 @@ function GridEditor({ form, gi }: { form: Form; gi: number }) {
                     </Button>
                   </span>
                   <HandInput form={form} path={`${base}/visits/${g.visits.indexOf(v)}/name`} empty="" label={`Visit ${v.code} name`} />
+                  <span className="mt-1 block">
+                    <HandInput form={form} path={`${base}/visits/${g.visits.indexOf(v)}/autopay`} label={`Visit ${v.code} paid automatically`} />
+                  </span>
                 </th>
               ))}
               <th className="border-b border-line bg-sunken px-2 py-2">
@@ -299,6 +319,10 @@ function GridEditor({ form, gi }: { form: Form; gi: number }) {
               <tr key={pi}>
                 <td className="border-b border-line p-1.5">
                   <HandInput form={form} path={`${base}/procedures/${pi}/name`} empty="" label={`Procedure, row ${pi + 1}`} />
+                  <span className="mt-1 flex flex-wrap gap-1">
+                    <HandInput form={form} path={`${base}/procedures/${pi}/category`} label={`Kind of line, row ${pi + 1}`} />
+                    <HandInput form={form} path={`${base}/procedures/${pi}/overheadApplied`} label={`Overhead added, row ${pi + 1}`} />
+                  </span>
                 </td>
                 <td className="border-b border-line p-1.5">
                   <HandInput form={form} path={`${base}/procedures/${pi}/unitCents`} label={`Unit price, row ${pi + 1}`} />

@@ -52,7 +52,7 @@ describe("contract list", () => {
     const all = await list();
     expect(protocols(all)).toEqual(["NY-OLD", "NY-NEW", "FAILED", "SETUP", "APPROVE", "READING", "LIVE-NEW", "LIVE-OLD"]);
     expect(all).toMatchObject({ total: 8, nextCursor: null });
-    expect(all.items[0]).toMatchObject({ needsYou: 2, openAnomalies: 2, liveVersion: null, siteName: "Site A" });
+    expect(all.items[0]).toMatchObject({ needsYou: 2, liveVersion: null, siteName: "Site A" });
   });
 
   it("filters by view, site and every word of q", async () => {
@@ -131,7 +131,7 @@ describe("stored stage follows the workflow", () => {
     expect((await list()).items[0]).toMatchObject({ id, status: "setting_up", needsYou: 0 });
     await extract(id);
     // 8 for what didn't check out, 7 interpretations picked blind, 10 confirmed values re-typed blind (ADR-001 §6)
-    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 25, openAnomalies: 25 });
+    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 25 });
     await settleAll(built, id, 1, "Asha", 24);
     expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 1 });
     await settleAll(built, id, 1);

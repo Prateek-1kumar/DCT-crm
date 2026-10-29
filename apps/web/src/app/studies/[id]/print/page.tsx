@@ -116,7 +116,7 @@ export default function PrintSummary() {
                   <tr key={x.code} className="break-inside-avoid">
                     <td className={td}>
                       {x.code} · {x.name}
-                      {!x.autopay && <span className="text-muted"> (invoice)</span>}
+                      {x.autopay === false && <span className="text-muted"> (invoice)</span>}
                     </td>
                     <td className={`${td} num text-right`}>{formatCents(x.totalCents)}</td>
                   </tr>
