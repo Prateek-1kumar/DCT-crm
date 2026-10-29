@@ -51,7 +51,7 @@ export const Golden = z.object({
 });
 export type Golden = z.infer<typeof Golden>;
 
-export type Category = { name: string; hit: number; total: number };
+type Category = { name: string; hit: number; total: number };
 export type Score = { name: string; pct: number; categories: Category[]; misses: string[] };
 
 export function scoreExtraction(rb: Rulebook, anomalies: Pick<ContractAnomaly, "code">[], golden: Golden): Score {

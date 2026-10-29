@@ -15,7 +15,7 @@ import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail,
 export const INTERPRETATION = "INTERPRETATION";
 /** A value of the read picked at random to be typed blind (ADR-001 §6 "Sample re-key"). */
 export const SAMPLE = "SAMPLE";
-export const SAMPLE_SIZE = 10;
+const SAMPLE_SIZE = 10;
 /** The option of the start-date question that means "from the amendment's own date". */
 export const PROSPECTIVE = "prospective";
 
@@ -273,7 +273,7 @@ export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, 
 
 /** Kinds of value, as ADR-001 §10 measures accuracy: a miss in one has all of that kind checked. */
 export type Family = "cells" | "totals" | "fees" | "rules";
-export const FAMILY_LABEL: Record<Family, string> = {
+const FAMILY_LABEL: Record<Family, string> = {
   cells: "budget grid prices",
   totals: "visit and per-patient totals",
   fees: "fee and invoiceable amounts",

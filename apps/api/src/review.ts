@@ -13,6 +13,7 @@ import {
   fieldKey,
   fromAnomalies,
   interpretations,
+  isoDate,
   itemIds,
   leaf,
   openItems,
@@ -43,7 +44,7 @@ import { getAt, parsePointer } from "./lib/pointer.js";
 type Checked = Pick<RulebookVersionDto, "evidence" | "review" | "pdfCheck">;
 type GridVisit = Rulebook["budgetGrids"][number]["visits"][number];
 
-export { askAbout, at, empty, fromAnomalies, leaf, recheck } from "@dct/shared";
+export { askAbout, at, empty, leaf, recheck } from "@dct/shared";
 
 const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as const;
 const box = (documentId: string, page: number): PageBox => ({ documentId, page, box: null });
@@ -58,7 +59,7 @@ export const needsYouOf = (v: { status: string; byHand: boolean; review: ReviewI
 export const hiddenPaths = withheldPaths;
 
 // The masking itself lives in @dct/shared, so the in-browser sample server withholds exactly the same.
-export { blindItem, blindReview, mask } from "@dct/shared";
+export { blindReview, mask } from "@dct/shared";
 
 // ---------- questions at extraction ----------
 
@@ -317,7 +318,7 @@ function uncarried(rb: Rulebook, evidence: ValueEvidence[], c: Carried, asked: S
 // ---------- answering ----------
 
 /** answerQuestion (@dct/shared) for the API: a refusal is an HttpError. Mutates `v`. */
-export function answer(v: AnswerDraft, itemId: string, raw: unknown, isoDate: (text: string) => string | null, now = new Date().toISOString()) {
+export function answer(v: AnswerDraft, itemId: string, raw: unknown, now = new Date().toISOString()) {
   const r = answerQuestion(v, itemId, raw, { isoDate, now });
   if ("refusal" in r) throw new HttpError(r.refusal.status, r.refusal.message);
   return r;

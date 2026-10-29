@@ -8,7 +8,7 @@ import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
 import { type App, type Built, cause, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
-// Regression tests for the security review (backend-audit.md): one block per finding.
+// Regression tests for the security review: one block per finding.
 
 let app: App;
 let built: Built;

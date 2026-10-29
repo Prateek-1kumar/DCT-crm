@@ -10,7 +10,7 @@ import { findProv } from "../pointer";
 
 type Box = [number, number, number, number];
 export type Span = { text: string; box: Box; path?: string; item?: string; weight?: 400 | 600 | 700; anchor?: "start" | "end"; muted?: boolean };
-export type LayoutItem = { id: string; path: string | null; where: PageBox[]; lines: string[] };
+type LayoutItem = { id: string; path: string | null; where: PageBox[]; lines: string[] };
 
 const BOILER = [
   "The parties agree that the following terms govern payment for services performed under the Protocol.",
@@ -32,7 +32,7 @@ export function numberPaths(rb: Rulebook): string[] {
 
 const wrap = (t: string) => t.match(/.{1,96}(\s|$)/g)?.map((x) => x.trim()) ?? [t];
 
-export const unionBox = (boxes: Box[]): Box | null => {
+const unionBox = (boxes: Box[]): Box | null => {
   if (!boxes.length) return null;
   const x0 = Math.min(...boxes.map((b) => b[0]));
   const y0 = Math.min(...boxes.map((b) => b[1]));

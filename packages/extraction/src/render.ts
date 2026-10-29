@@ -9,7 +9,7 @@ export type Rotation = 0 | 90 | 180 | 270;
 /** x0, y0, x1, y1 in page points (the space the text layer's word boxes are in). */
 export type PageRect = [number, number, number, number];
 
-export type RenderOptions = {
+type RenderOptions = {
   dpi?: number;
   /** Clockwise rotation applied before rendering, to make sideways grids upright. */
   rotate?: Rotation;
@@ -181,8 +181,8 @@ export async function renderPng(pdfPath: string, page: number, opts: RenderOptio
   return Buffer.from(await call<Uint8Array>("render", pdfPath, page, m, box, !!opts.gray, opts.mask ?? []));
 }
 
-export type TileOptions = { dpi: number; rotate?: Rotation; maxPx?: number; overlap?: number; gray?: boolean; mask?: PageRect[] };
-export type TileLayout = { dpi: number; width: number; height: number; tw: number; th: number; cols: number; rows: number; count: number };
+type TileOptions = { dpi: number; rotate?: Rotation; maxPx?: number; overlap?: number; gray?: boolean; mask?: PageRect[] };
+type TileLayout = { dpi: number; width: number; height: number; tw: number; th: number; cols: number; rows: number; count: number };
 
 /**
  * Tile grid for a page, without rendering anything. Fixed-size tiles (<= maxPx) step so neighbours

@@ -1,4 +1,4 @@
-import type { bindEvidence, isoDate, pageCount, ReadWarning, readTextLayer, reviewFromEvidence } from "@dct/extraction";
+import type { bindEvidence, pageCount, ReadWarning, readTextLayer, reviewFromEvidence } from "@dct/extraction";
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
@@ -39,12 +39,10 @@ export interface ExtractionPort {
   readTextLayer: typeof readTextLayer;
   bindEvidence: typeof bindEvidence;
   reviewFromEvidence: typeof reviewFromEvidence;
-  /** The ISO date a printed text says, as the binder reads it ("Aug. 22nd, 2025" → "2025-08-22"). */
-  isoDate: typeof isoDate;
 }
 
 /** The parts of the port with no AI in them: fake mode uses the real ones. */
-export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "bindEvidence" | "reviewFromEvidence" | "isoDate";
+export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "bindEvidence" | "reviewFromEvidence";
 
 let cached: Promise<ExtractionPort> | undefined;
 
@@ -56,8 +54,8 @@ export function getExtraction(): Promise<ExtractionPort> {
 
 /** Fake mode fakes only the AI: page images and the PDF's text come from the real PDF, so the viewer and the checks are real. */
 async function loadFake(): Promise<ExtractionPort> {
-  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence, isoDate }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
-  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence, isoDate };
+  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
+  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence };
 }
 
 async function loadReal(): Promise<ExtractionPort> {

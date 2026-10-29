@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bindEvidence, isoDate, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
-import { diffRulebooks, isoDate as sharedIsoDate, labelFor, type Rulebook } from "@dct/shared";
+import { bindEvidence, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
+import { diffRulebooks, labelFor, type Rulebook } from "@dct/shared";
 import { manualRulebook } from "../src/domain.js";
 import { failure } from "../src/jobs.js";
 import { getAt, markManual, parsePointer, setAt } from "../src/lib/pointer.js";
@@ -69,13 +69,6 @@ describe("diffRulebooks", () => {
 
   it("is empty for identical rulebooks", () => {
     expect(diffRulebooks({ a: [1, 2] }, { a: [1, 2] })).toEqual([]);
-  });
-});
-
-describe("printed dates", () => {
-  it("the sample server reads them as the binder does (@dct/shared's copy of the binder's reader, until the binder uses it)", () => {
-    const printed = ["2025-08-22", "August 22, 2025.", "Aug. 22nd 2025", "22 August 2025", "22-Aug-25", "the 22nd day of August, 2025", "8/22/2025", "22.08.2025", "8/9/2025", "31 June 2025", "June 2025", ""];
-    expect(printed.map(sharedIsoDate)).toEqual(printed.map(isoDate));
   });
 });
 
@@ -163,21 +156,21 @@ describe("picked answers", () => {
     expect(scope).toMatchObject({ id: "interpret:/overhead/appliesTo/value", kind: "interpretation", reason: "AMBIGUOUS_TERM", blocking: true, input: null });
     expect(scope.options.map((o) => o.id)).toEqual(["procedures_only", "procedures_and_staff", "all_per_patient_lines", "none"]);
     const draft = { version: 1, byHand: false, rulebook: rb, review: [...review, askAbout(rb, [], "/invoiceables/0/requiresPreApproval", "r1", "reported")], evidence: [], editors: [] };
-    expect(answer(draft, scope.id, { optionId: "procedures_only", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen", set: { path: "/overhead/appliesTo/value", before: "unspecified", after: "procedures_only" } });
+    expect(answer(draft, scope.id, { optionId: "procedures_only", by: "Sam" })).toMatchObject({ outcome: "chosen", set: { path: "/overhead/appliesTo/value", before: "unspecified", after: "procedures_only" } });
     expect(draft.review.at(-1)!.options).toEqual([{ id: "true", label: "Yes" }, { id: "false", label: "No" }]);
     // A reported yes/no value is checked like a typed one: a different pick differs (nothing written), picking again
     // settles it, with a note saying where the page prints it (a pick is never in the PDF's text).
-    expect(answer(draft, "r1", { optionId: "false", by: "Sam" }, isoDate)).toMatchObject({ outcome: "differs", set: undefined });
+    expect(answer(draft, "r1", { optionId: "false", by: "Sam" })).toMatchObject({ outcome: "differs", set: undefined });
     expect(draft.review.at(-1)!.compare).toEqual({ typed: false, read: true, printed: null });
     expect(draft.rulebook.invoiceables[0]!.requiresPreApproval).toBe(true);
-    expect(() => answer(draft, "r1", { optionId: "false", by: "Sam" }, isoDate)).toThrow("Add a short note saying where the page prints this value.");
+    expect(() => answer(draft, "r1", { optionId: "false", by: "Sam" })).toThrow("Add a short note saying where the page prints this value.");
     expect(draft.review.at(-1)!.outcome).toBe("differs");
-    expect(answer(draft, "r1", { optionId: "false", note: "Exhibit B, page 4: “no pre-approval needed”", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen" });
+    expect(answer(draft, "r1", { optionId: "false", note: "Exhibit B, page 4: “no pre-approval needed”", by: "Sam" })).toMatchObject({ outcome: "chosen" });
     expect(draft.review.at(-1)!.answer).toMatchObject({ optionId: "false", noPdfText: true });
     expect([draft.rulebook.overhead.appliesTo.value, draft.rulebook.invoiceables[0]!.requiresPreApproval]).toEqual(["procedures_only", false]);
     // The same value picked matches.
     draft.review.push(askAbout(draft.rulebook, [], "/invoiceables/0/requiresPreApproval", "r2", "reported"));
-    expect(answer(draft, "r2", { optionId: "false", by: "Sam", value: "x".repeat(1000) }, isoDate)).toMatchObject({ outcome: "matched" });
+    expect(answer(draft, "r2", { optionId: "false", by: "Sam", value: "x".repeat(1000) })).toMatchObject({ outcome: "matched" });
     expect(draft.review.at(-1)!.answer).not.toHaveProperty("value", "x".repeat(1000)); // only what was answered is kept
     expect(rb.overhead.appliesTo.value).toBe("unspecified"); // written to the draft, not the input
   });
@@ -236,7 +229,7 @@ describe("contract problems are never dropped", () => {
     const draft = { version: 1, byHand: false, rulebook: rb, review: r.review, evidence: r.evidence, editors: [] as string[] };
     const again = (v = draft) => recheck(checks, { ...v, anomalies: r.anomalies }, CELL);
     expect(again()).toEqual([]); // the cell is still being typed
-    answer(draft, `confirm:${CELL}`, { value: 10000, by: "Sam" }, isoDate);
+    answer(draft, `confirm:${CELL}`, { value: 10000, by: "Sam" });
     const asked = again();
     expect(asked.map((i) => [i.id, i.kind])).toEqual([[TOTAL, "contract_problem"]]); // blocking as its severity says, as at read
     draft.review.push(...asked);
@@ -246,10 +239,10 @@ describe("contract problems are never dropped", () => {
     // A correction draft: the live version asked about this total on these numbers, so it isn't asked again; a typed
     // number that changes the arithmetic is.
     const fix = { version: 2, byHand: false, rulebook: grid(), review: [askAbout(grid(), [], CELL, "reported:1", "reported")], evidence: [], editors: [] as string[] };
-    answer(fix, "reported:1", { value: 10000, by: "Sam" }, isoDate);
+    answer(fix, "reported:1", { value: 10000, by: "Sam" });
     expect(again(fix)).toEqual([]);
-    answer(fix, "reported:1", { value: 10050, by: "Sam" }, isoDate);
-    answer(fix, "reported:1", { value: 10050, note: "page 9, Week 1 column", by: "Sam" }, isoDate);
+    answer(fix, "reported:1", { value: 10050, by: "Sam" });
+    answer(fix, "reported:1", { value: 10050, note: "page 9, Week 1 column", by: "Sam" });
     expect(again(fix).map((i) => i.id)).toEqual(["anomaly:VISIT_TOTAL_MISMATCH:/budgetGrids/0/visits/1/procedureSubtotalCents"]);
   });
 });

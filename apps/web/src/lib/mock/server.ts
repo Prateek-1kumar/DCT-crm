@@ -846,7 +846,7 @@ const ok = (json: unknown): Res => ({ status: 200, json });
 const err = (status: number, message: string): Res => ({ status, json: { statusCode: status, error: status === 409 ? "Conflict" : "Error", message } });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Test seam: the sample server's network delay, least and most ms. None under vitest, where it was most of the web suite's time. */
-export const mockLatency: { ms: [number, number] } = { ms: process.env.NODE_ENV === "test" ? [0, 0] : [120, 300] };
+const mockLatency: { ms: [number, number] } = { ms: process.env.NODE_ENV === "test" ? [0, 0] : [120, 300] };
 
 /** Idempotency-Key → the request it came with and the response it got, as the API keeps them (in memory here). */
 const replays = new Map<string, { request: string; res: Res }>();

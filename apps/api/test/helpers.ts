@@ -7,7 +7,7 @@ import { at, empty, sampling } from "../src/review.js";
 
 export type Built = Awaited<ReturnType<typeof buildApp>>;
 /** A "random" draw that never moves anything (Fisher–Yates swaps each item with itself). */
-export const NO_SHUFFLE = () => 1 - 2 ** -32;
+const NO_SHUFFLE = () => 1 - 2 ** -32;
 export type App = Built["app"];
 
 /** `workers: false`: nothing runs the queued jobs, so a test can run (or strand) them itself. */

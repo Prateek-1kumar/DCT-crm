@@ -110,7 +110,7 @@ function safeJson(text: string): unknown {
 }
 
 /** Accepts Fastify's `{ message }`, `{ error }`, or a bare string. */
-export function errorMessage(json: unknown, status: number): string {
+function errorMessage(json: unknown, status: number): string {
   if (typeof json === "string" && json) return json;
   if (json && typeof json === "object") {
     const o = json as Record<string, unknown>;
@@ -173,7 +173,7 @@ export const api = {
   /** Type one value; by-hand drafts only. */
   typeValue: (id: string, v: number, body: { path: string; value: unknown; by: string }) =>
     request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, { ...body, note: "Typed by hand" }),
-  /** Proposed route: typing is done; picks the values someone else re-types blind. */
+  /** Typing is done; picks the values someone else re-types blind. */
   finishByHand: (id: string, v: number, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/by-hand/done`, { by }),
   /** `asOf`: the version's `updatedAt` as the approver saw it; a 409 if anything changed since. */
   signOff: (id: string, v: number, body: SignOffBody) =>

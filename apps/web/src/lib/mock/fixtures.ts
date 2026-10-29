@@ -4,7 +4,6 @@ import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
 import { boxOn, layoutPage, numberPaths, type Span } from "./layout";
 
-export { numberPaths };
 
 /**
  * SYNTHETIC data only: invented sponsors, protocols, sites and people.
@@ -14,7 +13,7 @@ export { numberPaths };
 type Invoiceable = Rulebook["invoiceables"][number];
 type Doc = { id: string; kind: DocumentKind; title: string; date: string | null };
 
-export function P(documentId: string, page: number, location?: string, extra: Partial<Provenance> & { quote?: string } = {}): Provenance {
+function P(documentId: string, page: number, location?: string, extra: Partial<Provenance> & { quote?: string } = {}): Provenance {
   const { quote, ...rest } = extra;
   return {
     source: { documentId, page, ...(location ? { location } : {}), ...(quote ? { quote } : {}) },
@@ -26,7 +25,7 @@ export function P(documentId: string, page: number, location?: string, extra: Pa
 }
 const s = <T,>(value: T, prov: Provenance) => ({ value, prov });
 
-export const VISITS = [
+const VISITS = [
   { code: "SCR", name: "Screening" },
   { code: "V1", name: "Day 1 · Randomization" },
   { code: "V2", name: "Week 4" },
@@ -54,7 +53,7 @@ const PROCS: { code: string | null; name: string; unit: number; category: "proce
   { code: null, name: "Subject stipend", unit: 7500, category: "non_procedure", visits: ALL },
 ];
 
-export type GridCfg = {
+type GridCfg = {
   id: string;
   label: string;
   arm: string | null;
@@ -71,7 +70,7 @@ export type GridCfg = {
   etInvoiceable?: boolean;
 };
 
-export function makeGrid(cfg: GridCfg, pi: string, site: string): BudgetGrid {
+function makeGrid(cfg: GridCfg, pi: string, site: string): BudgetGrid {
   const prov = (loc: string) => P(cfg.docId, cfg.page, loc);
   const procedures = PROCS.map((p) => {
     const unit = cfg.prices?.[p.code ?? p.name] ?? p.unit;
@@ -123,7 +122,7 @@ export function makeGrid(cfg: GridCfg, pi: string, site: string): BudgetGrid {
   };
 }
 
-export type StudyCfg = {
+type StudyCfg = {
   sponsor: string;
   payingAgent: string | null;
   protocol: string;
@@ -335,9 +334,9 @@ export type Spec = Pick<ReviewItem, "id" | "kind" | "reason" | "path" | "questio
 
 export type Draft = Pick<RulebookVersionDto, "review" | "evidence" | "pdfCheck" | "anomalies"> & { rulebook: Rulebook; secrets: Record<string, Secret> };
 
-export const pb = (documentId: string, page: number, box: PageBox["box"] = null): PageBox => ({ documentId, page, box });
+const pb = (documentId: string, page: number, box: PageBox["box"] = null): PageBox => ({ documentId, page, box });
 /** Box for the n-th question on a page: full-width lines in the lower half, so they never overlap. */
-export const box = (n: number): [number, number, number, number] => [0.07, 0.5 + (n % 7) * 0.06, 0.86, 0.042];
+const box = (n: number): [number, number, number, number] => [0.07, 0.5 + (n % 7) * 0.06, 0.86, 0.042];
 
 /** As the real API: a cap's limit is cents when its kind says it caps an amount; every other value's unit is in its name. */
 const inputFor = (rb: Rulebook, path: string, value?: unknown): NonNullable<ReviewItem["input"]> =>

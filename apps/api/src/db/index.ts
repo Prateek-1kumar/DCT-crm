@@ -29,7 +29,6 @@ export const apiPoolOptions = (): pg.PoolConfig => ({
 export type Db = ReturnType<typeof createDb>["db"];
 /** A db handle or a transaction: both expose the same query API. */
 export type Tx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
-export { schema };
 
 /** apps/api/drizzle, found from src (tsx) and from dist (the build) alike. */
 export const MIGRATIONS = path.join(findUp("drizzle/meta/_journal.json") ?? process.cwd(), "drizzle");

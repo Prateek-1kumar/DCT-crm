@@ -1,4 +1,4 @@
-import { bindEvidence, isoDate, reviewFromEvidence, runContractChecks } from "@dct/extraction";
+import { bindEvidence, reviewFromEvidence, runContractChecks } from "@dct/extraction";
 import { type AlertPage, type AuditPage, capFollowUps, type ContractAnomaly, type DocumentDto, type ReviewItem, type Rulebook, RulebookVersionDto, SAMPLE } from "@dct/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { appliesFromOf, manualRulebook } from "../src/domain.js";
@@ -108,8 +108,8 @@ describe("interpretations, picked blind (ADR-001 §6)", () => {
     const item = review.find((i) => i.id === "interpret:/holdback/appliesTo")!;
     expect(item).toMatchObject({ input: "text", options: [] });
     const d = { version: 1, byHand: false, rulebook: rb, review, evidence: [], editors: [] };
-    expect(answerDraft(d, item.id, { value: "Each Visit Payment ", by: "Sam" }, isoDate)).toMatchObject({ outcome: "matched" });
-    expect(answerDraft(d, item.id, { value: "every payment", by: "Ben" }, isoDate)).toMatchObject({ outcome: "differs" });
+    expect(answerDraft(d, item.id, { value: "Each Visit Payment ", by: "Sam" })).toMatchObject({ outcome: "matched" });
+    expect(answerDraft(d, item.id, { value: "every payment", by: "Ben" })).toMatchObject({ outcome: "differs" });
   });
 
   it("a cap's limit waits for its kind, and is asked again when the kind the person picks isn't the read's", async () => {
@@ -159,7 +159,7 @@ describe("a cap the person says has no limit", () => {
     expect(out.evidence.find((e) => e.path === "/screenFail/cap/n")).toMatchObject({ status: "ungrounded" }); // so it's asked once the kind is
     const kind = out.review.find((i) => i.path === "/screenFail/cap/kind")!;
     const d = { version: 2, byHand: false, rulebook: rb, review: out.review, evidence: out.evidence, editors: [] };
-    answerDraft(d, kind.id, { optionId: "count", by: "Sam" }, isoDate);
+    answerDraft(d, kind.id, { optionId: "count", by: "Sam" });
     expect(capFollowUps(d, kind, false, (p, id, r) => askAbout(rb, d.evidence, p, id, r))).toEqual([expect.objectContaining({ path: "/screenFail/cap/n", reason: "UNGROUNDED_VALUE" })]);
   });
 });
@@ -188,12 +188,12 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     expect(q.options).toEqual([{ id: "prospective", label: "Prospective only: from the amendment's own date" }]);
 
     const pick = { version: 1, byHand: false, rulebook: structuredClone(rb), review: structuredClone(review), evidence: [], editors: [] };
-    expect(answerDraft(pick, q.id, { optionId: "prospective", value: "2026-03-01", by: "Sam" }, isoDate)).toMatchObject({ outcome: "matched", set: { path: "/appliesFrom/value", before: null, after: "2026-03-01" } });
+    expect(answerDraft(pick, q.id, { optionId: "prospective", value: "2026-03-01", by: "Sam" })).toMatchObject({ outcome: "matched", set: { path: "/appliesFrom/value", before: null, after: "2026-03-01" } });
     expect(appliesFromOf(pick.rulebook)).toBe("2026-03-01");
     const typed = { version: 1, byHand: false, rulebook: structuredClone(rb), review: structuredClone(review), evidence: [], editors: [] };
-    expect(answerDraft(typed, q.id, { value: "2025-11-01", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen", set: { after: "2025-11-01" } });
+    expect(answerDraft(typed, q.id, { value: "2025-11-01", by: "Sam" })).toMatchObject({ outcome: "chosen", set: { after: "2025-11-01" } });
     expect(typed.review.find((i) => i.id === q.id)!.answer).toMatchObject({ value: "2025-11-01" });
-    expect(() => answerDraft(typed, q.id, { by: "Ben" }, isoDate)).toThrow("Type a value, or say you can't tell.");
+    expect(() => answerDraft(typed, q.id, { by: "Ben" })).toThrow("Type a value, or say you can't tell.");
   });
 
   it("asked on any amendment that gives no date, retroactive or not; a stated date is an interpretation, checked like a typed one", () => {
@@ -206,8 +206,8 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     q = review.find((i) => i.path === "/appliesFrom/value")!;
     expect(q).toMatchObject({ kind: "interpretation", reason: "INTERPRETATION", input: "date" });
     const d = { version: 1, byHand: false, rulebook: rb, review, evidence: [], editors: [] };
-    expect(answerDraft(d, q.id, { optionId: "prospective", value: "2026-03-01", by: "Sam" }, isoDate)).toMatchObject({ outcome: "differs" }); // March 1 isn't the read's February 1
-    expect(answerDraft(d, q.id, { value: "2026-02-01", note: "§1 says February 1", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen" });
+    expect(answerDraft(d, q.id, { optionId: "prospective", value: "2026-03-01", by: "Sam" })).toMatchObject({ outcome: "differs" }); // March 1 isn't the read's February 1
+    expect(answerDraft(d, q.id, { value: "2026-02-01", note: "§1 says February 1", by: "Sam" })).toMatchObject({ outcome: "chosen" });
     // a contract that isn't an amendment and gives no date asks nothing
     const base = manualRulebook({ sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0], []);
     expect(reviewDraft({ bindEvidence, reviewFromEvidence }, base, [], [], []).review.some((i) => i.path === "/appliesFrom/value")).toBe(false);
@@ -352,7 +352,7 @@ describe("corrections an amendment's read couldn't carry over", () => {
       "A correction from version 1 wasn't carried over: Study › Protocol, corrected by Asha. Check it in the invoicing master.",
     ]);
     const d = { version: 2, byHand: false, rulebook: rb, review: out.review, evidence: out.evidence, editors: [] };
-    expect(answerDraft(d, lost.id, { optionId: "bill_by_hand", note: "Pharmacy set-up $1,500 once", by: "Sam" }, isoDate)).toMatchObject({ outcome: "chosen", listed: { added: "Page 7 of “Work order”" } });
+    expect(answerDraft(d, lost.id, { optionId: "bill_by_hand", note: "Pharmacy set-up $1,500 once", by: "Sam" })).toMatchObject({ outcome: "chosen", listed: { added: "Page 7 of “Work order”" } });
     expect(d.rulebook.unclassified).toMatchObject([{ page: 7, note: "Pharmacy set-up $1,500 once", itemId: lost.id }]);
   });
 });

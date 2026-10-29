@@ -5,7 +5,7 @@ import { pageCount, textPage } from "./render";
 /** The PDF's own text (mupdf structured text), no AI: words with boxes, each page's text source, hidden text. */
 
 /** x0, y0, x1, y1 in points, in the space renderPage draws (the page's /Rotate applied). */
-export type Rect = [number, number, number, number];
+type Rect = [number, number, number, number];
 
 export type Word = {
   text: string;
@@ -47,7 +47,7 @@ export async function readTextLayer(pdfPath: string, documentId: string): Promis
   return out;
 }
 
-export const union = (rs: Rect[]): Rect => [Math.min(...rs.map((r) => r[0])), Math.min(...rs.map((r) => r[1])), Math.max(...rs.map((r) => r[2])), Math.max(...rs.map((r) => r[3]))];
+const union = (rs: Rect[]): Rect => [Math.min(...rs.map((r) => r[0])), Math.min(...rs.map((r) => r[1])), Math.max(...rs.map((r) => r[2])), Math.max(...rs.map((r) => r[3]))];
 
 /** The shared PageBox (fractions of the page) around some words. */
 export const boxOf = (p: TextPage, ws: Word[]): PageBox => {
@@ -110,7 +110,7 @@ const RULES: [SpanKind, RegExp][] = [
   ["limit", /\b(?:up to|maximum of|max(?:imum)?\.?|not to exceed|no more than)\s\(?\d[\d,]*/gi],
 ];
 
-export type SpanKind = "amount" | "grid_number" | "percent" | "days" | "ratio" | "limit" | "absence";
+type SpanKind = "amount" | "grid_number" | "percent" | "days" | "ratio" | "limit" | "absence";
 export type Span = {
   kind: SpanKind;
   where: PageBox;

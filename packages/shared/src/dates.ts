@@ -1,6 +1,6 @@
 /**
- * Dates as contracts print them, read the way the binder reads them (packages/extraction/src/binder.ts), so an answer is
- * compared with a value's printed date the same way in the API and the in-browser sample server.
+ * Dates as contracts print them. The binder (packages/extraction/src/binder.ts) reads a page's dates with this, so an
+ * answer is compared with a value's printed date the same way in the API and the in-browser sample server.
  */
 
 const MONTH = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?";

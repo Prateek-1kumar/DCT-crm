@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
 import { getExtraction } from "../src/extraction/port.js";
-import { type App, type Built, extract, liveStudy, makeTextPdf, multipart, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload, waitJob } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makeTextPdf, multipart, newStudy, resetDb, settleAll, storedVersion, testApp, upload, waitJob } from "./helpers.js";
 
 // A failure injected into the last insert of a write (a trigger that raises): nothing of the write is left behind. No
 // status change without its audit entry, no alert without its transition, no job without its row, no orphan file.

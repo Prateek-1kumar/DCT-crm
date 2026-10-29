@@ -1,10 +1,10 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
+import { isoDate, ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { describe, expect, it } from "vitest";
-import { bindEvidence, isoDate, reviewFromEvidence } from "../src/binder";
+import { bindEvidence, reviewFromEvidence } from "../src/binder";
 import { amounts, inventory, readTextLayer, type TextPage } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 

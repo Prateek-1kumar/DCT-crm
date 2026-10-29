@@ -20,7 +20,7 @@ const index = (t: string) => {
   return Number(t);
 };
 
-export function getAt(root: unknown, tokens: string[]): unknown {
+function getAt(root: unknown, tokens: string[]): unknown {
   let node = root;
   for (const t of tokens) node = Array.isArray(node) ? node[index(t)] : isObj(node) && Object.hasOwn(node, t) ? node[t] : undefined;
   return node;

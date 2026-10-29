@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { maintain } from "../src/jobs.js";
-import { type App, type Built, makePdf, makeTextPdf, multipart, resetDb, settleAll, signOff, storedVersion, testApp, waitJob } from "./helpers.js";
+import { type App, type Built, makePdf, makeTextPdf, multipart, resetDb, settleAll, storedVersion, testApp, waitJob } from "./helpers.js";
 
 // Every write route, sent twice with one Idempotency-Key: the second gets the first's response, byte for byte, and
 // changes nothing (rows, audit entries, alerts, jobs). Sent at once (a double click): one effect.

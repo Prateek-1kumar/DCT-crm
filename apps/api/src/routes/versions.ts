@@ -186,7 +186,7 @@ export const versionRoutes =
           version: row.version, byHand: row.byHand, rulebook: row.rulebook, review: structuredClone(row.review), evidence: structuredClone(row.evidence), editors: [...row.editors],
           proofread: row.proofread, anomalies: row.anomalies,
         };
-        const answered = answer(draft, req.params.itemId, req.body, port.isoDate);
+        const answered = answer(draft, req.params.itemId, req.body);
         // a repeat that changes nothing writes nothing and logs nothing
         if (answered.unchanged) return versionDto(row);
         const { by, action, detail } = answered.log;

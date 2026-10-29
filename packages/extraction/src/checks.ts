@@ -31,7 +31,7 @@ export type CheckOptions = {
   notes?: ExtractionNote[];
 };
 
-export const LOW_CONFIDENCE = 0.8;
+const LOW_CONFIDENCE = 0.8;
 
 const SEVERITY: Record<ContractAnomalyCode, ContractAnomaly["severity"]> = {
   GRID_CONFLICT: "blocker",
@@ -420,7 +420,7 @@ export function provAt(rb: Rulebook, path: string): Provenance | null {
 
 // ---------- cross-read comparison ----------
 
-export type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
+type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
 
 type Field = { item: string; itemPath: string; path: string; label: string; value: unknown; name: string };
 

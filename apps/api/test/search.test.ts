@@ -25,7 +25,6 @@ beforeEach(async () => {
 });
 
 const get = async <T>(url: string) => (await app.inject({ url })).json<T>();
-const post = (url: string, payload: object) => app.inject({ method: "POST", url, payload });
 const list = (qs = "") => get<StudyPage>(`/api/v1/studies${qs}`);
 const protocols = (p: StudyPage) => p.items.map((s) => s.protocol);
 

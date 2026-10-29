@@ -77,7 +77,7 @@ ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"`).join("\n")}
 For each document give its kind (master_agreement, work_order, adoption, amendment, budget, other), a short title and its date (effective or execution date) if printed.
 Then guess the study: sponsor (the company that owns the study, not a CRO), protocol number, site name (the contracting site entity) and principal investigator. Use null for anything you cannot see.`;
 
-export type TermsPart = "study" | "payment" | "items";
+type TermsPart = "study" | "payment" | "items";
 const TERMS_PARTS: Record<TermsPart, string> = {
   study: "Part 1 of 3: study, documents, referencedDocuments, rounding, appliesFrom and notes.",
   payment: "Part 2 of 3: overhead, payment, holdback, deadlines and overpayment.",

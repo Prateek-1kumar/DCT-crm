@@ -1,4 +1,4 @@
-import { bindEvidence, isoDate, type ReadWarning, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
+import { bindEvidence, type ReadWarning, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
 import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type MasterSearch, type ReviewItem, type Rulebook, type RulebookVersionDto, type StudyPage } from "@dct/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
@@ -135,10 +135,10 @@ describe("2–3. the governing grid is chosen per arm, and an amendment's new gr
       [null, "Arm B", ["gB1", "gB2"]],
     ]);
     const d = { ...local(rb, review), evidence };
-    answerDraft(d, grid[0]!.id, { optionId: "gA2", by: "Asha" }, isoDate);
-    answerDraft(d, grid[1]!.id, { optionId: "gB1", by: "Asha" }, isoDate);
+    answerDraft(d, grid[0]!.id, { optionId: "gA2", by: "Asha" });
+    answerDraft(d, grid[1]!.id, { optionId: "gB1", by: "Asha" });
     expect(d.rulebook.governingGridIds).toEqual(["gA2", "gB1"]);
-    answerDraft(d, grid[0]!.id, { optionId: "gA1", by: "Asha" }, isoDate); // arm A changes its mind; arm B's stays
+    answerDraft(d, grid[0]!.id, { optionId: "gA1", by: "Asha" }); // arm A changes its mind; arm B's stays
     expect(d.rulebook.governingGridIds).toEqual(["gB1", "gA1"]);
     expect(billedGrids(d.rulebook).map((g) => g.id)).toEqual(["gA1", "gB1"]);
   });
@@ -237,8 +237,8 @@ describe("5. every question holds approval; a Review question clears by a choice
     expect(more).toEqual([]);
     expect(problem).toMatchObject({ reason: "VISIT_TOTAL_MISMATCH", blocking: false, options: [{ id: "printed", note: "What should we ask the sponsor?" }, { id: "sum", note: "What should we ask the sponsor?" }] });
     const d = local(rb, [problem!]);
-    expect(() => answerDraft(d, problem!.id, { optionId: "sum", by: "Asha" }, isoDate)).toThrow("Add a short note for this answer: what should we ask the sponsor?");
-    answerDraft(d, problem!.id, { optionId: "sum", note: "Why is the Week 0 total a dollar over its parts?", by: "Asha" }, isoDate);
+    expect(() => answerDraft(d, problem!.id, { optionId: "sum", by: "Asha" })).toThrow("Add a short note for this answer: what should we ask the sponsor?");
+    answerDraft(d, problem!.id, { optionId: "sum", note: "Why is the Week 0 total a dollar over its parts?", by: "Asha" });
     expect([at(d.rulebook, G1_TOTAL), d.review[0]!.outcome, d.evidence]).toEqual([7700, "chosen", [expect.objectContaining({ path: G1_TOTAL, status: "attested" })]]);
   });
 
@@ -485,7 +485,7 @@ describe("11. a text page with a picture big enough to hold prices is attested l
     });
     expect(picture.options.map((o) => o.id)).toEqual(["none", "bill_by_hand"]);
     const d = { ...local(rb, review), evidence };
-    answerDraft(d, picture.id, { optionId: "bill_by_hand", note: "Pharmacy fee table, $1,500 set-up", by: "Asha" }, isoDate);
+    answerDraft(d, picture.id, { optionId: "bill_by_hand", note: "Pharmacy fee table, $1,500 set-up", by: "Asha" });
     expect(d.rulebook.unclassified).toMatchObject([{ label: "Page 3 of “Work Order.pdf”", page: 3, note: "Pharmacy fee table, $1,500 set-up", itemId: picture.id }]);
     // no picture, no question
     expect(reviewDraft(port, rb, [], [{ ...pages[0]!, largePicture: false }], docs).review.map((i) => i.reason)).not.toContain("PICTURE_PAGE");
