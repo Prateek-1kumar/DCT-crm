@@ -152,7 +152,7 @@ export const stageLabel = (s: StageState) =>
 
 export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
   if (!pdfCheck)
-    return "This PDF is a scan, so its numbers can't be checked against its text and you'll confirm more of them by hand. If you can, ask the sponsor for the signed DocuSign copy.";
+    return "This PDF is a scan: numbers its own totals confirm are checked automatically, and the rest come to you to confirm.";
   const n = new Intl.NumberFormat("en-US");
   return `${n.format(pdfCheck.matched)} of ${n.format(pdfCheck.values)} numbers match the contract PDF`;
 }

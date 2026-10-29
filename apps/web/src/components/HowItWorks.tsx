@@ -13,7 +13,7 @@ export function HowItWorks({ open, onClose }: { open: boolean; onClose: () => vo
     {
       icon: Upload,
       title: "Upload",
-      happens: "You add the signed contract. The DocuSign copy is best: its numbers can be checked against the PDF's own text.",
+      happens: "You add the signed contract, scanned or the DocuSign copy. A DocuSign copy's numbers are checked against its own text, so fewer come to you.",
       you: "Drop the PDF and confirm the sponsor, study and site.",
       time: "2 min",
     },

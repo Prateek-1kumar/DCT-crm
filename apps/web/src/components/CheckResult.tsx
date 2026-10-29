@@ -1,7 +1,7 @@
 "use client";
 
 import type { RulebookVersionDto } from "@dct/shared";
-import { AlertTriangle, ArrowRight, CheckCircle2, MessageCircleQuestion, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Info, MessageCircleQuestion, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { minutesFor, needsYou } from "@/lib/review";
@@ -58,9 +58,9 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
       )}
 
       {!pdf && (
-        <p className="flex items-start gap-2.5 rounded-tile bg-warn-soft/70 px-4 py-3 text-small text-ink-2">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
-          This PDF is a scan. If you can, ask the sponsor for the signed DocuSign copy: its numbers are checked automatically, so far fewer come to you.
+        <p className="flex items-start gap-2.5 rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">
+          <Info className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={2} />
+          This PDF is a scan: numbers its own totals confirm are checked automatically, and the rest come to you to confirm.
         </p>
       )}
 

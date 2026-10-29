@@ -29,12 +29,12 @@ describe("files uploaded before", () => {
     expect(newDocs([doc("wo")], [msa, doc("wo"), { ...msa, filename: "copy of msa.pdf" }])).toEqual([msa]);
   });
 
-  it("say plainly that the stored copy is used, keep their kind menu, and still warn about a scan", () => {
+  it("say plainly that the stored copy is used, keep their kind menu, and still say it is a scan", () => {
     wrap(<DocList docs={[doc("msa", { duplicateOf: "msa", text: "scan" })]} onChange={() => {}} />);
     expect(screen.getByText("Uploaded before · will be used")).toBeTruthy();
     expect(screen.queryByText("Already added")).toBeNull();
     expect(screen.getByLabelText("What kind of file msa.pdf is")).toBeTruthy();
-    expect(screen.getByText(/This file is a scan/)).toBeTruthy();
+    expect(screen.getByText(/A scanned PDF/)).toBeTruthy();
   });
 
   it("can start a new contract: a site's master agreement shared with another study", async () => {

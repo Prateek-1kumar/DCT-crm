@@ -2,7 +2,7 @@
 
 import type { DocumentDto, DocumentKind } from "@dct/shared";
 import { useMutation } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, FileCheck2, FileText, UploadCloud, X } from "lucide-react";
+import { ChevronDown, FileCheck2, FileText, Info, UploadCloud, X } from "lucide-react";
 import { useState, type DragEvent } from "react";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
@@ -116,7 +116,7 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
           </span>
         )}
         {!compact && !upload.isPending && (
-          <span className="mt-1 max-w-[52ch] text-small text-faint">Add the signed contract and its budget, plus any master agreement or amendment. The DocuSign copy is best: its numbers can be checked automatically.</span>
+          <span className="mt-1 max-w-[52ch] text-small text-faint">Add the signed contract and its budget, plus any master agreement or amendment. Scanned or DocuSign copies both work.</span>
         )}
       </label>
       {rejected.length > 0 && <ErrorNote>Only PDFs up to 50 MB can be added. Skipped: {rejected.join(", ")}</ErrorNote>}
@@ -189,12 +189,9 @@ export function DocList({ docs, onChange, onRemove }: { docs: DocumentDto[]; onC
               )}
             </div>
             {scan && (
-              <p className="flex items-start gap-2.5 border-t border-warn/20 bg-warn-soft/60 px-4 py-3 text-small text-ink-2">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
-                <span>
-                  This file is a scan, so its numbers can&apos;t be checked against its text and you&apos;ll confirm more of them by hand. If you have the signed
-                  DocuSign copy, {onRemove ? "remove this one and add that instead." : "add that instead."}
-                </span>
+              <p className="flex items-start gap-2.5 border-t border-line bg-sunken px-4 py-3 text-small text-ink-2">
+                <Info className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={2} />
+                <span>A scanned PDF: numbers its own totals confirm are checked automatically, and the rest come to you to confirm.</span>
               </p>
             )}
           </li>
