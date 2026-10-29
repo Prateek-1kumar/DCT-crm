@@ -88,18 +88,37 @@ function rowsFor(lines: Line[], cands: Line[], code: string | null, name: string
 // ---------- grid columns ----------
 
 const UNIT = /unit|cost|price|amount|rate|fee|budget/i;
+/** Our OCR's confidence below which a word confirms nothing (ocr.ts). */
+const MIN_OCR_CONF = 0.8;
 const OVERHEAD = /overhead|indirect|f\s?&\s?a\b/i;
 
-/** Word runs on one line that spell one of the targets. */
-function runs(l: Line, targets: string[]): Word[][] {
-  const ts = targets.map(norm).filter(Boolean);
-  const max = Math.max(0, ...ts.map((t) => t.length));
+/**
+ * A label as printed (normalized) against a visit's code or name: equal; or, `loose`, a name of 5+ characters with one
+ * letter misread, as OCR of a scan does. Digits must agree exactly: they tell visits apart ("visit 10" is never "visit 11").
+ */
+function sameLabel(printed: string, target: string, loose: boolean): boolean {
+  if (printed === target) return true;
+  if (!loose || target.length < 5 || printed.replace(/\D/g, "") !== target.replace(/\D/g, "")) return false;
+  let i = 0;
+  while (i < printed.length && i < target.length && printed[i] === target[i]) i++;
+  let j = 0;
+  while (j < printed.length - i && j < target.length - i && printed.at(-1 - j) === target.at(-1 - j)) j++;
+  return Math.max(printed.length, target.length) - i - j === 1;
+}
+
+/** Labels a visit may be printed as: its code exactly; its name, or code and name together, with one letter misread. */
+const labelsOf = (v: BudgetGrid["visits"][number]): [string, boolean][] =>
+  ([[v.code, false], [v.name, true], [`${v.code}${v.name}`, true], [`${v.name}${v.code}`, true]] as [string, boolean][]).map(([t, loose]): [string, boolean] => [norm(t), loose]).filter(([t]) => t);
+
+/** Word runs on one line that spell one of the labels. */
+function runs(l: Line, labels: [string, boolean][]): Word[][] {
+  const max = Math.max(0, ...labels.map(([t]) => t.length + 1));
   const out: Word[][] = [];
   l.words.forEach((_, i) => {
     let s = "";
     for (let j = i; j < l.words.length && s.length < max; j++) {
       s += norm(l.words[j]!.text);
-      if (ts.includes(s)) {
+      if (labels.some(([t, loose]) => sameLabel(s, t, loose))) {
         out.push(l.words.slice(i, j + 1));
         break;
       }
@@ -111,11 +130,156 @@ function runs(l: Line, targets: string[]): Word[][] {
 const span = (ws: Word[]): [number, number] => [Math.min(...ws.map((w) => frame(w)[0])), Math.max(...ws.map((w) => frame(w)[2]))];
 
 /**
- * Visit columns from the header line that names the most visits (code or name), in the text's own direction. `taken`:
- * header lines other grids on this page already use; a grid whose visits head another table just as well takes that one.
+ * Header cells stacked over two or three lines ("Visit 1" above "Day 1"), with their top on line `l`: each line's words
+ * are cut into cells at gaps wider than the text is tall, and cells on `l` and the lines just below it that overlap along
+ * the text are one column. Read top to bottom.
+ */
+function stacked(pg: Page, l: Line): Word[][] {
+  // the header ends where the table's prices start
+  const below = pg.lines.filter((x) => x.dir === l.dir && x.v >= l.v && x.v - l.v <= 2.5 * l.h).sort((a, b) => a.v - b.v);
+  const end = below.findIndex((x) => x.words.some(priceLike));
+  const lines = end < 0 ? below : below.slice(0, end);
+  if (lines.length < 2) return [];
+  const cells = lines.flatMap((x) =>
+    x.words.reduce<Word[][]>((cs, w, i) => {
+      const prev = x.words[i - 1];
+      if (prev && frame(w)[0] - frame(prev)[2] < frame(w)[3] - frame(w)[1]) cs.at(-1)!.push(w);
+      else cs.push([w]);
+      return cs;
+    }, []),
+  );
+  const cols: Word[][][] = [];
+  for (const c of cells) {
+    const [u0, u1] = span(c);
+    const col = cols.find((cs) => cs.some((x) => Math.min(span(x)[1], u1) - Math.max(span(x)[0], u0) > 0));
+    if (col) col.push(c);
+    else cols.push([c]);
+  }
+  return cols.filter((cs) => cs.length > 1 && cs[0]!.some((w) => l.words.includes(w))).map((cs) => cs.flat());
+}
+
+type Span2 = [number, number];
+const mid2 = (s: Span2) => (s[0] + s[1]) / 2;
+
+/**
+ * Columns run in visit order. A label printed again elsewhere ("Day 1" in another visit's header) would put a visit in
+ * another visit's column, where the same price often stands: of each visit's candidate spots, keep the most visits whose
+ * columns run in visit order (the spots nearest the header line on a tie). A visit out of that order has no column, so
+ * its cells are asked.
+ */
+function inOrder(visits: BudgetGrid["visits"], cands: (i: number) => { at: Span2; off: number }[]): Map<string, Span2> {
+  type Pick = { code: string; at: Span2; n: number; off: number; prev: Pick | null };
+  const ends: Pick[] = [];
+  let best: Pick | null = null;
+  for (const { v, i } of visits.map((v, i) => ({ v, i })).sort((a, b) => a.v.order - b.v.order)) {
+    const made = cands(i).map((c): Pick => {
+      const prev = ends.filter((e) => e.at[1] <= mid2(c.at) && mid2(e.at) < c.at[0]).sort((a, b) => b.n - a.n || a.off - b.off)[0] ?? null;
+      return { code: v.code, at: c.at, n: (prev?.n ?? 0) + 1, off: (prev?.off ?? 0) + c.off, prev };
+    });
+    for (const m of made) {
+      ends.push(m);
+      if (!best || m.n > best.n || (m.n === best.n && m.off < best.off)) best = m;
+    }
+  }
+  const at = new Map<string, Span2>();
+  for (let p = best; p; p = p.prev) at.set(p.code, p.at);
+  return at;
+}
+
+/** A number printed like money: with cents, a thousands comma or a dollar sign. */
+const priceLike = (w: Word) => NUMBER.test(bare(w.text)) && /\$|\d,\d{3}|\.\d{2}\)?$/.test(bare(w.text));
+/**
+ * The numbers of a table row: none unless the line prints money, then every number but a visit's tag ("Visit 12",
+ * "Week 4": a plain number after a word). A header's "1 2 3" isn't a row.
+ */
+const cellNumbers = (l: Line) =>
+  l.words.some(priceLike) ? l.words.filter((w, i) => NUMBER.test(bare(w.text)) && (priceLike(w) || !/^[a-z]+$/i.test(l.words[i - 1]?.text ?? ""))) : [];
+
+/** A table's number columns along the text: the numbers of its rows (cellNumbers), merged where they overlap, in order. */
+function numberColumns(lines: Line[]): Span2[] {
+  const spans = lines.flatMap((l) => {
+    const ns = cellNumbers(l);
+    return ns.length >= 3 ? ns.map((w) => span([w])) : [];
+  });
+  const out: [number, number, number][] = [];
+  for (const s of spans.sort((a, b) => a[0] - b[0])) {
+    const last = out.at(-1);
+    if (last && s[0] <= last[1]) (last[1] = Math.max(last[1], s[1]), last[2]++);
+    else out.push([s[0], s[1], 1]);
+  }
+  return out.map(([a, b]): Span2 => [a, b]);
+}
+
+/** "Visit 2", "Week 12", "Day-1": a word and the number after it, which tell one visit from another. */
+const tagsOf = (s: string) => new Set([...s.toLowerCase().matchAll(/([a-z]+)\s*[-#.:]?\s*(\d+)/g)].map((m) => m[1]! + m[2]!));
+
+/**
+ * When the read's visit names aren't printed as such (it joins a phase heading spanning several columns to each visit's
+ * own header, or makes up a short code), the columns come from the table itself: its number columns, and the header
+ * words printed above each. A visit takes a column whose header carries every tag of its name ("week12"), or, for a name
+ * without one, its whole name; only when that column is the visit's alone and the visit has no other. Still in visit order.
+ * ponytail: one table per page; a second table's columns could be taken. Upgrade: bound the region by the grid's title.
+ */
+function byTags(pg: Page, visits: BudgetGrid["visits"]): { at: Map<string, Span2>; h: Line } | null {
+  const dirs = [0, 1, 2, 3].map((d) => pg.lines.filter((l) => l.dir === d && cellNumbers(l).length >= 3));
+  const data = dirs.reduce((a, b) => (b.length > a.length ? b : a));
+  if (data.length < 2) return null;
+  const topV = Math.min(...data.map((l) => l.v));
+  const lh = data.map((l) => l.h).sort((a, b) => a - b)[Math.floor(data.length / 2)]!;
+  const head = pg.lines.filter((l) => l.dir === data[0]!.dir && l.v < topV && topV - l.v <= 12 * lh);
+  const cols = numberColumns(data);
+  if (!head.length || cols.length < 2) return null;
+  const pitch = Math.min(...cols.slice(1).map((c, i) => mid2(c) - mid2(cols[i]!)));
+  const text = cols.map((c) => norm(head.flatMap((l) => l.words.filter((w) => Math.abs(mid2(span([w])) - mid2(c)) <= pitch / 2)).map((w) => w.text).join(" ")));
+  const raw = cols.map((c) => head.flatMap((l) => l.words.filter((w) => Math.abs(mid2(span([w])) - mid2(c)) <= pitch / 2)).map((w) => w.text).join(" "));
+  const fits = (v: BudgetGrid["visits"][number], k: number) => {
+    const want = tagsOf(v.name);
+    if (want.size) return [...want].every((t) => tagsOf(raw[k]!).has(t));
+    return norm(v.name).length >= 5 && text[k]!.includes(norm(v.name));
+  };
+  const options = visits.map((v) => cols.flatMap((_, k) => (fits(v, k) ? [k] : [])));
+  const claims = cols.map((_, k) => options.filter((o) => o.includes(k)).length);
+  const at = inOrder(visits, (i) => (options[i]!.length === 1 && claims[options[i]![0]!] === 1 ? [{ at: cols[options[i]![0]!]!, off: 0 }] : []));
+  const h = head.reduce((a, b) => (b.v > a.v ? b : a));
+  return at.size ? { at, h } : null;
+}
+
+/**
+ * Visits without a column of their own, between two that have one: when exactly as many number columns lie between those
+ * two as visits do, they take them in order. Any other count, and they stay without a column (their cells are asked).
+ */
+function fillBetween(at: Map<string, Span2>, visits: BudgetGrid["visits"], cols: Span2[]): Map<string, Span2> {
+  if (cols.length < 2) return at;
+  const out = new Map(at);
+  const pitch = Math.min(...cols.slice(1).map((c, i) => mid2(c) - mid2(cols[i]!)));
+  const colOf = (s: Span2) => cols.findIndex((c) => Math.abs(mid2(c) - mid2(s)) <= pitch / 2);
+  const order = [...visits].sort((a, b) => a.order - b.order).map((v) => v.code);
+  const known = order.flatMap((code, i) => {
+    const s = at.get(code);
+    const k = s ? colOf(s) : -1;
+    return k >= 0 ? [{ i, k }] : [];
+  });
+  known.slice(1).forEach((b, j) => {
+    const a = known[j]!;
+    if (b.i - a.i > 1 && b.k - a.k === b.i - a.i) for (let n = 1; n < b.i - a.i; n++) out.set(order[a.i + n]!, cols[a.k + n]!);
+  });
+  return out;
+}
+
+/**
+ * Visit columns from the header line that names the most visits (code or name, on one line or stacked), in the text's
+ * own direction. `taken`: header lines other grids on this page already use; a grid whose visits head another table just
+ * as well takes that one.
  */
 function headerColumns(pg: Page, visits: BudgetGrid["visits"], taken: Line[] = []): Cols | null {
-  const hits = visits.map((v) => pg.lines.flatMap((l) => runs(l, [v.code, v.name]).map((ws) => ({ l, ws }))));
+  const columns = pg.lines.map((l) => stacked(pg, l));
+  const hits = visits.map((v) => {
+    const labels = labelsOf(v);
+    return pg.lines.flatMap((l, li) => [
+      ...runs(l, labels).map((ws) => ({ l, ws })),
+      ...columns[li]!.filter((ws) => labels.some(([t, loose]) => sameLabel(norm(ws.map((w) => w.text).join("")), t, loose))).map((ws) => ({ l, ws })),
+    ]);
+  });
   const near = (a: Line, b: Line) => a.dir === b.dir && Math.abs(a.v - b.v) <= 3 * Math.max(a.h, b.h);
   const best = (ls: Line[]) =>
     ls.reduce<[Line | null, number]>((b, l) => {
@@ -123,22 +287,27 @@ function headerColumns(pg: Page, visits: BudgetGrid["visits"], taken: Line[] = [
       return n > b[1] ? [l, n] : b;
     }, [null, 0]);
   const [top, most] = best(pg.lines);
-  // ponytail: one header line per page, visit labels on one line each. Upgrade: join stacked header cells per column.
-  if (!top || most < Math.max(2, visits.length / 2)) return null;
-  // Another grid's header, and the lines naming visits around it, are busy: an equally good header elsewhere is this grid's.
-  const lit = [...new Set(hits.flat().map((x) => x.l))];
-  const block = lit.filter((x) => taken.some((t) => near(t, x)));
-  const busy = (l: Line) => taken.some((t) => near(t, l)) || block.some((b) => near(b, l));
-  const [free, n] = best(lit.filter((l) => !busy(l)));
-  const h = busy(top) && free && n === most ? free : top;
-  const at = new Map<string, [number, number]>();
-  visits.forEach((v, i) => {
-    const pick = hits[i]!.filter((x) => near(x.l, h)).sort((a, b) => Math.abs(a.l.v - h.v) - Math.abs(b.l.v - h.v))[0];
-    if (pick) at.set(v.code, span(pick.ws));
-  });
+  let found: { at: Map<string, [number, number]>; h: Line } | null = null;
+  if (top && most >= Math.max(2, visits.length / 2)) {
+    // Another grid's header, and the lines naming visits around it, are busy: an equally good header elsewhere is this grid's.
+    const lit = [...new Set(hits.flat().map((x) => x.l))];
+    const block = lit.filter((x) => taken.some((t) => near(t, x)));
+    const busy = (l: Line) => taken.some((t) => near(t, l)) || block.some((b) => near(b, l));
+    const [free, n] = best(lit.filter((l) => !busy(l)));
+    const h = busy(top) && free && n === most ? free : top;
+    found = { h, at: inOrder(visits, (i) => hits[i]!.filter((x) => near(x.l, h)).map((x) => ({ at: span(x.ws), off: Math.abs(x.l.v - h.v) }))) };
+  }
+  if (!found || found.at.size < Math.max(2, visits.length / 2)) found = byTags(pg, visits) ?? found;
+  if (!found) return null;
+  const { h } = found;
+  const numbers = numberColumns(pg.lines.filter((l) => l.dir === h.dir && l.v > h.v));
+  const at = fillBetween(found.at, visits, numbers);
+  if (at.size < Math.max(2, visits.length / 2)) return null;
   const left = Math.min(...[...at.values()].map((c) => c[0]));
-  const centres = [...at.values()].map((c) => (c[0] + c[1]) / 2).sort((a, b) => a - b);
-  const gaps = centres.slice(1).map((c, i) => c - centres[i]!).sort((a, b) => a - b);
+  // a column is as wide as the table's own: with only some visits found, the gaps between them would span several columns
+  const gapsOf = (cs: number[]) => cs.slice(1).map((c, i) => c - cs[i]!).sort((a, b) => a - b);
+  const median = (xs: number[]) => xs[Math.floor(xs.length / 2)] ?? Infinity;
+  const gaps = [Math.min(median(gapsOf([...at.values()].map(mid2).sort((a, b) => a - b))), median(gapsOf(numbers.map(mid2))))];
   const unitWord = pg.lines.filter((l) => near(l, h)).flatMap((l) => l.words.filter((w) => UNIT.test(w.text) && frame(w)[2] <= left)).sort((a, b) => frame(b)[0] - frame(a)[0])[0];
   return { dir: h.dir, at, unit: unitWord ? span([unitWord]) : null, left, pitch: gaps[Math.floor(gaps.length / 2)] ?? Infinity, line: h };
 }
@@ -288,12 +457,14 @@ const ABOUT = {
 type Bound = { evidence: ValueEvidence[]; unaccounted: Span[] };
 
 export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
-  const data = new Map(pages.filter((p) => p.source === "text").map((p) => [`${p.documentId}#${p.page}`, pageData(p)]));
+  const data = new Map(pages.filter((p) => p.source === "text" || p.source === "ocr").map((p) => [`${p.documentId}#${p.page}`, pageData(p)]));
   const pageAt = (src: Provenance["source"]) => (src ? data.get(`${src.documentId}#${src.page}`) : undefined);
   const evidence: ValueEvidence[] = [];
   const bound = new Set<Word>();
   const put = (path: string, status: ValueEvidence["status"], where: PageBox[], printed: string | null, note: string | null = null, used: Word[] = []) => {
     used.forEach((w) => bound.add(w));
+    // OCR that wasn't sure of a word confirms nothing with it: the value is asked, or the contract's totals decide
+    if (status === "confirmed" && used.some((w) => (w.conf ?? 1) < MIN_OCR_CONF)) return evidence.push({ path, status: "ungrounded", where, printed: null, note: "the scan is unclear here" });
     evidence.push({ path, status, where, printed, note });
   };
   const nowhere = (src: Provenance["source"]): PageBox[] => (src ? [{ documentId: src.documentId, page: src.page, box: null }] : []);
@@ -355,6 +526,11 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const ws = cellWords(c.cols, row, key);
       const printed = ws.length ? txt(ws) : null;
       const ok = value === "invoiceable" ? /invoic/i.test(printed ?? "") : cents(printed) === value;
+      // On a scan, a blank or garbled cell is as likely the OCR's miss as the page's: it says nothing either way, so the
+      // value is unfound (the totals or a person decide), not contradicted. A PDF's own blank cell is a real blank.
+      // "Invoiceable" is how the read says a cell is billed, not a number the OCR can check: it decides nothing there either.
+      const unread = c.pg.p.source === "ocr" && !ok && (value === "invoiceable" || printed === null || cents(printed) === null || ws.some((w) => (w.conf ?? 1) < MIN_OCR_CONF));
+      if (unread) return put(path, "ungrounded", [boxOf(c.pg.p, ws.length ? ws : row.words)], null, "the scan is unclear here");
       put(path, ok ? "confirmed" : "conflict", [boxOf(c.pg.p, ws.length ? ws : row.words)], printed, null, [...ws, ...used]);
     };
 

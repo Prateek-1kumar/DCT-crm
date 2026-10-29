@@ -16,6 +16,8 @@ export type Word = {
   line: number;
   /** White, under MIN_VISIBLE_PT, off the page, or invisible render mode: no reader sees it. Never evidence. */
   hidden: boolean;
+  /** Our own OCR's confidence in this word (0–1); absent on a PDF's own text. */
+  conf?: number;
 };
 
 export type TextPage = {
@@ -23,8 +25,11 @@ export type TextPage = {
   page: number;
   width: number;
   height: number;
-  /** ocr_layer: text over a full-page image (a scanner's OCR), not the signed characters. */
-  source: "text" | "image_only" | "ocr_layer";
+  /**
+   * ocr_layer: text over a full-page image (a scanner's OCR), not the signed characters, never evidence. ocr: our own
+   * local OCR of a page with no text (ocr.ts): checks numbers by position like a text layer.
+   */
+  source: "text" | "image_only" | "ocr_layer" | "ocr";
   words: Word[];
   hidden: number;
   /**
