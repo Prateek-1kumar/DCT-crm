@@ -4,8 +4,9 @@
  * Binds the saved reads of the 4 scanned contracts (data/extractions) to our own OCR of their pages and scores the
  * result against the answer keys (data/golden):
  * - wrong confirmed: a value the key pins down, confirmed, but not the key's value. The gate: 0.
- * - planted errors: every confirmed value changed by one digit (random, and a look-alike digit), and every grid row
- *   shifted one visit over; each must come out unconfirmed. The gate: all caught.
+ * - planted errors: every confirmed value changed by one digit (random, and a look-alike digit), every grid row shifted
+ *   one visit over, and each cell copied to a neighbouring visit the read leaves empty; each must come out unconfirmed.
+ *   The gate: all caught. A copy the page itself prints in that visit's cell is the read's miss, counted apart.
  * - questions per contract, today (no OCR) and with OCR, by reason.
  *
  * The OCR is the app's own (readTextLayer with ocr, packages/extraction/ocr; install it with `pnpm run setup`), cached
@@ -204,8 +205,11 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
       });
     });
   });
-  const afterPlace = confirmedIn(bindEvidence(misplaced, pages).evidence);
-  planted.wrongVisit = [placed.length, placed.filter((p) => !afterPlace.has(p)).length];
+  // Confirmed only where the page prints that very price in that visit's cell (the binder confirms nothing else): there
+  // the read left a visit out. Counted apart, as the read's misses, not as errors the check let through.
+  const afterPlace = bindEvidence(misplaced, pages).evidence.filter((e) => e.status === "confirmed" && placed.includes(e.path));
+  planted.wrongVisit = [placed.length - afterPlace.length, placed.length - afterPlace.length];
+  const readMissed = afterPlace.length;
 
   const status = (ev: ValueEvidence[]) => tally(ev.map((e) => e.status));
   report[label] = {
@@ -215,6 +219,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
     withOcr: { status: status(withOcr.evidence), questions: withOcr.review.length, byReason: tally(withOcr.review.map((i) => i.reason)) },
     key: { keyed: key.size, aiWrong, wrongConfirmed },
     planted: Object.fromEntries(Object.entries(planted).map(([k, [tried, caught]]) => [k, `${caught}/${tried}`])),
+    readMissedAVisitThePagePrints: readMissed,
   };
 }
 // a cached run reads nothing: this is the time per page of the first run only

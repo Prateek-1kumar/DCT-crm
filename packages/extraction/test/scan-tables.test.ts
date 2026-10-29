@@ -196,11 +196,12 @@ describe("a continuation page that prints no header", () => {
 });
 
 describe("an invoiceable cell on a scan", () => {
-  it("is confirmed only by the word, never by a price printed in it: how a row is billed is a meaning, not a number", async () => {
-    const p = asOcr(await page([[X.name, 100, "Procedure"], [X.c1, 100, "V1"], [X.c2, 100, "V2"], [X.c3, 100, "V3"], ...rowAt(120, "Imaging", "400.00", ["400.00", "Invoiceable", "400.00"])]));
-    const rb = grid([["V1", "Screening"], ["V2", "Week 2"], ["V3", "Week 4"]], [["Imaging", 400, {}]]);
-    rb.budgetGrids[0]!.procedures[0]!.cells = { V1: "invoiceable", V2: "invoiceable" };
+  it("is there when the cell prints the row's price, or the word; a blank or another price says it isn't", async () => {
+    // tables print a price only under the visits it applies to
+    const p = asOcr(await page([[X.name, 100, "Procedure"], [X.unit, 100, "Unit"], [X.c1, 100, "V1"], [X.c2, 100, "V2"], [X.c3, 100, "V3"], [X.c4, 100, "V4"], ...rowAt(120, "Imaging", "400.00", ["400.00", "Invoiceable", null, "390.00"])]));
+    const rb = grid([["V1", "Screening"], ["V2", "Week 2"], ["V3", "Week 4"], ["V4", "Week 6"]], [["Imaging", 400, {}]]);
+    rb.budgetGrids[0]!.procedures[0]!.cells = { V1: "invoiceable", V2: "invoiceable", V3: "invoiceable", V4: "invoiceable" };
     const ev = bindEvidence(rb, [p]).evidence;
-    expect([cellStatus(ev, 0, "V1"), cellStatus(ev, 0, "V2")]).toEqual(["ungrounded", "confirmed"]);
+    expect(["V1", "V2", "V3", "V4"].map((v) => cellStatus(ev, 0, v))).toEqual(["confirmed", "confirmed", "ungrounded", "ungrounded"]);
   });
 });

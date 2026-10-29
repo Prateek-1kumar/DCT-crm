@@ -55,12 +55,15 @@ type Option = { row: Line; code: Word | null; score: number };
 
 /**
  * The rows a label may belong to, best first, found by the label and never by the value. The label's vertical band is
- * a run of up to 4 consecutive lines (left of `limit`) spelling most of the name in order, scored by the F1 of the
+ * a run of up to LABEL_LINES consecutive lines (left of `limit`) spelling most of the name in order, scored by the F1 of the
  * common subsequence (neighbouring rows' descriptions often differ in a word or two). Its row is the candidate (a line
  * carrying numbers) nearest the band, from one line above it to 5 line heights below, since labels sit on their row's
  * line or are centred on it; on the code's line when the item has a printed code. No name: a code printed on exactly one candidate.
  * Half the name isn't enough: one shared word ("visit" of "Unscheduled visit") would take another term's line.
  */
+/** A row's name can wrap over many lines in a narrow first column (8 measured on a scanned budget table). */
+const LABEL_LINES = 10;
+
 function rowsFor(lines: Line[], cands: Line[], code: string | null, name: string, limit = Infinity): Option[] {
   const c = norm(code ?? "");
   const codeOf = (l: Line) => (c ? (l.words.find((w) => norm(w.text) === c) ?? null) : null);
@@ -72,7 +75,7 @@ function rowsFor(lines: Line[], cands: Line[], code: string | null, name: string
   // ponytail: a bottom-aligned label, or a name that skips its label's first line in a top-aligned table, lands on the next row → conflicts. Upgrade: row bands from rulings.
   ls.forEach((first, i) => {
     if (!first.ts.some((t) => want.some((x) => sameToken(x, t)))) return;
-    for (let k = i, ts: string[] = []; k < Math.min(ls.length, i + 4); k++) {
+    for (let k = i, ts: string[] = []; k < Math.min(ls.length, i + LABEL_LINES); k++) {
       const [cur, prev] = [ls[k]!.l, ls[k - 1]?.l];
       if (k > i && (cur.dir !== prev!.dir || cur.v - prev!.v > 2 * Math.max(cur.h, prev!.h))) break;
       ts = [...ts, ...ls[k]!.ts];
@@ -551,12 +554,15 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const cands = lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(bare(w.text)) || /invoic/i.test(w.text)) && columnOf(cols, w)));
       return { pg, cols, lines, band, cands };
     };
-    const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = []) => {
+    const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = [], unitCents: number | null = null) => {
       const ws = cellWords(c.cols, row, key);
       const printed = ws.length ? txt(ws) : null;
-      // ponytail: a price printed in an "invoiceable" cell doesn't confirm it: invoiceable rows can print their price under
-      // visits that don't apply (planted wrong-visit errors were confirmed that way). Upgrade: ask once per row (meanings).
-      const ok = value === "invoiceable" ? /invoic/i.test(printed ?? "") : cents(printed) === value;
+      // An "invoiceable" cell is there when the cell says so, or prints the row's price: tables print a price only under the
+      // visits it applies to (owner, from the scans, 2026-10-29). Only under the page's own header: on a continuation page
+      // the columns are carried over, and a price under the visit next door is the same price (one shared visit pattern
+      // was confirmed there for 5 rows the read didn't list). How the row is billed is a meaning, asked as such.
+      const own = c.pg.lines.includes(c.cols.line);
+      const ok = value === "invoiceable" ? /invoic/i.test(printed ?? "") || (own && unitCents !== null && cents(printed) === unitCents) : cents(printed) === value;
       // On a scan, a blank or garbled cell is as likely the OCR's miss as the page's: it says nothing either way, so the
       // value is unfound (the totals or a person decide), not contradicted. A PDF's own blank cell is a real blank.
       // "Invoiceable" is how the read says a cell is billed, not a number the OCR can check: it decides nothing there either.
@@ -618,7 +624,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       if (p.unitCents !== null) entries.push([`${pp}/unitCents`, "#unit", p.unitCents]);
       for (const [path, key, value] of entries) {
         if (!c || !found || (key === "#unit" ? !c.cols.unit : !c.cols.at.has(key))) put(path, "ungrounded", found && c ? [boxOf(c.pg.p, found.row.words)] : nowhere(p.prov.source), null);
-        else cell(path, c, found.row, key, value, found.code ? [found.code] : []);
+        else cell(path, c, found.row, key, value, found.code ? [found.code] : [], p.unitCents);
       }
     });
 
