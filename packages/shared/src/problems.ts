@@ -173,3 +173,15 @@ export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: { rulebo
   const have = new Set(v.review.map((i) => i.id));
   return fromAnomalies(findings.filter((a) => !have.has(`anomaly:${a.id}`) && !(read.get(a.id) === a.message && askedAtRead.has(a.id))), v.rulebook, new Set());
 }
+
+/**
+ * Two grids for one arm that price the same are billed once (billedGrids), so nothing asks which. A number written into
+ * one of them later (a typed answer, a correction on the live version, a sample miss) can make them differ, and the arm
+ * would bill neither: its GRID_CONFLICT (the runtime's `checks`) is asked then, unless a grid is chosen for the arm
+ * (fromAnomalies) or its question is open already.
+ */
+export function gridConflicts(checks: (rb: Rulebook) => ContractAnomaly[], v: { rulebook: Rulebook; review: ReviewItem[] }, path: string): ReviewItem[] {
+  if (!gridOf(path)) return [];
+  const asked = (q: ReviewItem) => v.review.some((i) => i.id === q.id || (i.reason === "GRID_CONFLICT" && !settled(i) && i.options.some((o) => q.options.some((x) => x.id === o.id))));
+  return fromAnomalies(checks(v.rulebook).filter((a) => a.code === "GRID_CONFLICT"), v.rulebook, new Set()).filter((q) => !asked(q));
+}

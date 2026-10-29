@@ -73,6 +73,15 @@ describe("answering on the review page", () => {
     await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-halcyon/versions/2")).rulebook!.appliesFrom.value).toBe("2026-09-30"), { timeout: 10_000 });
   }, 60_000); // many requests, each with the sample server's network delay
 
+  it("a spot check whose first answer differed: the next answer still stands after “can't tell”, and the page says so", async () => {
+    const v = await get<RulebookVersionDto>("/studies/st-northwind/versions/1");
+    const unit = v.review.find((i) => i.reason === "SAMPLE" && i.path!.endsWith("/unitCents"))!;
+    for (const body of [{ value: 1 }, { cantTell: true }]) await mockRequest("POST", `/studies/st-northwind/versions/1/review/${encodeURIComponent(unit.id)}`, { ...body, by: "Sam Rivera" });
+    renderPage("st-northwind", unit.id);
+    fireEvent.click(await screen.findByRole("button", { name: "Answer it now" }, { timeout: 10_000 }));
+    expect(screen.getByText(/Look at the page again and type it once more\./)).toBeTruthy();
+  }, 60_000);
+
   it("an interpretation picked other than the read: both shown, and keeping the reading sends its option with a note", async () => {
     const id = "interpret:/payment/visitPayment/value";
     const sent = renderPage("st-northwind", id);

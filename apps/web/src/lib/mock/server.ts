@@ -6,12 +6,15 @@ import {
   bodyProblem,
   calendarDay,
   dateField,
+  empty,
   followUps,
   isoDate,
   labelFor,
+  noLimit,
   proofreadMarks,
   shownAppliesFrom,
   signOffRefusal,
+  blindEvidence,
   blindReview,
   ByHandBody,
   leaf,
@@ -498,7 +501,7 @@ function searchAll(d: Db, query: URLSearchParams): Res {
   return ok({ contracts, rates: rates.slice(0, limit) });
 }
 
-/** The invoicing master as an .xlsx, built in the browser by the same code the real server uses. */
+/** The invoicing master as an .xlsx, built in the browser by the same code the real server uses, from what was approved. */
 export async function mockExport(studyId: string, version: number, by: string): Promise<{ blob: Blob; filename: string }> {
   const d = load();
   const st = d.studies.find((s) => s.id === studyId);
@@ -506,12 +509,15 @@ export async function mockExport(studyId: string, version: number, by: string): 
   if (!st || !ver?.rulebook) throw new Error("There's no invoicing master to export yet.");
   if (ver.status !== "signed" && ver.status !== "superseded") throw new Error("Only an approved version can be exported.");
   const { buildWorkbook } = await import("@dct/shared/xlsx");
+  // as the real API: the approved master's study details, not the editable study row
+  const s = ver.rulebook.study;
   const bytes = await buildWorkbook(ver.rulebook, {
-    protocol: st.protocol, sponsor: st.sponsor, site: st.siteName, investigator: st.investigator, version, status: ver.status, approvedBy: ver.signedBy, approvedAt: ver.signedAt,
+    protocol: s.protocol.value, sponsor: s.sponsor.value, site: s.siteName.value, investigator: s.investigator.value, version, status: ver.status, approvedBy: ver.signedBy, approvedAt: ver.signedAt,
   });
-  log(d, by, st.id, "master.exported", { version, format: "xlsx" });
+  log(d, by, st.id, "version.exported", { version, format: "xlsx" });
   save();
-  return { blob: new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename: `${(st.protocol ?? "contract").replace(/[^\w.-]+/g, "_")}-v${version}-invoicing-master.xlsx` };
+  const protocol = s.protocol.value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "contract";
+  return { blob: new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename: `${protocol}-v${version}-invoicing-master.xlsx` };
 }
 
 function detail(d: Db, s: Study): StudyDetailDto {
@@ -571,8 +577,8 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
 
 /**
  * A version as a response shows it, as the real API (versionDto): on a draft, each value with an open question is
- * withheld with the words that restate it (mask), its printed text too, the checks' findings, and the numbers in notes
- * about it (blindReview).
+ * withheld with the words that restate it (mask), its printed text and spot on the page too (blindEvidence), the checks'
+ * findings, and the numbers in notes about it (blindReview).
  */
 function view(ver: RulebookVersionDto): RulebookVersionDto {
   const hidden = withheldPaths(ver);
@@ -583,7 +589,7 @@ function view(ver: RulebookVersionDto): RulebookVersionDto {
     appliesFrom: shownAppliesFrom(ver),
     rulebook: rulebook && mask(rulebook, hidden, ver),
     anomalies: [],
-    evidence: ver.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
+    evidence: blindEvidence(ver.evidence, hidden),
     review: blindReview(ver.review, hidden, ver.evidence),
   };
 }
@@ -673,6 +679,7 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.report));
   const { path, note, by } = parsed.data;
   if (!ver.rulebook || getAt(ver.rulebook, path) === undefined || !leaf(getAt(ver.rulebook, path))) return err(400, "Pick a single value to report.");
+  if (noLimit(ver.rulebook, path)) return err(409, "This cap has “No limit”, so there's no limit to report. If that's wrong, report the cap's kind instead.");
   let draft = ver;
   if (ver.status === "signed") {
     const newest = versionsOf(d, st.id).at(-1)!;
@@ -732,6 +739,9 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   if (dateField(path) && value !== null && leaf(value) && !calendarDay(value)) return err(400, "That isn't a date. Pick the day the contract gives.");
   const rb = setAt(ver.rulebook, path, value);
   if (!RulebookSchema.safeParse(rb).success) return err(400, "That field can't be left empty or take that value.");
+  // typed again as it is, by whoever typed it: nothing changes, nothing is logged (as the API)
+  const after = getAt(rb, path);
+  if (JSON.stringify(before) === JSON.stringify(after) && (!leaf(after) || empty(after) || ver.evidence.some((e) => e.path === path && e.note === `Typed by hand by ${by}`))) return ok(view(ver));
   // Structural edit (rows, visits): a typed value keeps its mark only if it's still there unchanged; after removing one
   // row or visit, the ones below move up.
   const removed = Array.isArray(before) && Array.isArray(value) && value.length === before.length - 1

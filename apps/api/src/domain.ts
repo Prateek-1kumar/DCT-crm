@@ -1,6 +1,7 @@
 import {
   type AlertKind,
   armKey,
+  blindEvidence,
   type DocumentDto,
   type DocumentKind,
   governingGrids,
@@ -52,8 +53,9 @@ export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
 
 /**
  * Blind entry: on a draft, a value with an open question is withheld (null) from the master along with the words that
- * restate it (mask), its printed text from the evidence, and the checks' anomalies (their messages and details carry the
- * reading) until nothing is withheld. Every response that carries a version goes through here.
+ * restate it (mask), its printed text and its spot on the page from the evidence (blindEvidence), and the checks'
+ * anomalies (their messages and details carry the reading) until nothing is withheld. Every response that carries a
+ * version goes through here.
  */
 export const versionDto = (v: VersionRow): RulebookVersionDto => {
   const hidden = hiddenPaths(v);
@@ -65,7 +67,7 @@ export const versionDto = (v: VersionRow): RulebookVersionDto => {
     anomalies: hidden.length ? [] : v.anomalies,
     editors: v.editors,
     cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
-    evidence: v.evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null } : e)),
+    evidence: blindEvidence(v.evidence, hidden),
     review: blindReview(v.review, hidden, v.evidence),
     pdfCheck: v.pdfCheck,
     byHand: v.byHand,

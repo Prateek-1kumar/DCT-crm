@@ -1,5 +1,5 @@
 import type { ReadWarning } from "@dct/extraction";
-import { armKey, type ContractAnomaly, type DocumentKind, type Rulebook } from "@dct/shared";
+import { armKey, type ContractAnomaly, type DocumentKind, gridPrices, type Rulebook } from "@dct/shared";
 import type { ExtractionPort, InputDoc, NoAi } from "./port.js";
 
 // Fake adapter (EXTRACTION_FAKE=1): a synthetic rulebook shaped like the COPD work order, with
@@ -131,10 +131,11 @@ function runContractChecks(rb: Rulebook, opts?: { crossRead?: Rulebook | null })
     if (!d.present)
       out.push(anomaly({ code: "MISSING_REFERENCED_DOC", severity: "warning", message: `Referenced "${d.description}" was not uploaded`, path: `/referencedDocuments/${i}`, detail: {} }));
   });
-  // as the real check: per arm (armKey), grids whose visit totals differ, only while no grid was chosen the old way
+  // as the real check: per arm (armKey), grids that price anything differently (gridPrices, a single cell included), only
+  // while no grid was chosen the old way
   const arms = new Map<string, string[]>();
   for (const g of rb.budgetGrids) arms.set(armKey(g), [...(arms.get(armKey(g)) ?? []), g.id]);
-  const sig = (id: string) => JSON.stringify(rb.budgetGrids.find((g) => g.id === id)!.visits.map((v) => v.totalCents).sort((a, b) => a - b));
+  const sig = (id: string) => gridPrices(rb.budgetGrids.find((g) => g.id === id)!);
   for (const [arm, ids] of arms)
     if (ids.length > 1 && rb.governingGridId === null && new Set(ids.map(sig)).size > 1)
       // same path as the real check: the first conflicting grid

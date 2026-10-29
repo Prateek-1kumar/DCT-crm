@@ -351,8 +351,9 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   const both = item.options.length > 0 && !!item.input;
   // "prospective only" takes the amendment's own date too, typed from the amendment
   const dated = choice === TYPED || choice === PROSPECTIVE;
-  // a spot check typed differently: typed again, blind, and that answer stands
-  const again = item.reason === SAMPLE && item.outcome === "differs";
+  // a spot check typed differently: typed again, blind, and from then on every answer stands (`retyped`, through "can't
+  // tell" or a send-back)
+  const again = item.reason === SAMPLE && (item.retyped || item.outcome === "differs") && item.outcome !== "matched" && item.outcome !== "chosen";
 
   function submit(e: FormEvent) {
     e.preventDefault();

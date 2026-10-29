@@ -454,6 +454,29 @@ describe("an amount on a line that prints other amounts too", async () => {
   });
 });
 
+describe("an amount the master can't hold, and one written with USD", async () => {
+  const text = await textPdf([
+    "Subject mileage is reimbursed at $0.655 per mile driven to each study visit.",
+    "A close-out fee of USD 1,000 is due within thirty days of the final visit.",
+    "Archiving is paid at 500.00 USD per box stored off site by the Institution.",
+  ]);
+
+  it("is swept all the same: a fraction of a cent with no cents, USD before or after the number as currency", () => {
+    expect(inventory(text).filter((x) => x.kind === "amount").map((x) => [x.words.map((w) => w.text).join(" "), x.cents])).toEqual([["$0.655", undefined], ["USD 1,000", 100000], ["500.00", 50000]]);
+  });
+
+  it("confirms nothing: a value read on its line is a conflict; with none, the amount is a money term to ask", () => {
+    const rb = rulebook();
+    rb.invoiceables = [];
+    rb.siteFees = [{ ...rb.siteFees[0]!, code: null, name: "Close-out fee", amountCents: 100000, dueDays: null, prov: onPage1() }];
+    const bound = bindEvidence(rb, text);
+    expect(statuses(bound.evidence)["/siteFees/0/amountCents"]).toBe("confirmed");
+    expect(bound.unaccounted.map((x) => x.words.map((w) => w.text).join(" "))).toEqual(expect.arrayContaining(["$0.655", "500.00"]));
+    rb.invoiceables = [{ ...rulebook().invoiceables[0]!, code: null, name: "Subject mileage", amountCents: 66, amountWithOverheadCents: null, cap: { kind: "none", n: null, ratio: null }, prov: onPage1() }];
+    expect(statuses(bindEvidence(rb, text).evidence)["/invoiceables/0/amountCents"]).toBe("conflict");
+  });
+});
+
 describe("a rule quoted from another clause", async () => {
   const text = await textPdf([
     "Sponsor shall pay each invoice within forty-five (45) days of receipt.",

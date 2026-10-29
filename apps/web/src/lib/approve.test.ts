@@ -64,6 +64,13 @@ describe("key terms", () => {
     expect(keyTerms(twice, v.evidence).filter((t) => t.label === "Per patient").map((t) => t.detail)).toEqual([expect.stringContaining("Exhibit A – Arm B"), expect.stringContaining("Arm A budget")]);
   });
 
+  it("an arm whose grids differ with none chosen is said, never left out; hidden while a number in them is withheld", async () => {
+    const nw = await version("st-northwind"); // its two grids differ, none chosen yet
+    const terms = keyTerms(nw.rulebook!, nw.evidence);
+    expect(terms.filter((t) => t.label === "Per patient")).toEqual([expect.objectContaining({ value: "No grid chosen", detail: "Exhibit A – Budget and Attachment 2 – Payment Schedule disagree, so nothing is billed until one is chosen" })]);
+    expect(keyTerms(nw.rulebook!, nw.evidence, new Set(["/budgetGrids/1/procedures/0/unitCents"])).find((t) => t.label === "Per patient")!.value).toBe("Hidden until answered");
+  });
+
   it("keeps the value's path when it's empty, so a withheld value isn't shown as missing", async () => {
     const v = await version("st-meridian");
     const rb = v.rulebook!;

@@ -28,11 +28,14 @@ export function parseCents(text: string, { restates = false } = {}): number | nu
 }
 
 /**
- * A percentage or plain number: "1.5%", "1.5%.", "40 percent", "45", "1,000". null when it isn't one (a word, "4,5",
- * "%" alone): never NaN, and never 0 for nothing.
+ * A percentage or plain number: "1.5%", "1.5%.", "40 percent", "45", "1,000", in brackets ("(15%)", "15%).") or
+ * restating its words ("fifteen percent (15%)"). null when it isn't one (a word, "4,5", "%" alone): never NaN, and never
+ * 0 for nothing.
  */
 export function parsePercent(text: string): number | null {
-  const m = new RegExp(`^([-−])?\\s*(${WHOLE})?(?:\\.(\\d+))?\\s*(?:%|percent|per\\s*cent)?$`, "i").exec(tail(text));
+  // the figure in brackets after its words; then a bracket on either side, as a sentence prints it, isn't part of it
+  const t = tail(tail(text).replace(/^[^\d()]*\((.*)\)$/, "$1").replace(/^\(|\)$/g, ""));
+  const m = new RegExp(`^([-−])?\\s*(${WHOLE})?(?:\\.(\\d+))?\\s*(?:%|percent|per\\s*cent)?$`, "i").exec(t);
   if (!m || (!m[2] && !m[3])) return null;
   const n = Number(`${m[1] ? "-" : ""}${(m[2] ?? "0").replace(/,/g, "")}.${m[3] ?? "0"}`);
   return Number.isFinite(n) ? n : null;

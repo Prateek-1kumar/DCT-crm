@@ -6,9 +6,9 @@ import { deepEqual, diffRulebooks, itemIds } from "./diff";
 import { AnswerReviewBody, BODY_WORDS, bodyProblem, type ProofreadMark, type ReviewItem, samePerson, settled, type ValueEvidence } from "./evidence";
 import { parseCents, parsePercent } from "./money";
 import { at, parsePointer, setAt } from "./pointer";
-import { ARITHMETIC, fromAnomalies, recheck, sumAt } from "./problems";
-import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords } from "./questions";
-import { Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
+import { ARITHMETIC, fromAnomalies, gridConflicts, recheck, sumAt } from "./problems";
+import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords } from "./questions";
+import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
  * Answering a question and the approval it gates (ADR-001 §6, I1–I6). Pure, so the API and the in-browser sample server
@@ -19,8 +19,11 @@ import { Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 export type Refusal = { refusal: { status: 400 | 404 | 409; message: string } };
 const refuse = (status: 400 | 404 | 409, message: string): Refusal => ({ refusal: { status, message } });
 
-/** A draft as an answer reads and writes it. `proofread` says what a sample miss still holds back. */
-export type AnswerDraft = { version: number; byHand: boolean; rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[]; proofread?: ProofreadMark[] };
+/**
+ * A draft as an answer reads and writes it. `proofread` says what a sample miss still holds back; `anomalies`, what the
+ * read's checks found (a total's printed value, for a question asked before it was kept on the question).
+ */
+export type AnswerDraft = { version: number; byHand: boolean; rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[]; proofread?: ProofreadMark[]; anomalies?: ContractAnomaly[] };
 
 const norm = (x: unknown) => (typeof x === "string" ? x.trim().toLowerCase() : x);
 /** Text ignores case and edge spaces; a list ignores the order of its items too. */
@@ -46,20 +49,32 @@ export const calendarDay = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2
 
 /**
  * What picking an option writes: the arm's governing grid (the other arms' picks stay); for a total that doesn't add up,
- * the sum of its parts, or the total as it was printed when asked (`asPrinted`), so either answer, picked after the
- * other, puts its own number back; or the value itself for a yes/no or fixed-list question.
+ * the sum of its parts, or the total as printed (`printed`, printedTotal), so either answer, picked after the other, puts
+ * its own number back; or the value itself for a yes/no or fixed-list question.
  */
-function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: unknown): { path: string; value: unknown } | undefined {
+function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: unknown, printed?: number): { path: string; value: unknown } | undefined {
   if (item.reason === "GRID_CONFLICT") {
     const arm = new Set(item.options.map((o) => o.id));
     return { path: "/governingGridIds", value: [...(rb.governingGridIds ?? []).filter((id) => !arm.has(id)), optionId] };
   }
   if (ARITHMETIC.has(item.reason)) {
-    const value = !item.path ? undefined : optionId === "sum" ? sumAt(rb, item.path) : optionId === "printed" ? item.asPrinted : undefined;
+    const value = !item.path ? undefined : optionId === "sum" ? sumAt(rb, item.path) : optionId === "printed" ? printed : undefined;
     return value === undefined ? undefined : { path: item.path!, value };
   }
   if (!item.path || (item.kind !== "confirm_value" && item.kind !== "interpretation") || current === undefined || !leaf(current)) return undefined;
   return { path: item.path, value: typeof current === "boolean" ? optionId === "true" : optionId };
+}
+
+/**
+ * The total "as printed" puts back: kept on the question when it was asked (`asPrinted`); on a question asked before
+ * that, what the read's check found printed (`detail.actual`), but not a subtotal's, which the check adds up with the
+ * non-procedure amount. undefined when neither says: the total may hold the sum by now, so it's never guessed (the
+ * answer is refused, and "This looks wrong" on the total asks the question again with what's typed: recheck).
+ */
+function printedTotal(v: AnswerDraft, item: ReviewItem): number | undefined {
+  if (item.asPrinted !== undefined) return item.asPrinted;
+  const actual = v.anomalies?.find((a) => `anomaly:${a.id}` === item.id)?.detail.actual;
+  return typeof actual === "number" && !/procedureSubtotalCents$/.test(item.path ?? "") ? actual : undefined;
 }
 
 /** Answers that list a page or a sentence to bill by hand (ADR-001 §7): the term goes on the master's unclassified list. */
@@ -115,11 +130,13 @@ const WHERE = "Add a short note saying where the page prints this value. The PDF
  * either; "prospective only" takes the amendment's own date typed blind too, checked against the read's. A typed date is
  * a calendar day. Can't tell is left for the approver, and doesn't clear anything. "Bill by hand" lists the term on the
  * master, and its note goes with it; answering it any other way takes it off again. A random spot check (SAMPLE) never
- * shows what the PDF check confirmed: one that differs is typed blind once more, and that answer stands, the confirmed
- * value again (a typo) or not, so nothing can be tried until it matches. Settled with another value, it has missed
- * (`missed`, ADR-001 §6). No limit on a cap drops its figures, and their follow-up if it's still open. Returns what was
- * written to the master, the log entry (`log`), and the miss's own entry and alert count (`incident`). `isoDate` reads a
- * printed date as the binder does.
+ * shows what the PDF check confirmed: one that differs is typed blind once more, and from then on (`retyped`, through
+ * "can't tell", a send-back or a changed answer) every answer stands, the confirmed value again (a typo) or not, so
+ * nothing can be tried until it matches. Settled with another value, it has missed (`missed`, ADR-001 §6). No limit on a
+ * cap drops its figures, and closes every question still open about them (`closed`); nothing is typed there after. "As
+ * printed" on a total whose printed value is lost (printedTotal) is refused. Returns what was written to the master, the
+ * log entry (`log`), and the miss's own entry and alert count (`incident`). `isoDate` reads a printed date as the binder
+ * does.
  */
 export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { isoDate, now }: { isoDate: (text: string) => string | null; now: string }) {
   const item = v.review.find((i) => i.id === itemId);
@@ -152,6 +169,15 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   const a = item.answer;
   if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (pick || same(a.value, value)))
     return { item, outcome: item.outcome!, changed: false, set: undefined, listed: undefined, missed: false, unchanged: true as const };
+  // a cap with no limit is billed by nothing else: a figure written there would be approved as a limit nobody set
+  if (!b.cantTell && item.path && noLimit(v.rulebook, item.path))
+    return refuse(409, "This cap was answered “No limit”, so there's no limit to type here. If the contract does set one, change that answer first.");
+  const asPrinted = ARITHMETIC.has(item.reason) && item.path ? printedTotal(v, item) : undefined;
+  if (ARITHMETIC.has(item.reason) && b.optionId === "printed" && asPrinted === undefined)
+    return refuse(
+      409,
+      "This question was asked before the app kept the total as printed, so it can't put it back. Keep the sum here, or use “This looks wrong” on the total and type it as the contract prints it: this question is then asked again.",
+    );
   let outcome: NonNullable<ReviewItem["outcome"]>;
   let set: { path: string; value: unknown } | undefined;
   let noPdfText = false;
@@ -160,7 +186,7 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     const option = item.options.find((o) => o.id === b.optionId);
     if (!option) return refuse(400, "Pick one of the options.");
     if (option.note && !note) return refuse(400, `Add a short note for this answer: ${option.note.replace(/^./, (c) => c.toLowerCase())}`);
-    set = optionValue(v.rulebook, item, option.id, current);
+    set = optionValue(v.rulebook, item, option.id, current, asPrinted);
     // A yes/no or fixed-list value is checked like a typed one: against the value we hold (a re-type of a hand-typed
     // value, "This looks wrong", an interpretation). A missing one has nothing to check against, nor does a read that
     // says the contract doesn't state it; a second pick after "differs" settles it.
@@ -178,8 +204,9 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     const printed = parsePrinted(item.input, ev?.printed ?? null, isoDate);
     // a missing value (or a placeholder of the blank form) holds nothing to compare with
     const truth = amended ?? (printed ?? (empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current));
-    // the spot check's second blind answer stands: the confirmed value again was a typo, anything else a miss
-    if (sample && item.outcome === "differs") outcome = truth !== undefined && same(value, truth) ? "matched" : "chosen";
+    // once a spot check's answer has differed, every answer stands: the confirmed value again was a typo, anything else a
+    // miss (an item stored before `retyped` existed is marked by its "differs")
+    if (sample && (item.retyped || item.outcome === "differs")) outcome = truth !== undefined && same(value, truth) ? "matched" : "chosen";
     else if (item.outcome === "differs") {
       if (printed === undefined && !note) return refuse(400, WHERE);
       if (printed !== undefined && !same(value, printed) && !note) return refuse(400, WHY);
@@ -190,7 +217,10 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     if (outcome !== "differs" && item.path) set = { path: item.path, value };
   }
   const changed = settled(item);
-  const picked = pick && !b.cantTell ? optionValue(v.rulebook, item, b.optionId!, current)?.value : undefined;
+  const picked = pick && !b.cantTell ? optionValue(v.rulebook, item, b.optionId!, current, asPrinted)?.value : undefined;
+  if (sample && outcome === "differs") item.retyped = true;
+  // kept from now on, so "as printed" puts it back even once "the sum" is written over it
+  if (asPrinted !== undefined) item.asPrinted = asPrinted;
   // a spot check's differing answer shows nothing: what it's compared with is the value being measured
   item.compare = outcome === "differs" && !sample ? { typed: picked ?? value, read: (amended ?? current) ?? null, printed: ev?.printed ?? null } : null;
   // Only what was answered is kept: a value sent along with a pick or "can't tell" isn't stored.
@@ -201,13 +231,15 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   const before = set ? at(v.rulebook, set.path) : undefined;
   const rb = structuredClone(v.rulebook);
   if (set) setAt(rb, parsePointer(set.path), set.value);
-  // No limit: a cap's figures go with its kind. Nothing is billed by them, so nothing is left to confirm or to ask.
+  // No limit: a cap's figures go with its kind. Nothing is billed by them, so nothing is left to confirm or to ask: every
+  // question still open about them is closed (a follow-up, "This looks wrong"), and logged (followUps).
+  const closed: ReviewItem[] = [];
   if (set && /\/cap\/kind$/.test(set.path) && set.value === "none")
     for (const p of alsoWithheld(set.path)) {
       setAt(rb, parsePointer(p), null);
       v.evidence = v.evidence.filter((e) => e.path !== p);
-      // its follow-up, if still open, has nothing left to ask (capFollowUps numbers them, so ids stay unique)
-      v.review = v.review.filter((i) => !i.id.startsWith(`cap:${p}`) || settled(i));
+      closed.push(...v.review.filter((i) => i.path === p && !settled(i)));
+      v.review = v.review.filter((i) => i.path !== p || settled(i));
     }
   // the arm's choice replaces a version's single pick from before per-arm choices, if that was one of this arm's grids
   if (item.reason === "GRID_CONFLICT" && set && item.options.some((o) => o.id === rb.governingGridId)) rb.governingGridId = null;
@@ -258,25 +290,29 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     count: miss.left.length,
     detail: { version: v.version, itemId: item.id, path: item.path, question: item.question, values: miss.label, "to check": miss.left.length },
   };
-  return { item, outcome, changed, set: written, listed, missed, unchanged: false as const, log, incident };
+  return { item, outcome, changed, set: written, listed, missed, unchanged: false as const, log, incident, closed };
 }
 
 /**
  * What an answer asks next, added to `v.review`: the grid's held-back totals, checked on the typed numbers once its last
- * one is answered (recheck, with the runtime's `checks`; a settled total whose answer no longer holds is asked again),
- * and a cap's limit once its kind is known (capFollowUps, worded by `ask`). Returns the log entries of the totals asked
- * again: an answer undone by another is logged, as the answer that settled it was.
+ * one is answered (recheck, with the runtime's `checks`; a settled total whose answer no longer holds is asked again);
+ * which grid to bill, once a written number makes two grids for one arm differ (gridConflicts); and a cap's limit once
+ * its kind is known (capFollowUps, worded by `ask`). Returns the log entries of the totals asked again (an answer undone
+ * by another is logged, as the answer that settled it was) and of the questions the answer closed (`closed`).
  */
 export function followUps(
   v: Pick<AnswerDraft, "version" | "rulebook" | "review" | "evidence"> & { anomalies: ContractAnomaly[] },
-  a: { item: ReviewItem; set?: { path: string; before: unknown; after: unknown } },
+  a: { item: ReviewItem; set?: { path: string; before: unknown; after: unknown }; closed?: ReviewItem[] },
   checks: (rb: Rulebook) => ContractAnomaly[],
   ask: (path: string, id: string, reason: string) => ReviewItem,
 ): { action: string; detail: Record<string, unknown> }[] {
   const answered = new Set(v.review.filter(settled).map((i) => i.id));
-  if (a.set) v.review.push(...recheck(checks, v, a.set.path));
+  if (a.set) v.review.push(...recheck(checks, v, a.set.path), ...gridConflicts(checks, v, a.set.path));
   v.review.push(...capFollowUps(v, a.item, !!a.set && !deepEqual(a.set.before, a.set.after), ask));
-  return v.review.filter((i) => answered.has(i.id) && !settled(i)).map((i) => ({ action: "review.reopened", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question } }));
+  return [
+    ...v.review.filter((i) => answered.has(i.id) && !settled(i)).map((i) => ({ action: "review.reopened", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question } })),
+    ...(a.closed ?? []).map((i) => ({ action: "review.closed", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question, why: "The cap was answered “No limit”, so it has no limit to ask." } })),
+  ];
 }
 
 /**
@@ -306,12 +342,15 @@ export function typingDone(
  * Approval (ADR-001 I1–I6), the first reason it's refused, in plain words, or null: a draft, as the approver saw it
  * (`asOf`, its `updatedAt` then); typing by hand re-typed blind; every question settled by a typed value, a pick or a
  * reason (a blocker by a value or a pick only: answerQuestion enforces how each clears), so nothing is withheld any more;
- * every number confirmed by the PDF's text or a person; after a random spot check missed, every value of its kind
- * proofread or typed; and with maker-checker on, not by anyone who answered (names compared as people type them). The
- * API refuses with it and the approve page explains with it, so the two say the same.
+ * a grid billed for every arm that has grids; every number confirmed by the PDF's text or a person; after a random spot
+ * check missed, every value of its kind proofread or typed; and with maker-checker on, not by anyone who answered (names
+ * compared as people type them). The API refuses with it and the approve page explains with it, so the two say the same.
  */
 export function signOffRefusal(
-  v: { version: number; status: string; rulebook: unknown; updatedAt: string; byHand: boolean; review: ReviewItem[]; evidence: ValueEvidence[]; proofread?: ProofreadMark[]; editors: string[] },
+  v: {
+    version: number; status: string; rulebook: (Pick<Rulebook, "budgetGrids" | "governingGridId"> & { governingGridIds?: string[] }) | null; updatedAt: string; byHand: boolean;
+    review: ReviewItem[]; evidence: ValueEvidence[]; proofread?: ProofreadMark[]; editors: string[];
+  },
   { asOf, by, makerChecker }: { asOf: string; by: string; makerChecker: boolean },
 ): string | null {
   if (v.status === "signed" || v.status === "superseded") return `Version ${v.version} is ${v.status} and immutable; changes need a new version (amendment)`;
@@ -320,6 +359,10 @@ export function signOffRefusal(
   if (v.byHand && !v.review.length) return "Typing isn't marked done yet, so nobody has re-typed the values.";
   const open = v.review.filter((i) => !settled(i)).length;
   if (open) return `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`;
+  // an arm whose grids differ and that has none chosen bills nothing (billedGrids), however it got there
+  const billed = new Set(billedGrids(v.rulebook).map(armKey));
+  const unbilled = v.rulebook.budgetGrids.find((g) => !billed.has(armKey(g)));
+  if (unbilled) return `Choose which budget grid to bill for ${unbilled.arm ?? "this contract"}.`;
   const unconfirmed = v.evidence.filter((e) => e.status !== "confirmed" && e.status !== "attested").length;
   if (unconfirmed) return `${unconfirmed} ${unconfirmed === 1 ? "number isn't" : "numbers aren't"} confirmed by the PDF or a person yet.`;
   const miss = sampleMisses(v).find((m) => m.left.length);

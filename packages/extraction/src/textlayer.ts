@@ -140,19 +140,22 @@ const RESTATES = new RegExp(`^(?:dollars?|usd|u\\.?s\\.?|\\d+/100|zero|${UNITS}|
 export const centsOf = (t: string, before = ""): number | null => parseCents(t, { restates: RESTATES.test(before.replace(/[.,;:]+$/, "")) });
 
 /**
- * Dollar amounts in reading order; a lone "$" joins the number after it. `currencyOnly`: only those with a sign.
- * `before` gives the word printed ahead of one (default: the one before it in `ws`), for "Dollars ($3,000.00)" across a line break.
+ * Dollar amounts in reading order; a lone "$" or "USD" joins the number after it, and "USD" after a number ("500.00 USD")
+ * marks it too. `currencyOnly`: only those with a sign or code. `before` gives the word printed ahead of one (default:
+ * the one before it in `ws`), for "Dollars ($3,000.00)" across a line break. `cents` is null for an amount the master
+ * can't hold (a fraction of a cent, "$0.655"): it's still an amount, so it's swept and asked, but it confirms nothing.
  */
-export function amounts(ws: Word[], currencyOnly = false, before?: (w: Word) => Word | undefined): { words: Word[]; cents: number }[] {
-  const out: { words: Word[]; cents: number }[] = [];
+export function amounts(ws: Word[], currencyOnly = false, before?: (w: Word) => Word | undefined): { words: Word[]; cents: number | null }[] {
+  const out: { words: Word[]; cents: number | null }[] = [];
   ws.forEach((w, i) => {
     const pair = CURRENCY.test(w.text) && ws[i + 1] && NUMBER.test(bare(ws[i + 1]!.text));
-    const t = bare(pair ? w.text + ws[i + 1]!.text : w.text);
+    // "USD1,000" reads as "$1,000"; the code after the number keeps a closing bracket with it ("(500.00 USD)")
+    const coded = !pair && NUMBER.test(bare(w.text)) && /^USD\)?[.,;:]*$/i.test(ws[i + 1]?.text ?? "");
+    const t = bare(pair ? w.text + ws[i + 1]!.text : coded ? w.text + ws[i + 1]!.text.replace(/^USD/i, "") : w.text).replace(/^(\(?)USD/i, "$1$");
     if (CURRENCY.test(ws[i - 1]?.text ?? "") || !NUMBER.test(t) || t.endsWith("%")) return;
-    const money = /\$|USD/.test(t) || (!currencyOnly && /\d,\d{3}|\.\d{2}\)?$/.test(t));
+    const money = coded || /\$/.test(t) || (!currencyOnly && /\d,\d{3}|\.\d{2}\)?$/.test(t));
     const whole = t.replace(/[^\d.]/g, "").split(".")[0]!;
-    const cents = centsOf(t, (before ? before(w) : ws[i - 1])?.text);
-    if (money && cents !== null && !(whole.length >= 8 && !t.includes(","))) out.push({ words: pair ? [w, ws[i + 1]!] : [w], cents });
+    if (money && !(whole.length >= 8 && !t.includes(","))) out.push({ words: pair ? [w, ws[i + 1]!] : [w], cents: centsOf(t, (before ? before(w) : ws[i - 1])?.text) });
   });
   return out;
 }
@@ -235,7 +238,7 @@ export function inventory(pages: TextPage[]): Span[] {
     const secret = new Set([...bank].filter((w) => taken.has(w) || digits(w) >= 6 || /^[A-Z]{2}\d{2}/.test(w.text)));
     secret.forEach((w) => taken.add(w));
     const lines = visualLines(p.words.filter((w) => !w.hidden));
-    for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l, a.cents);
+    for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l, a.cents ?? undefined);
     for (const l of lines) {
       // Table row ("grid row band"): 2+ numbers, each set off from the word before it by a column gap.
       const cells = l.filter((w, i) => NUMBER.test(bare(w.text)) && (i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1]));

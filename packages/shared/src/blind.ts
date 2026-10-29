@@ -29,12 +29,23 @@ type Box = NonNullable<PageBox["box"]>;
 const sameLine = (a: Box, b: Box) => a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
 /**
  * Where withheld values sit on the page, by their evidence: the PDF's text there prints the number (a conflict's), or
- * holds it among others (an ungrounded value's row). A money term quoted from one of those lines restates it.
+ * holds it among others (an ungrounded value's row). A money term quoted from one of those lines restates it. A value
+ * known only by its page (a rule read without its quote, a scan: no box) may be printed on any line of it, and one with
+ * no page at all (null) on any page.
  */
-const withheldAt = (hidden: Set<string>, evidence: ValueEvidence[]) => evidence.filter((e) => hidden.has(e.path)).flatMap((e) => e.where.filter((w) => !!w.box));
-/** Whether a question's quoted words (every line of its sentence, `quoted`; else its spots) share a printed line with `at`. */
-const onLineOf = (i: Pick<ReviewItem, "where" | "quoted">, at: PageBox[]) =>
-  (i.quoted ?? i.where).some((w) => !!w.box && at.some((x) => x.documentId === w.documentId && x.page === w.page && sameLine(x.box!, w.box!)));
+const withheldAt = (hidden: Set<string>, evidence: ValueEvidence[]): (PageBox | null)[] =>
+  evidence.filter((e) => hidden.has(e.path)).flatMap((e) => (e.where.length ? e.where : [null]));
+/** Whether a question's quoted words (every line of its sentence, `quoted`; else its spots) can print a value of `at`. */
+const onLineOf = (i: Pick<ReviewItem, "where" | "quoted">, at: (PageBox | null)[]) =>
+  (i.quoted ?? i.where).some((w) => at.some((x) => !x || (x.documentId === w.documentId && x.page === w.page && (!x.box || (!!w.box && sameLine(x.box, w.box))))));
+
+/**
+ * Evidence as a response may show it while values are withheld: a withheld value's without its printed text, and at its
+ * page only, never the spot the PDF check bound it to. The blind sample measures that check (ADR-001 §6): shown the
+ * spot, the person would type what's printed there, and a wrong binding would pass as right.
+ */
+export const blindEvidence = (evidence: ValueEvidence[], hidden: string[]): ValueEvidence[] =>
+  evidence.map((e) => (hidden.includes(e.path) ? { ...e, printed: null, where: e.where.map((w) => ({ ...w, box: null })) } : e));
 
 /** Whether a money-term question quotes the PDF's text from a printed line that also holds a withheld value. */
 export const quotesWithheld = (i: Pick<ReviewItem, "kind" | "where" | "quoted">, hidden: Set<string>, evidence: ValueEvidence[]) =>
@@ -55,9 +66,9 @@ export type Withheld = { evidence: ValueEvidence[]; review: ReviewItem[] };
  * text fields are blanked (blankNumbers; in names only amounts and %), and its page stays, so the clause can still be
  * found. Ids, codes and fixed-list values stay. Item- and section-level paths (a grid header, a referenced document) aren't
  * values and stay as they are. A term on the bill-by-hand list quoted from a line that holds a withheld value (any line
- * of its question's quote, `on`) carries that number in its words: they're blanked too, and its figures left out. A term whose
- * question isn't on this version came with a correction's copy of the live version: approved, and shown there in full,
- * so it withholds nothing.
+ * of its question's quote, `on`), or from a page holding one found only by its page, can carry that number in its words:
+ * they're blanked too, and its figures left out. A term whose question isn't on this version came with a correction's
+ * copy of the live version: approved, and shown there in full, so it withholds nothing.
  */
 export function mask(rb: Rulebook, hidden: string[], on: Withheld): Rulebook {
   // by JSON, not structuredClone: that keeps objects shared between items shared, so blanking one item's words would blank another's
@@ -117,7 +128,8 @@ export function blindItem(i: Pick<ReviewItem, "id" | "path">, hidden: Set<string
  * a withheld value (an answer's, a send-back's, the "This looks wrong" report's: "Should be $104") have their numbers
  * blanked (blankNumbers) until its question is settled, and so does a contract problem's wording. A money term found on
  * a printed line that holds a withheld value quotes the PDF's text there, which prints the value: its numbers are blanked
- * too, in its question, its words and every note on it (`evidence` says where each value is). A total's printed value
+ * too, in its question, its words and every note on it (`evidence` says where each value is). So is every money term on
+ * a page holding a withheld value found only by its page: any of them can print it. A total's printed value
  * (`asPrinted`) is left out while its grid holds a withheld value.
  */
 export function blindReview(review: ReviewItem[], hidden: string[], evidence: ValueEvidence[] = []): ReviewItem[] {
@@ -148,7 +160,8 @@ export function blindReview(review: ReviewItem[], hidden: string[], evidence: Va
  * Blind entry in the log: while a value's question is open on its draft (`open`: its withheld paths, questions and
  * evidence), an entry about it (its path, or the question it answered or sent back) shows no earlier answer, typed or
  * carried value (`before` / `after`), its note, and a contract problem's wording, have their numbers blanked, and the
- * value's label (`value`) its amounts (as mask blanks names). An
+ * value's label (`value`) its amounts (as mask blanks names). An entry about another value of the same item has the
+ * amounts in its label and its typed text blanked: the item's name can print the withheld amount. An
  * answer to a money term quoted from a withheld value's line has the numbers in its question, note and bill-by-hand
  * term blanked. A send-back logged before it named its questions is blanked while anything on its draft is open.
  */
@@ -157,6 +170,15 @@ export function blindDetail(action: string, d: Record<string, unknown>, open: (W
   const h = open.hidden;
   // a correction that wasn't carried is asked again where its item is now (`askedAt`)
   const about = (x: Record<string, unknown>) => [x.path, x.askedAt].some((p) => typeof p === "string" && h.has(p));
+  // An entry about another value of an item that holds a withheld one ("/siteFees/0/name" while "/siteFees/0/amountCents"
+  // is asked): the item's names can print the amount ("Archiving fee $250"), typed or in its label, so as mask blanks them.
+  const itemOf = (p: unknown) => (typeof p === "string" ? /^(.*\/\d+)(?:\/|$)/.exec(p)?.[1] : undefined);
+  const near = (x: Record<string, unknown>) => [x.path, x.askedAt].map(itemOf).some((item) => !!item && [...h].some((p) => p.startsWith(`${item}/`)));
+  const names = (x: Record<string, unknown>) => {
+    const out = { ...x };
+    for (const k of ["value", "before", "after"]) if (typeof out[k] === "string") out[k] = blankAmounts(out[k] as string);
+    return out;
+  };
   // a value's label names its item, whose name can print the amount ("Archiving fee $250 › Amount")
   const strip = ({ before: _b, after: _a, ...x }: Record<string, unknown>): Record<string, unknown> => ({
     ...x,
@@ -165,8 +187,8 @@ export function blindDetail(action: string, d: Record<string, unknown>, open: (W
   });
   const ids = [d.itemId, ...(Array.isArray(d.itemIds) ? d.itemIds : [])];
   const blind = about(d) || open.review.some((i) => ids.includes(i.id) && blindItem(i, h)) || (action === "review.sent_back" && !Array.isArray(d.itemIds));
-  const out = blind ? strip(d) : { ...d };
-  for (const k of ["carried", "skipped"]) if (Array.isArray(out[k])) out[k] = (out[k] as unknown[]).map((x) => (isObj(x) && about(x) ? strip(x) : x));
+  const out = blind ? strip(d) : near(d) ? names(d) : { ...d };
+  for (const k of ["carried", "skipped"]) if (Array.isArray(out[k])) out[k] = (out[k] as unknown[]).map((x) => (!isObj(x) ? x : about(x) ? strip(x) : near(x) ? names(x) : x));
   if (blind && typeof out.question === "string" && typeof out.itemId === "string" && out.itemId.startsWith("anomaly:")) out.question = blankNumbers(out.question);
   if (open.review.some((i) => ids.includes(i.id) && quotesWithheld(i, h, open.evidence)))
     for (const k of ["question", "note", "billByHand", "offBillByHand"]) if (typeof out[k] === "string") out[k] = blankNumbers(out[k] as string);

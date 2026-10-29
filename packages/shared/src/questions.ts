@@ -127,7 +127,8 @@ export const askedAsInterpretation = (a: Pick<ContractAnomaly, "code" | "path">,
  * Values whose meaning an open question decides, withheld with it: a cap's limit and ratio while its kind is asked (the
  * limit is cents for an amount cap, a count otherwise, so a figure or its question would give the kind away); every
  * visit's "paid automatically" while how visits are paid is asked, and every grid row's "overhead added" while what the
- * overhead applies to is (`rb`'s grids): row by row, they restate the answer.
+ * overhead applies to is (`rb`'s grids): row by row, they restate the answer; and each amendment's own date while the
+ * start date is asked: it's what a "prospective only" answer is checked against, and shown it would be typed back.
  * Not a withheld cell's visit subtotal and total, though the cell could be worked out from them and the row's other
  * cells: the person answering reads the page, which prints that subtotal too, and what blind entry guards against is
  * anchoring on a value shown, not sums done on purpose. Withholding them would hide numbers the PDF confirmed, and blank
@@ -135,7 +136,9 @@ export const askedAsInterpretation = (a: Pick<ContractAnomaly, "code" | "path">,
  */
 export function alsoWithheld(path: string, rb?: unknown): string[] {
   if (/\/cap\/kind$/.test(path)) return [path.replace(/kind$/, "n"), path.replace(/kind$/, "ratio")];
-  const grids = (rb as Partial<Rulebook> | null | undefined)?.budgetGrids ?? [];
+  const r = rb as Partial<Rulebook> | null | undefined;
+  if (path === "/appliesFrom/value") return (r?.documents ?? []).flatMap((d, i) => (d.kind === "amendment" ? [`/documents/${i}/date`] : []));
+  const grids = r?.budgetGrids ?? [];
   if (path === "/payment/visitPayment/value") return grids.flatMap((g, gi) => g.visits.map((_, vi) => `/budgetGrids/${gi}/visits/${vi}/autopay`));
   if (path === "/overhead/appliesTo/value") return grids.flatMap((g, gi) => g.procedures.map((_, pi) => `/budgetGrids/${gi}/procedures/${pi}/overheadApplied`));
   return [];
@@ -174,6 +177,9 @@ export function capFollowUps(
     return [ask(path, `cap:${path}${earlier ? `:${earlier + 1}` : ""}`, reason)];
   });
 }
+
+/** A cap's limit or ratio while its kind is "No limit": nothing is billed by them, so nothing is written or asked there. */
+export const noLimit = (rb: unknown, path: string) => /\/cap\/(?:n|ratio)$/.test(path) && valueAt(rb, path.replace(/(?:n|ratio)$/, "kind")) === "none";
 
 // ---------- a question about one value ----------
 

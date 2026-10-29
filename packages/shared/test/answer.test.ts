@@ -141,7 +141,7 @@ describe("followUps", () => {
 
 describe("signOffRefusal", () => {
   const settledItem = { ...askAbout(rulebook(), [], "/payment/netDays/value", "q", "reported"), outcome: "matched" as const };
-  const ready = { version: 2, status: "draft", rulebook: {}, updatedAt: "t1", byHand: false, review: [settledItem], evidence: [ev("/x", "confirmed")], proofread: [], editors: ["Asha"] };
+  const ready = { version: 2, status: "draft", rulebook: rulebook(), updatedAt: "t1", byHand: false, review: [settledItem], evidence: [ev("/x", "confirmed")], proofread: [], editors: ["Asha"] };
   const as = { asOf: "t1", by: "Ben", makerChecker: true };
   it.each([
     ["approves a draft as seen, every question settled, every number backed, by someone else", ready, as, null],

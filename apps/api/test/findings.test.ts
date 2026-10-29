@@ -1,4 +1,4 @@
-import { type AlertPage, type AuditPage, type DocumentDto, type RulebookVersionDto, SAMPLE, settled, type StudyPage } from "@dct/shared";
+import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type ReviewItem, type RulebookVersionDto, SAMPLE, settled, type StudyPage } from "@dct/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PDFDocument, StandardFonts } from "pdf-lib";
@@ -41,6 +41,11 @@ const setRulebook = async (studyId: string, change: (rb: NonNullable<RulebookVer
   const rb = structuredClone((await storedVersion(built, studyId, v)).rulebook!);
   change(rb);
   await built.ctx.db.update(rulebookVersions).set({ rulebook: rb }).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.version, v)));
+};
+/** The stored questions (and the read's findings), changed as a version stored before a fix would hold them. */
+const setStored = async (studyId: string, change: (row: { review: ReviewItem[]; anomalies: RulebookVersionDto["anomalies"] }) => object, v = 1) => {
+  const row = await storedVersion(built, studyId, v);
+  await built.ctx.db.update(rulebookVersions).set(change({ review: structuredClone(row.review), anomalies: structuredClone(row.anomalies) })).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.version, v)));
 };
 /** Re-types the blind sample's values in `grid` as the master holds them, so nothing in it is open any more. */
 const retypeSample = async (studyId: string, grid: string) => {
@@ -336,5 +341,202 @@ describe("15. lows", () => {
     let cursor = page.nextCursor;
     for (let n = 0; cursor && n < 10; n++) cursor = (await get<AuditPage>(`/audit?studyId=${studyId}&q=zzq123&limit=1&cursor=${cursor}`)).nextCursor;
     expect(cursor).toBeNull();
+  });
+});
+
+// ---- The second review of 2026-10-29, through the API: each `it` failed before its fix. ----
+
+const open = async (studyId: string, v = 1) => (await storedVersion(built, studyId, v)).review.filter((i) => !settled(i));
+const MANUAL = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" };
+
+describe("C1. two grids for one arm that priced the same at the read", () => {
+  it("asks which to bill once an answer sets them a single cell apart, and approval waits for it", async () => {
+    const { studyId } = await newStudy(app, "twins");
+    await extract(app, studyId);
+    // as a read whose two grids priced the same: billed once, nothing asked
+    await setRulebook(studyId, (rb) => (rb.budgetGrids[1]!.visits[1]!.totalCents = rb.budgetGrids[0]!.visits[1]!.totalCents));
+    await setStored(studyId, ({ review }) => ({ review: review.filter((i) => i.reason !== "GRID_CONFLICT") }));
+    await settleAll(built, studyId, 1);
+    const CELL = "/budgetGrids/1/procedures/0/cells/V1";
+    expect((await post(`/studies/${studyId}/versions/1/report`, { path: CELL, note: "the revised exhibit prints another price", by: "Ben" })).statusCode).toBe(200);
+    const reported = (await open(studyId))[0]!.id;
+    await answer(studyId, reported, { value: 6000 });
+    await answer(studyId, reported, { value: 6000, note: "the signed page prints 60.00" });
+    const asked = await open(studyId);
+    expect(asked).toEqual([expect.objectContaining({ reason: "GRID_CONFLICT", options: [expect.objectContaining({ id: "g1" }), expect.objectContaining({ id: "g2" })] })]);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);
+    await answer(studyId, asked[0]!.id, { optionId: "g2" });
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
+    expect(billedGrids((await storedVersion(built, studyId, 1)).rulebook!).map((g) => g.id)).toEqual(["g2"]);
+  });
+
+  it("approval refuses an arm that bills no grid, with every question settled", async () => {
+    const { studyId } = await newStudy(app, "unbilled");
+    await extract(app, studyId);
+    await settleAll(built, studyId, 1);
+    // a master that got there before an answer asked which grid: two grids apart, none chosen
+    await setRulebook(studyId, (rb) => (rb.governingGridIds = []));
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).json()).toMatchObject({ statusCode: 409, message: "Choose which budget grid to bill for this contract." });
+  });
+});
+
+describe("H1. the blind sample's final answer", () => {
+  it("can't be reset by “can't tell” or a send-back: the next wrong answer is a miss, each logged", async () => {
+    const { studyId } = await newStudy(app, "retyped");
+    await extract(app, studyId);
+    const first = "sample:/budgetGrids/0/procedures/0/cells/V1";
+    expect(await answer(studyId, first, { value: 1 })).toMatchObject({ outcome: "differs" });
+    expect(await answer(studyId, first, { cantTell: true })).toMatchObject({ outcome: "cant_tell", retyped: true });
+    expect(await answer(studyId, first, { value: 2 })).toMatchObject({ outcome: "chosen", missed: true });
+    const second = "sample:/budgetGrids/0/visits/0/totalCents";
+    await answer(studyId, second, { value: 1 });
+    expect((await post(`/studies/${studyId}/versions/1/send-back`, { itemIds: [second], note: "look again", by: "Ben" })).statusCode).toBe(200);
+    expect(await answer(studyId, second, { value: 2 })).toMatchObject({ outcome: "chosen", missed: true });
+    expect((await get<AuditPage>(`/audit?studyId=${studyId}`)).items.filter((e) => e.action === "sample.missed")).toHaveLength(2);
+  });
+});
+
+describe("M1. a sampled value's spot on the page", () => {
+  it("is its page only while it's withheld, as its question shows it", async () => {
+    const { studyId } = await newStudy(app, "spot");
+    await extract(app, studyId);
+    const v = await version(studyId);
+    const sampled = v.review.filter((i) => i.reason === SAMPLE).map((i) => i.path!);
+    expect(sampled.length).toBeGreaterThan(0);
+    for (const p of sampled) expect(v.evidence.find((e) => e.path === p)!.where.map((w) => w.box)).toEqual([null]);
+    expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === sampled[0])!.where[0]!.box).not.toBeNull();
+  });
+});
+
+describe("M2. 'prospective only' while the start date is asked", () => {
+  it("withholds the amendment's own date, what a typed date is checked against", async () => {
+    const { studyId } = await liveStudy(built, "dated");
+    const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend-dated") }])).json<DocumentDto[]>();
+    expect((await patch(`/documents/${amend!.id}`, { kind: "amendment", by: "Asha" })).statusCode).toBe(200);
+    await extract(app, studyId, { documentIds: [amend!.id] });
+    await setRulebook(studyId, (rb) => (rb.documents.find((d) => d.kind === "amendment")!.date = "2026-03-15"), 2);
+    const v = await version(studyId, 2);
+    expect(JSON.stringify(v.rulebook!.documents)).not.toMatch(/2026-03-15/);
+    const q = v.review.find((i) => i.path === "/appliesFrom/value")!;
+    await answer(studyId, q.id, { optionId: "prospective", value: "2026-01-01" }, 2);
+    expect((await version(studyId, 2)).rulebook!.documents.map((d) => d.date)).toContain("2026-03-15");
+  });
+});
+
+describe("M3. the log while a typed amount is re-typed blind", () => {
+  it("blanks it in the same fee's typed name", async () => {
+    const { studyId } = await newStudy(app, "fee-name", { scan: true });
+    fakeControls.failNext = 1;
+    await extract(app, studyId);
+    await post(`/studies/${studyId}/versions/by-hand`, { by: "Asha" });
+    const type = async (path: string, value: unknown) => expect((await patch(`/studies/${studyId}/versions/1/values`, { path, value, note: "x", by: "Asha" })).statusCode).toBe(200);
+    await type("/siteFees", [{ code: null, name: "", amountCents: null, trigger: "one_time", dueDays: null, prov: MANUAL }]);
+    // ten typed values for the pinned draw to re-type, the fee's amount among them; its name typed last, not drawn
+    for (const [path, value] of [
+      ["/siteFees/0/amountCents", 25000], ["/payment/netDays/value", 30], ["/budgetGrids/0/visits/0/name", "Screening"], ["/budgetGrids/0/visits/0/totalCents", 5500],
+      ["/budgetGrids/0/procedures/0/name", "Blood draw"], ["/budgetGrids/0/procedures/0/cells/V1", 5500], ["/budgetGrids/0/procedures/0/unitCents", 5500],
+      ["/budgetGrids/0/visits/0/autopay", true], ["/budgetGrids/0/procedures/0/overheadApplied", false], ["/budgetGrids/0/procedures/0/category", "procedure"],
+      ["/siteFees/0/name", "Archiving fee $250"],
+    ] as const)
+      await type(path, value);
+    await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" });
+    expect((await open(studyId)).map((i) => i.id)).toContain("spot:/siteFees/0/amountCents");
+    const entry = (await get<AuditPage>(`/audit?studyId=${studyId}&limit=100`)).items.find((e) => e.action === "value.typed" && e.detail.path === "/siteFees/0/name")!;
+    expect(entry.detail).toMatchObject({ value: "Site fee › Archiving fee ••• › Name", after: "Archiving fee •••" });
+  });
+});
+
+describe("M4. 'the total as printed' on a question stored before it kept the printed total", () => {
+  it("puts back what the read's check found printed", async () => {
+    const { studyId } = await newStudy(app, "old-total");
+    await extract(app, studyId);
+    await setStored(studyId, ({ review }) => ({ review: review.map(({ asPrinted: _, ...i }) => i) }));
+    await answer(studyId, ARITH, { optionId: "sum", note: "Which total is right?" });
+    await answer(studyId, ARITH, { optionId: "printed", note: "The printed total governs" });
+    expect((await storedVersion(built, studyId, 1)).rulebook!.budgetGrids[0]!.visits[1]!.totalCents).toBe(848900);
+  });
+
+  it("refuses it, in words, when nothing says what's printed", async () => {
+    const { studyId } = await newStudy(app, "lost-total");
+    await extract(app, studyId);
+    await setStored(studyId, ({ review }) => ({ review: review.map(({ asPrinted: _, ...i }) => i), anomalies: [] }));
+    await answer(studyId, ARITH, { optionId: "sum", note: "Which total is right?" });
+    const res = await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(ARITH)}`, { optionId: "printed", note: "?", by: "Sam" });
+    expect(res.json()).toMatchObject({ statusCode: 409, message: expect.stringMatching(/^This question was asked before the app kept the total as printed/) });
+    expect((await storedVersion(built, studyId, 1)).rulebook!.budgetGrids[0]!.visits[1]!.totalCents).toBe(848800);
+  });
+});
+
+describe("M5. a rule the read gives without its quote", () => {
+  it("blanks every money term on its page while it's asked", async () => {
+    const studyId = await textPdf("netdays", [
+      [60, "Sponsor shall pay each undisputed invoice within 37 days of receipt by the Sponsor."],
+      [140, "This Work Order is effective as of August 22, 2025, and runs until the study closes."],
+    ]);
+    const v = await version(studyId);
+    expect(v.evidence.find((e) => e.path === "/payment/netDays/value")!.where.map((w) => [w.page, w.box])).toEqual([[1, null]]);
+    const term = v.review.find((i) => i.reason === "UNACCOUNTED_TERM" && /undisputed/.test(i.question))!;
+    expect(JSON.stringify([term.question, term.term])).not.toMatch(/37/);
+  });
+});
+
+describe("H2. a 3-decimal rate, and an amount written with USD", () => {
+  it("is asked as a money term, with no amount to bill by", async () => {
+    const studyId = await textPdf("rates", [
+      [60, "Subject mileage is reimbursed at $0.655 per mile driven to each study appointment."],
+      [80, "Archiving is paid at 500.00 USD per box stored off site by the Institution."],
+    ]);
+    const terms = (await storedVersion(built, studyId, 1)).review.filter((i) => i.reason === "UNACCOUNTED_TERM");
+    expect(terms.find((i) => /mileage/.test(i.term!.quote))!.term!.amounts).toEqual([]);
+    expect(terms.find((i) => /Archiving/.test(i.term!.quote))!.term!.amounts).toEqual([50000]);
+  });
+});
+
+describe("L2. a cap answered 'No limit'", () => {
+  const KIND = "interpret:/screenFail/cap/kind";
+  const N = "/screenFail/cap/n";
+  const setUp = async (seed: string) => {
+    const { studyId } = await newStudy(app, seed);
+    await extract(app, studyId);
+    await answer(studyId, KIND, { optionId: "blocks_with_reauth" });
+    expect((await post(`/studies/${studyId}/versions/1/report`, { path: N, note: "the limit looks off", by: "Ben" })).statusCode).toBe(200);
+    await answer(studyId, KIND, { optionId: "none" });
+    return studyId;
+  };
+
+  it("closes a question still open on its limit, logged; the limit can't be reported after", async () => {
+    const studyId = await setUp("no-limit");
+    await answer(studyId, KIND, { optionId: "none", note: "§3 sets no limit" });
+    const row = await storedVersion(built, studyId, 1);
+    expect([row.review.some((i) => i.path === N && !settled(i)), row.rulebook!.screenFail!.cap]).toEqual([false, { kind: "none", n: null, ratio: null }]);
+    expect((await get<AuditPage>(`/audit?studyId=${studyId}`)).items.filter((e) => e.action === "review.closed").map((e) => e.detail.path)).toEqual([N]);
+    expect((await post(`/studies/${studyId}/versions/1/report`, { path: N, note: "again", by: "Ben" })).json()).toMatchObject({ statusCode: 409, message: "This cap has “No limit”, so there's no limit to report. If that's wrong, report the cap's kind instead." });
+  });
+
+  it("closing it is one write with its log entry: a failing entry leaves nothing behind", async () => {
+    const studyId = await setUp("no-limit-fail");
+    const before = await storedVersion(built, studyId, 1);
+    await built.ctx.db.execute(
+      sql.raw(`CREATE OR REPLACE FUNCTION test_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'review.closed' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`),
+    );
+    await built.ctx.db.execute(sql.raw("CREATE TRIGGER test_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION test_fail()"));
+    expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(KIND)}`, { optionId: "none", note: "§3 sets no limit", by: "Sam" })).statusCode).toBe(500);
+    const after = await storedVersion(built, studyId, 1);
+    expect([after.review, after.rulebook, after.updatedAt]).toEqual([before.review, before.rulebook, before.updatedAt]);
+  });
+});
+
+describe("L3. the test database guard", () => {
+  it("checks the database's own name, not the whole URL", async () => {
+    const was = process.env.DATABASE_URL;
+    try {
+      // "_test" in the user name only (the settings were read at import, so an app built anyway would still use the test database)
+      process.env.DATABASE_URL = "postgres://dct_test:dct@localhost:5434/dct_finance";
+      const got = await testApp().catch((e: Error) => e);
+      if (!(got instanceof Error)) await got.app.close();
+      expect(got).toEqual(new Error("tests must use the _test database"));
+    } finally {
+      process.env.DATABASE_URL = was;
+    }
   });
 });

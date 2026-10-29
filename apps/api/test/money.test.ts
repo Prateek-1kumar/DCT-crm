@@ -47,6 +47,15 @@ const answer = async (id: string, item: string, body: object, v = 1) => {
   expect(res.statusCode, res.body).toBe(200);
   return res.json<RulebookVersionDto>().review.find((i) => i.id === item)!;
 };
+/**
+ * Answers the questions about values found only by their page (the fake read gives its rules no quote): while one is
+ * open, every money term on its page is shown blanked (blindReview), so a test about another term answers them first.
+ */
+async function answerPageOnly(studyId: string, v = 1) {
+  const row = await storedVersion(built, studyId, v);
+  for (const i of row.review.filter((x) => !x.outcome && x.path && row.evidence.find((e) => e.path === x.path)?.where.every((w) => !w.box)))
+    await answer(studyId, i.id, { value: at(row.rulebook, i.path!) }, v);
+}
 async function draft(seed = "s", opts?: { scan?: boolean }) {
   const s = await newStudy(app, seed, opts);
   expect((await extract(app, s.studyId)).job.state).toBe("succeeded");
@@ -64,6 +73,7 @@ describe("1. bill by hand: a money term the master can't hold is listed on the m
 
   it("a bill-by-hand answer lists it; another answer takes it off; approval, the export and a correction keep it", async () => {
     const { studyId, doc } = await draft();
+    await answerPageOnly(studyId);
     const term = (await version(studyId)).review.find((i) => i.reason === "UNACCOUNTED_TERM")!;
     expect(term.term).toEqual({ quote: PARKING, amounts: [1200] });
     await answer(studyId, term.id, { optionId: "bill_by_hand" });
@@ -375,6 +385,8 @@ describe("9b. blind entry: a term listed to bill by hand from a withheld value's
     expect((await version(studyId, 2)).review.find((i) => i.id === `confirm:${FEE}`)!.outcome).toBeNull();
     await answer(studyId, term.id, { optionId: "bill_by_hand", note: "Amendment fee, next to the $12,000.00 admin fee" }, 2);
     expect((await storedVersion(built, studyId, 2)).rulebook!.unclassified).toMatchObject([{ quote: term.term!.quote, amounts: [25000] }]);
+    // so only the fee's line is withheld
+    await answerPageOnly(studyId, 2);
 
     const leaks = /12,000|1200000/;
     // ids and times can hold any digits; only what people read counts

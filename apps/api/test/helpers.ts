@@ -12,7 +12,8 @@ export type App = Built["app"];
 
 /** `workers: false`: nothing runs the queued jobs, so a test can run (or strand) them itself. */
 export async function testApp(opts: { workers?: boolean } = {}): Promise<Built> {
-  if (!process.env.DATABASE_URL?.includes("_test")) throw new Error("tests must use the _test database");
+  // the database's own name, as global-setup checks it: "_test" anywhere else in the URL must not pass
+  if (!new URL(process.env.DATABASE_URL ?? "postgres://x/").pathname.slice(1).endsWith("_test")) throw new Error("tests must use the _test database");
   // The blind sample without shuffling: in evidence order, a family at a time, so a test knows which values it holds.
   sampling.random = NO_SHUFFLE;
   return buildApp(opts);

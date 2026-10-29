@@ -275,7 +275,8 @@ function figures(pg: Page, ws: Word[], unit: Unit): Figure[] {
   const fig = (words: Word[], values: (number | string)[], printed: string): Figure => ({ words, values, printed, at: boxOf(pg.p, words) });
   if (unit === "date") return dates(ws).map((d) => fig(d.words, d.values, d.printed));
   const money = amounts(ws, false, pg.before);
-  if (unit === "cents") return money.filter((a) => limited(ws, ws.indexOf(a.words[0]!), ws.indexOf(a.words.at(-1)!))).map((a) => fig(a.words, [a.cents], txt(a.words)));
+  // an amount the master can't hold ("$0.655") is a figure that says no value: printed where a value is, it's asked
+  if (unit === "cents") return money.filter((a) => limited(ws, ws.indexOf(a.words[0]!), ws.indexOf(a.words.at(-1)!))).map((a) => fig(a.words, a.cents === null ? [] : [a.cents], txt(a.words)));
   const taken = new Set([...money, ...dates(ws)].flatMap((x) => x.words));
   const nums = scan(ws).filter((x) => !x.words.some((w) => taken.has(w)));
   if (unit === "pct" || unit === "days" || unit === "months") return nums.filter((x) => x.unit === unit).map((x) => fig(x.words, [x.n], x.printed));
@@ -478,7 +479,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const positional = want.length === 2 && onRow.length >= 2;
     // One amount wanted, a row printing others too ("$500.00, up to $5,000.00"; "$100.00 $130.00" with one of them read):
     // which one is this value can't be told, so as settle() does, it's asked, and the others stay unaccounted.
-    const alone = (as: { cents: number }[], value: number, i: number) => (want.length === 2 && as.length >= 2 ? as[i]!.cents === value : as.every((a) => a.cents === value));
+    const alone = (as: { cents: number | null }[], value: number, i: number) => (want.length === 2 && as.length >= 2 ? as[i]!.cents === value : as.every((a) => a.cents === value));
     want.forEach(([field, value], i) => {
       const path = `${base}/${field}`;
       const spot = positional ? onRow[i] : onRow.find((a) => a.cents === value);
@@ -491,7 +492,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         return put(path, "conflict", [boxOf(pg!.p, found!.row.words)], txt(shown.flatMap((a) => a.words)) || null, null, [...onRow.flatMap((a) => a.words), ...used]);
       }
       if (inQuote.length) {
-        const figs = (want.length === 2 && inQuote.length === 2 ? [inQuote[i]!] : inQuote).map((a) => ({ words: a.words, values: [a.cents], printed: txt(a.words), at: boxOf(pg!.p, a.words) }));
+        const figs = (want.length === 2 && inQuote.length === 2 ? [inQuote[i]!] : inQuote).map((a) => ({ words: a.words, values: a.cents === null ? [] : [a.cents], printed: txt(a.words), at: boxOf(pg!.p, a.words) }));
         return settle(path, value, figs, [boxOf(pg!.p, quote!)]);
       }
       // Wrong page reference: label and this amount on one line of exactly one other page of the same document.

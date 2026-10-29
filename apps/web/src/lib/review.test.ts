@@ -5,7 +5,7 @@ import { approveState, formatAnswer, needsYou, parseAnswer, pdfCheckLine, queueO
 const q = (id: string, blocking: boolean, outcome: ReviewItem["outcome"] = null): ReviewItem => ({
   id, kind: "confirm_value", reason: "spot_check", path: null, question: "", input: "money", options: [], where: [], blocking, answer: null, outcome, compare: null, sentBack: null,
 });
-const rulebook = {} as never;
+const rulebook = { budgetGrids: [], governingGridId: null, governingGridIds: [] } as never;
 
 describe("queue", () => {
   it("puts blocking questions first, otherwise keeps the order", () => {

@@ -1,4 +1,4 @@
-import { amendmentDate, billedGrids, type PageBox, type Rulebook, type ValueEvidence } from "@dct/shared";
+import { amendmentDate, armKey, billedGrids, type PageBox, type Rulebook, type ValueEvidence } from "@dct/shared";
 import { ENUM_OPTIONS, formatDate, formatValue } from "./format";
 import { findProv } from "./pointer";
 
@@ -87,10 +87,20 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
       : term("screen-fail", "Screen failures", "Not paid", "The contract doesn't pay for screen failures", null),
   );
 
-  // The grids billing uses (billedGrids): each arm's chosen grid, or its only one, never two for one arm.
+  // The grids billing uses (billedGrids): each arm's chosen grid, or its only one, never two for one arm. An arm whose
+  // grids differ with none chosen bills nothing: said, never left out (hidden while a number in them is withheld, as
+  // they may price the same once it's answered).
   const billed = new Set(billedGrids(rb));
+  const arms = new Set([...billed].map(armKey));
   rb.budgetGrids.forEach((g, gi) => {
-    if (!billed.has(g)) return;
+    if (!billed.has(g)) {
+      if (arms.has(armKey(g))) return;
+      arms.add(armKey(g));
+      const own = rb.budgetGrids.flatMap((x, xi) => (armKey(x) === armKey(g) ? [{ x, xi }] : []));
+      const inThem = [...hidden].filter((p) => own.some(({ xi }) => p.startsWith(`/budgetGrids/${xi}/`)));
+      out.push(term(`patient-${gi}`, "Per patient", "No grid chosen", `${g.arm ? `${g.arm}: ` : ""}${own.map(({ x }) => x.label).join(" and ")} disagree, so nothing is billed until one is chosen`, null, inThem));
+      return;
+    }
     const t = g.perPatientTotals[0];
     if (t) out.push(term(`patient-${gi}`, "Per patient", money(t.cents), `${t.label} · ${g.label}`, `/budgetGrids/${gi}/perPatientTotals/0/cents`));
     // no printed total: the visits added up, never while one of them is withheld

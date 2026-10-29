@@ -9,6 +9,7 @@ import {
   followUps,
   labelFor,
   type MasterSearch,
+  noLimit,
   ProofreadBody,
   proofreadMarks,
   ReportValueBody,
@@ -217,6 +218,8 @@ export const versionRoutes =
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         const value = row.rulebook ? at(row.rulebook, path) : undefined;
         if (value === undefined || !leaf(value)) throw new HttpError(400, "Pick a single value to report.");
+        // nothing is billed by a cap's limit while it has none: its question could never be answered (answerQuestion)
+        if (noLimit(row.rulebook, path)) throw new HttpError(409, "This cap has “No limit”, so there's no limit to report. If that's wrong, report the cap's kind instead.");
         let draft = row;
         if (row.status === "signed") {
           const [newest] = await tx.select({ version: rulebookVersions.version, status: rulebookVersions.status }).from(rulebookVersions).where(eq(rulebookVersions.studyId, row.studyId)).orderBy(desc(rulebookVersions.version)).limit(1);

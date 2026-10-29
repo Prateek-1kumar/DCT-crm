@@ -161,9 +161,10 @@ export function RulebookView({ part }: { part: MasterPart }) {
       </dl>
       <h4 className="eyebrow mt-5 mb-2">What this invoicing master is built from</h4>
       <ul className="flex flex-col gap-1.5 text-small">
-        {rb.documents.map((d) => (
+        {rb.documents.map((d, i) => (
           <li key={d.id} className="flex flex-wrap items-center gap-2">
-            <Badge tone="accent">{DOC_KIND_LABEL[d.kind]}</Badge> {d.title} <span className="text-muted">{d.date ? formatDate(d.date) : ""}</span>
+            {/* an amendment's own date is withheld while the start date is typed blind (alsoWithheld) */}
+            <Badge tone="accent">{DOC_KIND_LABEL[d.kind]}</Badge> {d.title} <span className="text-muted"><Val path={`/documents/${i}/date`}>{d.date ? formatDate(d.date) : ""}</Val></span>
           </li>
         ))}
         {rb.referencedDocuments.map((r, i) => (

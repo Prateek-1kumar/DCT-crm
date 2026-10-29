@@ -106,6 +106,12 @@ export const ReviewItem = z.object({
    * every value of its family is then checked before approval (sampleMisses).
    */
   missed: z.boolean().optional(),
+  /**
+   * A random spot check (reason SAMPLE) whose first answer differed from the value the PDF check confirmed: from then on
+   * every answer is final (the confirmed value, or a miss). Kept through "can't tell", a send-back and changed answers,
+   * so nobody can try values until one matches.
+   */
+  retyped: z.boolean().optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

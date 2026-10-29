@@ -103,7 +103,9 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   const ev = version.evidence.find((e) => e.path === path);
   const prov = findProv(rb, path);
   const mark = version.proofread?.find((m) => m.path === path);
-  const spot: PageBox | null = ev?.where[0] ?? (prov?.source ? { documentId: prov.source.documentId, page: prov.source.page, box: null } : null);
+  const at: PageBox | null = ev?.where[0] ?? (prov?.source ? { documentId: prov.source.documentId, page: prov.source.page, box: null } : null);
+  // its page only while it's withheld: the spot the PDF check bound it to would show which number to type
+  const spot = at && masked ? { ...at, box: null } : at;
   const value = getAt(rb, path);
   // typed by hand: reported once typing is marked done (before, the value is changed in the form)
   const reportable = report && (version.status === "signed" || (version.status === "draft" && (!version.byHand || version.review.length > 0))) && isLeaf(value) && !masked;

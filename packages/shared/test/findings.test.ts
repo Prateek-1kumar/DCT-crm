@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   type AnswerDraft,
   answerQuestion,
+  armKey,
   askAbout,
   billedGrids,
   blindDetail,
+  blindEvidence,
   blindReview,
   BODY_WORDS,
   bodyProblem,
@@ -15,6 +17,7 @@ import {
   followUps,
   fromAnomalies,
   gridChoice,
+  gridPrices,
   interpretations,
   isoDate,
   mask,
@@ -29,6 +32,7 @@ import {
   RulebookVersionDto,
   SAMPLE,
   settled,
+  signOffRefusal,
   typingDone,
   type ValueEvidence,
   versionDiff,
@@ -72,7 +76,7 @@ function rulebook(): Rulebook {
     unclassified: [],
   };
 }
-const ev = (path: string, status: ValueEvidence["status"], printed: string | null = null, where = box(0.5)): ValueEvidence => ({ path, status, where, printed, note: null });
+const ev = (path: string, status: ValueEvidence["status"], printed: string | null = null, where: ValueEvidence["where"] = box(0.5)): ValueEvidence => ({ path, status, where, printed, note: null });
 const draft = (review: ReviewItem[], evidence: ValueEvidence[] = [], rb = rulebook()): AnswerDraft & { anomalies: ContractAnomaly[] } => ({ version: 1, byHand: false, rulebook: rb, review, evidence, editors: [], anomalies: [] });
 const say = (d: AnswerDraft, id: string, body: Record<string, unknown>) => {
   const r = answerQuestion(d, id, { by: "Sam", ...body }, { isoDate, now: "2026-10-29T09:00:00.000Z" });
@@ -403,5 +407,205 @@ describe("16. the sample server's diff is the API's", () => {
     expect(versionDiff({ ...v, rulebook: null }, v)).toEqual({ refusal: { status: 409, message: "Both versions need an extracted rulebook to diff" } });
     const after = { ...v, rulebook: { ...rulebook(), payment: { ...rulebook().payment, netDays: s(30) } }, review: [askAbout(rulebook(), [], "/payment/netDays/value", "q", "reported")] };
     expect(versionDiff({ ...v, status: "signed" }, after)).toEqual([]);
+  });
+});
+
+// ---- The second review of 2026-10-29: each `it` failed before its fix. ----
+
+/** The arithmetic check and the grid check, as the API runs them: grids for one arm that price anything differently. */
+const withGrids = (rb: Rulebook): ContractAnomaly[] => {
+  const arms = new Map<string, number[]>();
+  rb.budgetGrids.forEach((g, i) => arms.set(armKey(g), [...(arms.get(armKey(g)) ?? []), i]));
+  const grids = [...arms.values()].flatMap((idxs): ContractAnomaly[] =>
+    new Set(idxs.map((i) => gridPrices(rb.budgetGrids[i]!))).size < 2 ? [] : [{ id: `GRID_CONFLICT:/budgetGrids/${idxs[0]}`, code: "GRID_CONFLICT", severity: "blocker", message: "grids disagree", path: `/budgetGrids/${idxs[0]}`, refs: [], detail: { gridIds: idxs.map((i) => rb.budgetGrids[i]!.id) }, resolution: null }],
+  );
+  return [...checks(rb), ...grids];
+};
+const answerAndFollow = (d: ReturnType<typeof draft>, id: string, body: Record<string, unknown>, by = "Sam") => {
+  const r = answerQuestion(d, id, { by, ...body }, { isoDate, now: "" });
+  if ("refusal" in r) throw new Error(r.refusal.message);
+  return { r, logged: r.unchanged ? [] : followUps(d, r, withGrids, ask(d)) };
+};
+const approvable = (d: ReturnType<typeof draft>) => signOffRefusal({ ...d, status: "draft", updatedAt: "t" }, { asOf: "t", by: "Ben", makerChecker: false });
+
+describe("C1. two grids for one arm that an answer makes differ", () => {
+  const CELL = "/budgetGrids/1/procedures/0/cells/V1";
+  // their visits add up, so nothing else is asked
+  const twin = (id: string) => ({ ...grid(id), visits: grid(id).visits.map((v) => ({ ...v, totalCents: 14000 })) });
+  const twins = () => {
+    const rb = { ...rulebook(), budgetGrids: [twin("g1"), twin("g2")] };
+    return draft([askAbout(rb, [], CELL, "reported:1", "reported")], [ev(CELL, "confirmed", "100.00")], rb);
+  };
+
+  it("asks which grid to bill once a typed number makes them differ, and approval waits for it", () => {
+    const d = twins();
+    expect(billedGrids(d.rulebook).map((g) => g.id)).toEqual(["g1"]);
+    answerAndFollow(d, "reported:1", { value: 9000 });
+    answerAndFollow(d, "reported:1", { value: 9000, note: "the signed page prints $90.00" });
+    const q = d.review.find((i) => i.reason === "GRID_CONFLICT")!;
+    expect(q).toMatchObject({ id: "anomaly:GRID_CONFLICT:/budgetGrids/0", outcome: null, options: [{ id: "g1" }, { id: "g2" }] });
+    expect(approvable(d)).toBe("1 question still needs an answer before this can be approved.");
+    // asked once: another number written in the grid doesn't ask it again
+    d.review.push(askAbout(d.rulebook, d.evidence, "/budgetGrids/1/procedures/0/unitCents", "reported:2", "reported"));
+    answerAndFollow(d, "reported:2", { value: 10000 });
+    expect(d.review.filter((i) => i.reason === "GRID_CONFLICT")).toHaveLength(1);
+    answerAndFollow(d, q.id, { optionId: "g2" });
+    expect([billedGrids(d.rulebook).map((g) => g.id), approvable(d)]).toEqual([["g2"], null]);
+  });
+
+  it("approval names the arm that bills no grid, however the master got there", () => {
+    const d = draft([], [], { ...rulebook(), budgetGrids: [grid("g1"), grid("g2", { V1: 9000 })] });
+    expect(approvable(d)).toBe("Choose which budget grid to bill for this contract.");
+    d.rulebook.budgetGrids = d.rulebook.budgetGrids.map((g) => ({ ...g, arm: "Arm A" }));
+    expect(approvable(d)).toBe("Choose which budget grid to bill for Arm A.");
+    d.rulebook.governingGridIds = ["g1"];
+    expect(approvable(d)).toBeNull();
+  });
+});
+
+describe("H1. the blind sample's final answer can't be reset", () => {
+  const cell = "/budgetGrids/0/procedures/0/cells/V1";
+  const sampled = () => {
+    const rb = rulebook();
+    const evidence = [ev(cell, "confirmed", "100.00"), ev("/budgetGrids/0/procedures/0/unitCents", "confirmed")];
+    return draft([askAbout(rb, evidence, cell, "q", SAMPLE)], evidence, rb);
+  };
+
+  it("through can't tell: the next answer still stands, and a wrong one is a miss", () => {
+    const d = sampled();
+    expect(say(d, "q", { value: 10100 })).toMatchObject({ outcome: "differs" });
+    expect(say(d, "q", { cantTell: true })).toMatchObject({ outcome: "cant_tell" });
+    expect(d.review[0]).toMatchObject({ retyped: true });
+    expect(approvable(d)).toBe("1 question still needs an answer before this can be approved."); // unresolved: approval waits
+    expect(say(d, "q", { value: 10200 })).toMatchObject({ outcome: "chosen", missed: true, incident: { count: 1 } });
+  });
+
+  it("through a send-back, a repeat and a changed answer", () => {
+    const d = sampled();
+    say(d, "q", { value: 10100 });
+    // the approver sends it back (the route clears the answer)
+    Object.assign(d.review[0]!, { outcome: null, answer: null, compare: null, sentBack: { by: "Ben", note: "look again", at: "" } });
+    expect(say(d, "q", { value: 10200 })).toMatchObject({ outcome: "chosen", missed: true });
+    const e = sampled();
+    say(e, "q", { value: 10100 });
+    expect(say(e, "q", { value: 10000 })).toMatchObject({ outcome: "matched", missed: false }); // a typo, settled
+    expect(say(e, "q", { value: 10000 }).unchanged).toBe(true);
+    expect(say(e, "q", { value: 10300, note: "changed my mind" })).toMatchObject({ outcome: "chosen", missed: true });
+  });
+
+  it("an item stored before the mark: its 'differs' is the mark", () => {
+    const d = sampled();
+    Object.assign(d.review[0]!, { outcome: "differs", answer: { value: 10100, by: "Sam", at: "" } });
+    expect(say(d, "q", { cantTell: true }).item.retyped).toBeUndefined();
+    Object.assign(d.review[0]!, { outcome: "differs" });
+    expect(say(d, "q", { value: 10200 })).toMatchObject({ outcome: "chosen", missed: true });
+  });
+});
+
+describe("M1. a withheld value's spot on the page", () => {
+  it("is its page only, with nothing printed; other values keep theirs", () => {
+    const evidence = [ev("/a", "confirmed", "100.00"), ev("/b", "confirmed", "5.00")];
+    expect(blindEvidence(evidence, ["/a"])).toEqual([{ ...evidence[0]!, printed: null, where: [{ documentId: "d1", page: 1, box: null }] }, evidence[1]]);
+  });
+});
+
+describe("M2. the amendment's own date while the start date is typed blind", () => {
+  it("is withheld with it, and the version still parses", () => {
+    const rb = rulebook();
+    rb.documents.push({ id: "d2", kind: "amendment", title: "Amendment 1", date: "2026-03-15" });
+    const review = interpretations(rb, { amendment: true });
+    const v = { status: "draft", review, rulebook: rb };
+    expect(withheldPaths(v)).toEqual(expect.arrayContaining(["/appliesFrom/value", "/documents/1/date"]));
+    expect(withheldPaths(v)).not.toContain("/documents/0/date"); // the work order's date isn't what it's checked against
+    const shown = mask(rb, withheldPaths(v), { evidence: [], review });
+    expect(shown.documents.map((d) => d.date)).toEqual(["2025-01-10", null]);
+    const dto = { version: 2, status: "draft" as const, createdAt: "", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s", rulebook: shown, anomalies: [], editors: [], cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [], updatedAt: "", warnings: [] };
+    expect(RulebookVersionDto.safeParse(dto).success).toBe(true);
+  });
+});
+
+describe("M3. the log while an amount of the same item is re-typed blind", () => {
+  it("blanks amounts in another value's label and typed text of that item, not of another item", () => {
+    const rb = rulebook();
+    const open = { hidden: new Set(["/siteFees/0/amountCents"]), review: [askAbout(rb, [], "/siteFees/0/amountCents", "spot:/siteFees/0/amountCents", "spot_check")], evidence: [] };
+    const typed = { version: 1, path: "/siteFees/0/name", value: "Site fee › Archiving fee $250 › Name", before: "", after: "Archiving fee $250" };
+    expect(blindDetail("value.typed", typed, open)).toEqual({ ...typed, value: "Site fee › Archiving fee ••• › Name", after: "Archiving fee •••" });
+    const other = { ...typed, path: "/siteFees/1/name" };
+    expect(blindDetail("value.typed", other, open)).toEqual(other);
+  });
+});
+
+describe("M4. 'as printed' on a total asked before its printed value was kept", () => {
+  const old = (path = TOTAL) => {
+    const rb = rulebook();
+    rb.budgetGrids[0]!.visits[0]!.totalCents = 15100;
+    const found = checks(rb).map((a) => ({ ...a, detail: { expected: 14000, actual: 15100 } }));
+    const [q] = fromAnomalies(found, rb, new Set());
+    const { asPrinted: _, ...stored } = q!;
+    return { ...draft([{ ...stored, id: `anomaly:VISIT_TOTAL_MISMATCH:${path}` }], [ev(TOTAL, "confirmed", "151.00")], rb), anomalies: path === TOTAL ? found : [] };
+  };
+
+  it("puts back what the read's check found printed", () => {
+    const d = old();
+    const id = d.review[0]!.id;
+    say(d, id, { optionId: "sum", note: "Ask the sponsor" });
+    expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(14000);
+    say(d, id, { optionId: "printed", note: "The sponsor says the printed total governs" });
+    expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(15100);
+  });
+
+  it("with nothing to say what's printed, refuses it, and “This looks wrong” asks it again with the total typed", () => {
+    const d = old("/elsewhere");
+    const id = d.review[0]!.id;
+    expect(refusal(d, id, { optionId: "printed", note: "?" })).toMatchObject({ status: 409, message: expect.stringMatching(/^This question was asked before the app kept the total as printed/) });
+    expect(d.review[0]!.outcome).toBeNull(); // the refusal changes nothing
+    answerAndFollow(d, id, { optionId: "sum", note: "Ask the sponsor" });
+    d.review.push(askAbout(d.rulebook, d.evidence, TOTAL, "reported:1", "reported"));
+    answerAndFollow(d, "reported:1", { value: 15100 });
+    answerAndFollow(d, "reported:1", { value: 15100, note: "the page prints $151.00" });
+    expect(d.review[0]).toMatchObject({ outcome: null, asPrinted: 15100 });
+    answerAndFollow(d, id, { optionId: "printed", note: "As printed" });
+    expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(15100);
+  });
+});
+
+describe("M5. a withheld value found only by its page", () => {
+  const term = (id: string, page: number, quote: string): ReviewItem => ({
+    id, kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, question: `Page ${page} has a payment term: "${quote}".`, input: null, options: [], blocking: true,
+    where: [{ documentId: "d1", page, box: [0.1, 0.2, 0.5, 0.02] }], answer: null, outcome: null, compare: null, sentBack: null, term: { quote, amounts: [], days: 37 },
+  });
+  const terms = [term("u1", 1, "Sponsor shall pay each invoice within 37 days."), term("u2", 2, "Parking is paid at $12.00 a visit.")];
+  const NET = "/payment/netDays/value";
+
+  it("blanks every money term on its page, none on another", () => {
+    const [p1, p2] = blindReview(terms, [NET], [ev(NET, "ungrounded", null, [{ documentId: "d1", page: 1, box: null }])]);
+    expect(JSON.stringify(p1)).not.toMatch(/37/);
+    expect(p2).toEqual(terms[1]);
+  });
+
+  it("with no page at all, blanks every money term", () => {
+    expect(JSON.stringify(blindReview(terms, [NET], [ev(NET, "ungrounded", null, [])]))).not.toMatch(/37|12\.00/);
+  });
+});
+
+describe("L1. a percentage in brackets", () => {
+  it.each([["(15%)", 15], ["15%).", 15], ["fifteen percent (15%)", 15], ["(1.5%", 1.5], ["30 days (15%)", null]])("parsePercent(%s) is %s", (t, n) => expect(parsePercent(t)).toBe(n));
+});
+
+describe("L2. a cap answered 'No limit'", () => {
+  it("closes every open question about its figures, logged, and refuses a figure there after", () => {
+    const rb = rulebook();
+    rb.screenFail!.cap = { kind: "count", n: 7, ratio: null };
+    const d = draft(interpretations(rb, { amendment: false }), [ev("/screenFail/cap/n", "confirmed", "7")], rb);
+    answerAndFollow(d, "interpret:/screenFail/cap/kind", { optionId: "count" });
+    d.review.push({ ...askAbout(d.rulebook, d.evidence, "/screenFail/cap/n", "reported:1", "reported"), reported: { by: "Ben", note: "?", at: "" } });
+    answerAndFollow(d, "interpret:/screenFail/cap/kind", { optionId: "none" });
+    const { logged } = answerAndFollow(d, "interpret:/screenFail/cap/kind", { optionId: "none", note: "§3 sets no limit" });
+    expect(d.review.some((i) => i.id === "reported:1")).toBe(false);
+    expect(logged).toEqual([{ action: "review.closed", detail: expect.objectContaining({ itemId: "reported:1", path: "/screenFail/cap/n" }) }]);
+    expect(d.rulebook.screenFail!.cap).toEqual({ kind: "none", n: null, ratio: null });
+    d.review.push(askAbout(d.rulebook, d.evidence, "/screenFail/cap/n", "reported:2", "reported"));
+    expect(refusal(d, "reported:2", { value: 9 })).toMatchObject({ status: 409 });
+    expect(d.rulebook.screenFail!.cap).toEqual({ kind: "none", n: null, ratio: null });
   });
 });

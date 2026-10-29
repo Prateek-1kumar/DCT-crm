@@ -1,4 +1,4 @@
-import { alsoWithheld, askAbout as ask, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
+import { alsoWithheld, armKey, askAbout as ask, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
 import { fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
@@ -390,13 +390,14 @@ const asPrinted = (rb: Rulebook, i: ReviewItem): Spec => {
 export const mockSampling: { random: () => number } = { random: cryptoRandom };
 
 /**
- * The sample server's contract checks, kept with a read and run again on typed numbers (recheck, @dct/shared): a visit
- * total that isn't its parts added up, worded as the real check words it.
- * ponytail: that one check; the real ones (packages/extraction/src/checks.ts) don't run in the browser. Add one here when
- * a sample contract needs it.
+ * The sample server's contract checks, kept with a read and run again on typed numbers (recheck, gridConflicts,
+ * @dct/shared), worded as the real checks word them: a visit total that isn't its parts added up, and grids for one arm
+ * that price anything differently (gridPrices, the real check's signature).
+ * ponytail: those two; the real ones (packages/extraction/src/checks.ts) don't run in the browser. Add one here when a
+ * sample contract needs it.
  */
 export function mockChecks(rb: Rulebook): ContractAnomaly[] {
-  return rb.budgetGrids.flatMap((g, gi) =>
+  const totals = rb.budgetGrids.flatMap((g, gi) =>
     g.visits.flatMap((v, vi): ContractAnomaly[] => {
       if (v.procedureSubtotalCents === null || v.overheadCents === null) return [];
       const parts = v.procedureSubtotalCents + v.overheadCents + (v.nonProcedureCents ?? 0);
@@ -406,6 +407,17 @@ export function mockChecks(rb: Rulebook): ContractAnomaly[] {
       return [{ id: `VISIT_TOTAL_MISMATCH:${path}`, code: "VISIT_TOTAL_MISMATCH", severity: "warning", message, path, refs: v.prov.source ? [v.prov.source] : [], detail: { expected: parts, actual: v.totalCents }, resolution: null }];
     }),
   );
+  // as the real check, only while no grid was chosen the old way (governingGridId)
+  const arms = new Map<string, number[]>();
+  rb.budgetGrids.forEach((g, i) => arms.set(armKey(g), [...(arms.get(armKey(g)) ?? []), i]));
+  const grids = rb.governingGridId !== null ? [] : [...arms.values()].flatMap((idxs): ContractAnomaly[] => {
+    const gs = idxs.map((i) => rb.budgetGrids[i]!);
+    if (new Set(gs.map(gridPrices)).size < 2) return [];
+    const path = `/budgetGrids/${idxs[0]}`;
+    const message = `${gs.length} budget grids for ${gs[0]!.arm ?? "the study"} disagree (${gs.map((g) => g.label).join(" vs ")}); choose the governing grid`;
+    return [{ id: `GRID_CONFLICT:${path}`, code: "GRID_CONFLICT", severity: "blocker", message, path, refs: gs.flatMap((g) => (g.prov.source ? [g.prov.source] : [])), detail: { gridIds: gs.map((g) => g.id) }, resolution: null }];
+  });
+  return [...totals, ...grids];
 }
 
 /** As the real API: a cap's limit and ratio wait for its kind's answer (their questions would name the kind). */
