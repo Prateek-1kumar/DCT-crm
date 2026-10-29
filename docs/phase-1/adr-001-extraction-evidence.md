@@ -322,3 +322,73 @@ These came from the research passes; the strength tag is the research agent's.
 10. AWS A2I closed to new customers: https://docs.aws.amazon.com/sagemaker/latest/dg/a2i-json-humantaskactivationconditions-textract-example.html. Google Document AI human review deprecated: https://docs.cloud.google.com/document-ai/docs/deprecation (strong)
 11. CTA money-term taxonomy: SCRS Site Invoiceables Guide https://myscrs.org/wp-content/uploads/2026/05/SCRS-Site_Invoiceables_Guide_Preview.pdf; ACTA https://www.rochester.edu/orpa/_assets/word/form_ACTA.docx; a CRO payment exhibit https://www.sec.gov/Archives/edgar/data/1946563/000121390024080313/ea021474701ex10-3_60degrees.htm
 12. Hidden-text prompt injection in PDFs: https://arxiv.org/abs/2509.10248. Malicious-font text/glyph mismatch: https://arxiv.org/abs/2505.16957 (weak). Spotlighting: https://arxiv.org/abs/2403.14720
+
+## Implementation notes (2026-10-29)
+
+Added after the decision, which is unchanged above. What the code on `feature/contarcts` does against the plan, so the owner can review it in one place. Current behavior in detail: [api.md](api.md#review-questions-adr-001).
+
+**Built, by build step (§12)**
+
+| Step | State |
+|---|---|
+| 1 TextLayer | Built: boxes, text source, hidden text, the money inventory, bank masking (also account-like numbers on a bank label's line or the next two; bank words are never stored in a span's text). A text page with a picture big enough to hold prices (`largePicture`) is attested like a scan: the "budget pasted as an image" row of §3. |
+| 2 Binder, ledger | Built, stricter than §5: a single value is confirmed only when its line prints no other amount that could be it; a label matches a row only on a strict majority of its name's words; a conflict consumes nothing on its line or in its quote, so those amounts stay in the sweep; a limit on a fee's line stays a term of its own; a rule's figure counts only from a sentence about its term; two grids on one page each bind under their own header; a bracketed amount is negative (one `parseCents` for all money text). COPD: 593 of 593 cells confirmed right, none wrong confirmed. |
+| 3 Coverage | The sweep (`UNACCOUNTED_TERM`, absence sentences) and the `unclassified` list (bill by hand) are built. Its amounts include `USD 1,000`, `USD1,000` and `500.00 USD`, and amounts the master can't hold (`$0.655` per mile), which are asked; a money term's question keeps every line of its sentence (`quoted`) for blind entry. The list is an optional field of schema v1 (`upgradeRulebook` reads older versions with it empty), not schema v2. |
+| 4 Cost and noise | The $20 runaway cap is built. The cross-read, the OpenAI client, `LOW_CONFIDENCE` and `AI_DISAGREEMENT` still run, but are never asked. A grid re-read is still skipped when it can't be afforded or most visits fail (§8), and said in the version's `warnings`. |
+| 5 API gate | Built, one function for the API and the approve page (`signOffRefusal`, `packages/shared/src/answer.ts`): approval of the version as seen (`asOf`), by-hand typing done, every question settled, every arm with grids billing one, every value `confirmed` or `attested`, the sample-miss gate, maker-checker on by default. The rules for answering are shared with the sample server the same way (`answerQuestion`, `followUps`). |
+| 6 Review UI | Built: blind typed and picked answers next to the page crop, the interpretations, the bill-by-hand list, the 10-value sample (at its page only, typed once more when it differs). The interpretations and the sample are questions in the one-at-a-time Needs you flow, not screens of their own. |
+| 7 Scan mode, cleanup | Scan mode is built (arithmetic, typing, page attestation). The §8 cleanup is not. |
+| 8–9 | Not started. |
+
+**Measured on the four saved reads** (COPD / HCWC / McAllen / Shah): 16 / 23 / 13 / 12 interpretations. HCWC is over the 10–20 of §6 because it has 17 site fees, each with its trigger asked. The blind sample is 10 on each.
+
+**Interpretations, as built** (`interpretations` in `packages/shared/src/questions.ts`): overhead scope, how visits are paid, each site fee's trigger, each cap's kind where there's a cap (and its limit or ratio after it, when unconfirmed, when the kind changed, or when the kind needs a figure the master lacks), the screen-fail basis, cap kind and how screen failures are paid (`screenFail.paidVia`, added to the §6 list: paid automatically where they should be invoiced means they're never billed), the holdback's scope, rounding, and the start date. These billing fields are **not** asked blind. The code doesn't record why, so each is for the owner to confirm:
+
+| Field | Today |
+|---|---|
+| `budgetGrids[].visits[].autopay` | Read by the AI, one per visit; in the Excel export ("How the visit is paid"). Not asked, but withheld while "How are visits paid?" is asked: row by row it restates the answer |
+| `budgetGrids[].procedures[].overheadApplied`, `category` | Read by the AI, one per grid row; `overheadApplied` is in the export, and withheld while the overhead scope is asked; `category` feeds the arithmetic checks |
+| `payment.frequency`, `payment.netDaysFrom` | Not asked; `netDays` is bound to its sentence |
+| `invoiceables[].basis`, `frequency`, `requiresPreApproval` | Not asked; the amount and the cap kind are |
+| `holdback.releaseConditions` | Not asked; the % is bound and the scope typed |
+| `overpayment.sponsorMayOffset` | Not asked; `refundDays` is bound |
+| `deadlines[].kind` | Not asked; its value binds only from a sentence with the kind's own words. It's the fixed list §7 replaces with `other` + `asWritten` |
+
+On a contract typed by hand, every number, yes/no and fixed-list value nobody typed or picked, these fields included, is asked when typing is marked done (`placeholders`).
+
+**Not built yet.** Each needs a prompt change and a live eval the owner hasn't approved:
+- schema v2: `other` plus `asWritten` on every enum, and `perPatientTotals[].visitCodes`;
+- the §8 prompt and check cleanup, including "only these kinds", and the test that greps prompts for names from the answer keys;
+- reading every page for terms (the classifier still chooses them; the sweep covers every text page);
+- removing the cross-read, the OpenAI client and cost-based re-read skipping.
+
+Also not built: dismissing a whole section at once (§6), and storing the hashes of §9 with the sign-off.
+
+**Product choices made while building.** Each is in the code; the owner may want to change any of them.
+1. "Can't tell" on any question, a Review one too, holds approval and counts in Needs you. The way forward is to answer it, or for the approver to send it back. On a sample value already typed once more (`retyped`) it leaves it unresolved: the next answer is still final.
+2. Picks on an overhead label or a duplicate item write nothing: the printed amounts stand, or the sponsor is asked, with the query as the note.
+3. On a total that doesn't add up, "the sum" and "as printed" each write their own number into the master, and amendments carry it like a correction. "As printed" is the read's total, or the total as a person last typed it (a correction, a sample, "This looks wrong"); never the sum. A settled total is asked again once its answer no longer holds (a part changed, or another answer wrote the total).
+4. Listing a scan or picture page to bill by hand needs a note naming each term and its amount.
+5. An amendment asks bill-by-hand terms again rather than carrying them.
+6. "This looks wrong" on the live version is refused while the newest version is an amendment that couldn't be read: it's read again or typed, never replaced by a correction.
+7. Maker-checker was turned on only in a database with an empty audit log; one in use kept its setting.
+8. A cap's kind is asked only where the reading's kind isn't `none`. An empty cap is the absence sweep's to question (I4).
+9. The holdback's scope is typed, not picked, because the master holds it as free text.
+10. "Prospective only" asks the person to type the amendment's own date, blind, as printed on it. Where the read gave no start date, it's checked against the read's date of the newest amendment document, which is withheld meanwhile; the date the AI read is never written as a person's. Offered on any amendment read.
+11. A read of a study that has a live version counts as an amendment, so it asks the start date.
+12. The sample is spread over four families: grid prices, visit and per-patient totals, fee and invoiceable amounts, and rules (%, days, limits, dates, and a grid's stated overhead %).
+13. A miss stays a miss, whatever the answer becomes later.
+14. Proofreading a missed family holds approval but isn't counted in the study's "needs you" number.
+15. The blind sample shows the value's page, never the spot the binder chose, and never a comparison. A first answer that differs is typed once more, blind, and that answer is final (the confirmed value again, or a miss); a send-back, "can't tell" or a changed answer don't reset it. So nobody can try values until one matches.
+16. Typing by hand asks, when typing is marked done, every value nobody typed or picked: a number the blank form had to fill, a yes/no or fixed-list default, the holdback's scope.
+17. Grids for one arm: identical ones bill once, with nothing asked; ones that differ, in a single cell too, bill none until one is chosen, and approval is refused while any arm bills none. An answer that makes an arm's grids differ asks which grid to bill.
+18. "No limit" on a cap drops its limit and ratio, closes every question still open about them, and refuses a limit or ratio typed, answered or reported there afterwards.
+19. "As printed" on a question stored before the printed total was kept on it falls back to what the read's check found printed (`detail.actual`), except for a visit's subtotal, whose check adds the non-procedure amount in; with neither, it's refused, and "This looks wrong" on the total asks it again.
+20. While "How are visits paid?" or the overhead scope is asked, every visit's `autopay` or every row's `overheadApplied` is withheld too; while the start date is asked, every amendment document's own date. A withheld cell's visit subtotal and total are not: the person reads the page, which prints them; blind entry guards against anchoring on a value shown, not sums done on purpose; and withholding them would hide numbers the PDF confirmed and blank most of a grid while a few cells are asked (`alsoWithheld`).
+
+**Known limits.** Each is in the code now; none is hidden from the reviewer, but each is weaker than the plan.
+- A fee's name printed on the line above another term's amount can still be taken as the fee's row. That line's amount is still asked: a conflict consumes nothing.
+- A grid cell the read got wrong still consumes the number printed in its cell: the cell is asked as a conflict, but that number isn't also swept as a money term. A grid row's code and counts are consumed once the row is matched.
+- A correction from the live version on a total that the amendment's read confirms, but whose parts don't add up there, isn't asked blind: the total's "which should we bill" question stands for it, while the draft's warning says it's "asked again in Needs you".
+- The sweep misses amounts written with the currency as a word after them ("1,000 dollars") and currencies other than US dollars.
+- For a version approved before `d5e8169` with an arm whose grids differ and no grid chosen, the Excel Summary sheet lists every grid's per-patient total without saying none is billed (the Budget grid sheet does say it). No such version exists yet.

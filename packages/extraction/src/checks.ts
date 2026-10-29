@@ -1,4 +1,4 @@
-import type { BudgetGrid, ContractAnomaly, ContractAnomalyCode, Provenance, Rulebook, SourceRef } from "@dct/shared";
+import { type BudgetGrid, type ContractAnomaly, type ContractAnomalyCode, gridPrices, parseCents, type Provenance, type Rulebook, type SourceRef } from "@dct/shared";
 
 /** Pure, deterministic contract checks. No AI. */
 
@@ -31,7 +31,7 @@ export type CheckOptions = {
   notes?: ExtractionNote[];
 };
 
-export const LOW_CONFIDENCE = 0.8;
+const LOW_CONFIDENCE = 0.8;
 
 const SEVERITY: Record<ContractAnomalyCode, ContractAnomaly["severity"]> = {
   GRID_CONFLICT: "blocker",
@@ -165,15 +165,16 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
     });
   });
 
-  // GRID_CONFLICT: ≥2 grids for the same arm with different visit totals and no governing grid chosen.
+  // GRID_CONFLICT: ≥2 grids for the same arm that price anything differently, a single cell included (two that agree on
+  // every total can still bill a visit's procedures differently), and no governing grid chosen. Grids that price the
+  // same are billed once (billedGrids), with nothing to ask.
   if (rulebook.governingGridId === null) {
     const byArm = new Map<string, number[]>();
     rulebook.budgetGrids.forEach((g, i) => byArm.set(norm(g.arm ?? ""), [...(byArm.get(norm(g.arm ?? "")) ?? []), i]));
     for (const idxs of byArm.values()) {
       if (idxs.length < 2) continue;
-      const sig = (g: BudgetGrid) => JSON.stringify([g.visits.map((v) => v.totalCents).sort((a, b) => a - b), g.perPatientTotals.map((t) => t.cents).sort((a, b) => a - b)]);
       const grids = idxs.map((i) => rulebook.budgetGrids[i]!);
-      if (new Set(grids.map(sig)).size > 1)
+      if (new Set(grids.map(gridPrices)).size > 1)
         add("GRID_CONFLICT", `/budgetGrids/${idxs[0]}`, `${grids.length} budget grids for ${grids[0]!.arm ?? "the study"} disagree (${grids.map((g) => g.label).join(" vs ")}); choose the governing grid`, refsOf(...grids.map((g) => g.prov)), {
           gridIds: grids.map((g) => g.id),
           perPatient: Object.fromEntries(grids.map((g) => [g.id, g.perPatientTotals.map((t) => t.cents)])),
@@ -320,7 +321,8 @@ export const MIN_PAGE_TEXT = 200;
 
 /**
  * Money-like numbers in a page's text, in cents; undefined when the page has no real text layer.
- * Digit runs of 8+ without thousands separators (account, routing, phone numbers) are dropped, never kept.
+ * Digit runs of 8+ without thousands separators (account, routing, phone numbers) are dropped, never kept; so is a
+ * number with more than two decimals (parseCents: no amount is a fraction of a cent).
  */
 export function printedAmounts(text: string): number[] | undefined {
   if (text.replace(/\s/g, "").length < MIN_PAGE_TEXT) return undefined;
@@ -328,8 +330,8 @@ export function printedAmounts(text: string): number[] | undefined {
   for (const [m] of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
     const whole = m.split(".")[0]!;
     if (!whole.includes(",") && whole.length >= 8) continue;
-    const cents = Math.round(Number(m.replace(/,/g, "")) * 100);
-    if (Number.isSafeInteger(cents) && cents > 0) out.add(cents);
+    const cents = parseCents(m);
+    if (cents !== null && cents > 0) out.add(cents);
   }
   return [...out].sort((a, b) => a - b);
 }
@@ -388,7 +390,7 @@ export function sameName(a: string, b: string): boolean {
 // ---------- provenance walking ----------
 
 /** Every `prov` in the rulebook with the JSON pointer of the value it describes. */
-export function provenances(rb: Rulebook): { path: string; prov: Provenance }[] {
+function provenances(rb: Rulebook): { path: string; prov: Provenance }[] {
   const out: { path: string; prov: Provenance }[] = [];
   const walk = (v: unknown, path: string) => {
     if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}/${i}`));
@@ -418,7 +420,7 @@ export function provAt(rb: Rulebook, path: string): Provenance | null {
 
 // ---------- cross-read comparison ----------
 
-export type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
+type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
 
 type Field = { item: string; itemPath: string; path: string; label: string; value: unknown; name: string };
 

@@ -6,7 +6,7 @@ import { z } from "zod";
  * structured outputs can't express records, so grid cells come back as a list.
  */
 
-export const PageKind = z.enum(["terms", "budget_grid", "invoiceables", "signatures", "boilerplate"]);
+const PageKind = z.enum(["terms", "budget_grid", "invoiceables", "signatures", "boilerplate"]);
 
 export const AiPages = z.object({
   pages: z.array(
@@ -28,7 +28,7 @@ export const AiIdentify = z.object({
   studyGuess: z.object({ sponsor: z.string().nullable(), protocol: z.string().nullable(), siteName: z.string().nullable(), investigator: z.string().nullable() }),
 });
 
-export const AiNote = z.object({
+const AiNote = z.object({
   kind: z.enum(["ambiguous", "retroactive_no_date"]),
   topic: z.string(),
   path: z.string().nullable(),
@@ -77,7 +77,7 @@ ${docs.map((d) => `- documentId ${d.id}: "${d.filename}"`).join("\n")}
 For each document give its kind (master_agreement, work_order, adoption, amendment, budget, other), a short title and its date (effective or execution date) if printed.
 Then guess the study: sponsor (the company that owns the study, not a CRO), protocol number, site name (the contracting site entity) and principal investigator. Use null for anything you cannot see.`;
 
-export type TermsPart = "study" | "payment" | "items";
+type TermsPart = "study" | "payment" | "items";
 const TERMS_PARTS: Record<TermsPart, string> = {
   study: "Part 1 of 3: study, documents, referencedDocuments, rounding, appliesFrom and notes.",
   payment: "Part 2 of 3: overhead, payment, holdback, deadlines and overpayment.",

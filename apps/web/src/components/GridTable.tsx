@@ -1,9 +1,9 @@
 "use client";
 
-import type { BudgetGrid } from "@dct/shared";
+import { gridChoice, type BudgetGrid } from "@dct/shared";
 import type { ReactNode } from "react";
 import { formatCents } from "@/lib/money";
-import { useRulebook, Val } from "./review-context";
+import { isHit, useRulebook, Val } from "./review-context";
 import { Badge, cx } from "./ui";
 
 const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCents" | "totalCents"; label: string }[] = [
@@ -15,15 +15,17 @@ const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCen
 
 /** Procedure × visit grid: sticky headers and first column, horizontal scroll, invoiceable cells marked. */
 export function GridTable({ index }: { index: number }) {
-  const { rulebook, show, focused, masked } = useRulebook();
+  const { rulebook, show, focused, masked, hits } = useRulebook();
   const grid = rulebook.budgetGrids[index]!;
   const base = `/budgetGrids/${index}`;
   const visits = [...grid.visits].sort((a, b) => a.order - b.order);
-  const governing = rulebook.governingGridId === grid.id;
+  // chosen for its arm, or another grid of its arm was (GRID_CONFLICT, one choice per arm)
+  const choice = gridChoice(rulebook, grid);
 
   const cell = (path: string, label: string, prov: BudgetGrid["prov"], text: ReactNode) => (
     <button
       type="button"
+      data-path={path}
       className={cx("num flex w-full justify-end px-2 py-1.5 hover:bg-accent-soft focus-visible:relative", focused === path && "bg-highlight")}
       onClick={() => show(path, prov, label)}
     >
@@ -36,9 +38,12 @@ export function GridTable({ index }: { index: number }) {
       <div className="flex flex-wrap items-center gap-2 text-[13px]">
         <span className="font-medium">{grid.label}</span>
         {grid.arm && <Badge>{grid.arm}</Badge>}
-        {governing && <Badge tone="ok">Billed from this grid</Badge>}
+        {choice?.billed === true && <Badge tone="ok">Billed from this grid</Badge>}
+        {choice?.billed === false && (
+          <Badge tone="warn">{choice.instead ? `Not billed: ${choice.instead.label} is billed instead${choice.same ? ", it prices every visit the same" : ""}` : "Not billed until a grid is chosen for this arm"}</Badge>
+        )}
         <span className="text-muted">
-          Stated overhead {grid.statedOverheadPct ?? "—"}% · Header:{" "}
+          Stated overhead <Val path={`${base}/statedOverheadPct`}>{grid.statedOverheadPct ?? "—"}%</Val> · Header:{" "}
           {masked.has(`${base}/header`) ? <span className="text-warn">needs you</span> : `${grid.header.investigator ?? "—"}, ${grid.header.siteName ?? "—"}`}
         </span>
         <button type="button" className="text-accent hover:underline" onClick={() => show(base, grid.prov, grid.label)}>
@@ -57,22 +62,33 @@ export function GridTable({ index }: { index: number }) {
                 Unit
               </th>
               {visits.map((v) => (
-                <th key={v.code} scope="col" className="sticky top-0 z-10 min-w-24 border-b border-line bg-sunken px-2 py-2 text-right font-medium">
+                <th
+                  key={v.code}
+                  scope="col"
+                  className={cx("sticky top-0 z-10 min-w-24 border-b border-line px-2 py-2 text-right font-medium", isHit(hits, `${base}/visits/${grid.visits.indexOf(v)}`) ? "bg-brand-soft" : "bg-sunken")}
+                >
                   <span className="block">{v.code}</span>
                   <span className="block font-normal text-muted">{v.name}</span>
-                  {!v.autopay && <span className="block font-normal text-warn">invoice</span>}
+                  {/* withheld (null) while how visits are paid is asked blind */}
+                  {v.autopay === false && <span className="block font-normal text-warn">invoice</span>}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {grid.procedures.map((p, pi) => (
-              <tr key={pi} className="group">
-                <th scope="row" className="sticky left-0 z-10 border-b border-line bg-surface px-2 py-1.5 text-left font-normal group-hover:bg-sunken">
+              <tr key={pi} className={cx("group", isHit(hits, `${base}/procedures/${pi}`) && "bg-brand-soft")}>
+                <th
+                  scope="row"
+                  className={cx(
+                    "sticky left-0 z-10 border-b border-line px-2 py-1.5 text-left font-normal group-hover:bg-sunken",
+                    isHit(hits, `${base}/procedures/${pi}`) ? "bg-brand-soft" : "bg-surface",
+                  )}
+                >
                   <span className="block truncate font-medium">{p.name}</span>
                   <span className="text-muted">
                     {p.code ?? "—"} · {p.category === "procedure" ? "procedure" : "non-procedure"}
-                    {p.overheadApplied ? " · +overhead" : ""}
+                    {p.overheadApplied === true ? " · +overhead" : ""}
                   </span>
                 </th>
                 <td className="border-b border-line p-0">{cell(`${base}/procedures/${pi}/unitCents`, `${p.name} · unit price`, p.prov, formatCents(p.unitCents))}</td>

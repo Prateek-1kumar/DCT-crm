@@ -10,6 +10,7 @@ import { renderPage } from "../src/index";
 import type { CostEntry, LlmClient, LlmRequest } from "../src/llm";
 import type { AiGrid, AiTerms } from "../src/prompts";
 import { pageCount, renderTiles } from "../src/render";
+import { readTextLayer } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
 /** 3-page synthetic PDF: portrait text-ish page, a landscape "grid" page, a blank page. */
@@ -124,6 +125,7 @@ describe("extractWith (mocked AI)", () => {
     expect(solo.crossRead).toBeNull();
     expect(solo.cost).toHaveLength(1);
     expect(solo.rulebook.payment.netDays.prov.crossCheck).toBe("not_checked");
+    expect(solo.warnings).toEqual([{ kind: "cross_read_off", text: "The cross-read is off (CROSS_READ=off, or no key)." }]);
 
     const broken = mockClient("openai", rb);
     broken.call = async () => {
@@ -131,16 +133,88 @@ describe("extractWith (mocked AI)", () => {
     };
     const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: broken });
     expect(out.crossRead).toBeNull();
-    expect(out.warnings.join()).toMatch(/Cross-read failed: boom/);
+    expect(out.warnings).toEqual([{ kind: "cross_read_failed", text: "The cross-read failed: boom" }]);
+  });
+
+  it("says by kind what made the reading weaker, in its own words: a re-read that failed or was skipped", async () => {
+    const rb = makeRulebook();
+    rb.budgetGrids[0]!.visits[0]!.totalCents = 89000; // its parts add up to 840.00: a misread digit, so the grid is re-read
+    const failing = mockClient("anthropic", rb);
+    const call = failing.call.bind(failing);
+    failing.call = (req) => (req.name === "grid-reread" ? Promise.reject(new Error("the answer was cut off")) : call(req));
+    const off = { kind: "cross_read_off", text: "The cross-read is off (CROSS_READ=off, or no key)." };
+    expect((await extractWith({ documents: docs }, { primary: failing, cross: null })).warnings).toEqual([
+      { kind: "grid_reread_failed", grid: 1, text: "The re-read of budget grid 1 failed, so the first read was kept: the answer was cut off" },
+      off,
+    ]);
+    CONFIG.maxUsd = 0.2; // under what the re-read is estimated to cost
+    expect((await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: null })).warnings).toEqual([
+      { kind: "grid_reread_skipped", grid: 1, text: "Budget grid 1: 1 total(s) don't add up; the re-read was skipped to stay within the $0.20 limit." },
+      off,
+    ]);
+  });
+
+  it("stops before the next AI call once its signal aborts, and gives every call the signal", async () => {
+    const stop = new AbortController();
+    const seen: Seen[] = [];
+    const signals: (AbortSignal | undefined)[] = [];
+    const c = mockClient("anthropic", makeRulebook(), seen);
+    const call = c.call.bind(c);
+    c.call = (req) => (signals.push(req.signal), req.name === "classify" && stop.abort(), call(req));
+    await expect(extractWith({ documents: docs, signal: stop.signal }, { primary: c, cross: mockClient("anthropic", makeRulebook()) })).rejects.toThrow(/aborted/);
+    expect(seen.map((x) => x.name)).toEqual(["classify"]);
+    expect(signals).toEqual([stop.signal]);
   });
 
   it("scrubs bank-like content and fixes unknown document ids", async () => {
     const rb = makeRulebook();
     rb.payment.invoiceAddress.value = "Pay to account 123456789012";
     rb.payment.netDays.prov.source = { documentId: "nope", page: 1, quote: "wire to ABA routing number on file" };
+    rb.payment.netDaysFrom.value = "receipt of invoice; refunds to GB82 WEST 1234 5698 7654 32 or 1234-5678-9012";
+    rb.payment.paymentConditions.value = ["Wire via Deutsche Bank, SWIFT DEUTDEFF", "eCRFs complete by 2025-08-22"];
+    rb.overhead.pct.prov.source = { documentId: "d1", page: 1, location: "Exhibit B, bank account no. 12345678" };
     const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: null });
     expect(out.rulebook.payment.invoiceAddress.value).toBe("Pay to account [redacted]");
     expect(out.rulebook.payment.netDays.prov.source).toEqual({ documentId: "d1", page: 1 });
+    // IBANs and grouped digit runs go wherever they are; a string about a bank with a code in it goes whole; dates stay
+    expect(out.rulebook.payment.netDaysFrom.value).toBe("receipt of invoice; refunds to [redacted] or [redacted]");
+    expect(out.rulebook.payment.paymentConditions.value).toEqual(["[redacted]", "eCRFs complete by 2025-08-22"]);
+    expect(out.rulebook.overhead.pct.prov.source!.location).toBe("[redacted]");
+  });
+
+  it("paints bank details over in the images it sends (text pages)", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const text = [
+      "Payee bank ABA routing 021000021, account 123456789.",
+      "This page continues the agreement between the parties and the site, as set out above in full detail.",
+      "A second ordinary line of words keeps this page well above the threshold for a real text layer.",
+    ];
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, text.map((t, i) => `BT /F1 10 Tf 40 ${732 - 20 * i} Td (${t}) Tj ET\n`).join("")));
+    const file = join(mkdtempSync(join(tmpdir(), "dct-extract-")), "bank.pdf");
+    writeFileSync(file, doc.saveToBuffer("").asUint8Array());
+    const sent: { name: string; png: Buffer }[] = [];
+    const c = mockClient("anthropic", makeRulebook());
+    const call = c.call.bind(c);
+    c.call = (req) => (req.images.forEach((i) => sent.push({ name: req.name, png: i.png })), call(req));
+    await extractWith({ documents: [{ id: "d1", filename: "bank.pdf", path: file, kind: null }] }, { primary: c, cross: null });
+    const [page] = await readTextLayer(file, "d1");
+    const account = page!.words.find((w) => w.text === "123456789.")!.rect;
+    for (const s of sent.filter((x) => x.name === "classify" || x.name === "terms")) {
+      const pix = new mupdf.Image(s.png).toPixmap();
+      const k = pix.getWidth() / 612; // the page is 612 pt wide
+      const [x0, y0, x1, y1] = account.map((v) => Math.round(v * k)) as [number, number, number, number];
+      const px = pix.getPixels();
+      for (let y = y0 + 1; y < y1 - 1; y++) for (let x = x0 + 1; x < x1 - 1; x++) expect(px[y * pix.getStride() + x]).toBeLessThan(10);
+    }
+    expect(sent.some((x) => x.name === "terms")).toBe(true);
+  });
+
+  it("identifyWith scrubs bank details from the guess it gives back (stored on the study and in the audit log)", async () => {
+    const c = mockClient("anthropic", makeRulebook());
+    const guess = { sponsor: "Acme Bio, account 123456789012", protocol: "ACM-100", siteName: "Pay to IBAN GB82 WEST 1234 5698 7654 32", investigator: null };
+    c.call = async (req) => req.schema.parse({ documents: [{ id: "d1", kind: "work_order", title: "WO", date: null }], studyGuess: guess });
+    expect((await identifyWith(docs, c)).studyGuess).toEqual({ sponsor: "Acme Bio, account [redacted]", protocol: "ACM-100", siteName: "[redacted]", investigator: null });
   });
 
   it("identifyWith keeps known kinds and fills the rest", async () => {
@@ -170,17 +244,26 @@ describe("EXTRACTION_FAKE=1", () => {
   });
 });
 
-describe("cost budget ($1 per contract)", () => {
-  it("refuses before any terms or grid read when the estimate exceeds the budget", async () => {
+describe("cost cap ($20 per contract, on real spend)", () => {
+  it("stops before the next AI call once what was spent reaches the cap", async () => {
     const seen: Seen[] = [];
     const saved = CONFIG.maxUsd;
-    CONFIG.maxUsd = 0.05;
+    CONFIG.maxUsd = 0.02; // the mock spends $0.01 a call
     try {
-      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/exceeds the \$0.05 budget/);
+      await expect(extractWith({ documents: docs }, { primary: mockClient("anthropic", makeRulebook(), seen), cross: null })).rejects.toThrow(/has spent \$0.02, the \$0.02 limit for one read/);
     } finally {
       CONFIG.maxUsd = saved;
     }
-    expect(seen.map((x) => x.name)).toEqual(["classify"]);
+    expect(seen.map((x) => x.name)).toEqual(["classify", "terms"]);
+  });
+
+  it("bounds each call's output tokens by its kind", async () => {
+    const limits: Record<string, number | undefined> = {};
+    const c = mockClient("anthropic", makeRulebook());
+    const call = c.call.bind(c);
+    c.call = (req) => ((limits[req.name] = req.maxTokens), call(req));
+    await extractWith({ documents: docs }, { primary: c, cross: null });
+    expect(limits).toMatchObject({ classify: 8_000, terms: 32_000, grid: 64_000 });
   });
 
   it("by default the cross-reader reads terms only, not budget grids", async () => {

@@ -6,8 +6,8 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
-import { DocList, Dropzone } from "@/components/UploadDocs";
-import { Button, ErrorNote, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
+import { DocList, Dropzone, newDocs } from "@/components/UploadDocs";
+import { Button, ErrorNote, LoadError, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { useInvalidateStudy, useStudy } from "@/lib/queries";
@@ -19,10 +19,12 @@ export default function AmendPage() {
   const router = useRouter();
   const invalidate = useInvalidateStudy();
   const [docs, setDocs] = useState<DocumentDto[]>([]);
-  const fresh = docs.filter((d) => !d.duplicateOf);
+  const [notice, setNotice] = useState<string | null>(null);
 
+  // A file uploaded before (for another study too) is used as it is: the API hands back the stored document. One that's
+  // already part of this contract adds nothing new to read, so it isn't listed.
   const start = useMutation({
-    mutationFn: () => api.extract(id, by!, fresh.map((d) => d.id)),
+    mutationFn: () => api.extract(id, by!, docs.map((d) => d.id)),
     onSuccess: async (r) => {
       await invalidate(id);
       router.push(`/studies/${id}/reading?job=${encodeURIComponent(r.jobId)}&v=${r.version}`);
@@ -30,8 +32,13 @@ export default function AmendPage() {
     },
   });
 
-  if (!study.data) return <div className="p-6">{study.error ? <ErrorNote error={study.error} /> : <Spinner />}</div>;
+  if (!study.data) return study.error ? <LoadError error={study.error} retry={() => void study.refetch()} /> : <div className="p-6"><Spinner label="Loading the contract" /></div>;
   const s = study.data;
+  const add = (uploaded: DocumentDto[]) => {
+    const fresh = newDocs([...s.documents, ...docs], uploaded);
+    setNotice(fresh.length < uploaded.length ? "Some files are already part of this contract or this list, so they were skipped." : null);
+    setDocs((cur) => [...cur, ...fresh]);
+  };
   return (
     <div className={`${pageCls} max-w-[860px]`}>
       <p className="mb-3 text-[13px]">
@@ -46,13 +53,14 @@ export default function AmendPage() {
       />
       <Stepper state={{ stage: "Upload" }} className="mb-6" />
       <div className="flex flex-col gap-4">
-        <Dropzone compact onUploaded={(u) => setDocs((cur) => [...cur, ...u.filter((d) => !cur.some((c) => c.id === d.id))])} />
+        <Dropzone compact onUploaded={add} />
+        {notice && <p className="text-small text-muted">{notice}</p>}
         <DocList docs={docs} onChange={(d) => setDocs((cur) => cur.map((x) => (x.id === d.id ? d : x)))} />
-        {fresh.some((d) => d.kind !== "amendment") && <p className="text-sm text-warn">Check the kind of file: an amendment should be marked “Amendment”.</p>}
+        {docs.some((d) => d.kind !== "amendment") && <p className="text-sm text-warn">Check the kind of file: an amendment should be marked “Amendment”.</p>}
         <div className="flex items-center justify-end gap-3">
           {!by && <NeedsPerson />}
           <ErrorNote error={start.error} />
-          <Button variant="primary" disabled={!fresh.length || !by || start.isPending} onClick={() => start.mutate()}>
+          <Button variant="primary" disabled={!docs.length || !by || start.isPending} onClick={() => start.mutate()}>
             {start.isPending ? "Starting…" : "Start reading →"}
           </Button>
         </div>

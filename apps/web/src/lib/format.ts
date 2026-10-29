@@ -1,4 +1,4 @@
-import type { DocumentKind } from "@dct/shared";
+import { ENUM_LABELS, type DocumentKind } from "@dct/shared";
 import { formatCents } from "./money";
 import { segments } from "./pointer";
 
@@ -11,41 +11,10 @@ export const DOC_KIND_LABEL: Record<DocumentKind, string> = {
   other: "Other",
 };
 
-/** Options for enum-valued fields, keyed by the field name in the rulebook. */
-export const ENUM_OPTIONS: Record<string, Record<string, string>> = {
-  visitPayment: { auto_edc: "Automatic (from EDC)", invoice: "By invoice", mixed: "Mixed", unspecified: "Not stated" },
-  frequency: { monthly: "Monthly", quarterly: "Quarterly", other: "Other", unspecified: "Not stated" },
-  appliesTo: {
-    procedures_only: "Procedures only",
-    procedures_and_staff: "Procedures and staff",
-    all_per_patient_lines: "All per-patient lines",
-    none: "None",
-    unspecified: "Not stated",
-  },
-  rounding: { printed_amounts: "Use printed amounts", cents: "Round to cents", unspecified: "Not stated" },
-  basis: { fixed: "Fixed", actual_cost: "Actual cost", per_procedure: "Per procedure", per_hour: "Per hour", per_mile: "Per mile" },
-  paidVia: { auto_edc: "Automatic (from EDC)", invoice: "By invoice" },
-  trigger: {
-    agreement_execution: "On agreement execution",
-    study_initiation: "On study initiation",
-    regulatory_package: "On regulatory package",
-    closeout: "At closeout",
-    annual: "Annually",
-    per_event: "Per event",
-    one_time: "One time",
-    actual_cost: "At actual cost",
-  },
-  kind: {
-    invoice_days_from_expense: "Invoice within N days of expense",
-    invoice_months_after_study_close: "Invoice within N months of study close",
-    final_invoice_days_after_closeout: "Final invoice within N days of closeout",
-    query_resolution_days: "Resolve queries within N days",
-    dispute_days_after_final_payment: "Dispute within N days of final payment",
-    edc_entry_business_days: "EDC entry within N business days",
-  },
-};
+/** Options for enum-valued fields, keyed by the field name in the rulebook (shared with the server-built exports). */
+export const ENUM_OPTIONS = ENUM_LABELS;
 
-export type ValueKind = "money" | "cell" | "int" | "number" | "text" | "date" | "list" | "bool" | "enum";
+type ValueKind = "money" | "cell" | "int" | "number" | "text" | "date" | "list" | "bool" | "enum";
 
 /** Field name a pointer ends at; "/payment/netDays/value" → "netDays", "/deadlines/0/value" → "value". */
 export function fieldKey(path: string): string {
@@ -112,19 +81,22 @@ export function formatDateTime(iso: string | null | undefined): string {
 
 export function relativeTime(iso: string, now = Date.now()): string {
   const s = Math.round((now - new Date(iso).getTime()) / 1000);
+  const ago = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
   if (s < 60) return "just now";
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return ago(m, "minute");
   const h = Math.round(m / 60);
-  if (h < 24) return `${h} h ago`;
+  if (h < 24) return ago(h, "hour");
   const d = Math.round(h / 24);
-  return d < 30 ? `${d} d ago` : formatDate(iso);
+  if (d === 1) return "yesterday";
+  return d < 30 ? ago(d, "day") : formatDate(iso);
 }
 
 const TOP: Record<string, string> = {
   study: "Study", payment: "Payment", overhead: "Overhead", budgetGrids: "Budget grid", invoiceables: "Invoiceable", siteFees: "Site fee",
   deadlines: "Deadline", screenFail: "Screen fail", holdback: "Holdback", overpayment: "Overpayment", rounding: "Rounding",
   appliesFrom: "Applies from", documents: "Document", referencedDocuments: "Referenced document", governingGridId: "Governing grid",
+  governingGridIds: "Governing grid", unclassified: "Bill by hand",
 };
 const FIELD: Record<string, string> = { pct: "Percent", n: "Limit", unitCents: "Unit price", cents: "Amount" };
 const humanize = (k: string) =>

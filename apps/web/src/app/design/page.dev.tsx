@@ -36,14 +36,14 @@ const statuses: [string, Tone, string, string][] = [
 ];
 
 const typeScale = [
-  ["Figure", "text-figure font-semibold tracking-tight", "40 / 44 · 600", "$1,245,020"],
-  ["Display", "text-display font-semibold tracking-tight", "32 / 40 · 600", "Contracts"],
-  ["Heading", "text-heading font-semibold tracking-tight", "26 / 32 · 600", "Check the summary, then approve"],
-  ["Title", "text-title font-semibold tracking-tight", "20 / 28 · 600", "Northwind Pharma · NWP-418-02"],
-  ["Lead", "text-lead text-muted", "17 / 26 · 400", "Each signed contract becomes an invoicing master."],
-  ["Body", "text-body", "15 / 24 · 400", "What amount is printed for the Visit 4 total?"],
-  ["Small", "text-small text-muted", "13 / 20 · 400", "Updated 6 days ago by Avery Chen"],
-  ["Caption", "eyebrow", "12 / 16 · 500 caps", "Needs you"],
+  ["Figure", "text-figure font-semibold tracking-tight", "34 / 40 · 600", "$1,245,020"],
+  ["Display", "text-display font-semibold tracking-tight", "28 / 34 · 600", "Contracts"],
+  ["Heading", "text-heading font-semibold tracking-tight", "22 / 28 · 600", "Check the summary, then approve"],
+  ["Title", "text-title font-semibold tracking-tight", "17.5 / 25 · 600", "Northwind Pharma · NWP-418-02"],
+  ["Lead", "text-lead text-muted", "15.5 / 24 · 400", "Each signed contract becomes an invoicing master."],
+  ["Body", "text-body", "14 / 22 · 400", "What amount is printed for the Visit 4 total?"],
+  ["Small", "text-small text-muted", "12.5 / 18 · 400", "Updated 6 days ago by Avery Chen"],
+  ["Caption", "eyebrow", "11.5 / 16 · 500 caps", "Needs you"],
 ] as const;
 
 const amounts = ["$1,245.20", "$98.00", "$12,000.00", "$717.40", "$1,050.20", "$4.50"];
@@ -87,7 +87,7 @@ function Swatch({ name, hex, cls, use, ratio }: { name: string; hex: string; cls
 export default function DesignPage() {
   return (
     <div className={pageCls}>
-      <PageTitle eyebrow="DCT Finance" title="Design system" sub="The pieces every screen is built from. Soft premium, light mode, Inter at 15px. Every text color passes the 4.5:1 readability minimum." />
+      <PageTitle eyebrow="DCT Finance" title="Design system" sub="The pieces every screen is built from. Soft premium, light mode, Inter at 14px. Every text color passes the 4.5:1 readability minimum." />
 
       <div className="grid gap-6">
         <Section title="Main button color" sub="Your color #6487D7 is lovely as a fill, but white text on it reads at 3.5:1, below the 4.5:1 minimum for button text. The same blue one step deeper keeps the look and stays readable.">

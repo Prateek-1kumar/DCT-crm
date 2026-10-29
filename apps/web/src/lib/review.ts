@@ -1,9 +1,9 @@
-import { settled, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
+import { openItems, parsePercent, signOffRefusal, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
 import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
 /** The pipeline every contract goes through. */
-export const STAGES = ["Upload", "Reading", "Checking", "Needs you", "Approve", "Live"] as const;
+const STAGES = ["Upload", "Reading", "Checking", "Needs you", "Approve", "Live"] as const;
 export type Stage = (typeof STAGES)[number];
 /** `byHand`: typed in by hand, so Reading and Checking are one step, "Typed by hand". */
 export type StageState = { stage: Stage; failed?: boolean; needs?: number; byHand?: boolean };
@@ -16,9 +16,71 @@ export const KIND_LABEL: Record<ReviewItem["kind"], string> = {
   unclassified: "Bill by hand",
 };
 
-/** Still needs a person: unanswered, answered differently, or a blocking "Can't tell". */
-export const needsYou = (items: ReviewItem[]) =>
-  items.filter((i) => i.outcome === null || i.outcome === "differs" || (i.blocking && i.outcome === "cant_tell"));
+/** Why a question is here, in one line, without giving away the tool's reading. */
+export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<ReviewItem, "options">>): string {
+  switch (i.reason) {
+    case "spot_check":
+      return "A random spot check. We pick a few numbers at random and ask a person to type them; it proves the checks are working.";
+    case "SAMPLE":
+      return "A random spot check. This number already matched the PDF, but we pick a few at random for a person to type: it's how we prove the checks miss nothing. Find it on the page by the row and column the question names.";
+    case "INTERPRETATION":
+      return "How the contract words this decides how it's billed. Read the spot and pick what it means; we don't show our reading, so it can't steer you.";
+    case "AMBIGUOUS_TERM":
+      return "The wording can be read more than one way. Read the spot and pick what the contract means; we don't show our reading.";
+    case "RETROACTIVE_NO_DATE":
+      return "Without a start date, the new prices would be billed from the original contract's date. Type the date they apply from, or pick prospective only.";
+    case "CORRECTION_NOT_CARRIED":
+      return "Someone corrected this on the version in use, but the amendment's reading has a different value here, so the correction wasn't copied over.";
+    case "CORRECTION_LOST":
+      return "Someone corrected this on the version in use, but the amendment's reading doesn't have it. If it's still in the contract, it has to be billed by hand.";
+    case "CAP_KIND_CHANGED":
+      return "The kind of limit was changed, so this figure may mean something else now (an amount instead of a count, say). Type what the contract prints.";
+    case "reported":
+      return "Someone reported this as looking wrong.";
+    case "VALUE_CONFLICT":
+    case "conflict":
+      return "This number didn't match the PDF's own text, so a person needs to read it.";
+    case "ungrounded":
+    case "UNGROUNDED_VALUE":
+      return "We couldn't find this number where the contract should print it.";
+    case "SCAN_VALUE":
+      return "This contract is a scan, so this number can't be checked against its text.";
+    case "SCAN_PAGE":
+      return "This page is a scan, so it can't be searched for money terms. Only a person can say what's on it.";
+    case "PICTURE_PAGE":
+      return "Part of this page is a picture, and a picture can't be searched for money terms. Only a person can say what's in it.";
+    case "UNACCOUNTED_TERM":
+      return "This is in the contract, but not in the invoicing master. If it's a payment term, it goes on the list to bill by hand.";
+    case "VISIT_TOTAL_MISMATCH":
+    case "PER_PATIENT_TOTAL_MISMATCH":
+      return "The contract's own numbers don't add up, so the contract itself is wrong here. Decide which number to bill, and note what to ask the sponsor.";
+    case "REQUIRED_MISSING":
+      return i.options?.length
+        ? "Nobody picked this when the contract was typed in, so it would be approved as the form's default. Pick what the contract says."
+        : "The invoicing master has nothing typed here yet, so it would be approved empty. Type what the contract says.";
+    case "HIDDEN_TEXT":
+      return "This page has words nobody can see. They're never used as evidence, but someone should check they don't change the money.";
+  }
+  switch (i.kind) {
+    case "unaccounted":
+      return "This is in the contract, but not in the invoicing master yet.";
+    case "unclassified":
+      return "The invoicing master has no place for this kind of term yet, so it's billed by hand.";
+    case "contract_problem":
+      return "The contract itself doesn't line up here, so someone has to decide.";
+    case "interpretation":
+      return "The wording can be read more than one way. Pick what the contract means.";
+    default:
+      return "We couldn't confirm this automatically, so a person needs to read it.";
+  }
+}
+
+/** For the question list: to do · done · differs (pick one) · can't tell. */
+export const itemStatus = (i: ReviewItem): "todo" | "done" | "differs" | "cant_tell" =>
+  i.outcome === "matched" || i.outcome === "chosen" ? "done" : i.outcome === "differs" ? "differs" : i.outcome === "cant_tell" ? "cant_tell" : "todo";
+
+/** Still needs a person: anything not settled, a "Can't tell" too (the API's count and its approval gate, openItems). */
+export const needsYou = openItems;
 
 /** Blocking first, otherwise in the order the checks listed them. */
 export const queueOrder = (items: ReviewItem[]) => [...items].sort((a, b) => Number(b.blocking) - Number(a.blocking));
@@ -67,6 +129,24 @@ export function versionStage(latest: Pick<VersionSummaryDto, "status"> | undefin
 export const stepsFor = (s: StageState): { stage: Stage; label: string }[] =>
   STAGES.filter((x) => !(s.byHand && x === "Checking")).map((x) => ({ stage: x, label: s.byHand && x === "Reading" ? "Typed by hand" : x }));
 
+/** Plain words for where a contract is, and which step that is (1-based) out of how many. */
+export function stageWords(s: StageState): { label: string; step: number; of: number } {
+  const steps = stepsFor(s);
+  const step = s.stage === "Live" ? steps.length : steps.findIndex((x) => x.stage === s.stage) + 1;
+  const label = s.failed
+    ? "Couldn't read"
+    : s.stage === "Upload"
+      ? "Details to confirm"
+      : s.stage === "Reading"
+        ? s.byHand
+          ? "Typing by hand"
+          : "Reading the contract"
+        : s.stage === "Approve"
+          ? "Waiting for approval"
+          : s.stage;
+  return { label, step, of: steps.length };
+}
+
 export const stageLabel = (s: StageState) =>
   s.failed ? "Couldn't read" : s.byHand && s.stage === "Reading" ? "Typing by hand" : s.stage === "Needs you" && s.needs ? `Needs you (${s.needs})` : s.stage;
 
@@ -78,22 +158,17 @@ export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
 }
 
 /**
- * Mirrors the API's approval rules so the button can explain itself before the 409.
- * The API stays the source of truth.
+ * The API's approval gate (signOffRefusal), so the button explains itself in the words the API would refuse with, plus
+ * what only the page knows: a name not picked yet. The API stays the source of truth.
  */
 export function approveState(
-  version: Pick<RulebookVersionDto, "status" | "review" | "editors" | "rulebook">,
+  version: Pick<RulebookVersionDto, "version" | "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence" | "proofread" | "updatedAt">,
   settings: Pick<SettingsDto, "makerChecker"> | undefined,
   by: string | null,
 ): { allowed: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  if (version.status !== "draft") reasons.push("Only a draft can be approved.");
-  if (!version.rulebook) reasons.push("There is no invoicing master to approve yet.");
-  const open = version.review.filter((i) => i.blocking && !settled(i)).length;
-  if (open) reasons.push(`${open} ${open === 1 ? "question needs" : "questions need"} an answer first.`);
-  if (!by) reasons.push("Choose your name under “Acting as” (top right).");
-  else if (settings?.makerChecker && version.editors.includes(by))
-    reasons.push(`Maker-checker is on, and ${by} answered questions on this contract, so someone else has to approve it.`);
+  // as shown: the page approves the version it shows (asOf), so a change since is the API's to refuse
+  const refusal = signOffRefusal(version, { asOf: version.updatedAt, by: by ?? "", makerChecker: settings?.makerChecker ?? true });
+  const reasons = [...(refusal ? [refusal] : []), ...(by ? [] : ["Choose your name first (bottom of the sidebar)."])];
   return { allowed: reasons.length === 0, reasons };
 }
 
@@ -110,8 +185,8 @@ export function parseAnswer(input: Input, raw: string): { value: unknown } | { e
     }
     case "percent":
     case "number": {
-      const n = Number(t.replace(/[,%\s]/g, ""));
-      return Number.isFinite(n) ? { value: n } : { error: "Type a number" };
+      const n = parsePercent(t);
+      return n !== null ? { value: n } : { error: "Type a number" };
     }
     case "date":
       return /^\d{4}-\d{2}-\d{2}$/.test(t) ? { value: t } : { error: "Pick a date" };

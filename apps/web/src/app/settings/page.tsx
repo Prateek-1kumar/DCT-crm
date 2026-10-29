@@ -4,7 +4,7 @@ import type { SettingsDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
-import { Button, Card, ErrorNote, PageTitle, pageCls, Spinner, cx, inputCls } from "@/components/ui";
+import { Button, Card, ErrorNote, LoadError, PageTitle, pageCls, Spinner, cx, inputCls } from "@/components/ui";
 import { MOCK, api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { keys, useSettings } from "@/lib/queries";
@@ -19,7 +19,8 @@ export default function SettingsPage() {
     onSuccess: (s) => qc.setQueryData(keys.settings, s),
   });
 
-  if (!settings.data) return <div className="p-6">{settings.error ? <ErrorNote error={settings.error} /> : <Spinner />}</div>;
+  if (!settings.data)
+    return settings.error ? <LoadError error={settings.error} what="settings" retry={() => void settings.refetch()} /> : <div className="p-6"><Spinner label="Loading settings" /></div>;
   const { people, makerChecker } = settings.data;
   const trimmed = name.trim();
   const dupe = people.some((p) => p.toLowerCase() === trimmed.toLowerCase());
@@ -98,7 +99,8 @@ export default function SettingsPage() {
             <Button
               variant="danger"
               onClick={async () => {
-                (await import("@/lib/mock/server")).mockReset();
+                // The flag is checked here, not via MOCK: only an inlined `if (process.env…)` lets a real build drop the sample server.
+                if (process.env.NEXT_PUBLIC_API_MOCK === "1") (await import("@/lib/mock/server")).mockReset();
                 await qc.invalidateQueries();
               }}
             >

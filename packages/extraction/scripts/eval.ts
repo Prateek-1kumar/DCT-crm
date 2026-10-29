@@ -3,7 +3,7 @@
  * pnpm --filter @dct/extraction score [name...]  score saved outputs only (no AI calls)
  *
  * Repo root (for .env and data/) = DCT_ROOT, else two levels above this package.
- * Prints values and scores only; never contract text.
+ * Prints counts and scores only; never contract text or amounts.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -37,7 +37,9 @@ if (!scoreOnly) {
     console.log("Fill in the key(s) and re-run, or score saved outputs with: pnpm --filter @dct/extraction score");
     process.exit(0);
   }
-  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) console.log("Note: OPENAI_API_KEY/OPENAI_MODEL not set; cross-read skipped.");
+  // The cross-read is Haiku unless CROSS_READ says otherwise (llm.ts clientsFromEnv); only the OpenAI one needs its own key.
+  if ((process.env.CROSS_READ || "haiku").toLowerCase() === "openai" && (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL))
+    console.log("Note: CROSS_READ=openai but OPENAI_API_KEY/OPENAI_MODEL not set; cross-read skipped.");
   mkdirSync(outDir, { recursive: true });
   for (const g of goldens) {
     const path = join(root, "data/contracts", g.file);
@@ -50,7 +52,7 @@ if (!scoreOnly) {
       });
       writeFileSync(join(outDir, `${g.name}.json`), JSON.stringify(out, null, 2));
       const usd = out.cost.reduce((a, c) => a + c.usd, 0);
-      console.log(`\n  done in ${Math.round((Date.now() - t0) / 1000)}s, $${usd.toFixed(2)}${out.warnings.length ? `; warnings: ${out.warnings.join("; ")}` : ""}`);
+      console.log(`\n  done in ${Math.round((Date.now() - t0) / 1000)}s, $${usd.toFixed(2)}${out.warnings.length ? `; warnings: ${out.warnings.map((w) => w.text).join("; ")}` : ""}`);
     } catch (e) {
       console.log(`\n  FAILED: ${(e as Error).message}`);
     }
@@ -91,7 +93,8 @@ console.log("\n");
 console.table(table);
 const totalUsd = rows.reduce((a, r) => a + (r.usd ?? 0), 0);
 console.log(`Total cost: $${totalUsd.toFixed(2)} (avg $${(totalUsd / rows.length).toFixed(2)} per contract)`);
+// Misses as counts per category: their text names items and amounts of the contract.
 for (const r of rows) {
-  console.log(`\n[${r.score.name}] anomalies: ${r.anomalies || "none"}`);
-  for (const m of r.score.misses) console.log(`  miss  ${m}`);
+  const misses = r.score.categories.filter((c) => c.hit < c.total).map((c) => `${c.name} ${c.total - c.hit}`);
+  console.log(`\n[${r.score.name}] anomalies: ${r.anomalies || "none"}; misses: ${misses.join(", ") || "none"}`);
 }

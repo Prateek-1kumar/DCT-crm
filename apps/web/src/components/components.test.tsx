@@ -1,7 +1,9 @@
 import type { DiffEntry } from "@dct/shared";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { ApiError } from "@/lib/api";
 import { DiffView } from "./DiffView";
+import { errorText } from "./ui";
 
 afterEach(cleanup);
 
@@ -30,5 +32,17 @@ describe("DiffView", () => {
   it("has an empty state", () => {
     render(<DiffView entries={[]} />);
     expect(screen.getByText("No differences")).toBeTruthy();
+  });
+});
+
+describe("errorText", () => {
+  it("shows people's messages and hides everything technical", () => {
+    expect(errorText(new ApiError(409, "2 questions still need an answer before this can be approved."))).toBe("2 questions still need an answer before this can be approved.");
+    expect(errorText(new ApiError(500, "Something went wrong on the server. Try again; if it keeps happening, tell the team (ref r-1)."))).toMatch(/ref r-1/);
+    expect(errorText(new ApiError(502, "Internal Server Error"))).toMatch(/^Something went wrong on the server/);
+    expect(errorText(new ApiError(0, "Can't reach the API. Is it running on port 4100?"))).toMatch(/^Can't reach DCT Finance/);
+    expect(errorText(new ApiError(404, "Study not found"))).toMatch(/^We couldn't find this/);
+    expect(errorText(new ApiError(400, "✖ Invalid input: expected string\n  → at by"))).toMatch(/^That didn't go through/);
+    expect(errorText(new TypeError("Cannot read properties of undefined (reading 'x')"))).toMatch(/^Something went wrong on this page/);
   });
 });

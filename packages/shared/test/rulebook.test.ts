@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Rulebook } from "../src";
+import { Rulebook, RulebookVersionDto } from "../src";
 
 const prov = { source: { documentId: "d1", page: 6 }, confidence: 0.98, method: "ai", crossCheck: "agree" } as const;
 const s = <T>(value: T) => ({ value, prov });
@@ -70,5 +70,40 @@ describe("Rulebook schema", () => {
 
   it("has no field for bank details", () => {
     expect(JSON.stringify(Rulebook.toJSONSchema())).not.toMatch(/routing|account ?number|bank/i);
+  });
+});
+
+describe("RulebookVersionDto: blind entry", () => {
+  const question = (path: string) => ({
+    id: `q:${path}`, kind: "confirm_value", reason: "VALUE_CONFLICT", path, question: "What amount is printed?", input: "money", options: [], where: [],
+    blocking: true, answer: null, outcome: null, compare: null, sentBack: null,
+  });
+  const dto = (rulebook: unknown, status: string, review: unknown[]) => ({
+    version: 1, status, createdAt: "2026-01-01T00:00:00Z", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s1", rulebook, anomalies: [], editors: [],
+    cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [],
+    updatedAt: "2026-01-01T00:00:00.000Z", warnings: [],
+  });
+  const withheld = () => {
+    const rb = structuredClone(minimal) as unknown as Rulebook;
+    (rb.budgetGrids[0]!.visits[0] as { totalCents: unknown }).totalCents = null;
+    return rb;
+  };
+  const path = "/budgetGrids/0/visits/0/totalCents";
+
+  it("takes null at an open question's path on a draft, and nowhere else", () => {
+    expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [question(path)])).success).toBe(true);
+    expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [])).success).toBe(false);
+    expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [{ ...question(path), outcome: "matched" }])).success).toBe(false);
+    expect(RulebookVersionDto.safeParse(dto(withheld(), "signed", [question(path)])).success).toBe(false);
+  });
+
+  it("still rejects a wrong value at a withheld path, and anything else invalid", () => {
+    const rb = structuredClone(minimal) as unknown as Rulebook;
+    (rb.budgetGrids[0]!.visits[0] as { totalCents: unknown }).totalCents = 12.5;
+    expect(RulebookVersionDto.safeParse(dto(rb, "draft", [question(path)])).success).toBe(false);
+    const other = withheld();
+    (other.study.sponsor as { value: unknown }).value = null;
+    expect(RulebookVersionDto.safeParse(dto(other, "draft", [question(path)])).success).toBe(false);
+    expect(RulebookVersionDto.safeParse(dto(minimal, "draft", [])).success).toBe(true);
   });
 });

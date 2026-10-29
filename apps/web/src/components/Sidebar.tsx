@@ -7,11 +7,12 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { askForPerson, askForPersonOnce, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
 import { MOCK } from "@/lib/api";
-import { useSettings, useStudies } from "@/lib/queries";
-import { summaryStage, VIEWS, type ViewId } from "@/lib/review";
+import { useSettings, useStudyCounts } from "@/lib/queries";
+import { VIEWS, type ViewId } from "@/lib/review";
+import { AlertBell, AlertWatcher } from "./Alerts";
 import { CommandPalette } from "./CommandPalette";
 import { HowItWorks } from "./HowItWorks";
-import { Button, cx, Dialog } from "./ui";
+import { Button, cx, Dialog, Sheet } from "./ui";
 
 const VIEW_BADGE: Record<ViewId, string> = {
   "needs-you": "bg-warn-soft text-warn",
@@ -35,11 +36,11 @@ function Count({ n, cls }: { n: number; cls: string }) {
 
 const itemCls = (active: boolean) =>
   cx(
-    "group flex h-10 w-full items-center gap-3 rounded-[12px] px-3 text-body transition-[background-color,box-shadow,color] duration-150",
+    "group flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-body transition-[background-color,box-shadow,color] duration-150",
     active ? "bg-surface font-medium text-ink shadow-card" : "text-ink-2 hover:bg-ink/[0.045] hover:text-ink",
   );
 
-const iconCls = (active: boolean) => cx("size-[18px] shrink-0 transition-colors", active ? "text-brand" : "text-muted group-hover:text-ink-2");
+const iconCls = (active: boolean) => cx("size-[17px] shrink-0 transition-colors", active ? "text-brand" : "text-muted group-hover:text-ink-2");
 
 function NavLink({ href, label, icon: Icon, active, badge, onNavigate }: { href: string; label: string; icon: LucideIcon; active: boolean; badge?: ReactNode; onNavigate?: () => void }) {
   return (
@@ -65,10 +66,9 @@ function NavButton({ label, icon: Icon, onClick, hint }: { label: string; icon: 
 function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
   const path = usePathname();
   const view = useSearchParams().get("view");
-  const { data } = useStudies();
+  const { data } = useStudyCounts();
   const [open, setOpen] = useState(true);
-  const stages = (data ?? []).map((s) => summaryStage(s));
-  const count = (id: ViewId) => stages.filter(VIEWS.find((v) => v.id === id)!.test).length;
+  const count = (id: ViewId) => data?.views[id] ?? 0;
   const waiting = count("needs-you") + count("approval") + count("failed");
   const onContracts = path === "/" || path.startsWith("/studies");
 
@@ -93,8 +93,8 @@ function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <div className={cx("grid transition-[grid-template-rows,opacity] duration-300 ease-out", open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
         <div className="relative min-h-0 overflow-hidden">
-          <span aria-hidden className="absolute top-1 bottom-1 left-[21px] w-px bg-line-strong" />
-          <ul className="flex flex-col gap-0.5 py-1 pl-9">
+          <span aria-hidden className="absolute top-1 bottom-1 left-[18px] w-px bg-line-strong" />
+          <ul className="flex flex-col gap-0.5 py-1 pl-8">
             {VIEWS.map((v) => {
               const active = path === "/" && view === v.id;
               return (
@@ -104,7 +104,7 @@ function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
                     aria-current={active ? "page" : undefined}
                     onClick={onNavigate}
                     className={cx(
-                      "flex h-9 items-center gap-2 rounded-[10px] px-3 text-small transition-colors",
+                      "flex h-8 items-center gap-2 rounded-[9px] px-2.5 text-small transition-colors",
                       active ? "bg-surface font-medium text-ink shadow-card" : "text-muted hover:bg-ink/[0.045] hover:text-ink",
                     )}
                   >
@@ -215,7 +215,7 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="flex items-start justify-between gap-2">
         <Link href="/" onClick={onNavigate} className="flex flex-col gap-1.5 px-2 pt-2">
-          <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} priority />
+          <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} preload />
           <span className="pl-0.5 text-caption font-semibold tracking-[0.22em] text-accent uppercase">Finance</span>
         </Link>
         {onClose && (
@@ -225,15 +225,18 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={onSearch}
-        className="flex h-10 items-center gap-2.5 rounded-[12px] bg-surface/70 px-3 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
-      >
-        <Search className="size-[18px]" strokeWidth={1.75} />
-        Search
-        <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">⌘K</kbd>
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onSearch}
+          className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-[10px] bg-surface/70 px-2.5 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
+        >
+          <Search className="size-[17px]" strokeWidth={1.75} />
+          Search
+          <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">⌘K</kbd>
+        </button>
+        <AlertBell />
+      </div>
 
       <nav aria-label="Main" className="flex flex-col gap-1">
         <ContractsNav onNavigate={onNavigate} />
@@ -259,8 +262,12 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
   );
 }
 
-/** Left column on desktop; a top bar with a slide-in menu on small screens. Owns ⌘K search and the guide. */
-export function Sidebar() {
+/**
+ * Left column on desktop; a top bar with a slide-in menu on small screens. Owns ⌘K search, the guide and the name picker.
+ * `bare` (focus mode): only those three, no navigation, so the page gets the whole window.
+ */
+export function Sidebar({ bare }: { bare?: boolean }) {
+  const me = useActingAs();
   const [search, setSearch] = useState(false);
   const [guide, setGuide] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -277,6 +284,15 @@ export function Sidebar() {
   }, []);
 
   const body = (drawer?: () => void) => <SidebarBody onSearch={() => setSearch(true)} onGuide={() => setGuide(true)} onNavigate={drawer} onClose={drawer} />;
+  const dialogs = (
+    <>
+      <CommandPalette open={search} onClose={() => setSearch(false)} onGuide={() => setGuide(true)} />
+      <HowItWorks open={guide} onClose={() => setGuide(false)} />
+      <PersonPicker />
+      <AlertWatcher key={me ?? ""} />
+    </>
+  );
+  if (bare) return dialogs;
 
   return (
     <>
@@ -286,6 +302,7 @@ export function Sidebar() {
         <Link href="/" className="mr-auto">
           <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={132} height={25} />
         </Link>
+        <AlertBell />
         <Button variant="ghost" size="icon" aria-label="Search" onClick={() => setSearch(true)}>
           <Search className="size-5" strokeWidth={1.75} />
         </Button>
@@ -293,18 +310,11 @@ export function Sidebar() {
           <Menu className="size-5" strokeWidth={1.75} />
         </Button>
       </header>
-      {menu && (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <button type="button" aria-label="Close menu" className="absolute inset-0 bg-backdrop" onClick={() => setMenu(false)} />
-          <div className="absolute inset-y-0 left-0 w-[288px] max-w-[85vw] overflow-y-auto bg-canvas shadow-raised">
-            {body(() => setMenu(false))}
-          </div>
-        </div>
-      )}
+      <Sheet open={menu} onClose={() => setMenu(false)} label="Menu" width="w-[288px] max-w-[85vw]">
+        {body(() => setMenu(false))}
+      </Sheet>
 
-      <CommandPalette open={search} onClose={() => setSearch(false)} onGuide={() => setGuide(true)} />
-      <HowItWorks open={guide} onClose={() => setGuide(false)} />
-      <PersonPicker />
+      {dialogs}
     </>
   );
 }

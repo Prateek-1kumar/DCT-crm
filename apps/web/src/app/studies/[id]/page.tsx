@@ -1,24 +1,54 @@
 "use client";
 
-import type { ReviewItem, RulebookVersionDto, StudyDetailDto, VersionSummaryDto } from "@dct/shared";
+import type { MasterSection, ReviewItem, RulebookVersionDto, StudyDetailDto, VersionSummaryDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ArrowRight, BadgeCheck, ChevronDown, Download, FileSpreadsheet, Printer, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { ByHandForm } from "@/components/ByHandForm";
+import { questionHref, RecheckNote, rechecked } from "@/components/Rechecked";
 import { DiffView } from "@/components/DiffView";
-import { RulebookView } from "@/components/RulebookView";
+import { DotLegend, useRulebook } from "@/components/review-context";
+import { RulebookView, type MasterPart } from "@/components/RulebookView";
 import { DocList } from "@/components/UploadDocs";
-import { Badge, Button, Card, Dialog, ErrorNote, Field, PageTitle, pageCls, Spinner, StagePill, Stepper, btnCls, cx, inputBase, inputCls } from "@/components/ui";
+import { Badge, Button, Card, ErrorNote, LoadError, onTabKeys, PageTitle, pageCls, Spinner, StagePill, Stepper, btnCls, cx, inputBase } from "@/components/ui";
 import { Workspace } from "@/components/Workspace";
 import { api } from "@/lib/api";
-import { useActingAs } from "@/lib/acting-as";
+import { askForPerson, useActingAs } from "@/lib/acting-as";
+import { keyTerms } from "@/lib/approve";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { keys, useDiff, useInvalidateStudy, useSettings, useStudy, useVersion } from "@/lib/queries";
-import { approveState, KIND_LABEL, minutesFor, needsYou, pdfCheckLine, versionStage, type StageState } from "@/lib/review";
+import { keys, useDiff, useInvalidateStudy, useMasterSearch, useStudy, useVersion } from "@/lib/queries";
+import { KIND_LABEL, minutesFor, needsYou, pdfCheckLine, versionStage, type StageState } from "@/lib/review";
 
-type Tab = "master" | "versions" | "files";
+type Tab = "overview" | "grid" | "fees" | "terms" | "documents" | "history";
+const TABS: [Tab, string][] = [
+  ["overview", "Overview"],
+  ["grid", "Budget grid"],
+  ["fees", "Fees & invoiceables"],
+  ["terms", "Payment terms"],
+  ["documents", "Documents"],
+  ["history", "History"],
+];
+const PART: Partial<Record<Tab, MasterPart>> = { grid: "grid", fees: "fees", terms: "terms" };
+const SECTION_TAB: Record<MasterSection, Tab> = { grid: "grid", fees: "fees", invoiceables: "fees", terms: "terms" };
+const tabOf = (path: string): Tab =>
+  path.startsWith("/budgetGrids") ? "grid" : /^\/(siteFees|invoiceables|screenFail)/.test(path) ? "fees" : /^\/(study|referencedDocuments)/.test(path) ? "documents" : "terms";
+
+/** A search hit is an item (a grid row, a fee, a term); this is the value that opens for it. */
+const TERM_VALUE: Record<string, string> = {
+  "/payment": "/payment/netDays/value",
+  "/holdback": "/holdback/pct",
+  "/overhead": "/overhead/pct/value",
+  "/screenFail": "/screenFail/amountCents",
+  "/overpayment": "/overpayment/refundDays",
+  "/rounding": "/rounding/value",
+  "/appliesFrom": "/appliesFrom/value",
+};
+const valueOf = (path: string) =>
+  TERM_VALUE[path] ??
+  (/\/procedures\/\d+$/.test(path) ? `${path}/unitCents` : /\/visits\/\d+$/.test(path) ? `${path}/totalCents` : /^\/(siteFees|invoiceables)\/\d+$/.test(path) ? `${path}/amountCents` : /^\/deadlines\/\d+$/.test(path) ? `${path}/value` : path);
 
 const VERSION_LABEL: Record<VersionSummaryDto["status"], string> = { extracting: "Reading", draft: "Draft", signed: "Live", superseded: "Replaced", failed: "Couldn't read" };
 
@@ -26,17 +56,17 @@ export default function ContractPage() {
   const { id } = useParams<{ id: string }>();
   const sp = useSearchParams();
   const study = useStudy(id);
-  const [tab, setTab] = useState<Tab>("master");
-  const invalidate = useInvalidateStudy();
   const latest = study.data ? [...study.data.versions].sort((a, b) => b.version - a.version)[0] : undefined;
   const draft = useVersion(id, latest?.status === "draft" ? latest.version : null);
 
-  if (study.error) return <div className="p-6"><ErrorNote error={study.error} /></div>;
-  if (!study.data || (latest?.status === "draft" && !draft.data)) return <div className="p-6"><Spinner /></div>;
+  // Only when there's nothing to show: a failed background refresh keeps the page as it was.
+  if (!study.data && study.error) return <LoadError error={study.error} retry={() => void study.refetch()} />;
+  if (!draft.data && draft.error) return <LoadError error={draft.error} retry={() => void draft.refetch()} />;
+  if (!study.data || (latest?.status === "draft" && !draft.data)) return <div className="p-6"><Spinner label="Loading the contract" /></div>;
   const s = study.data;
   const stage = versionStage(latest, draft.data);
-  const approved = sp.get("approved");
-  const corrected = sp.get("corrected");
+  // Set by "This looks wrong" on the live version; believed only while that version is the study's current draft.
+  const corrected = latest?.status === "draft" && sp.get("corrected") === String(latest.version) ? latest.version : null;
   const amending = !!s.liveVersion && stage.stage !== "Live";
 
   return (
@@ -55,6 +85,11 @@ export default function ContractPage() {
         }
         actions={
           <>
+            {(stage.stage === "Needs you" || stage.stage === "Approve" || stage.stage === "Live") && !stage.byHand && (
+              <Link href={`/studies/${s.id}/proofread`} className={btnCls()}>
+                Proofread
+              </Link>
+            )}
             {stage.stage === "Live" && (
               <Link href={`/studies/${s.id}/amend`} className={btnCls()}>
                 Upload amendment
@@ -72,46 +107,14 @@ export default function ContractPage() {
         {amending && <span className="text-[13px] text-muted">A new version is in progress. Version {s.liveVersion} stays live until it&apos;s approved.</span>}
       </div>
       <Stepper state={stage} className="mb-6" />
-      {approved && (
-        <p role="status" className="mb-5 rounded-[10px] bg-ok-soft px-4 py-2.5 text-[13px] text-ok">
-          ✓ Approved. Version {approved} is now the live invoicing master.
-        </p>
-      )}
-      {corrected && stage.stage !== "Live" && (
+      {corrected && (
         <p role="status" className="mb-5 rounded-[10px] bg-accent-soft px-4 py-2.5 text-[13px] text-accent">
           Thanks. Version {corrected} is open to correct it; version {s.liveVersion} stays live until version {corrected} is approved.
         </p>
       )}
       <StageCard study={s} stage={stage} draft={draft.data} />
 
-      <div role="tablist" aria-label="Contract" className="mt-7 mb-4 flex gap-0.5 border-b border-line">
-        {(
-          [
-            ["master", "Invoicing master"],
-            ["versions", `Versions (${s.versions.length})`],
-            ["files", `Files (${s.documents.length})`],
-          ] as [Tab, string][]
-        ).map(([k, l]) => (
-          <button
-            key={k}
-            role="tab"
-            type="button"
-            aria-selected={tab === k}
-            onClick={() => setTab(k)}
-            className={cx("-mb-px border-b-2 px-3.5 py-2.5 text-[14px]", tab === k ? "border-ink text-ink" : "border-transparent text-muted hover:text-ink")}
-          >
-            {l}
-          </button>
-        ))}
-      </div>
-      {tab === "master" && <MasterTab study={s} />}
-      {tab === "versions" && <VersionsTab study={s} />}
-      {tab === "files" && (
-        <div className="max-w-3xl">
-          <DocList docs={s.documents} onChange={() => void invalidate(s.id)} />
-          <p className="mt-2 text-xs text-muted">Changing a file&apos;s kind affects the next reading, not approved versions.</p>
-        </div>
-      )}
+      <Master study={s} draft={draft.data} />
     </div>
   );
 }
@@ -240,181 +243,326 @@ function FailedCard({ study }: { study: StudyDetailDto }) {
   );
 }
 
-function Tile({ n, label, tone }: { n: number; label: string; tone?: string }) {
-  return (
-    <div className="rounded-card border border-line px-4 py-3.5">
-      <p className={cx("num text-[26px] font-light", tone)}>{n}</p>
-      <p className="text-[12.5px] text-ink-2">{label}</p>
-    </div>
-  );
-}
-
+/** Ready for approval: a short summary and the way to the approval page. */
 function ApproveCard({ study, draft }: { study: StudyDetailDto; draft: RulebookVersionDto }) {
-  const by = useActingAs();
-  const settings = useSettings();
-  const [open, setOpen] = useState(false);
-  const gate = approveState(draft, settings.data, by);
   const ev = (st: string) => draft.evidence.filter((e) => e.status === st).length;
-  const cant = draft.review.filter((i) => i.outcome === "cant_tell");
-  const byHand = draft.review.filter((i) => i.kind === "unclassified");
-  const live = study.liveVersion;
+  const cant = draft.review.filter((i) => i.outcome === "cant_tell").length;
   return (
-    <Card className="flex flex-col gap-5 p-6">
-      <CheckLine draft={draft} />
-      <div>
-        <p className="eyebrow mb-1">Approve</p>
-        <h2 className="text-lg">Check the summary, then approve</h2>
-        <p className="mt-1 text-[13px] text-muted">Approving makes this the invoicing master everyone bills from. It&apos;s then locked; later changes go through a new version.</p>
+    <Card className="flex flex-wrap items-center justify-between gap-5 p-6">
+      <div className="flex items-start gap-4">
+        <span className="grid size-11 shrink-0 place-items-center rounded-tile bg-brand-soft text-accent">
+          <BadgeCheck className="size-5" strokeWidth={1.75} />
+        </span>
+        <div>
+          <p className="text-title font-semibold tracking-tight">Ready for approval</p>
+          <p className="num text-small text-muted">
+            {draft.pdfCheck ? `${ev("confirmed").toLocaleString("en-US")} matched the PDF · ` : ""}
+            {ev("attested")} confirmed by people{cant ? ` · ${cant} couldn't tell` : ""}
+          </p>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {draft.byHand ? (
-          <>
-            <Tile n={ev("attested")} label="values typed by hand" tone="text-accent" />
-            <Tile n={draft.review.filter((i) => i.reason === "spot_check" && i.outcome === "matched").length} label="re-typed blind and matched" tone="text-ok" />
-          </>
-        ) : (
-          <>
-            <Tile n={ev("confirmed")} label={draft.pdfCheck ? "numbers match the PDF" : "numbers add up in the contract's own totals"} tone="text-ok" />
-            <Tile n={ev("attested")} label="numbers confirmed by people" tone="text-accent" />
-          </>
-        )}
-        <Tile n={cant.length} label="couldn't tell" tone={cant.length ? "text-warn" : undefined} />
-        <Tile n={byHand.length} label={byHand.length === 1 ? "term to bill by hand" : "terms to bill by hand"} />
-      </div>
-      {cant.length > 0 && (
-        <ItemList title="Couldn't tell">
-          {cant.map((i) => (
-            <li key={i.id} className="flex flex-wrap items-baseline justify-between gap-2">
-              <span>
-                {i.question} {i.blocking && <Badge tone="warn">needed to approve</Badge>}
-              </span>
-              <Link href={`/studies/${study.id}/review?item=${encodeURIComponent(i.id)}`} className="text-accent hover:underline">
-                Answer now
-              </Link>
-            </li>
-          ))}
-        </ItemList>
-      )}
-      {byHand.length > 0 && (
-        <ItemList title="To bill by hand">
-          {byHand.map((i) => (
-            <li key={i.id}>{i.question.replace(/ The invoicing master has no place.*$/, "")}</li>
-          ))}
-        </ItemList>
-      )}
-      {live && live < draft.version && <AmendmentChanges study={study} version={draft.version} against={live} />}
-      {settings.data?.makerChecker && draft.editors.length > 0 && !gate.reasons.some((r) => r.startsWith("Maker-checker")) && (
-        <p className="text-[13px] text-muted">Maker-checker is on: {draft.editors.join(", ")} answered questions here, so someone else has to approve.</p>
-      )}
-      {!gate.allowed && <p id="approve-why" className="text-[13px] text-warn">Can&apos;t approve yet: {gate.reasons.join(" ")}</p>}
-      <div className="flex justify-end">
-        <Button variant="primary" disabled={!gate.allowed} onClick={() => setOpen(true)} aria-describedby={gate.allowed ? undefined : "approve-why"}>
-          Approve invoicing master
-        </Button>
-      </div>
-      <ApproveDialog open={open} onClose={() => setOpen(false)} study={study} draft={draft} />
+      <Link href={`/studies/${study.id}/approve`} className={btnCls("primary", "lg")}>
+        Review and approve <ArrowRight className="size-[18px]" strokeWidth={2} />
+      </Link>
     </Card>
   );
 }
+/**
+ * The invoicing master in tabs, with a search over it, the drawer for any value, and the export. `draft`: the newest
+ * version, when it's a draft; on the live version, the values it's re-checking are marked.
+ */
+function Master({ study, draft }: { study: StudyDetailDto; draft: RulebookVersionDto | undefined }) {
+  const sp = useSearchParams();
+  const router = useRouter();
+  const invalidate = useInvalidateStudy();
+  const withMaster = study.versions.filter((x) => x.status !== "failed" && x.status !== "extracting").sort((a, b) => b.version - a.version);
+  const [picked, setPicked] = useState<number | null>(Number(sp.get("v")) || null);
+  const v = picked ?? study.liveVersion ?? withMaster[0]?.version ?? null;
+  const version = useVersion(study.id, v);
+  const [want, setWant] = useState<{ path: string; n: number } | null>(() => {
+    const f = sp.get("focus");
+    return f ? { path: valueOf(f), n: 0 } : null;
+  });
+  // A link to a value on this same page (⌘K, while it's open) changes only the URL: open that version and value then too.
+  const [linked, setLinked] = useState(sp.get("focus"));
+  if (sp.get("focus") !== linked) {
+    const f = sp.get("focus");
+    setLinked(f);
+    if (f) {
+      if (Number(sp.get("v"))) setPicked(Number(sp.get("v")));
+      setWant((w) => ({ path: valueOf(f), n: (w?.n ?? 0) + 1 }));
+    }
+  }
+  const tab = (TABS.find(([k]) => k === sp.get("tab"))?.[0] ?? (want ? tabOf(want.path) : "overview")) as Tab;
+  const setTab = (t: Tab) => {
+    const p = new URLSearchParams(sp);
+    p.set("tab", t);
+    p.delete("focus");
+    router.replace(`/studies/${study.id}?${p}`, { scroll: false });
+  };
+  const [text, setText] = useState("");
+  const found = useMasterSearch(study.id, v, text);
+  const hits = useMemo(() => new Set(text.trim() && found.data ? found.data.hits.map((h) => h.path) : []), [found.data, text]);
+  const open = (path: string, t: Tab) => {
+    setTab(t);
+    setWant((w) => ({ path: valueOf(path), n: (w?.n ?? 0) + 1 }));
+  };
 
-function ItemList({ title, children }: { title: string; children: ReactNode }) {
+  const meta = study.versions.find((x) => x.version === v);
+  const rb = version.data?.rulebook;
+  const typing = !!version.data?.byHand && version.data.status === "draft" && !version.data.review.length;
+  const rechecks = useMemo(() => rechecked(draft, version.data), [draft, version.data]);
+  const tabs = typing ? [["overview", "Type it in"] as [Tab, string], ...TABS.slice(4)] : TABS;
+  const shown = typing && PART[tab] ? "overview" : tab;
+
+  const body = () => {
+    if (shown === "history") return <VersionsTab study={study} />;
+    if (shown === "documents")
+      return (
+        <div className="flex flex-col gap-5">
+          {rb && <RulebookView part="details" />}
+          <section className="rounded-card bg-surface p-5 ring-1 ring-line">
+            <h3 className="mb-3 text-body font-semibold tracking-tight">Files ({study.documents.length})</h3>
+            <DocList docs={study.documents} onChange={() => void invalidate(study.id)} />
+            <p className="mt-2 text-caption text-muted">Changing a file&apos;s kind affects the next reading, not approved versions.</p>
+          </section>
+        </div>
+      );
+    if (v === null) return <p className="text-small text-muted">The invoicing master appears here once the contract has been read.</p>;
+    if (!version.data) return version.error ? <ErrorNote error={version.error} retry={() => void version.refetch()} /> : <Spinner label="Loading the invoicing master" />;
+    if (typing) return <ByHandForm study={study} version={version.data} />;
+    if (shown === "overview") return <Overview study={study} version={version.data} draft={draft} rechecks={rechecks} />;
+    return <RulebookView part={PART[shown]!} />;
+  };
+
   return (
-    <div>
-      <h3 className="eyebrow mb-2">{title}</h3>
-      <ul className="flex flex-col gap-2 rounded-[10px] bg-sunken px-4 py-3 text-[13px]">{children}</ul>
+    <div className="mt-8 flex flex-col gap-4">
+      {rb && !typing && (
+        <div className="flex flex-wrap items-center gap-3">
+          {withMaster.length > 1 && (
+            <label className="flex items-center gap-2 text-small">
+              <span className="text-muted">Version</span>
+              <select className={cx(inputBase, "w-auto")} value={v ?? ""} onChange={(e) => setPicked(Number(e.target.value))}>
+                {withMaster.map((x) => (
+                  <option key={x.version} value={x.version}>
+                    Version {x.version} · {VERSION_LABEL[x.status]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <p className="text-small text-muted">
+            {meta?.status === "signed" && meta.signedBy ? `Approved by ${meta.signedBy} · ${formatDate(meta.signedAt)}` : meta?.status === "draft" ? "Draft, not approved yet" : `Version ${v}`}
+            {meta?.appliesFrom && ` · applies from ${formatDate(meta.appliesFrom)}`}
+          </p>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <label className="relative">
+              <span className="sr-only">Search this contract</span>
+              <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted" strokeWidth={1.75} />
+              <input
+                type="search"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Search this contract"
+                title="A procedure, a fee, a term or an amount, like ECG, 98.00 or holdback"
+                className="h-10 w-72 max-w-full rounded-full bg-surface pr-4 pl-9 text-small shadow-button ring-1 ring-line-strong placeholder:text-faint hover:ring-ink/20 focus:ring-4 focus:ring-brand/20 focus:outline-none"
+              />
+            </label>
+            {v !== null && (meta?.status === "signed" || meta?.status === "superseded") && <ExportMenu study={study} version={v} />}
+          </div>
+        </div>
+      )}
+
+      {draft && version.data && <RecheckNote studyId={study.id} draft={draft} shown={version.data} items={rechecks} />}
+
+      {text.trim() && found.data && (
+        <div className="flex flex-wrap items-center gap-2" aria-live="polite">
+          <span className="text-small text-muted">{found.data.hits.length ? `${found.data.hits.length} ${found.data.hits.length === 1 ? "match" : "matches"}:` : `Nothing in this contract matches “${text.trim()}”.`}</span>
+          {found.data.hits.slice(0, 12).map((h) => (
+            <button
+              key={h.path}
+              type="button"
+              onClick={() => open(h.path, SECTION_TAB[h.section])}
+              className="inline-flex h-7 items-center gap-1.5 rounded-full bg-brand-soft px-3 text-small text-accent ring-1 ring-brand/20 hover:ring-brand/50"
+            >
+              {h.label}
+              <span className="text-caption text-faint">{TABS.find(([k]) => k === SECTION_TAB[h.section])![1]}</span>
+            </button>
+          ))}
+          {found.data.hits.length > 12 && <span className="text-small text-faint">and {found.data.hits.length - 12} more; type more of the name</span>}
+          <Button size="sm" variant="ghost" onClick={() => setText("")}>
+            <X className="size-3.5" strokeWidth={2} /> Clear
+          </Button>
+        </div>
+      )}
+
+      <div role="tablist" aria-label="Invoicing master" onKeyDown={onTabKeys} className="flex gap-0.5 overflow-x-auto border-b border-line [scrollbar-width:none]">
+        {tabs.map(([k, l]) => (
+          <button
+            key={k}
+            id={`tab-${k}`}
+            role="tab"
+            type="button"
+            aria-selected={shown === k}
+            aria-controls="master-panel"
+            tabIndex={shown === k ? 0 : -1}
+            onClick={() => setTab(k)}
+            className={cx(
+              "-mb-px shrink-0 border-b-2 px-3.5 py-2.5 text-body whitespace-nowrap transition-colors",
+              shown === k ? "border-brand font-medium text-ink" : "border-transparent text-muted hover:text-ink",
+            )}
+          >
+            {l}
+            {k === "history" && <span className="num ml-1.5 text-caption text-faint">{study.versions.length}</span>}
+          </button>
+        ))}
+      </div>
+      {PART[shown] && rb && <DotLegend />}
+
+      <div role="tabpanel" id="master-panel" aria-labelledby={`tab-${shown}`}>
+        {version.data?.rulebook ? (
+          <Workspace study={study} version={version.data} report hits={hits} focus={want}>
+            {body()}
+          </Workspace>
+        ) : (
+          body()
+        )}
+      </div>
     </div>
   );
 }
 
-function AmendmentChanges({ study, version, against }: { study: StudyDetailDto; version: number; against: number }) {
-  const diff = useDiff(study.id, version, against);
+/**
+ * The terms that decide most of the money, each opening its spot in the contract, and how the numbers were checked. A
+ * term the newest draft is re-checking says so, with the way to its question.
+ */
+function Overview({ study, version, draft, rechecks }: { study: StudyDetailDto; version: RulebookVersionDto; draft: RulebookVersionDto | undefined; rechecks: Map<string, ReviewItem> }) {
+  const { rulebook: rb, show, masked } = useRulebook();
+  const terms = keyTerms(rb, version.evidence);
+  const count = (st: string) => version.evidence.filter((e) => e.status === st).length;
+  const numbers = version.evidence.length;
+  const proofread = version.proofread?.length ?? 0;
   return (
-    <details className="rounded-[10px] border border-line px-4 py-3">
-      <summary className="cursor-pointer text-[13px]">What changes compared with live version {against}</summary>
-      <div className="mt-3">{diff.data ? <DiffView entries={diff.data} /> : diff.error ? <ErrorNote error={diff.error} /> : <Spinner />}</div>
-    </details>
-  );
-}
+    <div className="flex flex-col gap-5">
+      <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {terms.map((t) => {
+          const hidden = t.paths.some((p) => masked.has(p));
+          const path = t.paths[0];
+          const again = draft && t.paths.map((p) => rechecks.get(p)).find(Boolean);
+          const inner = (
+            <>
+              <span className="text-small text-muted">{t.label}</span>
+              <span className={cx("num block text-title font-semibold tracking-tight", hidden && "text-warn")}>{hidden ? "Needs you" : t.value}</span>
+              {t.detail && !hidden && <span className="mt-0.5 block text-small text-muted">{t.detail}</span>}
+            </>
+          );
+          return (
+            <li key={t.id} className="flex flex-col gap-1.5">
+              {path ? (
+                <button
+                  type="button"
+                  data-path={path}
+                  onClick={() => show(path, null, t.label)}
+                  className="flex w-full flex-1 flex-col items-start rounded-tile bg-surface p-4 text-left ring-1 ring-line transition hover:shadow-card hover:ring-brand/40"
+                >
+                  {inner}
+                  <span className="mt-auto block pt-2 text-caption text-accent">Show in the contract</span>
+                </button>
+              ) : (
+                <div className="flex-1 rounded-tile bg-sunken/70 p-4 ring-1 ring-line">{inner}</div>
+              )}
+              {again && (
+                <Link href={questionHref(study.id, draft.version, again)} className="px-1 text-caption font-medium text-warn hover:underline">
+                  Being re-checked in version {draft.version}
+                </Link>
+              )}
+            </li>
+          );
+        })}
+      </ul>
 
-function ApproveDialog({ open, onClose, study, draft }: { open: boolean; onClose: () => void; study: StudyDetailDto; draft: RulebookVersionDto }) {
-  const by = useActingAs();
-  const router = useRouter();
-  const invalidate = useInvalidateStudy();
-  const [note, setNote] = useState("");
-  const approve = useMutation({
-    mutationFn: () => api.signOff(study.id, draft.version, { by: by!, ...(note.trim() ? { note: note.trim() } : {}) }),
-    onSuccess: async () => {
-      await invalidate(study.id);
-      onClose();
-      router.replace(`/studies/${study.id}?approved=${draft.version}`);
-    },
-  });
-  return (
-    <Dialog open={open} onClose={onClose} title={`Approve ${study.protocol ?? "this contract"}`}>
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          approve.mutate();
-        }}
-      >
-        <p className="text-[13px] text-muted">
-          {by} approves version {draft.version} as the invoicing master for {study.sponsor}. Your name, the time and your note go in the activity log.
-        </p>
-        <Field label="Note (optional)" htmlFor="ap-note">
-          <textarea id="ap-note" rows={3} className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Anything the next person should know" />
-        </Field>
-        <ErrorNote error={approve.error} />
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" disabled={approve.isPending}>
-            {approve.isPending ? "Approving…" : "Approve and make live"}
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
-/** The live version, or the draft until one is approved. */
-function MasterTab({ study }: { study: StudyDetailDto }) {
-  const withMaster = study.versions.filter((v) => v.status !== "failed" && v.status !== "extracting").sort((a, b) => b.version - a.version);
-  const [picked, setPicked] = useState<number | null>(null);
-  const v = picked ?? study.liveVersion ?? withMaster[0]?.version ?? null;
-  const version = useVersion(study.id, v);
-  if (v === null) return <p className="text-[13px] text-muted">The invoicing master appears here once the contract has been read.</p>;
-  if (!version.data) return version.error ? <ErrorNote error={version.error} /> : <Spinner />;
-  const meta = study.versions.find((x) => x.version === v);
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-3 text-[13px]">
-        <label className="flex items-center gap-2">
-          <span className="text-muted">Version</span>
-          <select className={cx(inputBase, "w-auto py-1.5")} value={v} onChange={(e) => setPicked(Number(e.target.value))}>
-            {withMaster.map((x) => (
-              <option key={x.version} value={x.version}>
-                Version {x.version} · {VERSION_LABEL[x.status]}
-              </option>
-            ))}
-          </select>
-        </label>
-        {meta?.signedBy && (
-          <span className="text-muted">
-            Approved by {meta.signedBy} · {formatDateTime(meta.signedAt)}
-          </span>
-        )}
-        {meta?.appliesFrom && <span className="text-muted">Applies from {formatDate(meta.appliesFrom)}</span>}
-        {meta?.status === "draft" && <span className="text-muted">Draft, not approved yet. Values with an open question show “needs you”.</span>}
-      </div>
-      {version.data.byHand && version.data.status === "draft" && !version.data.review.length ? (
-        <ByHandForm study={study} version={version.data} />
-      ) : (
-        <Workspace study={study} version={version.data} report>
-          <RulebookView />
-        </Workspace>
+      {numbers > 0 && (
+        <section className="flex flex-wrap items-center justify-between gap-4 rounded-card bg-surface p-5 ring-1 ring-line">
+          <div>
+            <h3 className="text-body font-semibold tracking-tight">How the numbers were checked</h3>
+            <p className="num mt-1 text-small text-muted">
+              {count("confirmed").toLocaleString("en-US")} of {numbers.toLocaleString("en-US")} match the PDF · {count("attested")} confirmed by a person
+              {count("conflict") + count("ungrounded") > 0 && ` · ${count("conflict") + count("ungrounded")} still need you`}
+              {` · ${proofread} proofread by someone`}
+            </p>
+          </div>
+          {!version.byHand && version.status !== "superseded" && (
+            <Link href={`/studies/${study.id}/proofread`} className={btnCls("secondary", "sm")}>
+              Proofread
+            </Link>
+          )}
+        </section>
       )}
+    </div>
+  );
+}
+
+/**
+ * Excel for billing systems; a printable summary (save as PDF) for people. A menu button: opening it focuses the first
+ * choice, arrow keys move between them, Escape closes it back to the button, Tab leaves it.
+ */
+function ExportMenu({ study, version }: { study: StudyDetailDto; version: number }) {
+  const by = useActingAs();
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const xlsx = useMutation({ mutationFn: () => api.exportXlsx(study.id, version, by!) });
+  const item = "flex w-full items-start gap-3 rounded-[10px] px-3 py-2.5 text-left hover:bg-sunken focus-visible:bg-sunken";
+  useEffect(() => {
+    if (open) menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [open]);
+  const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      button.current?.focus();
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    }
+  };
+  return (
+    <div className="relative" onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setOpen(false)}>
+      <Button ref={button} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)} onKeyDown={(e) => e.key === "ArrowDown" && (e.preventDefault(), setOpen(true))}>
+        <Download className="size-4" strokeWidth={1.75} /> Export <ChevronDown className="size-4" strokeWidth={2} />
+      </Button>
+      {open && (
+        <div ref={menu} role="menu" aria-label="Export" onKeyDown={onMenuKey} className="absolute top-full right-0 z-30 mt-2 w-72 rounded-tile bg-surface p-1.5 shadow-raised ring-1 ring-ink/[0.08]">
+          <button
+            type="button"
+            role="menuitem"
+            tabIndex={-1}
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              if (!by) return askForPerson();
+              xlsx.mutate();
+            }}
+          >
+            <FileSpreadsheet className="mt-0.5 size-[18px] shrink-0 text-ok" strokeWidth={1.75} />
+            <span>
+              <span className="block text-body font-medium">Excel spreadsheet</span>
+              <span className="block text-small text-muted">Budget grid, fees and terms, one sheet each</span>
+            </span>
+          </button>
+          <a role="menuitem" tabIndex={-1} href={`/studies/${study.id}/print?v=${version}`} target="_blank" rel="noreferrer" className={item} onClick={() => setOpen(false)}>
+            <Printer className="mt-0.5 size-[18px] shrink-0 text-muted" strokeWidth={1.75} />
+            <span>
+              <span className="block text-body font-medium">PDF summary</span>
+              <span className="block text-small text-muted">Key terms and rates, ready to print or save</span>
+            </span>
+          </a>
+        </div>
+      )}
+      <ErrorNote error={xlsx.error} />
     </div>
   );
 }
@@ -483,7 +631,7 @@ function VersionsTab({ study }: { study: StudyDetailDto }) {
             ) : diff.data ? (
               <DiffView entries={diff.data} title={`Version ${from} → ${to}`} />
             ) : diff.error ? (
-              <ErrorNote error={diff.error} />
+              <ErrorNote error={diff.error} retry={() => void diff.refetch()} />
             ) : (
               <Spinner />
             )}

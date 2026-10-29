@@ -1,18 +1,29 @@
 import type {
-  AuditEntryDto,
+  AlertListQuery,
+  AlertPage,
+  AuditListQuery,
+  AuditPage,
   DiffEntry,
   DocumentDto,
   DocumentKind,
   JobDto,
+  MasterSearch,
   RulebookVersionDto,
+  SearchResults,
   SettingsDto,
+  SignOffBody,
+  StudyCounts,
   StudyDetailDto,
-  StudySummaryDto,
+  StudyListQuery,
+  StudyPage,
 } from "@dct/shared";
 
-/** Typed client for the HTTP API in docs/PHASE-1.md. Everything goes through `request`. */
+/** Typed client for the HTTP API in docs/phase-1/api.md. Everything goes through `request`. */
 
 export const MOCK = process.env.NEXT_PUBLIC_API_MOCK === "1";
+
+/** Every route of the real API is under /api/v1 (the Next rewrite forwards /api/* as is). */
+const BASE = "/api/v1";
 
 export class ApiError extends Error {
   constructor(
@@ -25,24 +36,64 @@ export class ApiError extends Error {
 
 type Body = Record<string, unknown> | FormData | undefined;
 
-async function request<T>(method: string, path: string, body?: Body): Promise<T> {
+/** A fresh key per write; `crypto.randomUUID` needs a secure context (localhost is one), hence the fallback. */
+const newKey = () => crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+/** Waits before each retry of a write whose answer never arrived. */
+const RETRY_MS = [500, 1500];
+
+/** Writes still waiting for their answer, by what they send. */
+const inflight = new Map<string, Promise<unknown>>();
+const bodyKey = (body: Body) =>
+  body instanceof FormData
+    ? [...body.entries()].map(([k, v]) => `${k}=${typeof v === "string" ? v : `${v.name}:${v.size}:${v.lastModified}`}`).join("&")
+    : JSON.stringify(body ?? null);
+
+/**
+ * Every write is one user action with one Idempotency-Key. The same write again while the first is still waiting (a
+ * double click, Enter pressed twice: the button disables only once React re-renders) is that same action: it shares the
+ * first one's request and answer, so it can't apply twice. Once the answer is in, the same write is a new action.
+ */
+function request<T>(method: string, path: string, body?: Body): Promise<T> {
+  if (method === "GET") return send<T>(method, path, body);
+  const same = `${method} ${path} ${bodyKey(body)}`;
+  let p = inflight.get(same) as Promise<T> | undefined;
+  if (!p) {
+    p = send<T>(method, path, body, newKey()).finally(() => inflight.delete(same));
+    inflight.set(same, p);
+  }
+  return p;
+}
+
+/**
+ * The key is made once per action and sent again on each retry. A write whose answer was lost or that failed on the
+ * server's side (no answer: the network dropped; a 5xx: the API was restarting, or the proxy couldn't reach it) is
+ * retried with the same key: the API applies it once and hands back its first answer, and a write that failed saved
+ * nothing, so running it again is safe.
+ */
+async function send<T>(method: string, path: string, body: Body, key?: string): Promise<T> {
   if (MOCK) {
     const { mockRequest } = await import("./mock/server");
-    const res = await mockRequest(method, path, body);
+    const res = await mockRequest(method, path, body, key);
     if (res.status >= 400) throw new ApiError(res.status, errorMessage(res.json, res.status));
     return res.json as T;
   }
-  const init: RequestInit = { method, headers: {} };
+  const headers: Record<string, string> = key ? { "idempotency-key": `"${key}"` } : {};
+  const init: RequestInit = { method, headers };
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     init.body = JSON.stringify(body);
-    (init.headers as Record<string, string>)["content-type"] = "application/json";
+    headers["content-type"] = "application/json";
   }
-  let res: Response;
-  try {
-    res = await fetch(`/api${path}`, init);
-  } catch {
-    throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+  let res: Response | undefined;
+  for (let attempt = 0; ; attempt++) {
+    const retry = key !== undefined && attempt < RETRY_MS.length;
+    try {
+      res = await fetch(`${BASE}${path}`, init);
+      if (!retry || ![500, 502, 503, 504].includes(res.status)) break;
+    } catch {
+      if (!retry) throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+    }
+    await new Promise((r) => setTimeout(r, RETRY_MS[attempt]));
   }
   const text = await res.text();
   const json: unknown = text ? safeJson(text) : null;
@@ -59,7 +110,7 @@ function safeJson(text: string): unknown {
 }
 
 /** Accepts Fastify's `{ message }`, `{ error }`, or a bare string. */
-export function errorMessage(json: unknown, status: number): string {
+function errorMessage(json: unknown, status: number): string {
   if (typeof json === "string" && json) return json;
   if (json && typeof json === "object") {
     const o = json as Record<string, unknown>;
@@ -69,9 +120,22 @@ export function errorMessage(json: unknown, status: number): string {
 }
 
 const q = encodeURIComponent;
+/** `?a=1&b=2` from the set values, or "". */
+const qs = (o: Record<string, string | number | undefined | null>) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v));
+  const t = p.toString();
+  return t ? `?${t}` : "";
+};
 
 export const api = {
-  listStudies: () => request<StudySummaryDto[]>("GET", "/studies"),
+  /** One page of the contract list; the server filters, orders and pages. Pass `nextCursor` back for the next page. */
+  listStudies: (query: StudyListQuery) => request<StudyPage>("GET", `/studies${qs(query)}`),
+  studyCounts: (site?: string) => request<StudyCounts>("GET", `/studies/counts${qs({ site })}`),
+  /** ⌘K: contracts and rates in live contracts. */
+  search: (text: string, limit = 8) => request<SearchResults>("GET", `/search${qs({ q: text, limit })}`),
+  /** What in one invoicing master matches. */
+  searchMaster: (id: string, v: number, text: string) => request<MasterSearch>("GET", `/studies/${q(id)}/versions/${v}/search${qs({ q: text })}`),
   getStudy: (id: string) => request<StudyDetailDto>("GET", `/studies/${q(id)}`),
   getVersion: (id: string, v: number) => request<RulebookVersionDto>("GET", `/studies/${q(id)}/versions/${v}`),
   getDiff: (id: string, v: number, against: number) =>
@@ -100,23 +164,67 @@ export const api = {
   /** "This looks wrong" (ReportValueBody). On a draft: adds a question. On the live version: opens a correction draft. Returns the draft. */
   reportValue: (id: string, v: number, body: { path: string; note: string; by: string }) =>
     request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/report`, body),
+  /** The approver reopens answered questions with a note (SendBackBody). */
+  sendBack: (id: string, v: number, body: { itemIds: string[]; note: string; by: string }) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/send-back`, body),
+  /** Values that looked right to someone proofreading (ProofreadBody); any version with a master, live ones too. */
+  proofread: (id: string, v: number, body: { paths: string[]; by: string }) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/proofread`, body),
   /** A blank draft to type a contract in by hand (ByHandBody). */
   startByHand: (id: string, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/by-hand`, { by }),
   /** Type one value; by-hand drafts only. */
   typeValue: (id: string, v: number, body: { path: string; value: unknown; by: string }) =>
     request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, { ...body, note: "Typed by hand" }),
-  /** Proposed route: typing is done; picks the values someone else re-types blind. */
+  /** Typing is done; picks the values someone else re-types blind. */
   finishByHand: (id: string, v: number, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/by-hand/done`, { by }),
-  signOff: (id: string, v: number, body: { by: string; note?: string }) =>
+  /** `asOf`: the version's `updatedAt` as the approver saw it; a 409 if anything changed since. */
+  signOff: (id: string, v: number, body: SignOffBody) =>
     request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/sign-off`, body),
 
-  audit: (studyId?: string) => request<AuditEntryDto[]>("GET", `/audit${studyId ? `?studyId=${q(studyId)}` : ""}`),
+  /** Alerts for one person (everyone sees every alert; read state is theirs), newest first. */
+  alerts: (query: AlertListQuery) => request<AlertPage>("GET", `/alerts${qs(query)}`),
+  /** Marks `ids`, or every alert, read for `by`. */
+  readAlerts: (body: { by: string; ids?: string[] }) => request<{ unread: number }>("POST", "/alerts/read", body),
+
+  /** One page of the activity log, newest first; the server narrows, searches and pages. Pass `nextCursor` back for older ones. */
+  audit: (query: AuditListQuery) => request<AuditPage>("GET", `/audit${qs(query)}`),
   getSettings: () => request<SettingsDto>("GET", "/settings"),
   patchSettings: (body: Partial<SettingsDto>) => request<SettingsDto>("PATCH", "/settings", body),
 
-  /** URL for an <img>. Mock mode renders a synthetic page in the browser. */
-  pageSrc: async (docId: string, page: number): Promise<string> => {
+  /**
+   * Downloads the invoicing master as an Excel file (built by the server; by the sample server in mock mode). Fetched
+   * rather than linked to, so a refusal or a failure throws for the screen to show instead of downloading as a file.
+   * Never retried: each export is logged.
+   */
+  exportXlsx: async (id: string, v: number, by: string) => {
+    let file: { blob: Blob; filename: string };
+    if (MOCK) {
+      const { mockExport } = await import("./mock/server");
+      // The sample server refuses with a plain Error; the screen shows only an ApiError's message.
+      file = await mockExport(id, v, by).catch((e: unknown) => {
+        throw new ApiError(409, e instanceof Error ? e.message : String(e));
+      });
+    } else {
+      let res: Response;
+      try {
+        res = await fetch(`${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`);
+      } catch {
+        throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new ApiError(res.status, errorMessage(text ? safeJson(text) : null, res.status));
+      }
+      if (!/spreadsheetml/.test(res.headers.get("content-type") ?? "")) throw new ApiError(502, "The export didn't come back as a spreadsheet.");
+      const named = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1];
+      file = { blob: await res.blob(), filename: named ?? `invoicing-master-v${v}.xlsx` };
+    }
+    const href = URL.createObjectURL(file.blob);
+    Object.assign(document.createElement("a"), { href, download: file.filename }).click();
+    setTimeout(() => URL.revokeObjectURL(href), 10_000);
+  },
+
+  /** URL for an <img>. Mock mode renders a synthetic (vector) page in the browser. `dpi`: sharper page for close-ups. */
+  pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => {
     if (MOCK) return (await import("./mock/server")).mockPageSrc(docId, page);
-    return `/api/documents/${q(docId)}/pages/${page}.png`;
+    return `${BASE}/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`;
   },
 };

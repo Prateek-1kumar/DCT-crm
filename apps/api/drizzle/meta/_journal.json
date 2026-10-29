@@ -22,6 +22,69 @@
       "when": 1792947928576,
       "tag": "0002_sturdy_alex_power",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793192313612,
+      "tag": "0003_lame_scalphunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793195813734,
+      "tag": "0004_gigantic_stature",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793197306466,
+      "tag": "0005_talented_slyde",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793200355235,
+      "tag": "0006_signed_versions_locked",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793205722393,
+      "tag": "0007_sharp_barracuda",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793208967565,
+      "tag": "0008_unique_captain_midlands",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793210951562,
+      "tag": "0009_idempotency_and_one_live_read",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793217075298,
+      "tag": "0010_perfect_virginia_dare",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793217085633,
+      "tag": "0011_truncate_guards",
+      "breakpoints": true
     }
   ]
 }

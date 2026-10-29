@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "start": "node dist/server.js",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
+    "db:check": "tsx scripts/db-check.ts",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:dist": "node dist/db/migrate.js",
     "db:start": "./scripts/db.sh start",
     "db:stop": "./scripts/db.sh stop",
     "db:reset": "./scripts/db.sh reset"
@@ -21,7 +24,6 @@
     "@fastify/multipart": "^10.1.6",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.7",
-    "pdf-lib": "^1.17.1",
     "pg": "^8.23.1",
     "pg-boss": "^12.38.0",
     "zod": "^4.6.7"
@@ -30,6 +32,7 @@
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.11",
+    "pdf-lib": "^1.17.1",
     "tsup": "^9.0.0",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3",

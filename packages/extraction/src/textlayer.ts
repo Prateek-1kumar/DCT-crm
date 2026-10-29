@@ -1,12 +1,11 @@
-import { readFile } from "node:fs/promises";
-import type { PageBox } from "@dct/shared";
-import * as mupdf from "mupdf";
+import { type PageBox, parseCents } from "@dct/shared";
 import { MIN_PAGE_TEXT } from "./checks";
+import { pageCount, textPage } from "./render";
 
 /** The PDF's own text (mupdf structured text), no AI: words with boxes, each page's text source, hidden text. */
 
 /** x0, y0, x1, y1 in points, in the space renderPage draws (the page's /Rotate applied). */
-export type Rect = [number, number, number, number];
+type Rect = [number, number, number, number];
 
 export type Word = {
   text: string;
@@ -28,78 +27,27 @@ export type TextPage = {
   source: "text" | "image_only" | "ocr_layer";
   words: Word[];
   hidden: number;
+  /**
+   * A text page that also shows a picture (a budget table pasted in as an image, a screenshot): images that touch
+   * count as one, visible text covers under 5% of it, and it fills at least 5% of the page with its centre in the body,
+   * or 15% with its centre in the top or bottom tenth, where letterheads sit. What it prints can't be swept for money
+   * terms, so a person attests the page, as for a scan (ADR-001 §3, I5). Signatures, initials and logos are smaller.
+   * Always false on scans and OCR layers, which are attested whole.
+   */
+  largePicture: boolean;
 };
 
 /** COPD's signed budget grid is set in 3.2 pt type, so the ADR's "under 4 pt" would hide a real grid. */
-export const MIN_VISIBLE_PT = 2;
+const MIN_VISIBLE_PT = 2;
 
+/** Every page's text, read in the mupdf worker (render.ts), one page at a time: a page that hangs fails the read, it can't hang the server. */
 export async function readTextLayer(pdfPath: string, documentId: string): Promise<TextPage[]> {
-  const doc = mupdf.Document.openDocument(await readFile(pdfPath), "application/pdf");
-  try {
-    const out: TextPage[] = [];
-    for (let i = 0; i < doc.countPages(); i++) {
-      const page = doc.loadPage(i);
-      try {
-        out.push(readPage(page, documentId, i + 1));
-      } finally {
-        page.destroy();
-      }
-    }
-    return out;
-  } finally {
-    doc.destroy();
-  }
+  const out: TextPage[] = [];
+  for (let i = 1, n = await pageCount(pdfPath); i <= n; i++) out.push(await textPage(pdfPath, i, documentId, MIN_VISIBLE_PT, MIN_PAGE_TEXT));
+  return out;
 }
 
-function readPage(page: mupdf.Page, documentId: string, n: number): TextPage {
-  const [px0, py0, px1, py1] = page.getBounds();
-  // Invisible render mode (3 Tr) reaches a device as ignoreText; structured text keeps it as plain black text.
-  // ponytail: glyphs matched to chars by origin on a 0.5 pt grid. Upgrade: compare the render under each word.
-  const key = (x: number, y: number) => `${Math.round(x * 2)},${Math.round(y * 2)}`;
-  const invisible = new Set<string>();
-  const dev = new mupdf.Device({
-    ignoreText: (text, m) => text.walk({ showGlyph: (_f, t) => void invisible.add(key(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5])) }),
-  });
-  page.run(dev, mupdf.Matrix.identity);
-  dev.close();
-  dev.destroy();
-
-  const words: Word[] = [];
-  let [chars, imageArea, block, line, dir] = [0, 0, -1, -1, 0 as Word["dir"]];
-  let cur: Pick<Word, "text" | "rect" | "hidden"> | null = null;
-  const flush = () => {
-    if (cur) words.push({ ...cur, dir, block, line });
-    cur = null;
-  };
-  const st = page.toStructuredText("preserve-images,clip=no");
-  st.walk({
-    onImageBlock: ([x0, y0, x1, y1]) => void (imageArea = Math.max(imageArea, Math.max(0, Math.min(x1, px1) - Math.max(x0, px0)) * Math.max(0, Math.min(y1, py1) - Math.max(y0, py0)))),
-    beginTextBlock: () => void block++,
-    beginLine: (_b, _w, [dx, dy]) => {
-      line++;
-      dir = ((Math.round(Math.atan2(dy, dx) / (Math.PI / 2)) + 4) % 4) as Word["dir"];
-    },
-    onChar: (c, [ox, oy], _font, size, q, color) => {
-      if (!c.trim()) return flush();
-      chars++;
-      const r: Rect = [Math.min(q[0], q[2], q[4], q[6]), Math.min(q[1], q[3], q[5], q[7]), Math.max(q[0], q[2], q[4], q[6]), Math.max(q[1], q[3], q[5], q[7])];
-      // ponytail: white means white fill; white text on a dark box is visible but flagged. Upgrade: sample the render under the glyph.
-      const hidden = size < MIN_VISIBLE_PT || color.every((v) => v > 0.95) || ox < px0 || ox > px1 || oy < py0 || oy > py1 || invisible.has(key(ox, oy));
-      cur ??= { text: "", rect: r, hidden: false };
-      cur.text += c;
-      cur.rect = union([cur.rect, r]);
-      cur.hidden ||= hidden;
-    },
-    endLine: flush,
-  });
-  st.destroy();
-  const [width, height] = [px1 - px0, py1 - py0];
-  // ponytail: a genuine text page under MIN_PAGE_TEXT characters reads as image_only, so it goes to page attestation.
-  const source = chars < MIN_PAGE_TEXT ? "image_only" : imageArea > 0.8 * width * height ? "ocr_layer" : "text";
-  return { documentId, page: n, width, height, source, words, hidden: words.filter((w) => w.hidden).length };
-}
-
-export const union = (rs: Rect[]): Rect => [Math.min(...rs.map((r) => r[0])), Math.min(...rs.map((r) => r[1])), Math.max(...rs.map((r) => r[2])), Math.max(...rs.map((r) => r[3]))];
+const union = (rs: Rect[]): Rect => [Math.min(...rs.map((r) => r[0])), Math.min(...rs.map((r) => r[1])), Math.max(...rs.map((r) => r[2])), Math.max(...rs.map((r) => r[3]))];
 
 /** The shared PageBox (fractions of the page) around some words. */
 export const boxOf = (p: TextPage, ws: Word[]): PageBox => {
@@ -141,12 +89,14 @@ export function visualLines(words: Word[]): Word[][] {
  * The sweep's keywords, ADR-001 §3. Prefixes on purpose: "pay" covers payment, payable. "cap" only as "cap of / capped at":
  * a medication list's "cap" (capsule) otherwise makes every dose line a money sentence.
  */
-export const KEYWORDS = {
+const KEYWORDS = {
   money: /\b(?:pay|paid|invoic|fees?\b|cost|reimburs|overhead|indirect|f\s?&\s?a\b|holdback|withh|retain|refund|offset|interest|late\b|cap(?:ped)?\s(?:of|at|on)\b|not to exceed|escalat|increas|stipend|screen[\s-]?fail|terminat|budget|compensat)/i,
   /** A sentence with one of these is money-relevant even without a number: the sweep behind "no holdback", "no cap"... */
   absence: /\b(?:holdback|withh|retain|interest|late\b|escalat|increas|inflation|not to exceed|maximum|cap(?:ped)?\s(?:of|at|on)\b|screen[\s-]?fail|terminat)/i,
   /** Bank or payment instructions: excluded from the inventory and never stored (§9), when they also carry a digit run. */
   bank: /\b(?:aba|routing|swift|iban|bic|account|acct|sort code)\b/i,
+  /** A line naming bank details: its number may sit on the same line or the next one or two, in another text block. */
+  bankLabel: /\b(?:aba|routing|swift|iban|bic|account|acct|sort code|wire|ach|bank)\b/i,
 };
 
 /**
@@ -160,22 +110,52 @@ const RULES: [SpanKind, RegExp][] = [
   ["limit", /\b(?:up to|maximum of|max(?:imum)?\.?|not to exceed|no more than)\s\(?\d[\d,]*/gi],
 ];
 
-export type SpanKind = "amount" | "grid_number" | "percent" | "days" | "ratio" | "limit" | "absence";
-export type Span = { kind: SpanKind; where: PageBox; words: Word[]; /** The line or sentence it sits in. */ text: string };
+type SpanKind = "amount" | "grid_number" | "percent" | "days" | "ratio" | "limit" | "absence";
+export type Span = {
+  kind: SpanKind;
+  where: PageBox;
+  words: Word[];
+  /** The line or sentence it sits in. */
+  text: string;
+  /** Where that line or sentence is printed, one box per line: a sentence can run over lines the span isn't on. */
+  lines: PageBox[];
+  /** An amount's cents, read with the word before it (centsOf: brackets restating words aren't a credit). */
+  cents?: number;
+};
 
 export const NUMBER = /^\(?(?:US)?\$?\d[\d,]*(?:\.\d+)?\)?%?$/;
+/** A number as printed without the sentence punctuation after it: "$7,455.00." → "$7,455.00". Test NUMBER on this. */
+export const bare = (s: string) => s.replace(/(?<=[\d)%])[.,;:]+$/, "");
 const CURRENCY = /^\(?(?:US\$|\$|USD)$/;
 
-/** Dollar amounts in reading order; a lone "$" joins the number after it. `currencyOnly`: only those with a sign. */
-export function amounts(ws: Word[], currencyOnly = false): { words: Word[]; cents: number }[] {
-  const out: { words: Word[]; cents: number }[] = [];
+const UNITS = "one|two|three|four|five|six|seven|eight|nine";
+/** The word before "($3,000.00)" when the brackets restate an amount written in words: "Three Thousand Dollars ($3,000.00)". */
+const RESTATES = new RegExp(`^(?:dollars?|usd|u\\.?s\\.?|\\d+/100|zero|${UNITS}|ten|eleven|twelve|(?:thir|four|fif|six|seven|eigh|nine)teen|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:-(?:${UNITS}))?|hundred|thousand|million)$`, "i");
+
+/**
+ * The cents an amount prints (parseCents, @dct/shared: one reading of amounts everywhere). In brackets, "(1,500.00)" is a
+ * credit and comes out below zero, so it can't back a positive value; unless the brackets restate the words before them
+ * (`before`, the word printed just ahead). null when it isn't an amount (a fraction of a cent, say).
+ */
+export const centsOf = (t: string, before = ""): number | null => parseCents(t, { restates: RESTATES.test(before.replace(/[.,;:]+$/, "")) });
+
+/**
+ * Dollar amounts in reading order; a lone "$" or "USD" joins the number after it, and "USD" after a number ("500.00 USD")
+ * marks it too. `currencyOnly`: only those with a sign or code. `before` gives the word printed ahead of one (default:
+ * the one before it in `ws`), for "Dollars ($3,000.00)" across a line break. `cents` is null for an amount the master
+ * can't hold (a fraction of a cent, "$0.655"): it's still an amount, so it's swept and asked, but it confirms nothing.
+ */
+export function amounts(ws: Word[], currencyOnly = false, before?: (w: Word) => Word | undefined): { words: Word[]; cents: number | null }[] {
+  const out: { words: Word[]; cents: number | null }[] = [];
   ws.forEach((w, i) => {
-    const pair = CURRENCY.test(w.text) && ws[i + 1] && NUMBER.test(ws[i + 1]!.text);
-    const t = pair ? w.text + ws[i + 1]!.text : w.text;
+    const pair = CURRENCY.test(w.text) && ws[i + 1] && NUMBER.test(bare(ws[i + 1]!.text));
+    // "USD1,000" reads as "$1,000"; the code after the number keeps a closing bracket with it ("(500.00 USD)")
+    const coded = !pair && NUMBER.test(bare(w.text)) && /^USD\)?[.,;:]*$/i.test(ws[i + 1]?.text ?? "");
+    const t = bare(pair ? w.text + ws[i + 1]!.text : coded ? w.text + ws[i + 1]!.text.replace(/^USD/i, "") : w.text).replace(/^(\(?)USD/i, "$1$");
     if (CURRENCY.test(ws[i - 1]?.text ?? "") || !NUMBER.test(t) || t.endsWith("%")) return;
-    const money = /\$|USD/.test(t) || (!currencyOnly && /\d,\d{3}|\.\d{2}\)?$/.test(t));
+    const money = coded || /\$/.test(t) || (!currencyOnly && /\d,\d{3}|\.\d{2}\)?$/.test(t));
     const whole = t.replace(/[^\d.]/g, "").split(".")[0]!;
-    if (money && !(whole.length >= 8 && !t.includes(","))) out.push({ words: pair ? [w, ws[i + 1]!] : [w], cents: Math.round(Number(t.replace(/[^\d.]/g, "")) * 100) });
+    if (money && !(whole.length >= 8 && !t.includes(","))) out.push({ words: pair ? [w, ws[i + 1]!] : [w], cents: centsOf(t, (before ? before(w) : ws[i - 1])?.text) });
   });
   return out;
 }
@@ -200,6 +180,41 @@ export function sentences(p: TextPage): Word[][] {
 
 const text = (ws: Word[]) => ws.map((w) => w.text).join(" ");
 
+/** Bank or payment instructions: a bank keyword and a digit run in one sentence (ADR-001 §9). */
+const bankSentence = (s: Word[]) => KEYWORDS.bank.test(text(s)) && /\d[\d\s-]{4,}\d/.test(text(s));
+const digits = (w: Word) => w.text.match(/\d/g)?.length ?? 0;
+/** An account, routing or sort-code number (or an IBAN's opening), never an amount, a % or a date like 8/22/2025. */
+const accountNo = (w: Word) => {
+  const t = w.text.replace(/^[(#:]+|[.,;:)]+$/g, "");
+  return (/^[A-Z]{0,4}\d[\d-]*$/i.test(t) && digits(w) >= 3) || /^[A-Z]{2}\d{2}/.test(t);
+};
+
+/**
+ * The words holding bank details on a text page (ADR-001 §9): in each bank sentence, every word carrying 3+ digits or
+ * opening like an IBAN; and every account-like number on a line naming bank details or on the next one or two lines
+ * (a table's label cell, or "Wire to account:" above its number, are often a text block of their own).
+ * ponytail: up to 2 lines below a label, each within 2.5 line heights; a number further down isn't masked. Upgrade: the label's own block.
+ */
+function bankWords(p: TextPage): Word[] {
+  if (p.source !== "text") return [];
+  const out = new Set(sentences(p).filter(bankSentence).flatMap((s) => s.filter((w) => digits(w) >= 3 || /^[A-Z]{2}\d{2}/.test(w.text))));
+  const lines = visualLines(p.words);
+  const v = (l: Word[]) => (frame(l[0]!)[1] + frame(l[0]!)[3]) / 2;
+  const h = (l: Word[]) => Math.max(...l.map((w) => frame(w)[3] - frame(w)[1]));
+  lines.forEach((l, i) => {
+    if (!KEYWORDS.bankLabel.test(text(l))) return;
+    for (let k = i; k <= i + 2 && lines[k]; k++) {
+      const [cur, prev] = [lines[k]!, lines[k - 1]!];
+      if (k > i && (cur[0]!.dir !== prev[0]!.dir || v(cur) - v(prev) > 2.5 * Math.max(h(cur), h(prev)))) break;
+      cur.filter(accountNo).forEach((w) => out.add(w));
+    }
+  });
+  return [...out];
+}
+
+/** Where the bank details are, in page points, to paint over before the page goes to a model. Scans have none. */
+export const bankRects = (p: TextPage): Rect[] => bankWords(p).map((w) => w.rect);
+
 /**
  * Every money-relevant span on the text pages (ADR-001 §3): currency amounts, numbers in table rows, and %, day,
  * ratio and "up to N" figures or absence keywords in a money sentence. Bank instructions are left out.
@@ -208,18 +223,25 @@ export function inventory(pages: TextPage[]): Span[] {
   const out: Span[] = [];
   for (const p of pages.filter((x) => x.source === "text")) {
     const taken = new Set<Word>();
-    const add = (kind: SpanKind, ws: Word[], ctx: Word[]) => {
+    const add = (kind: SpanKind, ws: Word[], ctx: Word[], cents?: number) => {
       if (!ws.length || ws.some((w) => taken.has(w))) return;
       ws.forEach((w) => taken.add(w));
-      out.push({ kind, where: boxOf(p, ws), words: ws, text: text(ctx).slice(0, 240) });
+      const text = ctx.map((w) => (bank.has(w) ? "…" : w.text)).join(" ").slice(0, 240);
+      out.push({ kind, where: boxOf(p, ws), words: ws, text, lines: visualLines(ctx).map((l) => boxOf(p, l)), ...(cents !== undefined ? { cents } : {}) });
     };
     const sents = sentences(p);
-    for (const s of sents) if (KEYWORDS.bank.test(text(s)) && /\d[\d\s-]{4,}\d/.test(text(s))) s.forEach((w) => taken.add(w));
+    for (const s of sents) if (bankSentence(s)) s.forEach((w) => taken.add(w));
+    // Bank numbers found by their label line too, never stored, even as the line around another span: every bank word
+    // is "…" in a span's text. A short run (3–5 digits) under a line that only mentions an account may be a price or a
+    // count, so it stays in the sweep: masked from the model and in its text, it's then asked, never dropped.
+    const bank = new Set(bankWords(p));
+    const secret = new Set([...bank].filter((w) => taken.has(w) || digits(w) >= 6 || /^[A-Z]{2}\d{2}/.test(w.text)));
+    secret.forEach((w) => taken.add(w));
     const lines = visualLines(p.words.filter((w) => !w.hidden));
-    for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l);
+    for (const l of lines) for (const a of amounts(l, true)) add("amount", a.words, l, a.cents ?? undefined);
     for (const l of lines) {
       // Table row ("grid row band"): 2+ numbers, each set off from the word before it by a column gap.
-      const cells = l.filter((w, i) => NUMBER.test(w.text) && (i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1]));
+      const cells = l.filter((w, i) => NUMBER.test(bare(w.text)) && (i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1]));
       if (cells.length >= 2) for (const w of cells) add("grid_number", [w], l);
     }
     for (const s of sents) {
