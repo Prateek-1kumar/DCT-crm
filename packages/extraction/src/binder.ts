@@ -54,10 +54,11 @@ type Option = { row: Line; code: Word | null; score: number };
 
 /**
  * The rows a label may belong to, best first, found by the label and never by the value. The label's vertical band is
- * a run of up to 4 consecutive lines (left of `limit`) spelling at least half the name in order, scored by the F1 of the
+ * a run of up to 4 consecutive lines (left of `limit`) spelling most of the name in order, scored by the F1 of the
  * common subsequence (neighbouring rows' descriptions often differ in a word or two). Its row is the candidate (a line
  * carrying numbers) nearest the band, from one line above it to 5 line heights below, since labels sit on their row's
  * line or are centred on it; on the code's line when the item has a printed code. No name: a code printed on exactly one candidate.
+ * Half the name isn't enough: one shared word ("visit" of "Unscheduled visit") would take another term's line.
  */
 function rowsFor(lines: Line[], cands: Line[], code: string | null, name: string, limit = Infinity): Option[] {
   const c = norm(code ?? "");
@@ -76,7 +77,7 @@ function rowsFor(lines: Line[], cands: Line[], code: string | null, name: string
       ts = [...ts, ...ls[k]!.ts];
       const common = lcs(want, ts);
       const gap = (l: Line) => Math.max(0, first.l.v - l.v, l.v - cur.v);
-      const row = common >= want.length / 2 && pool.filter((l) => l.dir === first.l.dir && l.v >= first.l.v - 1.2 * first.l.h && l.v <= cur.v + 5 * cur.h).sort((a, b) => gap(a) - gap(b))[0];
+      const row = common > want.length / 2 && pool.filter((l) => l.dir === first.l.dir && l.v >= first.l.v - 1.2 * first.l.h && l.v <= cur.v + 5 * cur.h).sort((a, b) => gap(a) - gap(b))[0];
       if (row) best.set(row, Math.max(best.get(row) ?? 0, (2 * common) / (want.length + ts.length)));
     }
   });
@@ -339,13 +340,16 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   /**
    * A value against the figures of its kind printed where it's stated: confirmed only when every one of them says exactly
    * this value. When they differ, which one is this value's can't be told, so it's asked; when none says it, a conflict.
+   * A conflict consumes nothing: none of the figures is this value, so each may be another term's (the quote was another
+   * clause), and a consumed one would never be asked. One of several figures that says this value is consumed: the
+   * others keep the sentence in the sweep, where it's asked with all of them.
    */
   const settle = (path: string, value: number | string, figs: Figure[], fallback: PageBox[]) => {
     const own = figs.filter((f) => f.values.includes(value));
     const one = figs.every((f) => f.values.length === 1 && f.values[0] === figs[0]!.values[0]);
     if (own.length && own.length === figs.length && one) return put(path, "confirmed", [own[0]!.at], own[0]!.printed, null, own.flatMap((f) => f.words));
     if (own.length) return put(path, "ungrounded", fallback, null, own.some((f) => f.values.length > 1) ? "the date can be read as month/day or day/month" : "printed with another figure of the same kind, so which one it is can't be told", own.flatMap((f) => f.words));
-    if (figs.length && one) return put(path, "conflict", [figs[0]!.at], figs[0]!.printed, null, figs.flatMap((f) => f.words));
+    if (figs.length && one) return put(path, "conflict", [figs[0]!.at], figs[0]!.printed, null);
     put(path, figs.length ? "conflict" : "ungrounded", fallback, null);
   };
 
@@ -464,13 +468,13 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const pg = pageAt(src);
     const lineAmounts = (pg: Page) => pg.lines.filter((l) => within(l) && amounts(l.words).length);
     const found = pg ? rowsFor(pg.lines.filter(within), lineAmounts(pg), code, name)[0] : undefined;
-    // Numbers on the item's row other than amounts and figures with a unit (code, count) belong to it; "30 days" or "10%" is a term of its own.
+    // Numbers on the item's row other than amounts and figures with a unit (code, count) belong to it once its value is
+    // found there; "30 days", "10%" or a limit ("up to 3 per subject": a cap the read may not have) is a term of its own.
     const rowNumbers = (l: Line) => {
       const units = new Set(scan(l.words).flatMap((x) => (x.unit ? x.words : [])));
-      return l.words.filter((w) => NUMBER.test(bare(w.text)) && !units.has(w) && !amounts(l.words).some((a) => a.words.includes(w)));
+      return l.words.filter((w, i) => NUMBER.test(bare(w.text)) && !units.has(w) && !limited(l.words, i, i) && !amounts(l.words).some((a) => a.words.includes(w)));
     };
     const onRow = found ? amounts(found.row.words, false, pg!.before) : [];
-    if (found) rowNumbers(found.row).forEach((w) => bound.add(w));
     const quote = pg ? findQuote(pg, src?.quote) : null;
     const inQuote = quote ? amounts(quote, false, pg!.before) : [];
     const want = fields.filter((f): f is [string, number] => f[1] !== null);
@@ -478,18 +482,20 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     // ponytail: a table printing them the other way round gives conflicts. Upgrade: read the order from the column headers.
     const positional = want.length === 2 && onRow.length >= 2;
     // One amount wanted, a row printing others too ("$500.00, up to $5,000.00"; "$100.00 $130.00" with one of them read):
-    // which one is this value can't be told, so as settle() does, it's asked, and the others stay unaccounted.
+    // which one is this value can't be told, so as settle() does, it's asked, and the others stay unaccounted. A conflict,
+    // as in settle(), consumes nothing on the row: no amount there is this value, so each may be another term's (the row
+    // may be another term's line, "$0.655 per mile … visit" for a visit fee), and it would never be swept as a money term.
     const alone = (as: { cents: number | null }[], value: number, i: number) => (want.length === 2 && as.length >= 2 ? as[i]!.cents === value : as.every((a) => a.cents === value));
     want.forEach(([field, value], i) => {
       const path = `${base}/${field}`;
       const spot = positional ? onRow[i] : onRow.find((a) => a.cents === value);
       const used = found?.code ? [found.code] : [];
       if (spot?.cents === value && !alone(onRow, value, i))
-        return put(path, "ungrounded", [boxOf(pg!.p, found!.row.words)], null, "printed with another amount on the same line, so which one it is can't be told", [...onRow.filter((a) => a.cents === value).flatMap((a) => a.words), ...used]);
-      if (spot?.cents === value) return put(path, "confirmed", [boxOf(pg!.p, spot.words)], txt(spot.words), null, [...spot.words, ...used]);
+        return put(path, "ungrounded", [boxOf(pg!.p, found!.row.words)], null, "printed with another amount on the same line, so which one it is can't be told", [...onRow.filter((a) => a.cents === value).flatMap((a) => a.words), ...used, ...rowNumbers(found!.row)]);
+      if (spot?.cents === value) return put(path, "confirmed", [boxOf(pg!.p, spot.words)], txt(spot.words), null, [...spot.words, ...used, ...rowNumbers(found!.row)]);
       if (onRow.length) {
         const shown = positional ? [onRow[i]!] : onRow.filter((a) => !want.some(([, c]) => c === a.cents));
-        return put(path, "conflict", [boxOf(pg!.p, found!.row.words)], txt(shown.flatMap((a) => a.words)) || null, null, [...onRow.flatMap((a) => a.words), ...used]);
+        return put(path, "conflict", [boxOf(pg!.p, found!.row.words)], txt(shown.flatMap((a) => a.words)) || null, null);
       }
       if (inQuote.length) {
         const figs = (want.length === 2 && inQuote.length === 2 ? [inQuote[i]!] : inQuote).map((a) => ({ words: a.words, values: a.cents === null ? [] : [a.cents], printed: txt(a.words), at: boxOf(pg!.p, a.words) }));

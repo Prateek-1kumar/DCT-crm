@@ -85,8 +85,9 @@ export const ReviewItem = z.object({
    */
   quoted: z.array(PageBox).optional(),
   /**
-   * A total that doesn't add up (VISIT_TOTAL_MISMATCH, PER_PATIENT_TOTAL_MISMATCH): the total as it stood when asked,
-   * what "the total as printed" puts back after "the sum" was picked. Never shown while the total is withheld.
+   * A total that doesn't add up (VISIT_TOTAL_MISMATCH, PER_PATIENT_TOTAL_MISMATCH): the total as printed, as it stood
+   * when asked or as a person typed it since (answerQuestion), what "the total as printed" puts back after "the sum" was
+   * picked. Never "the sum". Never shown while the total is withheld.
    */
   asPrinted: z.number().int().optional(),
   /** Must be settled before approval. */

@@ -182,3 +182,43 @@ describe("the second review of 2026-10-29, by the API's rules", () => {
     expect((await log("st-solace")).filter((e) => e.action === "value.typed")).toHaveLength(1);
   }, 30_000);
 });
+
+describe("the third review of 2026-10-29, by the API's rules", () => {
+  const type = (path: string, value: unknown) => patch("/studies/st-solace/versions/1/values", { path, value, note: "x", by: "Avery Chen" });
+
+  it("F3. a cap's limit typed by hand while its kind is “No limit” is refused, whichever is typed second", async () => {
+    await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
+    const SF = { amountCents: null, basis: "fixed", cap: { kind: "none", n: null, ratio: null }, paidVia: "invoice", requiredDocs: [], prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } };
+    expect((await type("/screenFail", SF)).status).toBe(200);
+    const before = await version("st-solace");
+    const typedLog = async () => (await log("st-solace")).filter((e) => e.action === "value.typed").length;
+    const was = await typedLog();
+    const figure = { status: 409, json: { message: "This cap is set to “No limit”, so there's no limit to type here. If the contract does set one, change the cap's kind first." } };
+    expect(await type("/screenFail/cap/n", 7)).toMatchObject(figure);
+    expect(await type("/screenFail/cap/ratio", 0.5)).toMatchObject(figure);
+    expect(await type("/screenFail", { ...SF, cap: { kind: "none", n: 7, ratio: null } })).toMatchObject(figure);
+    expect([await version("st-solace"), await typedLog()]).toEqual([before, was]);
+    expect((await type("/screenFail/cap/kind", "count")).status).toBe(200);
+    expect((await type("/screenFail/cap/n", 7)).status).toBe(200);
+    expect(await type("/screenFail/cap/kind", "none")).toMatchObject({
+      status: 409,
+      json: { message: "This cap still has a limit typed, so it can't be “No limit”. Clear the limit first, or pick the kind of limit the contract sets." },
+    });
+    expect((await type("/screenFail/cap/n", null)).status).toBe(200);
+    expect((await type("/screenFail/cap/kind", "none")).status).toBe(200);
+    expect((await version("st-solace")).rulebook!.screenFail!.cap).toEqual({ kind: "none", n: null, ratio: null });
+  });
+
+  it("F4. a row or visit added or removed by hand is logged by its size, as the API logs it", async () => {
+    await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
+    const visits = (await version("st-solace")).rulebook!.budgetGrids[0]!.visits;
+    expect((await type("/budgetGrids/0/visits", [...visits, { ...visits[0]!, code: "V2", name: "Week 2", order: 2 }])).status).toBe(200);
+    expect((await type("/budgetGrids/0/visits", visits)).status).toBe(200);
+    const entries = (await log("st-solace")).filter((e) => e.action === "value.typed").map((e) => e.detail);
+    // newest first; the label is the API's own (labelFor, @dct/shared)
+    expect(entries).toEqual([
+      { version: 1, path: "/budgetGrids/0/visits", value: expect.any(String), items: visits.length },
+      { version: 1, path: "/budgetGrids/0/visits", value: expect.any(String), items: visits.length + 1 },
+    ]);
+  });
+});

@@ -11,6 +11,7 @@ import {
   isoDate,
   labelFor,
   noLimit,
+  noLimitTyped,
   proofreadMarks,
   shownAppliesFrom,
   signOffRefusal,
@@ -739,6 +740,9 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   if (dateField(path) && value !== null && leaf(value) && !calendarDay(value)) return err(400, "That isn't a date. Pick the day the contract gives.");
   const rb = setAt(ver.rulebook, path, value);
   if (!RulebookSchema.safeParse(rb).success) return err(400, "That field can't be left empty or take that value.");
+  // a cap with "No limit" takes no figure, as the API refuses it (noLimitTyped, @dct/shared)
+  const capped = noLimitTyped(ver.rulebook, rb, path);
+  if (capped) return err(409, capped);
   // typed again as it is, by whoever typed it: nothing changes, nothing is logged (as the API)
   const after = getAt(rb, path);
   if (JSON.stringify(before) === JSON.stringify(after) && (!leaf(after) || empty(after) || ver.evidence.some((e) => e.path === path && e.note === `Typed by hand by ${by}`))) return ok(view(ver));
@@ -762,7 +766,8 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
   ver.updatedAt = touched(ver.updatedAt);
   if (!ver.editors.some((e) => samePerson(e, by))) ver.editors.push(by);
   st.updatedAt = now();
-  if (leaf(value)) log(d, by, st.id, "value.typed", { version: ver.version, path, value: labelFor(rb, path), before: before ?? null, after: value });
+  // a row or visit added or removed is logged too, by its size, as the API logs it
+  log(d, by, st.id, "value.typed", { version: ver.version, path, value: labelFor(rb, path), ...(leaf(after) ? { before: before ?? null, after } : { items: Array.isArray(after) ? after.length : null }) });
   return ok(view(ver));
 }
 

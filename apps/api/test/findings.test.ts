@@ -540,3 +540,49 @@ describe("L3. the test database guard", () => {
     }
   });
 });
+
+// ---- The third review of 2026-10-29: each `it` failed before its fix. ----
+
+describe("F3. a cap's limit typed by hand while its kind is “No limit”", () => {
+  const SF = { amountCents: null, basis: "fixed", cap: { kind: "none", n: null, ratio: null }, paidVia: "invoice", requiredDocs: [], prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } };
+  const byHand = async (seed: string) => {
+    const { studyId } = await newStudy(app, seed, { scan: true });
+    fakeControls.failNext = 1;
+    await extract(app, studyId);
+    await post(`/studies/${studyId}/versions/by-hand`, { by: "Asha" });
+    const type = (path: string, value: unknown) => patch(`/studies/${studyId}/versions/1/values`, { path, value, note: "x", by: "Asha" });
+    expect((await type("/screenFail", SF)).statusCode).toBe(200);
+    return { studyId, type };
+  };
+
+  it("is refused in words, whichever is typed second, the figure or the kind; nothing is written or logged", async () => {
+    const { studyId, type } = await byHand("cap-hand");
+    const before = await storedVersion(built, studyId, 1);
+    const logged = async () => (await get<AuditPage>(`/audit?studyId=${studyId}`)).items.filter((e) => e.action === "value.typed").length;
+    const was = await logged();
+    const figure = { statusCode: 409, message: "This cap is set to “No limit”, so there's no limit to type here. If the contract does set one, change the cap's kind first." };
+    expect((await type("/screenFail/cap/n", 7)).json()).toMatchObject(figure);
+    expect((await type("/screenFail/cap/ratio", 0.5)).json()).toMatchObject(figure);
+    expect((await type("/screenFail", { ...SF, cap: { kind: "none", n: 7, ratio: null } })).json()).toMatchObject(figure);
+    const after = await storedVersion(built, studyId, 1);
+    expect([after.rulebook, after.evidence, after.updatedAt, await logged()]).toEqual([before.rulebook, before.evidence, before.updatedAt, was]);
+    // the kind first, then its limit: "No limit" over it is refused until the limit is cleared
+    expect((await type("/screenFail/cap/kind", "count")).statusCode).toBe(200);
+    expect((await type("/screenFail/cap/n", 7)).statusCode).toBe(200);
+    expect((await type("/screenFail/cap/kind", "none")).json()).toMatchObject({
+      statusCode: 409,
+      message: "This cap still has a limit typed, so it can't be “No limit”. Clear the limit first, or pick the kind of limit the contract sets.",
+    });
+    expect((await type("/screenFail/cap/n", null)).statusCode).toBe(200);
+    expect((await type("/screenFail/cap/kind", "none")).statusCode).toBe(200);
+    expect((await storedVersion(built, studyId, 1)).rulebook!.screenFail!.cap).toEqual({ kind: "none", n: null, ratio: null });
+  });
+
+  it("one typed before the rule can still be cleared a figure at a time", async () => {
+    const { studyId, type } = await byHand("cap-hand-old");
+    await setRulebook(studyId, (rb) => (rb.screenFail!.cap = { kind: "none", n: 7, ratio: 0.5 }));
+    expect((await type("/screenFail/cap/n", null)).statusCode).toBe(200);
+    expect((await type("/screenFail/cap/ratio", 0.25)).statusCode).toBe(409);
+    expect((await type("/screenFail/cap/ratio", null)).statusCode).toBe(200);
+  });
+});

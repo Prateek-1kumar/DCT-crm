@@ -609,3 +609,50 @@ describe("L2. a cap answered 'No limit'", () => {
     expect(d.rulebook.screenFail!.cap).toEqual({ kind: "none", n: null, ratio: null });
   });
 });
+
+// ---- The third review of 2026-10-29: each `it` failed before its fix. ----
+
+describe("F1. 'as printed' after a total is typed while its recheck waits", () => {
+  const CELL = "/budgetGrids/0/procedures/0/cells/V1";
+  // printed one dollar over its parts; a cell of its grid is in the blind sample, so the recheck waits for it
+  const setUp = (keep = true) => {
+    const rb = rulebook();
+    rb.budgetGrids[0]!.visits[0]!.totalCents = 15100;
+    const found = checks(rb).map((a) => ({ ...a, detail: { expected: 14000, actual: 15100 } }));
+    const [q] = fromAnomalies(found, rb, new Set());
+    const { asPrinted: _, ...old } = q!;
+    const evidence = [ev(TOTAL, "confirmed", "151.00"), ev(CELL, "confirmed", "100.00")];
+    const d = { ...draft([keep ? q! : old, askAbout(rb, evidence, CELL, `sample:${CELL}`, SAMPLE)], evidence, rb), anomalies: found };
+    return { d, id: q!.id };
+  };
+
+  it.each([["kept on the question", true], ["from the read's check, for a question asked before it was kept", false]])(
+    "is what a person typed for the total last, whichever answer runs the recheck (printed value %s)",
+    (_, keep) => {
+      const { d, id } = setUp(keep);
+      answerAndFollow(d, id, { optionId: "sum", note: "Ask the sponsor" });
+      expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(14000);
+      // "This looks wrong" on the total, typed while the sample in its grid is still open
+      d.review.push(askAbout(d.rulebook, d.evidence, TOTAL, "reported:1", "reported"));
+      answerAndFollow(d, "reported:1", { value: 15200 });
+      answerAndFollow(d, "reported:1", { value: 15200, note: "the signed page prints $152.00" });
+      expect(d.review.find((i) => i.id === id)).toMatchObject({ asPrinted: 15200 });
+      // the sample's answer runs the recheck: "the sum" doesn't hold any more, so it's asked again
+      const { logged } = answerAndFollow(d, `sample:${CELL}`, { value: 10000 });
+      expect(logged).toEqual([expect.objectContaining({ action: "review.reopened", detail: expect.objectContaining({ itemId: id }) })]);
+      expect(d.review.find((i) => i.id === id)).toMatchObject({ outcome: null, asPrinted: 15200 });
+      // "as printed" puts back what the person typed, never the old printed total over it
+      answerAndFollow(d, id, { optionId: "printed", note: "The sponsor says the printed total governs" });
+      expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(15200);
+    },
+  );
+
+  it("'the sum' never becomes what's printed", () => {
+    const { d, id } = setUp();
+    answerAndFollow(d, `sample:${CELL}`, { value: 10000 });
+    answerAndFollow(d, id, { optionId: "sum", note: "Ask the sponsor" });
+    expect(d.review.find((i) => i.id === id)).toMatchObject({ asPrinted: 15100 });
+    answerAndFollow(d, id, { optionId: "printed", note: "Back to the printed total" });
+    expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(15100);
+  });
+});

@@ -10,6 +10,7 @@ import {
   labelFor,
   type MasterSearch,
   noLimit,
+  noLimitTyped,
   ProofreadBody,
   proofreadMarks,
   ReportValueBody,
@@ -121,6 +122,9 @@ export const versionRoutes =
         const checked = Rulebook.safeParse(next);
         if (!checked.success) throw new HttpError(400, "That field can't be left empty or take that value.");
         const rb = checked.data;
+        // a cap with "No limit" is billed by nothing else: a figure there would be approved as a limit nobody set (answerQuestion)
+        const capped = noLimitTyped(row.rulebook, rb, path);
+        if (capped) throw new HttpError(409, capped);
         const after = at(rb, path);
         // typed again as it is, by whoever typed it: nothing changes, nothing is logged
         if (isDeepStrictEqual(before, after) && (!leaf(after) || empty(after) || row.evidence.some((e) => e.path === path && e.note === `Typed by hand by ${by}`))) return versionDto(row);

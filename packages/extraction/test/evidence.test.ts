@@ -5,7 +5,7 @@ import { ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { describe, expect, it } from "vitest";
 import { bindEvidence, isoDate, reviewFromEvidence } from "../src/binder";
-import { amounts, inventory, readTextLayer } from "../src/textlayer";
+import { amounts, inventory, readTextLayer, type TextPage } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
 /** Text at (x, y from the top) on a letter page; `up` draws it reading bottom→top (a sideways grid). */
@@ -474,6 +474,64 @@ describe("an amount the master can't hold, and one written with USD", async () =
     expect(bound.unaccounted.map((x) => x.words.map((w) => w.text).join(" "))).toEqual(expect.arrayContaining(["$0.655", "500.00"]));
     rb.invoiceables = [{ ...rulebook().invoiceables[0]!, code: null, name: "Subject mileage", amountCents: 66, amountWithOverheadCents: null, cap: { kind: "none", n: null, ratio: null }, prov: onPage1() }];
     expect(statuses(bindEvidence(rb, text).evidence)["/invoiceables/0/amountCents"]).toBe("conflict");
+  });
+});
+
+describe("a fee's label on a line that isn't the fee's", () => {
+  const fee = (name: string, amountCents: number) => {
+    const rb = rulebook();
+    rb.invoiceables = [{ ...rb.invoiceables[0]!, code: null, name, amountCents, amountWithOverheadCents: null, cap: { kind: "none", n: null, ratio: null }, prov: onPage1() }];
+    return rb;
+  };
+  const bind = (rb: Rulebook, text: TextPage[]) => {
+    const { evidence, unaccounted } = bindEvidence(rb, text);
+    const terms = reviewFromEvidence(evidence, unaccounted, rb).filter((i) => i.reason === "UNACCOUNTED_TERM");
+    return { status: statuses(evidence)["/invoiceables/0/amountCents"], left: unaccounted.map((x) => x.words.map((w) => w.text).join(" ")), asked: terms.map((i) => i.question) };
+  };
+
+  it("one word of the name on another term's line isn't the label: the fee is asked, and the term stays a money term", async () => {
+    const text = await textPdf(["Subject mileage is reimbursed at $0.655 per mile driven to each study visit.", "Parking is reimbursed at $12.00 for each study visit."]);
+    const { status, left, asked } = bind(fee("Unscheduled visit", 35000), text);
+    expect(status).toBe("ungrounded");
+    expect(left).toEqual(["$0.655", "$12.00"]);
+    expect(asked).toEqual([expect.stringContaining("Subject mileage"), expect.stringContaining("Parking")]);
+  });
+
+  it("the name on a line above another term's amount: what that line prints stays a money term while the fee is asked", async () => {
+    // ponytail: the row is still taken (real fee tables print the amount a line below its label), so only the sweep catches it
+    const text = await textPdf(["Unscheduled visits are paid as the budget sets out.", "Taxi fares are reimbursed at $40.00 per trip."]);
+    expect(bind(fee("Unscheduled visit", 35000), text)).toMatchObject({ status: "conflict", left: ["$40.00"], asked: [expect.stringContaining("Taxi fares")] });
+  });
+
+  it("on the fee's own line, a misread consumes nothing: every amount there stays a money term until a person settles it", async () => {
+    const own = await textPdf(["Unscheduled visit $350.00 per occurrence", "This schedule forms part of the agreement signed by both parties."]);
+    expect(bind(fee("Unscheduled visit", 35000), own)).toMatchObject({ status: "confirmed", left: [] });
+    expect(bind(fee("Unscheduled visit", 30500), own)).toMatchObject({ status: "conflict", left: ["$350.00"] });
+    const more = await textPdf(["Unscheduled visit $350.00, plus mileage at $0.655 per mile", "Unscheduled call $50.00, plus parking at $12.00"]);
+    expect(bind(fee("Unscheduled visit", 30500), more)).toMatchObject({ status: "conflict", left: ["$350.00,", "$0.655", "$50.00,", "$12.00"] });
+    // the read's amount is one of two on its line: it's the fee's, asked, and the line stays a money term for the other
+    expect(bind(fee("Unscheduled call", 5000), more)).toMatchObject({ status: "ungrounded", left: ["$350.00,", "$0.655", "$12.00"] });
+  });
+
+  it("nor does a rule's: a figure in its quote that isn't the value stays in the sweep", async () => {
+    const text = await textPdf(["Payment is due within 30 days of invoice and disputes within 60 days of payment."]);
+    const rb = rulebook();
+    rb.payment.netDays = { value: 60, prov: onPage1("Payment is due within 30 days of invoice and disputes within 60 days of payment") };
+    const { evidence, unaccounted } = bindEvidence(rb, text);
+    expect(statuses(evidence)["/payment/netDays/value"]).toBe("ungrounded");
+    const days = (u: typeof unaccounted) => u.filter((x) => x.kind === "days").map((x) => x.words.map((w) => w.text).join(" "));
+    expect(days(unaccounted)).toEqual(["30 days"]);
+    rb.payment.netDays = { value: 45, prov: onPage1("Payment is due within 30 days of invoice") };
+    const misread = bindEvidence(rb, text);
+    expect(statuses(misread.evidence)["/payment/netDays/value"]).toBe("conflict");
+    expect(days(misread.unaccounted)).toEqual(["30 days", "60 days"]);
+  });
+
+  it("a limit printed on a confirmed fee's line is a term of its own, not a number of the fee's row", async () => {
+    const text = await textPdf(["Unscheduled visit fee $350.00, up to 3 per subject", "This schedule forms part of the agreement signed by both parties."]);
+    const { evidence, unaccounted } = bindEvidence(fee("Unscheduled visit fee", 35000), text);
+    expect(statuses(evidence)["/invoiceables/0/amountCents"]).toBe("confirmed");
+    expect(unaccounted.map((x) => x.kind)).toEqual(["limit"]);
   });
 });
 

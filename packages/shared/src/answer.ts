@@ -134,9 +134,9 @@ const WHERE = "Add a short note saying where the page prints this value. The PDF
  * "can't tell", a send-back or a changed answer) every answer stands, the confirmed value again (a typo) or not, so
  * nothing can be tried until it matches. Settled with another value, it has missed (`missed`, ADR-001 §6). No limit on a
  * cap drops its figures, and closes every question still open about them (`closed`); nothing is typed there after. "As
- * printed" on a total whose printed value is lost (printedTotal) is refused. Returns what was written to the master, the
- * log entry (`log`), and the miss's own entry and alert count (`incident`). `isoDate` reads a printed date as the binder
- * does.
+ * printed" on a total whose printed value is lost (printedTotal) is refused; a total typed is its printed value after.
+ * Returns what was written to the master, the log entry (`log`), and the miss's own entry and alert count (`incident`).
+ * `isoDate` reads a printed date as the binder does.
  */
 export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { isoDate, now }: { isoDate: (text: string) => string | null; now: string }) {
   const item = v.review.find((i) => i.id === itemId);
@@ -257,6 +257,10 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     if (had && is && !deepEqual(had, is)) relisted = is.label;
   }
   if (set || listed || relisted) v.rulebook = Rulebook.parse(rb);
+  // A total typed (a correction, a sample, "This looks wrong") is its printed value from now on: what "as printed" on its
+  // "which should we bill" question puts back, whichever later answer runs the recheck that asks it again. "The sum" is
+  // nobody's reading of the page, so it never is.
+  if (set && !ARITHMETIC.has(item.reason)) for (const i of v.review) if (ARITHMETIC.has(i.reason) && i.path === set.path && typeof set.value === "number") i.asPrinted = set.value;
   if (item.path && settled(item)) {
     // what a person typed or chose is attested; one with no ledger entry yet (a value the read never had) gets one
     if (ev) Object.assign(ev, { status: "attested", note: `Typed by ${b.by}` });

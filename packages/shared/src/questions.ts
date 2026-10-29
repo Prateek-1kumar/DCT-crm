@@ -181,6 +181,27 @@ export function capFollowUps(
 /** A cap's limit or ratio while its kind is "No limit": nothing is billed by them, so nothing is written or asked there. */
 export const noLimit = (rb: unknown, path: string) => /\/cap\/(?:n|ratio)$/.test(path) && valueAt(rb, path.replace(/(?:n|ratio)$/, "kind")) === "none";
 
+/**
+ * Typing by hand (PATCH …/values, the API and the sample server alike): what's refused when a typed value at `path`
+ * leaves a cap it touches with "No limit" and a limit or ratio, `after` being the master with it, `before` without. The
+ * export bills such a cap as "No cap", and its figure could never be re-typed (answerQuestion refuses one there), so
+ * it's refused whichever is typed second, the figure or the kind. A cap that was so already (typed before this rule)
+ * can still be cleared a figure at a time.
+ */
+export function noLimitTyped(before: Rulebook, after: Rulebook, path: string): string | null {
+  const caps = [...(after.screenFail ? [["/screenFail/cap", after.screenFail.cap] as const] : []), ...after.invoiceables.map((x, i) => [`/invoiceables/${i}/cap`, x.cap] as const)];
+  const touched = (p: string) => path === p || path.startsWith(`${p}/`) || p.startsWith(`${path}/`);
+  const added = (p: string, c: (typeof caps)[number][1]) => {
+    const was = valueAt(before, p) as typeof c | undefined;
+    return was?.kind !== "none" || (c.n !== null && c.n !== was.n) || (c.ratio !== null && c.ratio !== was.ratio);
+  };
+  const hit = caps.find(([p, c]) => c.kind === "none" && (c.n !== null || c.ratio !== null) && touched(p) && added(p, c));
+  if (!hit) return null;
+  return path === `${hit[0]}/kind`
+    ? "This cap still has a limit typed, so it can't be “No limit”. Clear the limit first, or pick the kind of limit the contract sets."
+    : "This cap is set to “No limit”, so there's no limit to type here. If the contract does set one, change the cap's kind first.";
+}
+
 // ---------- a question about one value ----------
 
 /** Nothing there to compare with or to re-type: no value, an empty text, an empty list. */

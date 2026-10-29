@@ -129,7 +129,7 @@ export function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked:
 /** Checks whose truth depends on numbers a person may type: held back while they're open (heldBack), then run again. */
 const RECHECKED = new Set<ContractAnomaly["code"]>(["VISIT_TOTAL_MISMATCH", "PER_PATIENT_TOTAL_MISMATCH", "OVERHEAD_LABEL_MISMATCH"]);
 
-/** Whether a settled "which should we bill" answer still says what the master holds: the sum of the parts as they are now, or the total as printed. */
+/** Whether a settled "which should we bill" answer still says what the master holds: the sum of the parts as they are now, or the total as printed (as last typed). */
 function holds(rb: Rulebook, i: ReviewItem): boolean {
   const now = at(rb, i.path!);
   if (i.answer?.optionId === "sum") return now === sumAt(rb, i.path!);
@@ -145,7 +145,9 @@ function holds(rb: Rulebook, i: ReviewItem): boolean {
  * marked done (`anomalies`), so the same holds for it.
  * A total already settled is asked again, in place (`v.review` changes), once its answer no longer holds: a number it
  * adds up from changed (the finding reads differently, or "the sum" isn't the sum any more), or another answer wrote
- * the total itself (then that answer is what's printed). Otherwise billing would take a sum of numbers since corrected.
+ * the total itself (the finding reads differently; "as printed" then puts back that answer, which answerQuestion keeps
+ * as `asPrinted` when it's typed, whichever answer runs this). Otherwise billing would take a sum of numbers since
+ * corrected.
  */
 export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: { rulebook: Rulebook; review: ReviewItem[]; anomalies: ContractAnomaly[] }, path: string): ReviewItem[] {
   const grid = gridOf(path);
@@ -166,7 +168,6 @@ export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: { rulebo
       Object.assign(i, {
         question: f?.question ?? i.question,
         options: f?.options ?? i.options,
-        ...(path === i.path ? { asPrinted: at(v.rulebook, path) } : {}),
         answer: null, outcome: null, compare: null, sentBack: null,
       });
   }
