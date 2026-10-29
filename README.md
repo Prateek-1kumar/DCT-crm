@@ -11,17 +11,16 @@ You need Node 24 (`.nvmrc`; `engines` asks for 24 or later), pnpm 10, and Apple 
 ### First time
 
 ```sh
-cp .env.example .env    # fill in ANTHROPIC_API_KEY, or set EXTRACTION_FAKE=1 to read without AI
+cp .env.example .env    # fill in ANTHROPIC_API_KEY
 pnpm run setup          # install, start Postgres, apply the migrations
 ```
 
-Use `pnpm run setup`: `pnpm setup` runs pnpm's own setup command instead. Only starting the server needs `ANTHROPIC_API_KEY` or `EXTRACTION_FAKE=1`; the migration step doesn't.
+Use `pnpm run setup`: `pnpm setup` runs pnpm's own setup command instead. Only starting the server needs `ANTHROPIC_API_KEY`; the migration step doesn't.
 
 ### Every day
 
 ```sh
-pnpm dev:fake           # Postgres + API + web; reads are synthetic, no AI cost
-pnpm dev                # the same with real AI reads (costs money)
+pnpm dev                # Postgres + API + web, with real AI reads (costs money)
 ```
 
 Open http://127.0.0.1:3100. Ctrl-C stops the API and the web; Postgres keeps running until `pnpm db:stop`. After pulling a change that adds a migration, run `pnpm --filter @dct/api db:migrate` and restart.
@@ -40,7 +39,6 @@ No database or API is needed. The sample data lives in the browser; Settings →
 |---|---|
 | `pnpm run setup` | Install, start Postgres, apply migrations to the dev database |
 | `pnpm dev` | Postgres, API on 127.0.0.1:4100 and web on 127.0.0.1:3100, with real AI reads (costs money) |
-| `pnpm dev:fake` | The same, with `EXTRACTION_FAKE=1`: synthetic reads; page images, the PDF text checks and the review are real |
 | `pnpm dev:mock` | Web only, in sample mode |
 | `pnpm dev:api` / `pnpm dev:web` | One side on its own (`dev:web` talks to the real API) |
 | `pnpm db:start` / `pnpm db:stop` | Start or stop the Postgres container |

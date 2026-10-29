@@ -109,9 +109,15 @@ describe("settings, checked at startup", () => {
 
   it("only a server that reads contracts needs the AI key; the migrator never does", async () => {
     expect(problems({ DATABASE_URL: base.DATABASE_URL })).toBeNull();
-    expect(readingProblem({})).toContain("- ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)");
+    expect(readingProblem({})).toContain("- ANTHROPIC_API_KEY is needed to read contracts");
     expect(readingProblem({ ANTHROPIC_API_KEY: "k" })).toBeNull();
-    expect(readingProblem({ EXTRACTION_FAKE: "1" })).toBeNull();
+    // the synthetic reading never starts on a real database, the dev default included, key or not
+    const fakeOnly = "- EXTRACTION_FAKE=1 is only for the automated tests";
+    expect(readingProblem({ EXTRACTION_FAKE: "1" })).toContain(fakeOnly);
+    expect(readingProblem({ EXTRACTION_FAKE: "1", ANTHROPIC_API_KEY: "k", DATABASE_URL: "postgres://u:p@db:5432/dct_finance" })).toContain(fakeOnly);
+    expect(readingProblem({ EXTRACTION_FAKE: "1", DATABASE_URL: "postgres://u:p@db:5432/dct_test_copy" })).toContain(fakeOnly);
+    expect(readingProblem({ EXTRACTION_FAKE: "1", DATABASE_URL: "postgres://u:p@db:5432/dct_finance_test" })).toBeNull();
+    expect(readingProblem({ EXTRACTION_FAKE: "1", DATABASE_URL: "postgres://u:p@db:5432/dct_finance_e2e" })).toBeNull();
     // the release step itself: no key, no fake reading (set but empty, so .env can't fill them in)
     const api = path.resolve(import.meta.dirname, "..");
     const { stdout } = await promisify(execFile)(path.join(api, "node_modules/.bin/tsx"), ["src/db/migrate.ts"], {

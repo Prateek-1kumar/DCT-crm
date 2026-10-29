@@ -67,11 +67,23 @@ function needs(env: Record<string, string>): string[] {
   return out;
 }
 
-/** Why this server can't read contracts, or null: only a server that runs the reading needs the AI key (server.ts). */
+/**
+ * Why this server can't read contracts, or null: only a server that runs the reading needs the AI key (server.ts). The
+ * synthetic reading is for the automated tests only, so it starts only on a test database (`_test`, `_e2e`): on a real
+ * one it would answer an uploaded contract with made-up terms (owner, 2026-10-29).
+ */
 export function readingProblem(env: NodeJS.ProcessEnv = process.env): string | null {
-  return env.EXTRACTION_FAKE !== "1" && !env.ANTHROPIC_API_KEY
-    ? "The API's settings aren't valid (check .env or the environment):\n  - ANTHROPIC_API_KEY is needed to read contracts (or set EXTRACTION_FAKE=1 for the synthetic reading)"
-    : null;
+  const bad = (why: string) => `The API's settings aren't valid (check .env or the environment):\n  - ${why}`;
+  if (env.EXTRACTION_FAKE === "1") {
+    let db = "";
+    try {
+      db = new URL(env.DATABASE_URL || DEV_DATABASE_URL).pathname.slice(1);
+    } catch {
+      // not a URL: parseConfig reports it; here it's simply not a test database
+    }
+    return /_(test|e2e)$/.test(db) ? null : bad("EXTRACTION_FAKE=1 is only for the automated tests, on a database whose name ends in _test or _e2e");
+  }
+  return env.ANTHROPIC_API_KEY ? null : bad("ANTHROPIC_API_KEY is needed to read contracts");
 }
 
 export class ConfigError extends Error {}

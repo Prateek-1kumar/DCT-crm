@@ -8,7 +8,7 @@ Start with [docs/architecture.md](docs/architecture.md). Each package has its ow
 
 - Never commit, paste or log anything from `data/` (real contracts, answer keys, uploads) or `.env`. Tests and fixtures use synthetic PDFs only.
 - Patient data never goes to the AI. Only contracts do, and only through `packages/extraction/src/llm.ts`.
-- Never run anything that spends AI money without the owner's explicit approval: `pnpm eval`, `pnpm probe`, a real read (`pnpm dev` or `dev:api` with real keys, then reading a contract), or any script that builds a client from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. Use `pnpm dev:fake` or `EXTRACTION_FAKE=1`.
+- Never run anything that spends AI money without the owner's explicit approval: `pnpm eval`, `pnpm probe`, a real read (`pnpm dev` or `dev:api` with real keys, then reading a contract), or any script that builds a client from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. The synthetic reading (`EXTRACTION_FAKE=1`) is for the automated tests only: the server refuses it unless its database name ends in `_test` or `_e2e` (`readingProblem`), so the owner never sees made-up terms for a real contract.
 - Never stop the owner's dev servers (web 3100, API 4100) or their Postgres container. Use other ports, and never point a second API at the dev database `dct_finance`: its workers would take the owner's jobs (and complete a real read with a fake one under `EXTRACTION_FAKE=1`).
 - Never discard uncommitted changes you didn't make (`git checkout -- .`, `git reset --hard`, `git clean`, `git stash` of others' work).
 - Never weaken a money invariant below to make a test or a screen pass. If one is in the way, stop and ask.
@@ -79,7 +79,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks f
 - Next.js 16 differs from your training data. Read the guide in `apps/web/node_modules/next/dist/docs/` before writing web code.
 - Postgres runs in Apple `container` (`container ls`, `container exec`), not Docker: `apps/api/scripts/db.sh`.
 - Run the root setup script as `pnpm run setup`: `pnpm setup` is pnpm's own command.
-- Anything that imports `apps/api/src/config.ts` exits on a bad setting (`db:migrate`, `e2e-reset`, the API tests' global setup). Only starting the server (`src/server.ts`: `dev`, `start`) needs `ANTHROPIC_API_KEY` or `EXTRACTION_FAKE=1`; migrations, tests and the e2e don't. Outside the repo, `DATABASE_URL` and `UPLOAD_DIR` are required.
+- Anything that imports `apps/api/src/config.ts` exits on a bad setting (`db:migrate`, `e2e-reset`, the API tests' global setup). Only starting the server (`src/server.ts`: `dev`, `start`) needs `ANTHROPIC_API_KEY` (or `EXTRACTION_FAKE=1` on a `_test` / `_e2e` database); migrations, tests and the e2e don't. Outside the repo, `DATABASE_URL` and `UPLOAD_DIR` are required.
 - Drizzle queries are thenables that run only when awaited: an un-awaited `audit(tx, …)` or `tx.update(…)` writes nothing, silently. `pnpm lint` catches it (`no-floating-promises` with `checkThenables`).
 - `db.sh` publishes Postgres on 127.0.0.1 only, but a `dct-postgres` container created before that change (`d496a1f`) keeps listening on every interface until it's recreated. That deletes its data: see the runbook ("Recreating the dev database container") and ask the owner first.
 - The API reads the repo-root `.env`; the web doesn't (Next reads `apps/web/.env*` and the shell).

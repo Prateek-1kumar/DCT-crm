@@ -12,7 +12,7 @@ Since 2026-10-28 the API implements the review workflow of ADR-001 (`docs/phase-
 pnpm install
 apps/api/scripts/db.sh start          # Postgres 16 in Apple `container` "dct-postgres", port 5434; creates dct_finance, dct_finance_test, dct_finance_e2e
 pnpm --filter @dct/api db:migrate     # drizzle migrations (DATABASE_URL from repo-root .env)
-EXTRACTION_FAKE=1 pnpm dev:api        # tsx watch: http://127.0.0.1:4100/api/v1
+pnpm dev:api                         # tsx watch: http://127.0.0.1:4100/api/v1 (real AI reads cost money)
 pnpm --filter @dct/api test           # uses dct_finance_test, temp UPLOAD_DIR, fake extraction
 pnpm --filter @dct/api typecheck
 pnpm --filter @dct/api lint           # ESLint (un-awaited Drizzle queries and promises)

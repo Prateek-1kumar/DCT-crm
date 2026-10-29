@@ -102,4 +102,4 @@ The web shows the same journey as six steps: Upload, Reading, Checking, Needs yo
 | As printed | For a total that doesn't add up, the answer "the total as printed": it writes back the total the contract prints, kept on the question (`asPrinted`) as the read had it, or as a person last typed it (a correction, a sample, "This looks wrong"). Never the sum. "The sum" writes the parts added up instead. |
 | Stranded job | A job pg-boss failed for good (its server died, it ran out of time, its handler threw), copied to the `stranded` queue and marked failed there in plain words. |
 | Sample mode | The web with `NEXT_PUBLIC_API_MOCK=1`: an in-browser sample server with invented data, no API or database. |
-| Fake mode | The API with `EXTRACTION_FAKE=1`: the AI calls return a synthetic reading. Page images, the text layer and the evidence binding are real. |
+| Fake mode | The API with `EXTRACTION_FAKE=1`, for the automated tests only (it starts only on a `_test` or `_e2e` database): the AI calls return a synthetic reading. Page images, the text layer and the evidence binding are real. |

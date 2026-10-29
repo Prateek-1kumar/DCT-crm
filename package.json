@@ -7,7 +7,6 @@
     "db:start": "apps/api/scripts/db.sh start",
     "db:stop": "apps/api/scripts/db.sh stop",
     "dev": "apps/api/scripts/db.sh start && (pnpm dev:api & pnpm dev:web; wait)",
-    "dev:fake": "apps/api/scripts/db.sh start && (EXTRACTION_FAKE=1 pnpm dev:api & pnpm dev:web; wait)",
     "dev:api": "pnpm --filter @dct/api dev",
     "dev:web": "pnpm --filter web dev:api",
     "dev:mock": "pnpm --filter web dev",
