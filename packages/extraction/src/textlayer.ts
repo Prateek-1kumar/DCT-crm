@@ -43,6 +43,17 @@ export type TextPage = {
   largePicture: boolean;
   /** Our OCR's page (source "ocr"): areas with ink no word it read covers, each asked about (ocr.ts). */
   unread?: PageBox[];
+  /**
+   * Drawn as vector shapes with no text layer (text turned into outlines, as some signing tools print): it renders sharp
+   * at any size, so it's read by our OCR, not a photo of a page. Its tables' rules are in the file (`grids`).
+   */
+  drawn?: boolean;
+  /**
+   * The ruled tables drawn on this page (grid.ts), each: its outline and its rules, in page points like `Word.rect`,
+   * ascending: the x of every vertical rule and the y of every horizontal one. A table's cells are what they enclose; on a
+   * sideways table the text's reading frame (frame()) turns these into its rows and columns.
+   */
+  grids?: { box: [number, number, number, number]; xs: number[]; ys: number[] }[];
 };
 
 /** COPD's signed budget grid is set in 3.2 pt type, so the ADR's "under 4 pt" would hide a real grid. */
