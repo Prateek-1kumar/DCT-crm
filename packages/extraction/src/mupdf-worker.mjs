@@ -93,16 +93,19 @@ function subpaths(path, ctm) {
 
 /** Rule segments of one drawn path: the straight sides of a stroke, or a thin filled rectangle (a rule drawn as a shape). */
 function addRules(rules, path, ctm, stroked) {
+  // a crafted page can't grow this without bound: collecting stops past the cap (gridsOf then finds no table)
+  if (rules.length > MAX_RULES) return;
   for (const sp of subpaths(path, ctm)) {
-    const [xs, ys] = [sp.map((p) => p[0]), sp.map((p) => p[1])];
-    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (const [x, y] of sp) [x0, x1, y0, y1] = [Math.min(x0, x), Math.max(x1, x), Math.min(y0, y), Math.max(y1, y)];
     if (stroked) {
       for (let i = 1; i < sp.length; i++) {
         const [[ax, ay], [bx, by]] = [sp[i - 1], sp[i]];
         if (Math.abs(ay - by) < 0.5 && Math.abs(ax - bx) > MIN_RULE) rules.push({ dir: "h", at: ay, from: Math.min(ax, bx), to: Math.max(ax, bx) });
         else if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) > MIN_RULE) rules.push({ dir: "v", at: ax, from: Math.min(ay, by), to: Math.max(ay, by) });
       }
-    } else if (sp.length <= 5 && sp.every(([x, y]) => (Math.abs(x - x0) < 0.01 || Math.abs(x - x1) < 0.01) && (Math.abs(y - y0) < 0.01 || Math.abs(y - y1) < 0.01))) {
+    } else if (sp.length <= 6 && sp.every(([x, y]) => (Math.abs(x - x0) < 0.1 || Math.abs(x - x1) < 0.1) && (Math.abs(y - y0) < 0.1 || Math.abs(y - y1) < 0.1))) {
+      // a rectangle: four corners, closed back to the first (the last side drawn out or by closePath), corners to 0.1 pt
       if (y1 - y0 < 1.5 && x1 - x0 > MIN_RULE) rules.push({ dir: "h", at: (y0 + y1) / 2, from: x0, to: x1 });
       else if (x1 - x0 < 1.5 && y1 - y0 > MIN_RULE) rules.push({ dir: "v", at: (x0 + x1) / 2, from: y0, to: y1 });
     }
