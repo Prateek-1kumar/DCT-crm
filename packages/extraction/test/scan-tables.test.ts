@@ -217,3 +217,148 @@ describe("a table that prints two costs before its visits", () => {
     expect(unit()).toBe("conflict");
   });
 });
+
+/**
+ * A table's drawn grid (TextPage.grids): rows lined up with the read's rows by what they print, visits by their columns'
+ * headers. Built straight as a TextPage (our OCR's words and a ruled table), upright (dir 0) or sideways (dir 3, text
+ * reading bottom to top). Row names are printed differently from the read's on purpose: only the grid path can then find them.
+ */
+type Printed = string | [text: string, conf: number] | null;
+const U = [40, 160, 220, 280, 340, 400, 460];
+const V0 = 80;
+const RH = 20;
+
+function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = "ocr"): TextPage {
+  const words: TextPage["words"] = [];
+  table.forEach((row, r) =>
+    row.forEach((c, k) => {
+      if (!c) return;
+      const [text, conf] = typeof c === "string" ? [c, 0.99] : c;
+      let u = U[k]! + 4;
+      for (const t of text.split(" ")) {
+        const [u0, u1, v0, v1] = [u, u + 5 * t.length, V0 + RH * r + 5, V0 + RH * r + 15];
+        // sideways: the reading frame's u runs up the page (y = 700 - u), v across it (x)
+        const rect: TextPage["words"][number]["rect"] = dir === 0 ? [u0, v0, u1, v1] : [v0, 700 - u1, v1, 700 - u0];
+        words.push({ text: t, rect, dir, block: words.length, line: words.length, hidden: false, conf });
+        u = u1 + 4;
+      }
+    }),
+  );
+  const ys = table.map((_, r) => V0 + RH * r).concat(V0 + RH * table.length);
+  const rules = dir === 0 ? { xs: U, ys } : { xs: ys, ys: U.map((u) => 700 - u).reverse() };
+  const box: [number, number, number, number] = [Math.min(...rules.xs), Math.min(...rules.ys), Math.max(...rules.xs), Math.max(...rules.ys)];
+  return { documentId: "d1", page: 1, width: 612, height: 792, source, words, hidden: 0, largePicture: false, grids: [{ box, ...rules }] };
+}
+
+const HEAD: Printed[] = ["Procedure", "Cost", "Week 4", "Week 8", "Week 12", "Total"];
+const TABLE: Printed[][] = [
+  HEAD,
+  ["Venipuncture", "100.00", "100.00", "200.00", "300.00", "600.00"],
+  ["ECG tracing", "50.00", "50.00", null, "150.00", "200.00"],
+  ["Urine screen", "25.00", null, "25.00", "25.00", "50.00"],
+];
+const VISITS: [string, string][] = [["T4", "Week 4"], ["T8", "Week 8"], ["T12", "Week 12"]];
+const read = (): Rulebook =>
+  grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Electrocardiogram", 50, { T4: 50, T12: 150 }], ["Urinalysis", 25, { T8: 25, T12: 25 }]]);
+const bind = (rb: Rulebook, p: TextPage) => bindEvidence(rb, [p]).evidence;
+const statuses = (ev: ValueEvidence[], row: number, visits: string[]) => visits.map((v) => cellStatus(ev, row, v));
+const unit = (ev: ValueEvidence[], row: number) => ev.find((e) => e.path === `/budgetGrids/0/procedures/${row}/unitCents`)?.status;
+
+describe.each([0, 3] as const)("the drawn grid, text reading direction %i", (dir) => {
+  const page = (t: Printed[][] = TABLE) => drawn(t, dir);
+
+  it("confirms a clean table, rows the read worded differently included", () => {
+    const ev = bind(read(), page());
+    expect(statuses(ev, 0, ["T4", "T8", "T12"])).toEqual(["confirmed", "confirmed", "confirmed"]);
+    expect(statuses(ev, 1, ["T4", "T12"])).toEqual(["confirmed", "confirmed"]);
+    expect(statuses(ev, 2, ["T8", "T12"])).toEqual(["confirmed", "confirmed"]);
+    expect([0, 1, 2].map((r) => unit(ev, r))).toEqual(["confirmed", "confirmed", "confirmed"]);
+    // without the drawn grid the label path can't find those rows: it is the grid that did it
+    expect(cellStatus(bind(read(), { ...page(), grids: undefined }), 0, "T8")).not.toBe("confirmed");
+  });
+
+  it("never confirms a one-digit change in any cell", () => {
+    for (const [row, visit] of [[0, "T4"], [0, "T8"], [0, "T12"], [1, "T4"], [1, "T12"], [2, "T8"], [2, "T12"]] as const) {
+      for (const d of [10, -10, 1, -1, 100, 1000]) {
+        const rb = read();
+        const cells = rb.budgetGrids[0]!.procedures[row]!.cells;
+        cells[visit] = (cells[visit] as number) + d * 100;
+        expect(cellStatus(bind(rb, page()), row, visit)).not.toBe("confirmed");
+      }
+    }
+  });
+
+  it("never confirms a price moved to the neighbouring visit where the row prints nothing", () => {
+    const rb = read();
+    rb.budgetGrids[0]!.procedures[1]!.cells = { T8: 5000, T12: 15000 };
+    const ev = bind(rb, page());
+    expect(cellStatus(ev, 1, "T8")).not.toBe("confirmed");
+    // a price at the visit before the printed one, and the printed one left out, is the same mistake
+    const early = read();
+    early.budgetGrids[0]!.procedures[2]!.cells = { T4: 2500, T8: 2500 };
+    expect(cellStatus(bind(early, page()), 2, "T4")).not.toBe("confirmed");
+  });
+
+  it("never confirms a whole row shifted one visit over", () => {
+    const rb = read();
+    rb.budgetGrids[0]!.procedures[0]!.cells = { T8: 10000, T12: 20000 };
+    expect(statuses(bind(rb, page()), 0, ["T8", "T12"])).not.toContain("confirmed");
+  });
+
+  it("never confirms two rows whose prices were swapped", () => {
+    const rb = grid(VISITS, [["Blood draw", 40, { T4: 40, T8: 80, T12: 90 }], ["Physical exam", 100, { T4: 100, T8: 200, T12: 300 }]]);
+    const table: Printed[][] = [HEAD, ["Blood draw", "100.00", "100.00", "200.00", "300.00", "600.00"], ["Physical exam", "40.00", "40.00", "80.00", "90.00", "210.00"]];
+    const ev = bind(rb, page(table));
+    expect([...statuses(ev, 0, ["T4", "T8", "T12"]), ...statuses(ev, 1, ["T4", "T8", "T12"])]).not.toContain("confirmed");
+  });
+
+  it("falls back when the read's visits are one fewer or one more than the grid's visit columns", () => {
+    const table: Printed[][] = [["Procedure", "Cost", "Visit 1", "Visit 2", "Visit 3", "Total"], ["Blood draw", "100.00", "100.00", "200.00", "300.00", "600.00"]];
+    // fewer: the read dropped Visit 1, and put the first column's price where Visit 2 is
+    const fewer = grid([["V2", "Visit 2"], ["V3", "Visit 3"]], [["Blood draw", 100, { V2: 100, V3: 200 }]]);
+    expect(statuses(bind(fewer, page(table)), 0, ["V2", "V3"])).not.toContain("confirmed");
+    // more: an extra first visit, and Visit 1 given Visit 2's price
+    const more = grid([["S", "Screening"], ["V1", "Visit 1"], ["V2", "Visit 2"], ["V3", "Visit 3"]], [["Blood draw", 100, { V1: 200, V2: 300 }]]);
+    expect(statuses(bind(more, page(table)), 0, ["V1", "V2"])).not.toContain("confirmed");
+  });
+
+  it("falls back when a header tag contradicts its visit (Week 16 over the Week 12 column)", () => {
+    const rb = grid([["T4", "Week 4"], ["T8", "Week 8"], ["T16", "Week 16"]], [["Blood draw", 100, { T4: 100, T8: 200, T16: 300 }]]);
+    const ev = bind(rb, page([HEAD, ["Blood draw", "100.00", "100.00", "200.00", "300.00", "600.00"]]));
+    expect(cellStatus(ev, 0, "T16")).not.toBe("confirmed");
+  });
+
+  it("does not ask about a blank cell the read has no value for", () => {
+    const ev = bind(read(), page());
+    expect(ev.some((e) => e.path === "/budgetGrids/0/procedures/1/cells/T8" || e.path === "/budgetGrids/0/procedures/2/cells/T4")).toBe(false);
+  });
+
+  describe("the row's printed total", () => {
+    const row = (t4: Printed, t8: Printed, total = "600.00"): Printed[][] => [HEAD, ["Blood draw", "100.00", t4, t8, "300.00", total]];
+    const rb = grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }]]);
+
+    it("confirms the one cell the scan is unsure of when the printed total needs the read's value", () => {
+      const ev = bind(rb, page(row("100.00", ["200.00", 0.5])));
+      expect(statuses(ev, 0, ["T4", "T8", "T12"])).toEqual(["confirmed", "confirmed", "confirmed"]);
+      expect(ev.find((e) => e.path === "/budgetGrids/0/procedures/0/cells/T8")?.note).toMatch(/total confirms it/);
+    });
+
+    it("confirms nothing when the total doesn't add up", () => {
+      const off = grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 250, T12: 300 }]]);
+      expect(cellStatus(bind(off, page(row("100.00", ["250.00", 0.5]))), 0, "T8")).toBe("ungrounded");
+    });
+
+    it("confirms nothing when two cells are unconfirmed, though the total adds up", () => {
+      const ev = bind(rb, page(row(["100.00", 0.5], ["200.00", 0.5])));
+      expect(statuses(ev, 0, ["T4", "T8"])).toEqual(["ungrounded", "ungrounded"]);
+      // nor when the total happens to equal the confirmed cell plus either one of them
+      const other = bind(rb, page(row(["100.00", 0.5], ["200.00", 0.5], "500.00")));
+      expect(statuses(other, 0, ["T4", "T8"])).toEqual(["ungrounded", "ungrounded"]);
+    });
+
+    it("confirms nothing when the cell the read left out prints something", () => {
+      const left = grid(VISITS, [["Blood draw", 100, { T8: 200, T12: 300 }]]);
+      expect(cellStatus(bind(left, page(row("100.00", ["200.00", 0.5], "500.00"))), 0, "T8")).toBe("ungrounded");
+    });
+  });
+});
