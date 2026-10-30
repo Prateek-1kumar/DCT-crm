@@ -569,14 +569,15 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
 
 /**
  * The read's rows that `plan` couldn't match by what they print, placed onto the table's body rows by order. Anchors are the
- * rows matched firmly; between two of them the read's rows are placed only when there are exactly as many as the table's
- * body rows between them (a blank row and a total or subtotal row aren't body rows). Any other gap is left alone.
- * Never a guess: whoever confirms the table's check picks the procedure for two of these rows.
+ * rows matched firmly, and the table's own ends; between two of them the read's rows are placed only when there are exactly
+ * as many as the table's body rows between them (a blank row and a total or subtotal row aren't body rows). Any other gap is
+ * left alone. Never a guess: whoever confirms the table's check picks the procedure for two of these rows.
+ * ponytail: a header row above the first anchor is a body row to this count, so a headed table's start is never placed.
  */
 function place(t: Table, rows: number[], found: Map<number, number>, free: (pi: number, j: number) => boolean): Map<number, number> {
   const out = new Map<number, number>();
   const label = rowLabels(t);
-  const anchors = [...found].sort((a, b) => a[0] - b[0]);
+  const anchors = [[-1, -1] as [number, number], ...[...found].sort((a, b) => a[0] - b[0]), [Infinity, t.cells.length] as [number, number]];
   for (let i = 1; i < anchors.length; i++) {
     const [[pa, ja], [pb, jb]] = [anchors[i - 1]!, anchors[i]!];
     const reads = rows.filter((pi) => pi > pa && pi < pb);

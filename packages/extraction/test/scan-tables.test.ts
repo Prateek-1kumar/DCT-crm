@@ -638,6 +638,20 @@ describe.each([0, 3] as const)("rows placed by order, text reading direction %i"
     expect(one.tableChecks.flatMap((c) => c.rows ?? [])).toEqual([]);
   });
 
+  it("places the rows after the last firm one up to the table's end, when the counts are equal", () => {
+    // the table's last two rows are read, but no price places them
+    const rb = withMiddle(mid);
+    rb.budgetGrids[0]!.procedures.splice(3, 1);
+    const { evidence: ev, tableChecks } = bindEvidence(rb, [drawn(table.slice(0, 4), dir)]);
+    expect(heldOf(ev, 1, "T4")).toBe(tableChecks[0]!.id);
+    expect(heldOf(ev, 2, "T8")).toBe(tableChecks[0]!.id);
+    // one row more in the read than the table has: nothing is placed
+    const extra = withMiddle([...mid, ["Height", 20, { T12: "invoiceable" }]]);
+    extra.budgetGrids[0]!.procedures.splice(4, 1);
+    const none = bindEvidence(extra, [drawn(table.slice(0, 4), dir)]);
+    expect(none.tableChecks.flatMap((c) => c.rows ?? [])).toEqual([]);
+  });
+
   it("a total row between the firm ones isn't a body row", () => {
     const withTotal: Printed[][] = [table[0]!, table[1]!, table[2]!, ["Subtotal", "100.00", null, null, null], table[3]!, table[4]!];
     const { evidence: ev } = bindEvidence(withMiddle(mid), [drawn(withTotal, dir)]);
