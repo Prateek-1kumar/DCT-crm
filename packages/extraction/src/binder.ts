@@ -492,7 +492,7 @@ const rowLabels = (t: Table) =>
  * the mapping is `held`: every check applies, but which visit each column is waits for a person (a table check).
  * ponytail: a visit column blank in every matched row, outside the span of the printed ones, is found only if the headers pick the run. Upgrade: columns from the rules' own spacing.
  */
-function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean): Plan | null {
+function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean, pct: number | null = null): Plan | null {
   const labels = rowLabels(t);
   const label = labels.map((ws) => ws.map((w) => norm(w.text)).filter(Boolean));
   const owns = (j: number, p: BudgetGrid["procedures"][number]) => tokens(p.name).some((n) => label[j]!.some((l) => sameToken(n, l)));
@@ -547,7 +547,10 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
   if (visitCols.length !== visits.length) return null;
   const held = !!loose;
   const plain = data.filter((c) => c < visitCols[0]! && UNIT.test(head(c)) && !/total|overhead|incl|with|\boh\b|w\//i.test(head(c)));
-  const unitCol = plain.length === 1 ? plain[0]! : -1;
+  // The unit price is the cost column before overhead. By the page's arithmetic when it has one (costColumns), which a header that
+  // names another column contradicts (then none); else the one column the headers name.
+  const cost = costColumns(t, pct);
+  const unitCol = cost && cost.base < visitCols[0]! ? (plain.length === 0 || (plain.length === 1 && plain[0] === cost.base) ? cost.base : -1) : plain.length === 1 ? plain[0]! : -1;
   // a page without its own header (a continuation) can't say a price under a visit is that visit's
   const headed = !held || visitCols.filter((c) => head(c).trim()).length * 2 >= visitCols.length;
   // A row the prices fit by chance (one price printed all along it) is no match: a value the read has never sits on a blank
@@ -589,6 +592,97 @@ function place(t: Table, rows: number[], found: Map<number, number>, free: (pi: 
     if (reads.every((pi, k) => free(pi, body[k]!))) reads.forEach((pi, k) => out.set(pi, body[k]!));
   }
   return out;
+}
+
+// ---------- cost columns ----------
+
+/** The direction most of a page's words read in: the one its tables are cut in. */
+const domDir = (p: TextPage): Word["dir"] => {
+  const n = [0, 1, 2, 3].map((d) => p.words.filter((w) => !w.hidden && w.dir === d).length);
+  return n.indexOf(Math.max(...n)) as Word["dir"];
+};
+/** What a table's cell prints when the scan is sure of every digit of it, else null. */
+const solid = (t: Table, r: number, c: number): number | null => (t.cells[r]![c]!.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF) ? (t.printed[r]![c] ?? null) : null);
+/** How well a row's printed label and a name say the same, 0 to 1 (words shared, over both's words). */
+const dice = (name: string, label: Word[]) => {
+  const [n, s] = [tokens(name), label.map((w) => norm(w.text)).filter((l) => l.length > 1 && !STOP.has(l))];
+  return (2 * n.filter((x) => s.some((l) => sameToken(x, l))).length) / Math.max(1, n.length + s.length);
+};
+
+/**
+ * A table's cost columns: the price before overhead and the price with it, found by arithmetic on what the page prints and
+ * never by their headers (a scan's headers are garbled or missing). The one with overhead is the pair's right-hand column
+ * where, on rows that print both and differ, the price is the other's plus the contract's overhead % within a cent's
+ * rounding (at least two such rows, and most of the rows that differ); the pair with the most such rows, then the left-most,
+ * is the table's. A table with no overhead rows at all (fees) has none by arithmetic, but a table of at most four number columns
+ * whose only two neighbouring columns that print the same on every row (three at least) says one price twice: both are the
+ * price, and `ratio` is false.
+ * ponytail: the overhead % is the read's (the grid's stated one, else the contract's): a wrong % finds no pair, so the rows are asked.
+ */
+type Costs = { base: number; incl: number; ratio: boolean };
+function costColumns(t: Table, pct: number | null): Costs | null {
+  const busy = t.u.map((_, c) => c).filter((c) => t.cells.filter((_, r) => solid(t, r, c) !== null).length >= 3);
+  let best: (Costs & { n: number }) | null = null;
+  const same: Costs[] = [];
+  for (const a of busy)
+    for (const b of busy) {
+      if (b <= a) continue;
+      let [oh, eq, odd] = [0, 0, 0];
+      t.cells.forEach((_, r) => {
+        const [x, y] = [solid(t, r, a), solid(t, r, b)];
+        if (x === null || y === null || x <= 0) return;
+        if (y === x) eq++;
+        else if (pct !== null && Math.abs(y - Math.round((x * (100 + pct)) / 100)) <= 1) oh++;
+        else odd++;
+      });
+      if (pct !== null && oh >= 2 && odd * 4 <= oh + odd && (!best || oh > best.n)) best = { base: a, incl: b, ratio: true, n: oh };
+      if (oh === 0 && odd === 0 && eq >= 3 && b === busy[busy.indexOf(a) + 1]) same.push({ base: a, incl: b, ratio: false });
+    }
+  if (best) return best;
+  return busy.length <= 4 && same.length === 1 ? same[0]! : null;
+}
+
+/**
+ * The row of a table a priced thing is on, by its name. `base`, `incl`: the cells at the two cost columns; `ok`: what each prints
+ * (OCR digits, every word sure) is the thing's price; `sure`: it prints some number the scan is sure of. `also`: the other cost
+ * column's cell when it prints the very amount confirmed (a price printed twice, with no overhead), which is then the row's too.
+ */
+type CostHit = { base: Word[]; incl: Word[]; ok: { base: boolean; incl: boolean }; sure: { base: boolean; incl: boolean }; left: Word[]; also: Word[]; row: Word[] };
+/**
+ * Each thing's row in the page's drawn tables that have cost columns. The row is the one whose label fits the name best, at least
+ * half and better than every other row (a tie is nobody's); a row two things want goes to the better fit, and to nobody on a tie.
+ * Never a guess: anything else has no hit, and its prices are looked for by label as before. A price is confirmed only by its
+ * own column's cell: a hit whose cell prints another amount says so (the label path must not find the price in the row's
+ * other cells: with a quantity printed like a price, the first amount of the line is not the price before overhead).
+ */
+function byCosts(pg: Page, pct: number | null, things: { name: string; base: number | null; incl: number | null }[]): (CostHit | null)[] {
+  const dir = domDir(pg.p);
+  const tabs = tablesOn(pg.p, dir).flatMap(({ t: ruled }) => {
+    const t = tableOf(pg.p, ruled, dir);
+    const cc = t && costColumns(t, pct);
+    return t && cc ? [{ t, cc, labels: rowLabels(t) }] : [];
+  });
+  const pick = things.map((th) => {
+    const all = tabs.flatMap((tb, ti) => tb.labels.map((l, r) => ({ ti, r, fit: dice(th.name, l) }))).sort((a, b) => b.fit - a.fit);
+    const [top, next] = all;
+    return top && top.fit >= 0.5 && (!next || next.fit < top.fit) ? top : null;
+  });
+  return things.map((th, i) => {
+    const me = pick[i];
+    if (!me || pick.some((o, k) => k !== i && o && o.ti === me.ti && o.r === me.r && o.fit >= me.fit)) return null;
+    const { t, cc } = tabs[me.ti]!;
+    const [b, w] = [solid(t, me.r, cc.base), solid(t, me.r, cc.incl)];
+    const ok = { base: th.base !== null && b === th.base, incl: th.incl !== null && w === th.incl };
+    return {
+      base: t.cells[me.r]![cc.base]!,
+      incl: t.cells[me.r]![cc.incl]!,
+      ok,
+      sure: { base: b !== null, incl: w !== null },
+      left: t.cells[me.r]!.slice(0, cc.base).flat(),
+      also: th.incl === null && ok.base && w === th.base ? t.cells[me.r]![cc.incl]! : [],
+      row: t.cells[me.r]!.flat(),
+    };
+  });
 }
 
 // ---------- quotes ----------
@@ -791,8 +885,12 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     return { pagesOf, colsOn };
   });
 
+  // the overhead % a table's cost columns are found with: the grid's own stated one, else the contract's
+  const overheadPct = (g?: BudgetGrid) => g?.statedOverheadPct ?? rulebook.overhead.pct.value ?? null;
+
   rulebook.budgetGrids.forEach((g, gi) => {
     const gp = `/budgetGrids/${gi}`;
+    const pct = overheadPct(g);
     const { pagesOf, colsOn } = layout[gi]!;
     const ctx = (src: Provenance["source"]) => {
       const pg = pageAt(src);
@@ -863,7 +961,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       for (const { t: ruled, i: ti } of tablesOn(pg.p, dir)) {
         const t = tableOf(pg.p, ruled, dir);
         const rest = idx.filter((pi) => !viaGrid.has(pi) && !heldRows.has(pi));
-        const pl = t && rest.length ? plan(t, g, rest, (r) => gridTaken.has(`${k}#${ti}#${r}`)) : null;
+        const pl = t && rest.length ? plan(t, g, rest, (r) => gridTaken.has(`${k}#${ti}#${r}`), pct) : null;
         if (!t || !pl) continue;
         let id: string | undefined;
         const check = () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir));
@@ -972,6 +1070,18 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       options.push(o);
     });
     for (const o of options) if (rowOf.get(o.pi) === o) claimed.push({ row: o.row, header: o.header, visits });
+    // The unit price of a row no planned table took: the row of a table with cost columns whose label fits its name, and its
+    // cell before overhead (byCosts). Used only where the label path above has no unit column of its own to judge it by.
+    const unitHits = new Map<number, CostHit>();
+    const unitPages = new Map<string, number[]>();
+    g.procedures.forEach((p, pi) => {
+      const src = p.prov.source;
+      if (src && p.unitCents !== null && !viaGrid.has(pi) && !heldRows.has(pi)) unitPages.set(`${src.documentId}#${src.page}`, [...(unitPages.get(`${src.documentId}#${src.page}`) ?? []), pi]);
+    });
+    for (const [k, idx] of unitPages) {
+      const pg = data.get(k);
+      if (pg?.p.grids?.length) byCosts(pg, pct, idx.map((pi) => ({ name: g.procedures[pi]!.name, base: g.procedures[pi]!.unitCents, incl: null }))).forEach((h, n) => h && unitHits.set(idx[n]!, h));
+    }
     g.procedures.forEach((p, pi) => {
       if (viaGrid.has(pi)) return;
       const pp = `${gp}/procedures/${pi}`;
@@ -987,7 +1097,12 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const unit = c && found ? unitOnRow(c.cols, found.row) : null;
       for (const [path, key, value] of entries) {
         if (key === "#unit" && unit && typeof value === "number") put(path, cents(unit.text) === value ? "confirmed" : "conflict", [boxOf(c!.pg.p, [unit])], unit.text, null, [unit]);
-        else if (!c || !found || (key === "#unit" ? !c.cols.unit : !c.cols.at.has(key))) put(path, "ungrounded", found && c ? [boxOf(c.pg.p, found.row.words)] : nowhere(p.prov.source), null);
+        else if (key === "#unit" && unitHits.has(pi) && !(c && found && c.cols.unit)) {
+          const h = unitHits.get(pi)!;
+          const where = [boxOf(pageAt(p.prov.source)!.p, h.base.length ? h.base : h.row)];
+          if (h.ok.base) put(path, "confirmed", where, txt(h.base), null, [...h.base, ...h.also, ...h.left.filter((w) => NUMBER.test(bare(w.text)) && !priceLike(w))]);
+          else put(path, h.sure.base ? "conflict" : "ungrounded", where, h.sure.base ? txt(h.base) : null, h.sure.base ? null : "the scan is unclear here", h.sure.base ? [] : h.base);
+        } else if (!c || !found || (key === "#unit" ? !c.cols.unit : !c.cols.at.has(key))) put(path, "ungrounded", found && c ? [boxOf(c.pg.p, found.row.words)] : nowhere(p.prov.source), null);
         else cell(path, c, found.row, key, value, found.code ? [found.code] : [], p.unitCents);
       }
     });
@@ -1098,7 +1213,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
    * Label + amount on one row of the cited page, or the amount inside the quote; else a wrong page reference. `within`:
    * the lines the row may be on (a grid's band, when another grid shares the page).
    */
-  function item(base: string, code: string | null, name: string, prov: Provenance, fields: [string, number | null][], within: (l: Line) => boolean = () => true) {
+  function item(base: string, code: string | null, name: string, prov: Provenance, fields: [string, number | null][], within: (l: Line) => boolean = () => true, hit: CostHit | null = null) {
     const src = prov.source;
     const pg = pageAt(src);
     const lineAmounts = (pg: Page) => pg.lines.filter((l) => within(l) && amounts(l.words).length);
@@ -1123,6 +1238,14 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const alone = (as: { cents: number | null }[], value: number, i: number) => (want.length === 2 && as.length >= 2 ? as[i]!.cents === value : as.every((a) => a.cents === value));
     want.forEach(([field, value], i) => {
       const path = `${base}/${field}`;
+      // the cell at its cost column in the row of a drawn table (byCosts) says it: confirmed, with the row's other numbers (quantity,
+      // code) its own; or says another amount: asked, and the line's other amounts are not looked at
+      if (hit) {
+        const [cell, ok, sure] = field === "amountWithOverheadCents" ? [hit.incl, hit.ok.incl, hit.sure.incl] : [hit.base, hit.ok.base, hit.sure.base];
+        const where = [boxOf(pg!.p, cell.length ? cell : hit.row)];
+        if (ok) return put(path, "confirmed", where, txt(cell), null, [...cell, ...hit.also, ...hit.left.filter((w) => NUMBER.test(bare(w.text)) && !priceLike(w))]);
+        return put(path, sure ? "conflict" : "ungrounded", where, sure ? txt(cell) : null, sure ? null : "the scan is unclear here", sure ? [] : cell);
+      }
       const spot = positional ? onRow[i] : onRow.find((a) => a.cents === value);
       const used = found?.code ? [found.code] : [];
       if (spot?.cents === value && !alone(onRow, value, i))
@@ -1154,8 +1277,23 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     });
   }
 
-  rulebook.invoiceables.forEach((x, i) => item(`/invoiceables/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents], ["amountWithOverheadCents", x.amountWithOverheadCents]]));
-  rulebook.siteFees.forEach((x, i) => item(`/siteFees/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents]]));
+  // Invoiceable items and site fees found by their row in a drawn table with cost columns (byCosts), page by page.
+  const costHits = new Map<string, CostHit>();
+  {
+    const by = new Map<string, { key: string; name: string; base: number | null; incl: number | null }[]>();
+    const add = (key: string, x: { name: string; prov: Provenance }, base: number | null, incl: number | null) => {
+      const k = x.prov.source ? `${x.prov.source.documentId}#${x.prov.source.page}` : "";
+      by.set(k, [...(by.get(k) ?? []), { key, name: x.name, base, incl }]);
+    };
+    rulebook.invoiceables.forEach((x, i) => add(`/invoiceables/${i}`, x, x.amountCents, x.amountWithOverheadCents));
+    rulebook.siteFees.forEach((x, i) => add(`/siteFees/${i}`, x, x.amountCents, null));
+    for (const [k, things] of by) {
+      const pg = data.get(k);
+      if (pg?.p.grids?.length) byCosts(pg, overheadPct(rulebook.budgetGrids[0]), things).forEach((h, n) => h && costHits.set(things[n]!.key, h));
+    }
+  }
+  rulebook.invoiceables.forEach((x, i) => item(`/invoiceables/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents], ["amountWithOverheadCents", x.amountWithOverheadCents]], undefined, costHits.get(`/invoiceables/${i}`)));
+  rulebook.siteFees.forEach((x, i) => item(`/siteFees/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents]], undefined, costHits.get(`/siteFees/${i}`)));
   if (rulebook.screenFail) item("/screenFail", null, "screen failure", rulebook.screenFail.prov, [["amountCents", rulebook.screenFail.amountCents]]);
 
   /**

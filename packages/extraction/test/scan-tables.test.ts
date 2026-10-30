@@ -228,13 +228,13 @@ const U = [40, 160, 220, 280, 340, 400, 460];
 const V0 = 80;
 const RH = 20;
 
-function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = "ocr", cut: number[] = [], skew = 0): TextPage {
+function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = "ocr", cut: number[] = [], skew = 0, cols: number[] = U): TextPage {
   const words: TextPage["words"] = [];
   table.forEach((row, r) =>
     row.forEach((c, k) => {
       if (!c) return;
       const [text, conf] = typeof c === "string" ? [c, 0.99] : c;
-      let u = U[k]! + 4;
+      let u = cols[k]! + 4;
       for (const t of text.split(" ")) {
         const [u0, u1, v0, v1] = [u, u + 5 * t.length, V0 + RH * r + 5, V0 + RH * r + 15];
         // sideways: the reading frame's u runs up the page (y = 700 - u), v across it (x)
@@ -248,7 +248,7 @@ function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = 
   // `cut`: rows where the table is drawn as a new piece (a header strip, a body in two); `skew` moves the first piece's column rules
   const ends = [0, ...cut, table.length];
   const grids = ends.slice(1).map((end, i) => {
-    const [seg, us] = [ys.slice(ends[i]!, end + 1), U.map((u) => u + (i === 0 ? skew : 0))];
+    const [seg, us] = [ys.slice(ends[i]!, end + 1), cols.map((u) => u + (i === 0 ? skew : 0))];
     const rules = dir === 0 ? { xs: us, ys: seg } : { xs: seg, ys: us.map((u) => 700 - u).reverse() };
     return { box: [Math.min(...rules.xs), Math.min(...rules.ys), Math.max(...rules.xs), Math.max(...rules.ys)] as [number, number, number, number], ...rules };
   });
@@ -798,5 +798,99 @@ describe.each([0, 3] as const)("a unit price by its column, text reading directi
     expect(unitEv(read(4000))?.held).toBeDefined();
     expect(unitEv(read(5200))?.held).toBeUndefined();
     expect(unitEv(read(5200))?.status).not.toBe("confirmed");
+  });
+});
+
+/**
+ * A table's two cost columns, found by arithmetic on what the page prints (the price with overhead is the other's plus the
+ * overhead %), never by their headers: items and unit prices are confirmed at their own column's cell, in the row whose label
+ * fits their name. The quantity prints like a price ("2.00"), which the label path would take for the first amount.
+ */
+describe.each([0, 3] as const)("cost columns by arithmetic, text reading direction %i", (dir) => {
+  const HEADS: Printed[] = ["Item", "OH?", "Qty", "Cost", "Cost", "Total"];
+  const ROWS: Printed[][] = [
+    ["Venipuncture kit", "Y", "2.00", "100.00", "130.00", "260.00"],
+    ["Electrode pack", "Y", "1.00", "50.00", "65.00", "65.00"],
+    ["Urine cup set", "N", "3.00", "25.00", "25.00", "75.00"],
+    ["Spirometry filter", "Y", "4.00", "40.00", "52.00", "208.00"],
+  ];
+  const page = (rows: Printed[][] = ROWS) => drawn([HEADS, ...rows], dir);
+  type ItemRead = [name: string, base: number, incl: number | null];
+  const READ: ItemRead[] = [["Venipuncture kit", 100, 130], ["Electrode pack", 50, 65], ["Urine cup set", 25, 25], ["Spirometry filter", 40, 52]];
+  const read = (items: ItemRead[] = READ, pct = 30): Rulebook => {
+    const rb = grid([["V1", "Visit 1"]], []);
+    rb.overhead.pct.value = pct;
+    rb.screenFail = null;
+    rb.siteFees = [];
+    rb.invoiceables = items.map(([name, base, incl]) => ({ ...makeRulebook().invoiceables[0]!, code: null, name, amountCents: base * 100, amountWithOverheadCents: incl === null ? null : incl * 100, prov: { ...on } }));
+    return rb;
+  };
+  const item = (ev: ValueEvidence[], i: number, f: "amountCents" | "amountWithOverheadCents") => ev.find((e) => e.path === `/invoiceables/${i}/${f}`)?.status;
+  const all = (ev: ValueEvidence[]) => READ.flatMap((_, i) => [item(ev, i, "amountCents"), item(ev, i, "amountWithOverheadCents")]);
+
+  it("confirms an item's price before overhead and with it at their columns, where the label path alone finds a conflict", () => {
+    expect(all(bind(read(), page()))).toEqual(Array(8).fill("confirmed"));
+    // (an item whose two prices are the same is found by the label path too)
+    expect(all(bind(read(), { ...page(), grids: undefined })).slice(0, 4)).not.toContain("confirmed");
+  });
+
+  it("never confirms the two prices exchanged, or a one-digit change", () => {
+    const swapped = read(READ.map(([n, b, w]): ItemRead => [n, w!, b]));
+    const ev = bind(swapped, page());
+    expect([0, 1, 3].flatMap((i) => [item(ev, i, "amountCents"), item(ev, i, "amountWithOverheadCents")])).not.toContain("confirmed");
+    for (const [i, f] of [[0, "amountCents"], [1, "amountWithOverheadCents"], [3, "amountCents"]] as const) {
+      for (const d of [1, -1, 10, -10, 100]) {
+        const rb = read();
+        const x = rb.invoiceables[i]!;
+        x[f] = (x[f] as number) + d * 100;
+        expect(item(bind(rb, page()), i, f)).not.toBe("confirmed");
+      }
+    }
+  });
+
+  it("finds no cost columns when the % the read gives isn't the one the page's prices follow", () => {
+    // (not the item whose two prices are the same: the label path finds it)
+    expect(all(bind(read(READ, 20), page())).filter((_, k) => k !== 4 && k !== 5)).not.toContain("confirmed");
+  });
+
+  it("confirms only the price whose cell agrees: the other, read wrongly, is asked", () => {
+    const rb = read();
+    rb.invoiceables[0]!.amountWithOverheadCents = 14000;
+    const ev = bind(rb, page());
+    expect(item(ev, 0, "amountCents")).toBe("confirmed");
+    expect(item(ev, 0, "amountWithOverheadCents")).not.toBe("confirmed");
+  });
+
+  it("places nothing on two rows that carry the same name, or where another item fits the row better", () => {
+    const twice = [...ROWS, ["Venipuncture kit", "Y", "1.00", "100.00", "130.00", "130.00"] as Printed[]];
+    expect(item(bind(read(), page(twice)), 0, "amountCents")).not.toBe("confirmed");
+    // a longer name that holds the first's words doesn't take its row: the row goes to the better fit
+    const both = read([...READ, ["Venipuncture kit single use", 100, 130]]);
+    const ev = bind(both, page());
+    expect(item(ev, 4, "amountCents")).not.toBe("confirmed");
+    expect(item(ev, 0, "amountCents")).toBe("confirmed");
+  });
+
+  it("confirms a unit price at the cost column before overhead, never the one with it", () => {
+    const rb = grid([["V1", "Visit 1"]], [["Venipuncture kit", 100, {}], ["Electrode pack", 65, {}]]);
+    rb.overhead.pct.value = 30;
+    rb.invoiceables = read().invoiceables;
+    const ev = bind(rb, page());
+    expect(["/budgetGrids/0/procedures/0/unitCents", "/budgetGrids/0/procedures/1/unitCents"].map((p) => ev.find((e) => e.path === p)?.status)).toEqual(["confirmed", "conflict"]);
+  });
+
+  it("a table that prints one price twice (no overhead) is read as one cost, and a fee is confirmed at it", () => {
+    const fees: Printed[][] = [HEADS, ["Start-up fee", "N", "1.00", "500.00", "500.00", "500.00"], ["Archive fee", "N", "2.00", "300.00", "300.00", "600.00"], ["Pharmacy fee", "N", "2.00", "150.00", "150.00", "300.00"]];
+    const rb = read();
+    rb.invoiceables = [];
+    rb.siteFees = [["Start-up fee", 500], ["Archive fee", 300], ["Pharmacy fee", 150]].map(([name, d]) => ({ ...makeRulebook().siteFees[0]!, code: null, name: name as string, amountCents: (d as number) * 100, prov: { ...on } }));
+    const st = (r: Rulebook, table: Printed[][], i: number) => bind(r, drawn(table, dir)).find((e) => e.path === `/siteFees/${i}/amountCents`)?.status;
+    expect([0, 1, 2].map((i) => st(rb, fees, i))).toEqual(["confirmed", "confirmed", "confirmed"]);
+    rb.siteFees[1]!.amountCents = 30100;
+    expect(st(rb, fees, 1)).not.toBe("confirmed");
+    // two columns that differ are no price printed twice
+    const differ = fees.map((r, i) => (i === 3 ? [r[0], r[1], r[2], r[3], "310.00", r[5]] : r) as Printed[]);
+    rb.siteFees[1]!.amountCents = 30000;
+    expect(st(rb, differ, 1)).not.toBe("confirmed");
   });
 });

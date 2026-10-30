@@ -6,7 +6,9 @@
  * - wrong confirmed: a value the key pins down, confirmed, but not the key's value. The gate: 0.
  * - planted errors: every confirmed value changed by one digit (random, and a look-alike digit), every grid row shifted
  *   one visit over, each cell copied to a neighbouring visit the read leaves empty ("invoiceable" marks too), two adjacent
- *   rows' contents exchanged (rowSwap) and a whole block of rows with held cells placed one row down (rowShift); each must
+ *   rows' contents exchanged (rowSwap), a whole block of rows with held cells placed one row down (rowShift), and the two cost
+ *   columns read the wrong way round (costColumnSwap: an item's price before overhead and with it exchanged, a unit price read
+ *   from the column with overhead); each must
  *   come out unconfirmed (a value that bills the same amount as before isn't an error).
  *   The gate: all caught. A copy the page itself prints in that visit's cell is the read's miss, counted apart.
  * - questions per contract, today (no OCR) and with OCR, by reason.
@@ -89,9 +91,22 @@ function keyed(rb: Rulebook, g: Golden): Map<string, number | string> {
     }
   }
   const items = [...rb.invoiceables.map((x, i) => ({ base: `/invoiceables/${i}`, x, withOh: x.amountWithOverheadCents })), ...rb.siteFees.map((x, i) => ({ base: `/siteFees/${i}`, x, withOh: null }))];
-  for (const { base, x, withOh } of items) {
-    const named = g.items.filter((k) => (k.code && x.code && norm(k.code) === norm(x.code)) || (sameName(k.name, x.name) && sharesWord(k.name, x.name)));
-    if (named.length !== 1) continue;
+  // One golden item is one read item's key. The name test is loose (a longer name that holds a shorter one's words passes it), so
+  // when several read items pair with one golden item, the one whose words are the closest to its own keeps it, and a tie leaves it
+  // with none: a key must not be set against a different item that only resembles it.
+  const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  const closeness = (a: string, b: string) => {
+    const [x, y] = [words(a), words(b)];
+    return (2 * [...x].filter((t) => y.has(t)).length) / (x.size + y.size);
+  };
+  const pairs = items.flatMap((it) => {
+    const named = g.items.filter((k) => (k.code && it.x.code && norm(k.code) === norm(it.x.code)) || (sameName(k.name, it.x.name) && sharesWord(k.name, it.x.name)));
+    return named.length === 1 ? [{ ...it, k: named[0]!, close: closeness(named[0]!.name, it.x.name) }] : [];
+  });
+  for (const { base, x, withOh, k, close } of pairs) {
+    const rivals = pairs.filter((o) => o.k === k && o.base !== base);
+    if (rivals.some((o) => o.close >= close)) continue;
+    const named = [k];
     if (x.amountCents !== null) out.set(`${base}/amountCents`, named[0]!.cents);
     if (withOh !== null && withOh !== undefined && named[0]!.withOverheadCents !== undefined) out.set(`${base}/amountWithOverheadCents`, named[0]!.withOverheadCents);
   }
@@ -157,17 +172,18 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const final = new Map(withOcr.evidence.map((e) => [e.path, sure(e) ? "confirmed" : e.status]));
   let wrongConfirmed = 0;
   let aiWrong = 0;
+  const wrongAt: string[] = [];
   for (const [p, v] of key) {
     const right = get(rb, p) === v;
     if (!right) aiWrong++;
-    if (!right && final.get(p) === "confirmed") wrongConfirmed++;
+    if (!right && final.get(p) === "confirmed") (wrongConfirmed++, wrongAt.push(p));
   }
 
   // planted errors, bound against the OCR alone (the totals can't confirm a changed value: they no longer add up)
   const base = bindEvidence(rb, pages);
   const confirmed = confirmedIn(base.evidence);
   const heldPaths = new Set(base.evidence.filter((e) => e.held).map((e) => e.path));
-  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0] };
+  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift" | "costColumnSwap", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0], costColumnSwap: [0, 0] };
   for (const kind of ["digit", "lookalike"] as const)
     for (let round = 0; round < 3; round++) {
       const m = structuredClone(rb);
@@ -293,6 +309,29 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const [down, up] = [moveRows(1), moveRows(-1)];
   planted.rowShift = [down.tried, down.caught];
   const rowOffByOne = { rowBelow: `${down.still.filter((x) => heldPaths.has(x)).length}/${down.tried}`, rowAbove: `${up.still.filter((x) => heldPaths.has(x)).length}/${up.tried}` };
+  // The two cost columns read the wrong way round: an item's price before overhead and with it exchanged, and a row's unit price
+  // read from the column with overhead (its own price plus the overhead %). Where the two come out the same nothing changed.
+  const swappedCosts = structuredClone(rb);
+  const costPaths: string[] = [];
+  swappedCosts.invoiceables.forEach((x, i) => {
+    const [a, b] = [rb.invoiceables[i]!.amountCents, rb.invoiceables[i]!.amountWithOverheadCents];
+    if (a === null || b === null || a === b) return;
+    [x.amountCents, x.amountWithOverheadCents] = [b, a];
+    costPaths.push(`/invoiceables/${i}/amountCents`, `/invoiceables/${i}/amountWithOverheadCents`);
+  });
+  swappedCosts.budgetGrids.forEach((g, gi) => {
+    const pct = rb.budgetGrids[gi]!.statedOverheadPct ?? rb.overhead.pct.value;
+    if (pct === null) return;
+    g.procedures.forEach((p, pi) => {
+      const unit = rb.budgetGrids[gi]!.procedures[pi]!.unitCents;
+      if (unit === null || Math.round((unit * (100 + pct)) / 100) === unit) return;
+      p.unitCents = Math.round((unit * (100 + pct)) / 100);
+      costPaths.push(`/budgetGrids/${gi}/procedures/${pi}/unitCents`);
+    });
+  });
+  const afterCosts = confirmedIn(bindEvidence(swappedCosts, pages).evidence);
+  const costsTried = costPaths.filter((x) => confirmed.has(x));
+  planted.costColumnSwap = [costsTried.length, costsTried.filter((x) => !afterCosts.has(x)).length];
   // a price put at the visit next door, where the row prints nothing: billing a procedure at a visit that doesn't have it
   const misplaced = structuredClone(rb);
   const placed: string[] = [];
@@ -328,7 +367,8 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
     autoConfirmed: { values: withOcr.evidence.length, confirmed: nConfirmed, withHeld: nConfirmed + nHeld, share: pct(nConfirmed), shareWithHeld: pct(nConfirmed + nHeld) },
     mappingOffByOne: { ...offByOne, ...rowOffByOne },
     rowsPlacedByOrder: base.tableChecks.reduce((n, c) => n + (c.rows?.length ?? 0), 0),
-    key: { keyed: key.size, aiWrong, wrongConfirmed },
+    // the paths of any wrong confirmation (indices only, no text), so it can be found
+    key: { keyed: key.size, aiWrong, wrongConfirmed, ...(wrongAt.length ? { wrongAt } : {}) },
     planted: Object.fromEntries(Object.entries(planted).map(([k, [tried, caught]]) => [k, `${caught}/${tried}`])),
     readMissedAVisitThePagePrints: readMissed,
   };
