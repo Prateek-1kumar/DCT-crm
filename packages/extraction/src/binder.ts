@@ -374,6 +374,116 @@ function columnOf(cols: Cols, w: Word): string | null {
 
 const cellWords = (cols: Cols, row: Line, key: string) => row.words.filter((w) => columnOf(cols, w) === key);
 
+// ---------- a table's drawn grid ----------
+
+type Ruled = NonNullable<TextPage["grids"]>[number];
+/**
+ * A ruled table cut into cells by its drawn rules (grid.ts), in the text's reading frame: `cells[row][col]` are the words
+ * whose centre lies inside, left to right. A sideways table's rows and columns come from frame(), not the page's axes.
+ * `printed`: each cell's price when it prints one.
+ */
+type Table = { cells: Word[][][]; u: Span2[]; printed: (number | null)[][] };
+
+const bands = (rs: number[]): Span2[] => rs.slice(1).map((r, i): Span2 => [rs[i]!, r]);
+const flip = (xs: number[]) => xs.map((x) => -x).reverse();
+
+function tableOf(p: TextPage, g: Ruled, dir: Word["dir"]): Table | null {
+  const [us, vs] = ([[g.xs, g.ys], [g.ys, flip(g.xs)], [flip(g.xs), flip(g.ys)], [flip(g.ys), g.xs]] as [number[], number[]][])[dir]!;
+  if (us.length < 2 || vs.length < 2) return null;
+  const [u, v] = [bands(us), bands(vs)];
+  const cells = v.map(() => u.map((): Word[] => []));
+  const into = (bs: Span2[], x: number) => bs.findIndex(([a, b]) => x >= a && x < b);
+  for (const w of p.words) {
+    if (w.hidden || w.dir !== dir) continue;
+    const f = frame(w);
+    const [r, c] = [into(v, (f[1] + f[3]) / 2), into(u, (f[0] + f[2]) / 2)];
+    if (r >= 0 && c >= 0) cells[r]![c]!.push(w);
+  }
+  for (const row of cells) for (const ws of row) ws.sort((a, b) => frame(a)[0] - frame(b)[0]);
+  // only a number printed like money is a price: a code or a count in the same row is not
+  const printed = cells.map((row) => row.map((ws) => (ws.some(priceLike) ? cents(txt(ws)) : null)));
+  return { cells, u, printed };
+}
+
+/** The page's drawn tables that hold price-like words, the one holding the most first (a word is in a table when its centre is). */
+function tablesOn(p: TextPage): { g: Ruled; i: number }[] {
+  const prices = p.words.filter((w) => !w.hidden && priceLike(w)).map((w) => [(w.rect[0] + w.rect[2]) / 2, (w.rect[1] + w.rect[3]) / 2] as const);
+  const held = (g: Ruled) => prices.filter(([x, y]) => x >= g.box[0] && x <= g.box[2] && y >= g.box[1] && y <= g.box[3]).length;
+  return (p.grids ?? []).map((g, i) => ({ g, i, n: held(g) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
+}
+
+const TOTALISH = /total|overhead|indirect|f\s?&\s?a\b/i;
+/** `rows`: the AI's procedure index → the table's row. `cols`: visit code → the table's column; `first`/`last`: the visit columns' ends. */
+type Plan = { rows: Map<number, number>; cols: Map<string, number>; first: number; last: number };
+
+/**
+ * Each header cell against its visit: a "word+number" tag with other digits ("Week 12" over "Week 4") contradicts it, and
+ * at least half the visits must positively match (their code as a word, their name, or a tag).
+ */
+function headerAgrees(visits: BudgetGrid["visits"], heads: string[]): boolean {
+  let hits = 0;
+  for (const [k, v] of visits.entries()) {
+    const h = heads[k]!;
+    const [have, want] = [tagsOf(h), new Set([...tagsOf(v.name), ...tagsOf(v.code)])];
+    const word = (t: string) => t.replace(/\d+$/, "");
+    if ([...have].some((t) => !want.has(t) && [...want].some((x) => word(x) === word(t)))) return false;
+    const code = norm(v.code);
+    if ([...want].some((t) => have.has(t)) || (code && h.split(/\s+/).map(norm).includes(code)) || (norm(v.name).length >= 4 && norm(h).includes(norm(v.name)))) hits++;
+  }
+  return hits >= Math.ceil(visits.length / 2);
+}
+
+/**
+ * The AI's rows (`rows`, in its order) lined up with the table's, and its visits with the table's visit columns; null
+ * unless all of it is clean, and the caller falls back to finding rows by their labels.
+ * A table row fits an AI row when it prints every number the AI read for it (two at least; one, with a word of the row's
+ * name printed in it), unless its label names another AI row and not this one: two rows whose prices were swapped must not
+ * each find the other's. Rows are the longest in-order matching of those fits, one table row each. Visit columns are the
+ * price columns right of the unit/cost ones, as many as there are visits, with a header over each that doesn't contradict
+ * its visit.
+ * ponytail: a visit column blank in every matched row isn't seen, so the counts differ and it falls back. Upgrade: columns from the rules' own spacing.
+ */
+function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean): Plan | null {
+  const labels = t.cells.map((row, r) => {
+    const k = t.printed[r]!.findIndex((x) => x !== null);
+    return row.slice(0, k < 0 ? row.length : k).flat();
+  });
+  const label = labels.map((ws) => ws.map((w) => norm(w.text)).filter(Boolean));
+  const owns = (j: number, p: BudgetGrid["procedures"][number]) => tokens(p.name).some((n) => label[j]!.some((l) => sameToken(n, l)));
+  const weight = rows.map((pi, i) => {
+    const p = g.procedures[pi]!;
+    const want = [...Object.values(p.cells).filter((v): v is number => typeof v === "number"), ...(p.unitCents !== null ? [p.unitCents] : [])];
+    return t.cells.map((_, j) => {
+      if (taken(j) || (TOTALISH.test(txt(labels[j]!)) && !TOTALISH.test(p.name))) return 0;
+      const have = t.printed[j]!.filter((x) => x !== null);
+      if (!want.length || !want.every((v) => { const k = have.indexOf(v); return k >= 0 && have.splice(k, 1); })) return 0;
+      const mine = owns(j, p);
+      if (want.length < 2 && !mine) return 0;
+      if (!mine && rows.some((o, i2) => i2 !== i && owns(j, g.procedures[o]!))) return 0;
+      return 1000 + (mine ? 1 : 0);
+    });
+  });
+  const dp = Array.from({ length: rows.length + 1 }, () => new Array<number>(t.cells.length + 1).fill(0));
+  rows.forEach((_, i) => t.cells.forEach((__, j) => (dp[i + 1]![j + 1] = Math.max(dp[i]![j + 1]!, dp[i + 1]![j]!, weight[i]![j]! ? dp[i]![j]! + weight[i]![j]! : 0))));
+  const found = new Map<number, number>();
+  for (let i = rows.length, j = t.cells.length; i > 0 && j > 0; ) {
+    if (weight[i - 1]![j - 1] && dp[i]![j] === dp[i - 1]![j - 1]! + weight[i - 1]![j - 1]!) (found.set(rows[i - 1]!, j - 1), i--, j--);
+    else if (dp[i]![j] === dp[i - 1]![j]) i--;
+    else j--;
+  }
+  if (!found.size) return null;
+  const used = [...found.values()];
+  const head = (c: number) => txt(t.cells.slice(0, Math.min(...used)).flatMap((row) => row[c]!));
+  const data = t.u.flatMap((_, c) => (used.some((r) => t.printed[r]![c] !== null) ? [c] : []));
+  const unit = Math.max(-1, ...data.filter((c) => UNIT.test(head(c)) && !/total/i.test(head(c))));
+  const visitCols = data.filter((c) => c > unit);
+  while (visitCols.length && /total/i.test(head(visitCols.at(-1)!))) visitCols.pop();
+  const visits = [...g.visits].sort((a, b) => a.order - b.order);
+  if (!visitCols.length || visitCols.length !== visits.length) return null;
+  if (!headerAgrees(visits, visitCols.map(head))) return null;
+  return { rows: found, cols: new Map(visits.map((v, k) => [v.code, visitCols[k]!])), first: visitCols[0]!, last: visitCols.at(-1)! };
+}
+
 // ---------- quotes ----------
 
 const QUOTE_WORD = (s: string) =>
@@ -536,6 +646,8 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   // numbers). Upgrade: match each grid's printed title above its header.
   const headersOn = new Map<string, Line[]>();
   const claimed: { row: Line; header: Line; visits: Set<string> }[] = [];
+  // the drawn grid's rows (page#table#row) a grid has bound: one printed row confirms one grid's cells at most
+  const gridTaken = new Set<string>();
   const layout = rulebook.budgetGrids.map((g) => {
     const pagesOf = [...new Set([...g.procedures, ...g.visits].flatMap((x) => (x.prov.source ? [`${x.prov.source.documentId}#${x.prov.source.page}`] : [])))].sort((a, b) => Number(a.split("#")[1]) - Number(b.split("#")[1]));
     // A continuation page without its own header uses the columns of the grid page before it.
@@ -568,26 +680,98 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const cands = lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(bare(w.text)) || /invoic/i.test(w.text)) && columnOf(cols, w)));
       return { pg, cols, lines, band, cands };
     };
-    const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = [], unitCents: number | null = null) => {
-      const ws = cellWords(c.cols, row, key);
+    type Judged = { status: ValueEvidence["status"]; where: PageBox[]; printed: string | null; note: string | null; used: Word[] };
+    const judge = (pg: TextPage, ws: Word[], rowWords: Word[], value: number | "invoiceable", used: Word[], own: boolean, unitCents: number | null): Judged => {
       const printed = ws.length ? txt(ws) : null;
       // An "invoiceable" cell is there when the cell says so, or prints the row's price: tables print a price only under the
       // visits it applies to (owner, from the scans, 2026-10-29). Only under the page's own header: on a continuation page
       // the columns are carried over, and a price under the visit next door is the same price (one shared visit pattern
       // was confirmed there for 5 rows the read didn't list). How the row is billed is a meaning, asked as such.
-      const own = c.pg.lines.includes(c.cols.line);
       const ok = value === "invoiceable" ? /invoic/i.test(printed ?? "") || (own && unitCents !== null && cents(printed) === unitCents) : cents(printed) === value;
       // On a scan, a blank or garbled cell is as likely the OCR's miss as the page's: it says nothing either way, so the
       // value is unfound (the totals or a person decide), not contradicted. A PDF's own blank cell is a real blank.
       // "Invoiceable" is how the read says a cell is billed, not a number the OCR can check: it decides nothing there either.
-      const unread = c.pg.p.source === "ocr" && !ok && (value === "invoiceable" || printed === null || cents(printed) === null || ws.some((w) => (w.conf ?? 1) < MIN_OCR_CONF));
+      const unread = pg.source === "ocr" && !ok && (value === "invoiceable" || printed === null || cents(printed) === null || ws.some((w) => (w.conf ?? 1) < MIN_OCR_CONF));
+      const where = [boxOf(pg, ws.length ? ws : rowWords)];
       // what the cell prints belongs to a row the master holds, and its value is asked: it isn't another money term too
-      if (unread) return put(path, "ungrounded", [boxOf(c.pg.p, ws.length ? ws : row.words)], null, "the scan is unclear here", ws);
-      put(path, ok ? "confirmed" : "conflict", [boxOf(c.pg.p, ws.length ? ws : row.words)], printed, null, [...ws, ...used]);
+      if (unread) return { status: "ungrounded", where, printed: null, note: "the scan is unclear here", used: ws };
+      // digits that agree but that the OCR wasn't sure of: put() downgrades them the same way
+      if (ok && [...ws, ...used].some((w) => (w.conf ?? 1) < MIN_OCR_CONF)) return { status: "ungrounded", where, printed: null, note: "the scan is unclear here", used: [...ws, ...used] };
+      return { status: ok ? "confirmed" : "conflict", where, printed, note: null, used: [...ws, ...used] };
     };
+    const emit = (path: string, j: Judged) => put(path, j.status, j.where, j.printed, j.note, j.used);
+    const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = [], unitCents: number | null = null) =>
+      emit(path, judge(c.pg.p, cellWords(c.cols, row, key), row.words, value, used, c.pg.lines.includes(c.cols.line), unitCents));
+
+    // Cells by the table's drawn grid, where the cited page has one that holds the table: rows lined up in order by what
+    // they print, visits by their columns' headers. Anything it can't do cleanly is left to the label path below.
+    const viaGrid = new Set<number>();
+    const byPage = new Map<string, number[]>();
+    g.procedures.forEach((p, pi) => p.prov.source && byPage.set(`${p.prov.source.documentId}#${p.prov.source.page}`, [...(byPage.get(`${p.prov.source.documentId}#${p.prov.source.page}`) ?? []), pi]));
+    for (const [k, idx] of byPage) {
+      const pg = data.get(k);
+      if (!pg?.p.grids?.length) continue;
+      const dirs = [0, 1, 2, 3].map((d) => pg.p.words.filter((w) => !w.hidden && w.dir === d).length);
+      const dir = dirs.indexOf(Math.max(...dirs)) as Word["dir"];
+      for (const { g: ruled, i: ti } of tablesOn(pg.p)) {
+        const t = tableOf(pg.p, ruled, dir);
+        const pl = t && plan(t, g, idx, (r) => gridTaken.has(`${k}#${ti}#${r}`));
+        if (!t || !pl) continue;
+        for (const [pi, j] of pl.rows) {
+          gridTaken.add(`${k}#${ti}#${j}`);
+          viaGrid.add(pi);
+          const p = g.procedures[pi]!;
+          const pp = `${gp}/procedures/${pi}`;
+          const row = t.cells[j]!;
+          const rowWords = row.flat();
+          // codes and counts left of the visit columns belong to this row; its prices are bound only where a value is read
+          row.slice(0, pl.first).flat().forEach((w) => NUMBER.test(bare(w.text)) && !priceLike(w) && bound.add(w));
+          const out = new Map<string, Judged>();
+          for (const [key, value] of Object.entries(p.cells)) {
+            const col = pl.cols.get(key);
+            out.set(`${pp}/cells/${ptr(key)}`, col === undefined ? { status: "ungrounded", where: [boxOf(pg.p, rowWords)], printed: null, note: null, used: [] } : judge(pg.p, row[col]!, rowWords, value, [], true, p.unitCents));
+          }
+          // The unit price: the one price left of the visit columns, or of several the one its own visit cells print most often.
+          if (p.unitCents !== null) {
+            const left = row.slice(0, pl.first).filter((ws, c) => t.printed[j]![c] !== null);
+            const seen = [...pl.cols.values()].flatMap((c) => (t.printed[j]![c] === null ? [] : [t.printed[j]![c]!]));
+            const top = [...new Set(seen)].map((v) => ({ v, n: seen.filter((x) => x === v).length })).sort((a, b) => b.n - a.n);
+            const pick = left.length === 1 ? left[0] : top.length && !(top[1] && top[1].n === top[0]!.n) ? left.find((ws) => cents(txt(ws)) === top[0]!.v) : undefined;
+            out.set(`${pp}/unitCents`, pick ? judge(pg.p, pick, rowWords, p.unitCents, [], true, null) : { status: "ungrounded", where: [boxOf(pg.p, rowWords)], printed: null, note: null, used: [] });
+          }
+          // Third check, from the printed page alone: the row's own total. With every other visit cell confirmed (or blank on
+          // both sides) and exactly one the scan leaves unread, the cell whose read value makes the sum exact is confirmed.
+          // Two unconfirmed cells would let a wrong pair cancel out, so then nothing is confirmed by it.
+          let [sum, open, clean] = [0, null as string | null, true];
+          for (const [key, col] of pl.cols) {
+            const value = p.cells[key];
+            const r = out.get(`${pp}/cells/${ptr(key)}`);
+            if (value === undefined) clean &&= !row[col]!.length;
+            else if (value === "invoiceable") clean = false;
+            else if (r?.status === "confirmed") sum += value;
+            else if (r?.status === "ungrounded" && open === null) open = key;
+            else clean = false;
+          }
+          if (Object.keys(p.cells).some((key) => !pl.cols.has(key))) clean = false;
+          const target = open === null ? null : p.cells[open];
+          if (clean && open !== null && typeof target === "number" && sum + target > 0) {
+            const total = row.slice(pl.last + 1).find((ws) => ws.some(priceLike) && cents(txt(ws)) === sum + target && ws.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF));
+            const path = `${pp}/cells/${ptr(open)}`;
+            if (total) {
+              const was = out.get(path)!;
+              row[pl.cols.get(open)!]!.forEach((w) => bound.add(w));
+              out.set(path, { status: "confirmed", where: was.where, printed: null, note: "the row's printed total confirms it", used: total });
+            }
+          }
+          for (const [path, j2] of out) emit(path, j2);
+        }
+        break;
+      }
+    }
 
     // Grid cells, by the row's label and the visit's column. One printed row per item: best label matches claim rows first.
     const options = g.procedures.flatMap((p, pi) => {
+      if (viaGrid.has(pi)) return [];
       const c = ctx(p.prov.source);
       return c ? rowsFor(c.lines, c.cands, p.code, p.name, c.cols.left).map((o) => ({ ...o, pi, header: c.cols.line })) : [];
     });
@@ -603,7 +787,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     // line, so the row stays unfound and asked; each cell is still checked in its own visit's column.
     g.procedures.forEach((p, pi) => {
       const c = ctx(p.prov.source);
-      if (rowOf.has(pi) || !c) return;
+      if (rowOf.has(pi) || !c || viaGrid.has(pi)) return;
       const want = [...Object.values(p.cells).filter((v): v is number => typeof v === "number"), ...(p.unitCents !== null ? [p.unitCents] : [])];
       if (want.length < 2) return;
       const name = tokens(p.name);
@@ -629,6 +813,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     });
     for (const o of options) if (rowOf.get(o.pi) === o) claimed.push({ row: o.row, header: o.header, visits });
     g.procedures.forEach((p, pi) => {
+      if (viaGrid.has(pi)) return;
       const pp = `${gp}/procedures/${pi}`;
       const c = ctx(p.prov.source);
       const found = rowOf.get(pi);
