@@ -228,7 +228,7 @@ const U = [40, 160, 220, 280, 340, 400, 460];
 const V0 = 80;
 const RH = 20;
 
-function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = "ocr"): TextPage {
+function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = "ocr", cut: number[] = [], skew = 0): TextPage {
   const words: TextPage["words"] = [];
   table.forEach((row, r) =>
     row.forEach((c, k) => {
@@ -245,9 +245,14 @@ function drawn(table: Printed[][], dir: 0 | 3 = 0, source: TextPage["source"] = 
     }),
   );
   const ys = table.map((_, r) => V0 + RH * r).concat(V0 + RH * table.length);
-  const rules = dir === 0 ? { xs: U, ys } : { xs: ys, ys: U.map((u) => 700 - u).reverse() };
-  const box: [number, number, number, number] = [Math.min(...rules.xs), Math.min(...rules.ys), Math.max(...rules.xs), Math.max(...rules.ys)];
-  return { documentId: "d1", page: 1, width: 612, height: 792, source, words, hidden: 0, largePicture: false, grids: [{ box, ...rules }] };
+  // `cut`: rows where the table is drawn as a new piece (a header strip, a body in two); `skew` moves the first piece's column rules
+  const ends = [0, ...cut, table.length];
+  const grids = ends.slice(1).map((end, i) => {
+    const [seg, us] = [ys.slice(ends[i]!, end + 1), U.map((u) => u + (i === 0 ? skew : 0))];
+    const rules = dir === 0 ? { xs: us, ys: seg } : { xs: seg, ys: us.map((u) => 700 - u).reverse() };
+    return { box: [Math.min(...rules.xs), Math.min(...rules.ys), Math.max(...rules.xs), Math.max(...rules.ys)] as [number, number, number, number], ...rules };
+  });
+  return { documentId: "d1", page: 1, width: 612, height: 792, source, words, hidden: 0, largePicture: false, grids };
 }
 
 const HEAD: Printed[] = ["Procedure", "Cost", "Week 4", "Week 8", "Week 12", "Total"];
@@ -360,5 +365,109 @@ describe.each([0, 3] as const)("the drawn grid, text reading direction %i", (dir
       const left = grid(VISITS, [["Blood draw", 100, { T8: 200, T12: 300 }]]);
       expect(cellStatus(bind(left, page(row("100.00", ["200.00", 0.5], "500.00"))), 0, "T8")).toBe("ungrounded");
     });
+  });
+});
+
+/**
+ * The same planted errors over tables the plain grid path can't read: prices without cents ("150", "45.5") and a table
+ * drawn in pieces (its header strip apart from the body, the body in two). The row names the read uses differ from the
+ * page's, so only the grid path finds them.
+ */
+const WHOLE: Printed[][] = [
+  HEAD,
+  ["Venipuncture", "100", "100", "200", "300", "600"],
+  ["ECG tracing", "45.5", "45.5", null, "136.5", "182"],
+  ["Urine screen", "25", null, "25", "25", "50"],
+];
+const layouts: { name: string; table: Printed[][]; cut?: number[] }[] = [
+  { name: "prices without cents", table: WHOLE },
+  { name: "a header strip drawn apart from the body", table: TABLE, cut: [1] },
+  { name: "a body drawn in two pieces", table: TABLE, cut: [2] },
+  { name: "whole-dollar prices in a table drawn in three pieces", table: WHOLE, cut: [1, 3] },
+];
+const dollars = (c: Printed) => (c === null ? null : Number(typeof c === "string" ? c : c[0]));
+const VISIT_CODES = ["T4", "T8", "T12"];
+const rowOf = (r: Printed[]): [number, Record<string, number>] => [dollars(r[1]!)!, Object.fromEntries(VISIT_CODES.flatMap((v, k) => (dollars(r[2 + k]!) === null ? [] : [[v, dollars(r[2 + k]!)!]])))];
+
+describe.each(layouts)("$name", ({ table, cut }) => {
+  const dollarRead = (): Rulebook => grid(VISITS, table.slice(1).map((r, i): [string, number, Record<string, number>] => [["Blood draw", "Electrocardiogram", "Urinalysis"][i]!, ...rowOf(r)]));
+  const cases = [[0, "T4"], [0, "T8"], [0, "T12"], [1, "T4"], [1, "T12"], [2, "T8"], [2, "T12"]] as const;
+  const cellsOf = (rb: Rulebook, row: number) => rb.budgetGrids[0]!.procedures[row]!.cells;
+
+  describe.each([0, 3] as const)("text reading direction %i", (dir) => {
+    const page = (t: Printed[][] = table, c = cut) => drawn(t, dir, "ocr", c);
+
+    it("confirms every cell and unit price of a clean table", () => {
+      const ev = bind(dollarRead(), page());
+      for (const [row, visit] of cases) expect(cellStatus(ev, row, visit)).toBe("confirmed");
+      expect([0, 1, 2].map((r) => unit(ev, r))).toEqual(["confirmed", "confirmed", "confirmed"]);
+      // outside a drawn table the page's whole-number prices still prove nothing
+      expect(cellStatus(bind(dollarRead(), { ...page(), grids: undefined }), 0, "T8")).not.toBe("confirmed");
+    });
+
+    it("never confirms a one-digit change in any cell", () => {
+      for (const [row, visit] of cases)
+        for (const d of [10, -10, 1, -1, 100, 1000]) {
+          const rb = dollarRead();
+          cellsOf(rb, row)[visit] = (cellsOf(rb, row)[visit] as number) + d * 100;
+          expect(cellStatus(bind(rb, page()), row, visit)).not.toBe("confirmed");
+        }
+      // a decimal point moved ("45.5" read as 455.0, or 4.55)
+      for (const wrong of [455, 4.55]) {
+        const rb = dollarRead();
+        cellsOf(rb, 1).T4 = Math.round(wrong * 100);
+        expect(cellStatus(bind(rb, page()), 1, "T4")).not.toBe("confirmed");
+      }
+    });
+
+    it("never confirms a price moved to a neighbouring visit where the row prints nothing", () => {
+      const rb = dollarRead();
+      rb.budgetGrids[0]!.procedures[1]!.cells = { T8: rowOf(table[2]!)[1].T4! * 100, T12: rowOf(table[2]!)[1].T12! * 100 };
+      expect(cellStatus(bind(rb, page()), 1, "T8")).not.toBe("confirmed");
+      const early = dollarRead();
+      early.budgetGrids[0]!.procedures[2]!.cells = { T4: rowOf(table[3]!)[1].T8! * 100, T8: rowOf(table[3]!)[1].T8! * 100 };
+      expect(cellStatus(bind(early, page()), 2, "T4")).not.toBe("confirmed");
+    });
+
+    it("never confirms a whole row shifted one visit over", () => {
+      const rb = dollarRead();
+      const row = cellsOf(rb, 0);
+      rb.budgetGrids[0]!.procedures[0]!.cells = { T8: row.T4!, T12: row.T8! };
+      expect(statuses(bind(rb, page()), 0, ["T8", "T12"])).not.toContain("confirmed");
+    });
+
+    it("never confirms two rows whose prices were swapped", () => {
+      const [a, b] = [table[1]!, table[2]!];
+      const rb = grid(VISITS, [[String(a[0]), ...rowOf(b)], [String(b[0]), ...rowOf(a)]]);
+      const ev = bind(rb, page([HEAD, a, b], cut?.filter((c) => c < 3)));
+      expect([...statuses(ev, 0, VISIT_CODES), ...statuses(ev, 1, VISIT_CODES)]).not.toContain("confirmed");
+    });
+  });
+});
+
+describe("a table drawn in pieces", () => {
+  const read = (): Rulebook => grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }]]);
+
+  it("is one table only where the pieces share their column rules", () => {
+    expect(cellStatus(bind(read(), drawn(TABLE, 0, "ocr", [1])), 0, "T8")).toBe("confirmed");
+    // the header strip's columns don't line up with the body's: its words are in no column of the body
+    expect(cellStatus(bind(read(), drawn(TABLE, 0, "ocr", [1], 12)), 0, "T8")).not.toBe("confirmed");
+  });
+});
+
+describe("a row the prices fit only by chance", () => {
+  const same: Printed[][] = [HEAD, ["Venipuncture", "100", "100", "100", "100", "300"]];
+
+  it("is no match when the row prints a price at a visit the read leaves empty and its label isn't the read's", () => {
+    const rb = grid(VISITS, [["Physical exam", 100, { T4: 100, T12: 100 }]]);
+    expect(statuses(bind(rb, drawn(same)), 0, ["T4", "T12"])).not.toContain("confirmed");
+    // the label vouching for it makes it the row
+    const named = grid(VISITS, [["Venipuncture", 100, { T4: 100, T12: 100 }]]);
+    expect(cellStatus(bind(named, drawn(same)), 0, "T4")).not.toBe("conflict");
+  });
+
+  it("is no match when a value the read has sits on a blank cell", () => {
+    const rb = grid(VISITS, [["Physical exam", 100, { T4: 100, T8: 100 }]]);
+    expect(statuses(bind(rb, drawn([HEAD, ["Venipuncture", "100", "100", null, "100", "200"]])), 0, ["T4", "T8"])).not.toContain("confirmed");
   });
 });

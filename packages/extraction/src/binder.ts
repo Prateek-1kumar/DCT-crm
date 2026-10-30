@@ -387,8 +387,14 @@ type Table = { cells: Word[][][]; u: Span2[]; printed: (number | null)[][] };
 const bands = (rs: number[]): Span2[] => rs.slice(1).map((r, i): Span2 => [rs[i]!, r]);
 const flip = (xs: number[]) => xs.map((x) => -x).reverse();
 
-function tableOf(p: TextPage, g: Ruled, dir: Word["dir"]): Table | null {
+/** A drawn table's rules in the reading frame: `us` along the text (the columns), `vs` across it (the rows). */
+type Piece = { us: number[]; vs: number[] };
+const framed = (g: Ruled, dir: Word["dir"]): Piece => {
   const [us, vs] = ([[g.xs, g.ys], [g.ys, flip(g.xs)], [flip(g.xs), flip(g.ys)], [flip(g.ys), g.xs]] as [number[], number[]][])[dir]!;
+  return { us, vs };
+};
+
+function tableOf(p: TextPage, { us, vs }: Piece, dir: Word["dir"]): Table | null {
   if (us.length < 2 || vs.length < 2) return null;
   const [u, v] = [bands(us), bands(vs)];
   const cells = v.map(() => u.map((): Word[] => []));
@@ -400,16 +406,45 @@ function tableOf(p: TextPage, g: Ruled, dir: Word["dir"]): Table | null {
     if (r >= 0 && c >= 0) cells[r]![c]!.push(w);
   }
   for (const row of cells) for (const ws of row) ws.sort((a, b) => frame(a)[0] - frame(b)[0]);
-  // only a number printed like money is a price: a code or a count in the same row is not
-  const printed = cells.map((row) => row.map((ws) => (ws.some(priceLike) ? cents(txt(ws)) : null)));
+  // Inside a ruled cell a lone number is a price whatever its format ("150", "45.5"): the cell's own box says it is one.
+  const printed = cells.map((row) => row.map((ws) => (ws.some(priceLike) || (ws.length === 1 && NUMBER.test(bare(ws[0]!.text))) ? cents(txt(ws)) : null)));
   return { cells, u, printed };
 }
 
-/** The page's drawn tables that hold price-like words, the one holding the most first (a word is in a table when its centre is). */
-function tablesOn(p: TextPage): { g: Ruled; i: number }[] {
-  const prices = p.words.filter((w) => !w.hidden && priceLike(w)).map((w) => [(w.rect[0] + w.rect[2]) / 2, (w.rect[1] + w.rect[3]) / 2] as const);
-  const held = (g: Ruled) => prices.filter(([x, y]) => x >= g.box[0] && x <= g.box[2] && y >= g.box[1] && y <= g.box[3]).length;
-  return (p.grids ?? []).map((g, i) => ({ g, i, n: held(g) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
+// A table drawn in pieces (a header strip, a body split in two, extra columns) is one table: pieces that touch and share
+// one axis's rules, to within a point and a half, are joined.
+const TOL = 1.5;
+const GAP = 5;
+const holds = (a: number[], b: number[]) => b.every((x) => a.some((y) => Math.abs(x - y) <= TOL));
+const union = (a: number[], b: number[]) => [...a, ...b].sort((x, y) => x - y).reduce<number[]>((o, x) => (o.length && x - o.at(-1)! <= TOL ? o : [...o, x]), []);
+const apart = (a: number[], b: number[]) => Math.max(a[0]!, b[0]!) - Math.min(a.at(-1)!, b.at(-1)!);
+const same = (a: number[], b: number[]) => holds(a, b) || holds(b, a);
+
+function joined(pieces: Piece[]): Piece[] {
+  const out = pieces.filter((x) => x.us.length >= 2 && x.vs.length >= 2);
+  for (let again = true; again; ) {
+    again = false;
+    for (let i = 0; i < out.length && !again; i++)
+      for (let j = i + 1; j < out.length && !again; j++) {
+        const [a, b] = [out[i]!, out[j]!];
+        if ((same(a.us, b.us) && apart(a.vs, b.vs) <= GAP) || (same(a.vs, b.vs) && apart(a.us, b.us) <= GAP)) {
+          out[i] = { us: union(a.us, b.us), vs: union(a.vs, b.vs) };
+          out.splice(j, 1);
+          again = true;
+        }
+      }
+  }
+  return out;
+}
+
+/** The page's drawn tables that hold numbers, the one holding the most first (a word is in a table when its centre is). */
+function tablesOn(p: TextPage, dir: Word["dir"]): { t: Piece; i: number }[] {
+  const prices = p.words.filter((w) => !w.hidden && w.dir === dir && NUMBER.test(bare(w.text))).map((w) => [(frame(w)[0] + frame(w)[2]) / 2, (frame(w)[1] + frame(w)[3]) / 2] as const);
+  const held = ({ us, vs }: Piece) => prices.filter(([x, y]) => x >= us[0]! && x <= us.at(-1)! && y >= vs[0]! && y <= vs.at(-1)!).length;
+  return joined((p.grids ?? []).map((g) => framed(g, dir)))
+    .map((t, i) => ({ t, i, n: held(t) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n);
 }
 
 const TOTALISH = /total|overhead|indirect|f\s?&\s?a\b/i;
@@ -438,10 +473,10 @@ function headerAgrees(visits: BudgetGrid["visits"], heads: string[]): boolean {
  * unless all of it is clean, and the caller falls back to finding rows by their labels.
  * A table row fits an AI row when it prints every number the AI read for it (two at least; one, with a word of the row's
  * name printed in it), unless its label names another AI row and not this one: two rows whose prices were swapped must not
- * each find the other's. Rows are the longest in-order matching of those fits, one table row each. Visit columns are the
- * price columns right of the unit/cost ones, as many as there are visits, with a header over each that doesn't contradict
- * its visit.
- * ponytail: a visit column blank in every matched row isn't seen, so the counts differ and it falls back. Upgrade: columns from the rules' own spacing.
+ * each find the other's. Rows are the longest in-order matching of those fits, one table row each. Visit columns are a run of
+ * columns right of the unit/cost ones, as many as there are visits, with a header over each that doesn't contradict its
+ * visit. A fit by prices alone is dropped again once the columns are known (see the end).
+ * ponytail: a visit column blank in every matched row, outside the span of the printed ones, is found only if the headers pick the run. Upgrade: columns from the rules' own spacing.
  */
 function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean): Plan | null {
   const labels = t.cells.map((row, r) => {
@@ -476,12 +511,29 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
   const head = (c: number) => txt(t.cells.slice(0, Math.min(...used)).flatMap((row) => row[c]!));
   const data = t.u.flatMap((_, c) => (used.some((r) => t.printed[r]![c] !== null) ? [c] : []));
   const unit = Math.max(-1, ...data.filter((c) => UNIT.test(head(c)) && !/total/i.test(head(c))));
-  const visitCols = data.filter((c) => c > unit);
-  while (visitCols.length && /total/i.test(head(visitCols.at(-1)!))) visitCols.pop();
+  // The visit columns: a run of as many columns as the read's visits, with every printed column right of the unit ones in
+  // it or left of it and a header over each that doesn't contradict its visit. The one such run, or of several the one from
+  // the first printed column to the last (a column between two that print is a visit's too, blank in every matched row or
+  // not). A total, and a gap between pieces (no word in it anywhere), is no visit's.
   const visits = [...g.visits].sort((a, b) => a.order - b.order);
-  if (!visitCols.length || visitCols.length !== visits.length) return null;
-  if (!headerAgrees(visits, visitCols.map(head))) return null;
-  return { rows: found, cols: new Map(visits.map((v, k) => [v.code, visitCols[k]!])), first: visitCols[0]!, last: visitCols.at(-1)! };
+  const pool = t.u.flatMap((_, c) => (c > unit && t.cells.some((row) => row[c]!.length) && !/total/i.test(head(c)) ? [c] : []));
+  const runs = pool.flatMap((_, i) => (i + visits.length <= pool.length ? [pool.slice(i, i + visits.length)] : []));
+  const [first, last] = [data.find((c) => c > unit) ?? -1, pool.filter((c) => c <= data.at(-1)!).at(-1)];
+  const fits = runs.filter((r) => data.every((c) => c <= unit || c < r[0]! || r.includes(c) || /total/i.test(head(c))) && headerAgrees(visits, r.map(head)));
+  const visitCols = (fits.length === 1 ? fits[0] : fits.find((r) => r[0] === first && r.at(-1) === last)) ?? [];
+  if (visitCols.length !== visits.length) return null;
+  // A row the prices fit by chance (one price printed all along it) is no match: a value the read has never sits on a blank
+  // cell, and a row no label of its own vouches for prints nothing at a visit the read leaves empty.
+  const cols = new Map(visits.map((v, k) => [v.code, visitCols[k]!]));
+  for (const [pi, j] of found) {
+    const p = g.procedures[pi]!;
+    const named = tokens(p.name);
+    const [at, alone] = [Object.keys(p.cells).map((code) => cols.get(code)), named.filter((n) => label[j]!.some((l) => sameToken(n, l))).length * 2 <= named.length];
+    const blank = Object.entries(p.cells).some(([code, v]) => typeof v === "number" && t.printed[j]![cols.get(code) ?? -1] == null);
+    if (blank || (alone && [...cols.values()].some((c) => t.printed[j]![c] != null && !at.includes(c)))) found.delete(pi);
+  }
+  if (!found.size) return null;
+  return { rows: found, cols, first: visitCols[0]!, last: visitCols.at(-1)! };
 }
 
 // ---------- quotes ----------
@@ -713,7 +765,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       if (!pg?.p.grids?.length) continue;
       const dirs = [0, 1, 2, 3].map((d) => pg.p.words.filter((w) => !w.hidden && w.dir === d).length);
       const dir = dirs.indexOf(Math.max(...dirs)) as Word["dir"];
-      for (const { g: ruled, i: ti } of tablesOn(pg.p)) {
+      for (const { t: ruled, i: ti } of tablesOn(pg.p, dir)) {
         const t = tableOf(pg.p, ruled, dir);
         const pl = t && plan(t, g, idx, (r) => gridTaken.has(`${k}#${ti}#${r}`));
         if (!t || !pl) continue;
@@ -755,7 +807,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
           if (Object.keys(p.cells).some((key) => !pl.cols.has(key))) clean = false;
           const target = open === null ? null : p.cells[open];
           if (clean && open !== null && typeof target === "number" && sum + target > 0) {
-            const total = row.slice(pl.last + 1).find((ws) => ws.some(priceLike) && cents(txt(ws)) === sum + target && ws.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF));
+            const total = row.slice(pl.last + 1).find((ws) => t.printed[j]![row.indexOf(ws)] === sum + target && ws.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF));
             const path = `${pp}/cells/${ptr(open)}`;
             if (total) {
               const was = out.get(path)!;
