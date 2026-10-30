@@ -8,7 +8,8 @@
  *   one visit over, each cell copied to a neighbouring visit the read leaves empty ("invoiceable" marks too), two adjacent
  *   rows' contents exchanged (rowSwap), a whole block of rows with held cells placed one row down (rowShift), and the two cost
  *   columns read the wrong way round (costColumnSwap: an item's price before overhead and with it exchanged, a unit price read
- *   from the column with overhead); each must
+ *   from the column with overhead), and a visit's overhead, subtotal, non-procedure amount or total taken from the visit next
+ *   door (summaryRowShift); each must
  *   come out unconfirmed (a value that bills the same amount as before isn't an error).
  *   The gate: all caught. A copy the page itself prints in that visit's cell is the read's miss, counted apart.
  * - questions per contract, today (no OCR) and with OCR, by reason.
@@ -183,7 +184,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const base = bindEvidence(rb, pages);
   const confirmed = confirmedIn(base.evidence);
   const heldPaths = new Set(base.evidence.filter((e) => e.held).map((e) => e.path));
-  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift" | "costColumnSwap", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0], costColumnSwap: [0, 0] };
+  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift" | "costColumnSwap" | "summaryRowShift", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0], costColumnSwap: [0, 0], summaryRowShift: [0, 0] };
   for (const kind of ["digit", "lookalike"] as const)
     for (let round = 0; round < 3; round++) {
       const m = structuredClone(rb);
@@ -332,6 +333,27 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const afterCosts = confirmedIn(bindEvidence(swappedCosts, pages).evidence);
   const costsTried = costPaths.filter((x) => confirmed.has(x));
   planted.costColumnSwap = [costsTried.length, costsTried.filter((x) => !afterCosts.has(x)).length];
+  // A visit's overhead, subtotal, non-procedure amount or total taken from the visit next door (the summary row read one column
+  // over). Where the neighbour's value is the same, nothing changed.
+  const shiftedSums = structuredClone(rb);
+  const sumPaths: string[] = [];
+  const SUMS = ["overheadCents", "procedureSubtotalCents", "nonProcedureCents", "totalCents"] as const;
+  shiftedSums.budgetGrids.forEach((g, gi) => {
+    const order = rb.budgetGrids[gi]!.visits.map((v, vi) => ({ v, vi })).sort((a, b) => a.v.order - b.v.order);
+    order.forEach(({ v, vi }, k) => {
+      const next = order[k + 1];
+      if (!next) return;
+      for (const f of SUMS) {
+        const path = `/budgetGrids/${gi}/visits/${vi}/${f}`;
+        const to = next.v[f];
+        if (to === null || v[f] === null || to === v[f] || !confirmed.has(path)) continue;
+        (g.visits[vi]![f] as number) = to;
+        sumPaths.push(path);
+      }
+    });
+  });
+  const afterSums = confirmedIn(bindEvidence(shiftedSums, pages).evidence);
+  planted.summaryRowShift = [sumPaths.length, sumPaths.filter((x) => !afterSums.has(x)).length];
   // a price put at the visit next door, where the row prints nothing: billing a procedure at a visit that doesn't have it
   const misplaced = structuredClone(rb);
   const placed: string[] = [];

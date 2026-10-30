@@ -894,3 +894,80 @@ describe.each([0, 3] as const)("cost columns by arithmetic, text reading directi
     expect(st(rb, differ, 1)).not.toBe("confirmed");
   });
 });
+
+/**
+ * A visit summary table that holds no row of the read (the overhead and the cost per visit, by visit, on a page of their own): its
+ * columns are the visits' by count and order (held: only a person says which is which), its own total column is told by being the
+ * sum of the columns before it, and each visit's overhead is confirmed (held) by the page's digits where it is also the grid's stated
+ * % of the read's overhead-applied cells there.
+ */
+describe.each([0, 3] as const)("visit summary rows, text reading direction %i", (dir) => {
+  // headers that don't name the visits: the label path has no columns to look in, so only the summary table's own can settle a visit's overhead
+  const items: Printed[][] = [
+    ["Procedure", "Cost", "Alpha", "Beta", "Gamma", "Total"],
+    ["Venipuncture", "100.00", "100.00", "200.00", "300.00", "600.00"],
+    ["ECG tracing", "50.00", "50.00", null, "150.00", "200.00"],
+  ];
+  const labelled: Printed[][] = [
+    [null, null, "Alpha", "Beta", "Gamma", "Total"],
+    ["Costs charged with overhead", null, "150.00", "200.00", "450.00", "800.00"],
+    ["Costs not charged with overhead", null, "0.00", "0.00", "0.00", "0.00"],
+    ["Overhead at 30%", null, "45.00", "60.00", "135.00", "240.00"],
+    ["Total cost per visit", null, "195.00", "260.00", "585.00", "1040.00"],
+  ];
+  const read = (): Rulebook => {
+    const rb = grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Electrocardiogram", 50, { T4: 50, T12: 150 }]]);
+    const g = rb.budgetGrids[0]!;
+    g.statedOverheadPct = 30;
+    [[15000, 4500, 19500], [20000, 6000, 26000], [45000, 13500, 58500]].forEach(([sub, oh, total], i) => {
+      Object.assign(g.visits[i]!, { procedureSubtotalCents: sub, overheadCents: oh, totalCents: total });
+      g.visits[i]!.prov = { ...on, source: { documentId: "d1", page: 2 } };
+    });
+    return rb;
+  };
+  const both = (summary: Printed[][] = labelled) => [drawn(items, dir), { ...drawn(summary, dir), page: 2 }];
+  const bound = (rb: Rulebook, summary?: Printed[][]) => {
+    const out = bindEvidence(rb, both(summary));
+    return { ev: [0, 1, 2].map((i) => out.evidence.find((e) => e.path === `/budgetGrids/0/visits/${i}/overheadCents`)!), checks: out.tableChecks };
+  };
+  // the overhead row without its label, as a scan that lost it
+  const lose = (rows: Printed[][], cells: (string | null)[] = ["45.00", "60.00", "135.00", "240.00"]) => rows.map((r) => (r[0] === "Overhead at 30%" ? [null, null, ...cells] : r) as Printed[]);
+  const heldOf = (rb: Rulebook, summary?: Printed[][]) => bound(rb, summary).ev.map((e) => !!e.held);
+
+  it("holds each visit's overhead under a table check, the total column left out and the rows of costs with or without overhead not taken for it", () => {
+    const { ev, checks } = bound(read());
+    expect(checks).toHaveLength(1);
+    for (const e of ev) expect(e).toMatchObject({ status: "ungrounded", printed: null, held: checks[0]!.id });
+    expect(checks[0]!.columns.map((c) => c.visit)).toEqual(["T4", "T8", "T12"]);
+  });
+
+  it("never settles an overhead the page prints at another visit (the row read one column over)", () => {
+    const rb = read();
+    rb.budgetGrids[0]!.visits[1]!.overheadCents = 13500;
+    expect(heldOf(rb)).toEqual([true, false, true]);
+  });
+
+  it("never settles an overhead that isn't the stated % of the read's cells, though the page prints it", () => {
+    const rb = read();
+    rb.budgetGrids[0]!.visits[1]!.overheadCents = 7000;
+    const wrong = labelled.map((r) => (r[0] === "Overhead at 30%" ? ["Overhead at 30%", null, "45.00", "70.00", "135.00", "250.00"] : r) as Printed[]);
+    expect(heldOf(rb, wrong)).toEqual([true, false, true]);
+  });
+
+  it("never settles an overhead the page prints another number for, or whose digits the scan isn't sure of", () => {
+    const other = labelled.map((r) => (r[0] === "Overhead at 30%" ? ["Overhead at 30%", null, "45.00", "61.00", "135.00", "241.00"] : r) as Printed[]);
+    expect(heldOf(read(), other)).toEqual([true, false, true]);
+    const unsure = labelled.map((r) => (r[0] === "Overhead at 30%" ? ["Overhead at 30%", null, ["45.00", 0.5], "60.00", "135.00", "240.00"] : r) as Printed[]);
+    expect(heldOf(read(), unsure)).toEqual([false, true, true]);
+  });
+
+  it("without the label, finds the overhead row by what it prints: the stated % of the read's cells at every visit it prints", () => {
+    expect(heldOf(read(), lose(labelled))).toEqual([true, true, true]);
+    // a row that merely prints the costs' numbers is no overhead
+    expect(heldOf(read(), lose(labelled, ["150.00", "200.00", "450.00", "800.00"]))).toEqual([false, false, false]);
+    // nor one that disagrees at a visit
+    const rb = read();
+    rb.budgetGrids[0]!.visits[1]!.overheadCents = 7000;
+    expect(heldOf(rb, lose(labelled, ["45.00", "70.00", "135.00", "250.00"]))).toEqual([false, false, false]);
+  });
+});

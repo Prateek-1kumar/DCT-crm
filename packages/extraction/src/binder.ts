@@ -594,6 +594,51 @@ function place(t: Table, rows: number[], found: Map<number, number>, free: (pi: 
   return out;
 }
 
+// ---------- visit summary rows ----------
+
+const NOT = /\b(?:not|without|non|excl\w*)\b/i;
+const WITH = /\b(?:with|charged|incl\w*|applied|plus)\b/i;
+/**
+ * The rows that sum a visit, by the generic words a budget uses (never a sponsor's or a layout's): a total ("total", "per visit"), a
+ * subtotal, a non-procedure amount, and overhead itself ("overhead at 30%"): not a row about the costs "with" or "without" it, which
+ * is no overhead.
+ */
+const VISIT_LABELS: Record<"totalCents" | "procedureSubtotalCents" | "overheadCents" | "nonProcedureCents", (s: string) => boolean> = {
+  totalCents: (s) => (/\btotal/i.test(s) || (/\bper[\s-]?visit\b/i.test(s) && !OVERHEAD.test(s))) && !/sub[\s-]?total|patient|subject/i.test(s),
+  procedureSubtotalCents: (s) => /sub[\s-]?total/i.test(s) && !/non[\s-]?proc/i.test(s),
+  nonProcedureCents: (s) => /non[\s-]?proc/i.test(s),
+  overheadCents: (s) => OVERHEAD.test(s) && !/\btotal/i.test(s) && !WITH.test(s) && !NOT.test(s),
+};
+
+/**
+ * A drawn table that holds no rows of the read, but whose rows labelled as a visit's total, subtotal, non-procedure amount or
+ * overhead (VISIT_LABELS), or that lost their label to the scan, print a number for each of the grid's visits: those columns, in visit order (one more than the visits, and one
+ * of them the sum of the columns before it on every row that prints them all: the table's own total, and no visit's). Held, since nothing but the count and order says which visit
+ * a column is, unless the headers agree; null when they contradict, or the count differs.
+ */
+function summaryPlan(t: Table, g: BudgetGrid): Plan | null {
+  const labels = rowLabels(t);
+  // rows labelled as a visit's sum, and rows whose label the scan lost (they take part in finding the columns, and name no field)
+  const rows = t.cells.flatMap((_, j) => ((Object.values(VISIT_LABELS).some((f) => f(txt(labels[j]!))) || !labels[j]!.length) && t.printed[j]!.filter((x) => x !== null).length >= 2 ? [j] : []));
+  if (!rows.length) return null;
+  const need = Math.min(2, rows.length);
+  let pool = t.u.flatMap((_, c) => (rows.filter((j) => t.printed[j]![c] !== null).length >= need ? [c] : []));
+  const visits = [...g.visits].sort((a, b) => a.order - b.order);
+  if (pool.length === visits.length + 1) {
+    // the table's own total: the one column that, on every row printing all of them (two at least), is the sum of the columns before it
+    // (as printed, not as sure: a digit the scan doubts breaks the sum, never makes one)
+    const full = rows.filter((j) => pool.every((c) => t.printed[j]![c] !== null));
+    const totals = full.length < 2 ? [] : pool.map((_, e) => e).filter((e) => e > 0 && full.every((j) => pool.slice(0, e).reduce((n, c) => n + t.printed[j]![c]!, 0) === t.printed[j]![pool[e]!]));
+    if (totals.length === 1) pool = pool.filter((_, e) => e !== totals[0]);
+  }
+  if (pool.length !== visits.length) return null;
+  const head = (c: number) => txt(t.cells.slice(0, rows[0]).flatMap((row) => row[c]!));
+  const heads = pool.map(head);
+  if (headerFit(visits, heads).contradicts) return null;
+  const held = !headerAgrees(visits, heads);
+  return { rows: new Map(), cols: new Map(visits.map((v, k) => [v.code, pool[k]!])), first: pool[0]!, last: pool.at(-1)!, held, headed: !held || heads.filter((h) => h.trim()).length * 2 >= pool.length, unitCol: -1, unfit: () => false };
+}
+
 // ---------- cost columns ----------
 
 /** The direction most of a page's words read in: the one its tables are cut in. */
@@ -869,6 +914,8 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   const claimed: { row: Line; header: Line; visits: Set<string> }[] = [];
   // the drawn grid's rows (page#table#row) a grid has bound: one printed row confirms one grid's cells at most
   const gridTaken = new Set<string>();
+  // the drawn tables (page#table) a grid's visit summary rows were taken from: one table belongs to one grid
+  const summaryTaken = new Set<string>();
   const layout = rulebook.budgetGrids.map((g) => {
     const pagesOf = [...new Set([...g.procedures, ...g.visits].flatMap((x) => (x.prov.source ? [`${x.prov.source.documentId}#${x.prov.source.page}`] : [])))].sort((a, b) => Number(a.split("#")[1]) - Number(b.split("#")[1]));
     // A continuation page without its own header uses the columns of the grid page before it.
@@ -950,7 +997,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const heldRows = new Set<number>();
     const queued: { path: string; j: Judged; check: () => string; row?: NonNullable<TableCheck["rows"]>[number] }[] = [];
     // the drawn tables this grid's rows were placed in: where the totals cascade looks for what the page prints
-    const planned: { pg: Page; t: Table; pl: Plan; check: () => string; peek: () => string | undefined }[] = [];
+    const planned: { pg: Page; t: Table; pl: Plan; check: () => string; peek: () => string | undefined; k: string; ti: number }[] = [];
     const byPage = new Map<string, number[]>();
     g.procedures.forEach((p, pi) => p.prov.source && byPage.set(`${p.prov.source.documentId}#${p.prov.source.page}`, [...(byPage.get(`${p.prov.source.documentId}#${p.prov.source.page}`) ?? []), pi]));
     for (const [k, idx] of byPage) {
@@ -965,7 +1012,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         if (!t || !pl) continue;
         let id: string | undefined;
         const check = () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir));
-        planned.push({ pg, t, pl, check, peek: () => id });
+        planned.push({ pg, t, pl, check, peek: () => id, k, ti });
         // rows the prices don't place, placed by order between the firm ones: held on their rows, whatever the columns
         const byOrder = place(t, idx, pl.rows, (pi, j) => !viaGrid.has(pi) && !heldRows.has(pi) && !gridTaken.has(`${k}#${ti}#${j}`));
         for (const [pi, j] of byOrder) if (pl.unfit(pi, j, false)) byOrder.delete(pi);
@@ -1108,12 +1155,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     });
 
     // Visit totals and subtotals: rows found by their printed label.
-    const LABELS: Record<"totalCents" | "procedureSubtotalCents" | "overheadCents" | "nonProcedureCents", (s: string) => boolean> = {
-      totalCents: (s) => /\btotal/i.test(s) && !/sub[\s-]?total|patient|subject/i.test(s),
-      procedureSubtotalCents: (s) => /sub[\s-]?total/i.test(s) && !/non[\s-]?proc/i.test(s),
-      nonProcedureCents: (s) => /non[\s-]?proc/i.test(s),
-      overheadCents: (s) => OVERHEAD.test(s) && !/\btotal/i.test(s),
-    };
+    const LABELS = VISIT_LABELS;
     g.visits.forEach((v, vi) => {
       const c = ctx(v.prov.source);
       for (const f of Object.keys(LABELS) as (keyof typeof LABELS)[]) {
@@ -1146,6 +1188,22 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
      * confirmed or held (never the other way round: a total confirms no part). Confirmed when every part is; held when any part,
      * or the table's column mapping, is, and then all by one table check, else it stays asked.
      */
+    // The grid's visit summary tables: drawn tables of its visits' pages that no row was planned in (summaryPlan).
+    for (const k of new Set(g.visits.flatMap((v) => (v.prov.source ? [`${v.prov.source.documentId}#${v.prov.source.page}`] : [])))) {
+      const pg = data.get(k);
+      if (!pg?.p.grids?.length) continue;
+      const dir = domDir(pg.p);
+      for (const { t: ruled, i: ti } of tablesOn(pg.p, dir)) {
+        if (planned.some((d) => d.k === k && d.ti === ti) || summaryTaken.has(`${k}#${ti}`)) continue;
+        const t = tableOf(pg.p, ruled, dir);
+        const pl = t && summaryPlan(t, g);
+        if (!t || !pl) continue;
+        summaryTaken.add(`${k}#${ti}`);
+        let id: string | undefined;
+        planned.push({ pg, t, pl, check: () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir)), peek: () => id, k, ti });
+      }
+    }
+
     {
       const live = (path: string) => evidence.find((e) => e.path === path);
       const sure = (path: string) => {
@@ -1153,7 +1211,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         return !!e && (e.status === "confirmed" || !!e.held);
       };
       const open = (path: string) => live(path)?.status === "ungrounded" && !live(path)!.held;
-      const rowsLabelled = (find: (label: string) => boolean) => planned.flatMap((d) => d.t.cells.flatMap((row, j) => (find(txt(row.slice(0, d.pl.first).flat())) ? [{ d, row }] : [])));
+      const rowsLabelled = (find: (label: string) => boolean, atVisits = true) => planned.flatMap((d) => d.t.cells.flatMap((row, j) => (find(txt(row.slice(0, d.pl.first).flat())) && (!atVisits || [...d.pl.cols.values()].some((c) => d.t.printed[j]![c] !== null)) ? [{ d, row }] : [])));
       const agrees = (ws: Word[], value: number) => ws.length > 0 && cents(txt(ws)) === value && ws.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF);
       const settleOn = (path: string, found: { d: (typeof planned)[number]; ws: Word[] }, parts: string[], byMapping: boolean) => {
         const ids = new Set(parts.flatMap((x) => live(x)?.held ?? []));
@@ -1168,6 +1226,30 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         put(path, id === undefined ? "confirmed" : "ungrounded", [boxOf(found.d.pg.p, found.ws)], txt(found.ws), "its parts are confirmed and add up to it, and the page prints it", found.ws, id);
       };
       const cellsAt = (code: string, category: "procedure" | "non_procedure") => g.procedures.flatMap((p, pi) => (p.category === category && typeof p.cells[code] === "number" ? [{ path: `${gp}/procedures/${pi}/cells/${ptr(code)}`, v: p.cells[code] as number }] : []));
+      // The overhead the grid's stated % comes to at a visit: of the read's cells of the rows marked overhead-applied there, within the rounding of
+      // one cent for every two of them. The page's own digits decide a value; this is the read agreeing with itself.
+      const overheadAt = (v: BudgetGrid["visits"][number]) => {
+        const applied = g.procedures.filter((p) => p.overheadApplied && typeof p.cells[v.code] === "number");
+        const base = applied.reduce((n, p) => n + (p.cells[v.code] as number), 0);
+        return { e: g.statedOverheadPct === null ? null : (base * g.statedOverheadPct) / 100, tol: Math.max(1, Math.ceil(applied.length / 2)) };
+      };
+      // An overhead row whose label the scan lost: the one row of a planned table with no label that prints, at every visit it prints at (three
+      // at least, most of the visits that have overhead), what the stated % comes to there. A row of procedure prices never does.
+      const lostOverhead =
+        g.statedOverheadPct === null
+          ? []
+          : planned.flatMap((d) =>
+              d.t.cells.flatMap((row, j) => {
+                if (txt(row.slice(0, d.pl.first).flat()).trim()) return [];
+                const seen = g.visits.flatMap((v) => {
+                  const [{ e, tol }, c] = [overheadAt(v), d.pl.cols.get(v.code)];
+                  const x = c === undefined ? null : solid(d.t, j, c);
+                  return e === null || x === null ? [] : [Math.abs(x - e) <= tol];
+                });
+                const wanted = g.visits.filter((v) => (overheadAt(v).e ?? 0) > 0).length;
+                return seen.length >= 3 && seen.every(Boolean) && seen.length >= 0.8 * wanted ? [{ d, row }] : [];
+              }),
+            );
       g.visits.forEach((v, vi) => {
         const at = (f: keyof typeof LABELS) => `${gp}/visits/${vi}/${f}`;
         const sumOf = (xs: { v: number }[]) => xs.reduce((a, x) => a + x.v, 0);
@@ -1180,9 +1262,15 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         for (const [f, parts, total] of fields) {
           const value = v[f];
           if (value === null || !open(at(f))) continue;
+          // overhead is the grid's stated % of what it applies to
+          if (f === "overheadCents") {
+            const { e, tol } = overheadAt(v);
+            if (e !== null && Math.abs(value - e) > tol) continue;
+          }
           // the parts add up to it and are all in hand (a total with no overhead or no subtotal read has no parts to add)
           if (f !== "overheadCents" && (value !== total || !parts.length || !parts.every(sure) || (f === "totalCents" && (v.procedureSubtotalCents === null || v.overheadCents === null)))) continue;
-          const hits = rowsLabelled(LABELS[f]).flatMap(({ d, row }) => (d.pl.cols.has(v.code) ? [{ d, ws: row[d.pl.cols.get(v.code)!]! }] : []));
+          const labelled = rowsLabelled(LABELS[f]);
+          const hits = (f === "overheadCents" && !labelled.length && lostOverhead.length === 1 ? lostOverhead : labelled).flatMap(({ d, row }) => (d.pl.cols.has(v.code) ? [{ d, ws: row[d.pl.cols.get(v.code)!]! }] : []));
           if (hits.length === 1 && agrees(hits[0]!.ws, value)) settleOn(at(f), hits[0]!, parts, true);
         }
       });
@@ -1191,7 +1279,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         const path = `${gp}/perPatientTotals/${ti}/cents`;
         const parts = g.visits.map((_, vi) => `${gp}/visits/${vi}/totalCents`);
         if (!open(path) || !parts.every(sure) || g.visits.reduce((a, v) => a + v.totalCents, 0) !== pt.cents) return;
-        const hits = rowsLabelled((l) => /total/i.test(l) && /patient|subject/i.test(l)).flatMap(({ d, row }) => row.slice(d.pl.first).filter((ws) => agrees(ws, pt.cents)).map((ws) => ({ d, ws })));
+        const hits = rowsLabelled((l) => /total/i.test(l) && /patient|subject/i.test(l), false).flatMap(({ d, row }) => row.slice(d.pl.first).filter((ws) => agrees(ws, pt.cents)).map((ws) => ({ d, ws })));
         if (hits.length === 1) settleOn(path, hits[0]!, parts, false);
       });
     }
