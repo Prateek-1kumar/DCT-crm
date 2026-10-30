@@ -205,11 +205,12 @@ export function reviewDraft(
   const totals = byTotals(rb);
   // A cited page that doesn't exist is neither: its values stay ungrounded and are asked.
   const onScan = (e: ValueEvidence) => scanPages.has(key(e.where[0]));
-  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && totals(e.path) ? { ...e, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
+  // (a held value the totals confirm is confirmed outright: it no longer waits for its table's check)
+  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && totals(e.path) ? { path: e.path, where: e.where, printed: e.printed, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
   const spans = new Map(bound.unaccounted.map((s) => [whereKey(s.where), s]));
-  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb).map((i): ReviewItem => {
+  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb, bound.tableChecks).map((i): ReviewItem => {
     if (i.path && scan.has(i.path)) return { ...i, reason: "SCAN_VALUE" };
     if (i.reason !== "UNACCOUNTED_TERM") return i;
     const term = termOf(i.where.flatMap((w) => spans.get(whereKey(w)) ?? []));

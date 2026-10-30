@@ -43,6 +43,8 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
     case "ungrounded":
     case "UNGROUNDED_VALUE":
       return "We couldn't find this number where the contract should print it.";
+    case "TABLE_CHECK":
+      return "The numbers in this table match what we read, but the table doesn't say which visit each column is. A person has to say, so a column can't be mistaken for the one next to it.";
     case "SCAN_VALUE":
       return "This contract is a scan, so this number can't be checked against its text.";
     case "SCAN_PAGE":

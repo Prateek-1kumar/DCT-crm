@@ -25,6 +25,11 @@ export const ValueEvidence = z.object({
   printed: z.string().nullable(),
   /** e.g. "page reference corrected from 4 to 9". */
   note: z.string().nullable(),
+  /**
+   * Every check passed except which visit each column of its table is (the headers didn't say): the id of that table check,
+   * and it counts as confirmed only once a person confirms the mapping. The status stays not-confirmed until then.
+   */
+  held: z.string().optional(),
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
 

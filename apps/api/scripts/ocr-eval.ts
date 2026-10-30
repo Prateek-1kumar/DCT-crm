@@ -8,6 +8,10 @@
  *   one visit over, and each cell copied to a neighbouring visit the read leaves empty; each must come out unconfirmed.
  *   The gate: all caught. A copy the page itself prints in that visit's cell is the read's miss, counted apart.
  * - questions per contract, today (no OCR) and with OCR, by reason.
+ * - held values (every check passed, a person still confirms their table's columns): counted as confirmed in every gate above,
+ *   since the worst case is that the person confirms the mapping. Also reported: table checks, the share confirmed with
+ *   and without held, and "mapping off by one" (held cells that would still confirm with the table's columns assigned to the
+ *   visit next door; reported, not a gate).
  *
  * The OCR is the app's own (readTextLayer with ocr, packages/extraction/ocr; install it with `pnpm run setup`), cached
  * beside each PDF after the first run. Repo root = DCT_ROOT, else three levels above this file. Prints counts only;
@@ -122,7 +126,10 @@ function oneDigit(rb: Rulebook, p: string, v: number | string, look: boolean): n
   return isCents(rb, p) ? Math.round(Number(t) * 100) : Number(t);
 }
 
-const confirmedIn = (ev: ValueEvidence[]) => new Set(ev.filter((e) => e.status === "confirmed").map((e) => e.path));
+// A held value (every check passed, a person still has to confirm its table's columns) counts as confirmed here: the worst
+// case is that the person confirms the mapping, so a planted error it lets through is a failure of the gate.
+const sure = (e: ValueEvidence) => e.status === "confirmed" || !!e.held;
+const confirmedIn = (ev: ValueEvidence[]) => new Set(ev.filter(sure).map((e) => e.path));
 
 const files = readdirSync(join(root, "data/contracts")).filter((f) => f.endsWith(".pdf"));
 const report: Record<string, unknown> = {};
@@ -145,7 +152,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const withOcr = reviewDraft(port, rb, anomalies, pages, docs);
 
   const key = keyed(rb, golden);
-  const final = new Map(withOcr.evidence.map((e) => [e.path, e.status]));
+  const final = new Map(withOcr.evidence.map((e) => [e.path, sure(e) ? "confirmed" : e.status]));
   let wrongConfirmed = 0;
   let aiWrong = 0;
   for (const [p, v] of key) {
@@ -155,7 +162,9 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   }
 
   // planted errors, bound against the OCR alone (the totals can't confirm a changed value: they no longer add up)
-  const confirmed = confirmedIn(bindEvidence(rb, pages).evidence);
+  const base = bindEvidence(rb, pages);
+  const confirmed = confirmedIn(base.evidence);
+  const heldPaths = new Set(base.evidence.filter((e) => e.held).map((e) => e.path));
   const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0] };
   for (const kind of ["digit", "lookalike"] as const)
     for (let round = 0; round < 3; round++) {
@@ -189,6 +198,32 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   });
   const afterShift = confirmedIn(bindEvidence(shifted, pages).evidence);
   planted.columnShift = [moved.length, moved.filter((p) => !afterShift.has(p)).length];
+  // "Mapping off by one" (reported, not a gate): a held table's columns assigned to the visit next door, either way. Every
+  // cell of a row with a held cell moves one visit over (what a wrong mapping would make the master say), and the held
+  // cells that would still confirm are counted. A cell whose neighbour is read alike is left out: nobody could tell it apart.
+  const offByOne = Object.fromEntries(
+    ([-1, 1] as const).map((d) => {
+      const m = structuredClone(rb);
+      const moved: string[] = [];
+      m.budgetGrids.forEach((g, gi) => {
+        const codes = [...g.visits].sort((a, b) => a.order - b.order).map((v) => v.code);
+        g.procedures.forEach((p, pi) => {
+          const orig = rb.budgetGrids[gi]!.procedures[pi]!.cells;
+          const at = (c: string) => `/budgetGrids/${gi}/procedures/${pi}/cells/${ptr(c)}`;
+          if (!codes.some((c) => heldPaths.has(at(c)))) return;
+          p.cells = {};
+          codes.forEach((c, i) => {
+            const to = codes[i + d];
+            if (!(c in orig) || to === undefined) return;
+            p.cells[to] = orig[c]!;
+            if (heldPaths.has(at(c)) && orig[to] !== orig[c]) moved.push(at(to));
+          });
+        });
+      });
+      const after = confirmedIn(bindEvidence(m, pages).evidence);
+      return [d < 0 ? "visitBefore" : "visitAfter", `${moved.filter((p) => after.has(p)).length}/${moved.length}`];
+    }),
+  );
   // a price put at the visit next door, where the row prints nothing: billing a procedure at a visit that doesn't have it
   const misplaced = structuredClone(rb);
   const placed: string[] = [];
@@ -207,16 +242,22 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   });
   // Confirmed only where the page prints that very price in that visit's cell (the binder confirms nothing else): there
   // the read left a visit out. Counted apart, as the read's misses, not as errors the check let through.
-  const afterPlace = bindEvidence(misplaced, pages).evidence.filter((e) => e.status === "confirmed" && placed.includes(e.path));
+  const afterPlace = bindEvidence(misplaced, pages).evidence.filter((e) => sure(e) && placed.includes(e.path));
   planted.wrongVisit = [placed.length - afterPlace.length, placed.length - afterPlace.length];
   const readMissed = afterPlace.length;
 
   const status = (ev: ValueEvidence[]) => tally(ev.map((e) => e.status));
+  const nConfirmed = withOcr.evidence.filter((e) => e.status === "confirmed").length;
+  const nHeld = withOcr.evidence.filter((e) => e.held).length;
+  const pct = (n: number) => `${((100 * n) / withOcr.evidence.length).toFixed(1)}%`;
   report[label] = {
     values: withOcr.evidence.length,
     pages: { ocr: ocred, unclear: withOcr.review.filter((i) => i.reason === "SCAN_PAGE").length, regions: withOcr.review.filter((i) => i.reason === "SCAN_REGION").length },
     today: { status: status(today.evidence), questions: today.review.length },
-    withOcr: { status: status(withOcr.evidence), questions: withOcr.review.length, byReason: tally(withOcr.review.map((i) => i.reason)) },
+    withOcr: { status: status(withOcr.evidence), held: withOcr.evidence.filter((e) => e.held).length, questions: withOcr.review.length, byReason: tally(withOcr.review.map((i) => i.reason)) },
+    tableChecks: base.tableChecks.length,
+    autoConfirmed: { values: withOcr.evidence.length, confirmed: nConfirmed, withHeld: nConfirmed + nHeld, share: pct(nConfirmed), shareWithHeld: pct(nConfirmed + nHeld) },
+    mappingOffByOne: offByOne,
     key: { keyed: key.size, aiWrong, wrongConfirmed },
     planted: Object.fromEntries(Object.entries(planted).map(([k, [tried, caught]]) => [k, `${caught}/${tried}`])),
     readMissedAVisitThePagePrints: readMissed,
