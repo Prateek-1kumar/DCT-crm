@@ -565,12 +565,118 @@ describe.each([0, 3] as const)("a held mapping, text reading direction %i", (dir
       expect(tableChecks[1]).toMatchObject({ page: 2 });
     });
 
-    it("confirms an invoiceable cell only by the word, since the page has no header of its own", () => {
+    it("holds an invoiceable cell that prints the row's unit price, though the page has no header of its own", () => {
       const r = two();
       r.budgetGrids[0]!.procedures[2]!.cells = { T8: "invoiceable", T12: 2500 };
       const ev = bindEvidence(r, [first(), second()]).evidence;
-      expect(heldOf(ev, 2, "T8")).toBeUndefined();
+      expect(heldOf(ev, 2, "T8")).toBeDefined();
+      expect(cell(ev, 2, "T8")).toMatchObject({ status: "ungrounded", printed: null });
       expect(heldOf(ev, 2, "T12")).toBeDefined();
     });
+
+    it("holds nothing for an invoiceable cell that is blank or prints another number", () => {
+      const r = two();
+      // the row prints nothing at T4, and 25.00 (not 30.00, its unit price) at T8
+      r.budgetGrids[0]!.procedures[2]!.cells = { T4: "invoiceable", T8: "invoiceable", T12: 2500 };
+      r.budgetGrids[0]!.procedures[2]!.unitCents = 3000;
+      const ev = bindEvidence(r, [first(), second()]).evidence;
+      expect(heldOf(ev, 2, "T4")).toBeUndefined();
+      expect(heldOf(ev, 2, "T8")).toBeUndefined();
+      expect(cell(ev, 2, "T4")?.status).not.toBe("confirmed");
+      expect(cell(ev, 2, "T8")?.status).not.toBe("confirmed");
+    });
+  });
+});
+
+/**
+ * Rows the prices don't place, placed by order between the rows they do: held on their rows as well, with the rows listed on
+ * the table check for the person's blind row picks. Only where the read's rows and the table's body rows between two firm rows
+ * are as many; never a guess.
+ */
+describe.each([0, 3] as const)("rows placed by order, text reading direction %i", (dir) => {
+  const NAMELESS: Printed[] = ["Procedure", "Cost", "Alpha", "Beta", "Gamma"];
+  // the first and last rows hold three prices each (matched by what they print); the ones between hold only an invoiceable mark
+  const table: Printed[][] = [
+    NAMELESS,
+    ["Venipuncture", "100.00", "100.00", "200.00", "300.00"],
+    ["Vital signs", "40.00", "40.00", null, null],
+    ["Weight check", "60.00", null, "60.00", null],
+    ["ECG tracing", "50.00", "50.00", null, "150.00"],
+  ];
+  const read = (middle: [name: string, unit: number, cells: Record<string, "invoiceable">][]): Rulebook =>
+    grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ...middle.map(([n, u]): [string, number, Record<string, number>] => [n, u, {}]), ["Electrocardiogram", 50, { T4: 50, T12: 150 }]]);
+  const withMiddle = (middle: [string, number, Record<string, "invoiceable">][]) => {
+    const rb = read(middle);
+    middle.forEach(([, , cells], i) => (rb.budgetGrids[0]!.procedures[i + 1]!.cells = cells));
+    return rb;
+  };
+  const mid: [string, number, Record<string, "invoiceable">][] = [["Pulse and BP", 40, { T4: "invoiceable" }], ["Scale", 60, { T8: "invoiceable" }]];
+  const heldOf = (ev: ValueEvidence[], row: number, visit: string) => ev.find((e) => e.path === `/budgetGrids/0/procedures/${row}/cells/${visit}`)?.held;
+  const unitHeld = (ev: ValueEvidence[], row: number) => ev.find((e) => e.path === `/budgetGrids/0/procedures/${row}/unitCents`)?.held;
+
+  it("places the rows between two firm ones, and lists them on the check", () => {
+    const { evidence: ev, tableChecks } = bindEvidence(withMiddle(mid), [drawn(table, dir)]);
+    expect(tableChecks).toHaveLength(1);
+    expect(heldOf(ev, 1, "T4")).toBe(tableChecks[0]!.id);
+    expect(heldOf(ev, 2, "T8")).toBe(tableChecks[0]!.id);
+    expect(unitHeld(ev, 1)).toBe(tableChecks[0]!.id);
+    expect(tableChecks[0]!.rows!.map((r) => r.procedure).sort()).toEqual([1, 2]);
+    expect(tableChecks[0]!.rows!.every((r) => r.box.page === 1)).toBe(true);
+    expect(tableChecks[0]!.columns.map((c) => c.visit)).toEqual(["T4", "T8", "T12"]);
+    expect(ev.find((e) => e.path === "/budgetGrids/0/procedures/1/cells/T4")).toMatchObject({ status: "ungrounded", printed: null });
+  });
+
+  it("leaves a gap alone when the counts differ", () => {
+    // the read has three rows between the firm ones, the table two
+    const three: [string, number, Record<string, "invoiceable">][] = [...mid, ["Height", 20, { T12: "invoiceable" }]];
+    const { evidence: ev, tableChecks } = bindEvidence(withMiddle(three), [drawn(table, dir)]);
+    for (const row of [1, 2, 3]) expect(heldOf(ev, row, ["T4", "T8", "T12"][row - 1]!)).toBeUndefined();
+    expect(tableChecks.flatMap((c) => c.rows ?? [])).toEqual([]);
+    // and the other way: the read has one row where the table has two
+    const one = bindEvidence(withMiddle(mid.slice(0, 1)), [drawn(table, dir)]);
+    expect(heldOf(one.evidence, 1, "T4")).toBeUndefined();
+    expect(one.tableChecks.flatMap((c) => c.rows ?? [])).toEqual([]);
+  });
+
+  it("a total row between the firm ones isn't a body row", () => {
+    const withTotal: Printed[][] = [table[0]!, table[1]!, table[2]!, ["Subtotal", "100.00", null, null, null], table[3]!, table[4]!];
+    const { evidence: ev } = bindEvidence(withMiddle(mid), [drawn(withTotal, dir)]);
+    expect(heldOf(ev, 1, "T4")).toBeDefined();
+    expect(heldOf(ev, 2, "T8")).toBeDefined();
+  });
+
+  it("two placed rows swapped in the read are not held", () => {
+    const swapped: [string, number, Record<string, "invoiceable">][] = [mid[1]!, mid[0]!];
+    const { evidence: ev } = bindEvidence(withMiddle(swapped), [drawn(table, dir)]);
+    expect(heldOf(ev, 1, "T8")).toBeUndefined();
+    expect(heldOf(ev, 2, "T4")).toBeUndefined();
+    expect(unitHeld(ev, 1)).toBeUndefined();
+    expect(unitHeld(ev, 2)).toBeUndefined();
+  });
+
+  it("a row whose invoiceable cell is blank on the page is not held there", () => {
+    const wrongVisit: [string, number, Record<string, "invoiceable">][] = [["Pulse and BP", 40, { T4: "invoiceable", T8: "invoiceable" }], mid[1]!];
+    const { evidence: ev } = bindEvidence(withMiddle(wrongVisit), [drawn(table, dir)]);
+    expect(heldOf(ev, 1, "T4")).toBeDefined();
+    expect(heldOf(ev, 1, "T8")).toBeUndefined();
+  });
+});
+
+describe("two rows whose names share a word, swapped in the read", () => {
+  const table: Printed[][] = [HEAD, ["Urine test", "10.00", "10.00", "20.00", null, "30.00"], ["Urine pregnancy test", "30.00", "30.00", null, "60.00", "90.00"]];
+  const right = (): Rulebook => grid(VISITS, [["Urine test", 10, { T4: 10, T8: 20 }], ["Urine pregnancy test", 30, { T4: 30, T12: 60 }]]);
+
+  it("each is confirmed on its own row when read the right way round", () => {
+    const ev = bind(right(), drawn(table));
+    expect([statuses(ev, 0, ["T4", "T8"]), statuses(ev, 1, ["T4", "T12"])]).toEqual([["confirmed", "confirmed"], ["confirmed", "confirmed"]]);
+  });
+
+  it("neither is confirmed when the read has their prices the wrong way round, though each name fits the other's row", () => {
+    const rb = right();
+    const [a, b] = rb.budgetGrids[0]!.procedures;
+    [a!.cells, b!.cells, a!.unitCents, b!.unitCents] = [{ T4: 3000, T12: 6000 }, { T4: 1000, T8: 2000 }, 3000, 1000];
+    const ev = bind(rb, drawn(table));
+    expect([...statuses(ev, 0, ["T4", "T12"]), ...statuses(ev, 1, ["T4", "T8"])]).not.toContain("confirmed");
+    expect([unit(ev, 0), unit(ev, 1)]).not.toContain("confirmed");
   });
 });

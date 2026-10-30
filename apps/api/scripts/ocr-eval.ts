@@ -5,13 +5,15 @@
  * result against the answer keys (data/golden):
  * - wrong confirmed: a value the key pins down, confirmed, but not the key's value. The gate: 0.
  * - planted errors: every confirmed value changed by one digit (random, and a look-alike digit), every grid row shifted
- *   one visit over, and each cell copied to a neighbouring visit the read leaves empty; each must come out unconfirmed.
+ *   one visit over, each cell copied to a neighbouring visit the read leaves empty ("invoiceable" marks too), two adjacent
+ *   rows' contents exchanged (rowSwap) and a whole block of rows with held cells placed one row down (rowShift); each must
+ *   come out unconfirmed (a value that bills the same amount as before isn't an error).
  *   The gate: all caught. A copy the page itself prints in that visit's cell is the read's miss, counted apart.
  * - questions per contract, today (no OCR) and with OCR, by reason.
  * - held values (every check passed, a person still confirms their table's columns): counted as confirmed in every gate above,
  *   since the worst case is that the person confirms the mapping. Also reported: table checks, the share confirmed with
  *   and without held, and "mapping off by one" (held cells that would still confirm with the table's columns assigned to the
- *   visit next door; reported, not a gate).
+ *   visit next door, or its rows to the row next door; reported, not a gate), and the rows placed by order.
  *
  * The OCR is the app's own (readTextLayer with ocr, packages/extraction/ocr; install it with `pnpm run setup`), cached
  * beside each PDF after the first run. Repo root = DCT_ROOT, else three levels above this file. Prints counts only;
@@ -165,7 +167,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const base = bindEvidence(rb, pages);
   const confirmed = confirmedIn(base.evidence);
   const heldPaths = new Set(base.evidence.filter((e) => e.held).map((e) => e.path));
-  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0] };
+  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0] };
   for (const kind of ["digit", "lookalike"] as const)
     for (let round = 0; round < 3; round++) {
       const m = structuredClone(rb);
@@ -224,6 +226,73 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
       return [d < 0 ? "visitBefore" : "visitAfter", `${moved.filter((p) => after.has(p)).length}/${moved.length}`];
     }),
   );
+  // Rows. A procedure's content is its cells and unit price, by path. Two adjacent rows' contents exchanged where they differ
+  // (a read that has two rows the wrong way round), and a whole block of rows with held cells placed one row down or up
+  // (what a wrong row mapping would make the master say). Each changed value that was confirmed or held must come out
+  // unconfirmed; where the neighbour's value is the same nothing changed, and nobody could tell.
+  const contents = (m: Rulebook, gi: number, pi: number) => {
+    const p = m.budgetGrids[gi]!.procedures[pi]!;
+    return new Map<string, number | string>([...Object.entries(p.cells).map(([c, v]) => [`/budgetGrids/${gi}/procedures/${pi}/cells/${ptr(c)}`, v] as const), ...(p.unitCents !== null ? [[`/budgetGrids/${gi}/procedures/${pi}/unitCents`, p.unitCents] as const] : [])]);
+  };
+  const put = (m: Rulebook, gi: number, pi: number, from: Map<string, number | string>) => {
+    const p = m.budgetGrids[gi]!.procedures[pi]!;
+    const cells: Record<string, number | "invoiceable"> = {};
+    let unit = p.unitCents;
+    for (const [path, v] of from) {
+      const last = path.split("/").at(-1)!;
+      if (last === "unitCents") unit = v as number;
+      else cells[last.replace(/~1/g, "/").replace(/~0/g, "~")] = v as number | "invoiceable";
+    }
+    p.cells = cells;
+    p.unitCents = unit;
+  };
+  // What a cell bills: its number, or for "invoiceable" the row's unit price. A cell that comes out billing the same amount
+  // as before isn't an error, whatever the read calls it.
+  const meaning = (m: Rulebook, path: string) => (get(m, path) === "invoiceable" ? (get(m, path.replace(/\/cells\/.*$/, "/unitCents")) ?? null) : get(m, path));
+  const rowsTried = (m: Rulebook, planned: string[]) => {
+    const changed = planned.filter((x) => meaning(m, x) !== meaning(rb, x));
+    const after = confirmedIn(bindEvidence(m, pages).evidence);
+    return { tried: changed.length, caught: changed.filter((x) => !after.has(x)).length, still: changed.filter((x) => after.has(x)) };
+  };
+  const swapped = structuredClone(rb);
+  const swappedPaths: string[] = [];
+  rb.budgetGrids.forEach((g, gi) => {
+    for (let pi = 0; pi + 1 < g.procedures.length; pi += 2) {
+      const [a, b] = [contents(rb, gi, pi), contents(rb, gi, pi + 1)];
+      const there = (path: string) => path.replace(`/procedures/${pi}/`, `/procedures/${pi + 1}/`);
+      const [na, nb] = [new Map(a), new Map(b)];
+      for (const [path, v] of a) {
+        const other = there(path);
+        if (b.has(other) && b.get(other) !== v && confirmed.has(path) && confirmed.has(other)) (na.set(path, b.get(other)!), nb.set(other, v), swappedPaths.push(path, other));
+      }
+      put(swapped, gi, pi, na);
+      put(swapped, gi, pi + 1, nb);
+    }
+  });
+  const swap = rowsTried(swapped, swappedPaths);
+  planted.rowSwap = [swap.tried, swap.caught];
+  // Blocks of consecutive rows holding a held cell, moved one row down (`1`: each takes the content of the one above) or up.
+  const moveRows = (d: 1 | -1) => {
+    const m = structuredClone(rb);
+    const changed: string[] = [];
+    m.budgetGrids.forEach((g, gi) => {
+      const holds = g.procedures.map((_, pi) => [...contents(rb, gi, pi).keys()].some((x) => heldPaths.has(x)));
+      const order = g.procedures.map((_, pi) => pi);
+      for (const pi of d === 1 ? order.reverse() : order) {
+        const from = pi - d;
+        if (!holds[pi] || !holds[from]) continue;
+        const [mine, src] = [contents(rb, gi, pi), contents(rb, gi, from)];
+        // the neighbour's content under this row's own paths
+        const moved = new Map([...src].map(([path, v]) => [path.replace(`/procedures/${from}/`, `/procedures/${pi}/`), v] as const));
+        for (const [path, v] of moved) if (mine.has(path) && mine.get(path) !== v && confirmed.has(path)) changed.push(path);
+        put(m, gi, pi, moved);
+      }
+    });
+    return rowsTried(m, changed);
+  };
+  const [down, up] = [moveRows(1), moveRows(-1)];
+  planted.rowShift = [down.tried, down.caught];
+  const rowOffByOne = { rowBelow: `${down.still.filter((x) => heldPaths.has(x)).length}/${down.tried}`, rowAbove: `${up.still.filter((x) => heldPaths.has(x)).length}/${up.tried}` };
   // a price put at the visit next door, where the row prints nothing: billing a procedure at a visit that doesn't have it
   const misplaced = structuredClone(rb);
   const placed: string[] = [];
@@ -244,7 +313,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   // the read left a visit out. Counted apart, as the read's misses, not as errors the check let through.
   const afterPlace = bindEvidence(misplaced, pages).evidence.filter((e) => sure(e) && placed.includes(e.path));
   planted.wrongVisit = [placed.length - afterPlace.length, placed.length - afterPlace.length];
-  const readMissed = afterPlace.length;
+  const readMissed = { price: afterPlace.filter((e) => typeof get(misplaced, e.path) === "number").length, invoiceable: afterPlace.filter((e) => get(misplaced, e.path) === "invoiceable").length };
 
   const status = (ev: ValueEvidence[]) => tally(ev.map((e) => e.status));
   const nConfirmed = withOcr.evidence.filter((e) => e.status === "confirmed").length;
@@ -257,7 +326,8 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
     withOcr: { status: status(withOcr.evidence), held: withOcr.evidence.filter((e) => e.held).length, questions: withOcr.review.length, byReason: tally(withOcr.review.map((i) => i.reason)) },
     tableChecks: base.tableChecks.length,
     autoConfirmed: { values: withOcr.evidence.length, confirmed: nConfirmed, withHeld: nConfirmed + nHeld, share: pct(nConfirmed), shareWithHeld: pct(nConfirmed + nHeld) },
-    mappingOffByOne: offByOne,
+    mappingOffByOne: { ...offByOne, ...rowOffByOne },
+    rowsPlacedByOrder: base.tableChecks.reduce((n, c) => n + (c.rows?.length ?? 0), 0),
     key: { keyed: key.size, aiWrong, wrongConfirmed },
     planted: Object.fromEntries(Object.entries(planted).map(([k, [tried, caught]]) => [k, `${caught}/${tried}`])),
     readMissedAVisitThePagePrints: readMissed,

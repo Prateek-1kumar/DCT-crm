@@ -34,7 +34,14 @@ export const ValueEvidence = z.object({
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
 
 /** A scanned table whose columns line up with the visits by count and order though its headers don't match their names: one person confirms the mapping (a table check). */
-export type TableCheck = { id: string; grid: number; page: number; columns: { box: PageBox; visit: string }[] };
+export type TableCheck = {
+  id: string;
+  grid: number;
+  page: number;
+  columns: { box: PageBox; visit: string }[];
+  /** The read's rows placed on the grid's rows by order, not by what they print (`procedure`: index into the grid's procedures); absent: none. */
+  rows?: { box: PageBox; procedure: number }[];
+};
 
 /**
  * confirm_value: type what the page says (conflicts, values not found, spot checks) · unaccounted: found in the contract but not in the master ·
