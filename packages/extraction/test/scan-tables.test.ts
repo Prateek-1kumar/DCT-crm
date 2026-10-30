@@ -694,3 +694,109 @@ describe("two rows whose names share a word, swapped in the read", () => {
     expect([unit(ev, 0), unit(ev, 1)]).not.toContain("confirmed");
   });
 });
+
+/**
+ * The totals cascade: a visit's subtotal, overhead and total (and a per-patient total) the label path doesn't find are
+ * confirmed, or held with their parts, when the table's labelled row prints them and they add up from parts that are
+ * confirmed or held. Never the other way round.
+ */
+describe.each([0, 3] as const)("the totals cascade, text reading direction %i", (dir) => {
+  const rows: Printed[][] = [
+    ["Venipuncture", "100.00", "100.00", "200.00", "300.00"],
+    ["ECG tracing", "50.00", "50.00", null, "150.00"],
+    ["Subtotal", null, "150.00", "200.00", "450.00"],
+    ["Overhead", null, "30.00", "40.00", "90.00"],
+    ["Total", null, "180.00", "240.00", "540.00"],
+    ["Total per subject", null, null, null, "960.00"],
+  ];
+  const NAMELESS: Printed[] = ["Procedure", "Cost", "Alpha", "Beta", "Gamma"];
+  const read = (): Rulebook => {
+    const rb = grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Electrocardiogram", 50, { T4: 50, T12: 150 }]]);
+    const g = rb.budgetGrids[0]!;
+    [[15000, 3000, 18000], [20000, 4000, 24000], [45000, 9000, 54000]].forEach(([sub, oh, total], i) => Object.assign(g.visits[i]!, { procedureSubtotalCents: sub, overheadCents: oh, totalCents: total }));
+    g.perPatientTotals = [{ label: "Total per patient", cents: 96000, prov: { ...on } }];
+    return rb;
+  };
+  const at = (ev: ValueEvidence[], path: string) => ev.find((e) => e.path === `/budgetGrids/0/${path}`);
+  const FIELDS = ["visits/0/procedureSubtotalCents", "visits/1/procedureSubtotalCents", "visits/2/procedureSubtotalCents", "visits/0/overheadCents", "visits/0/totalCents", "visits/2/totalCents", "perPatientTotals/0/cents"];
+
+  it("holds each total under its parts' check when the headers don't name the visits", () => {
+    const { evidence: ev, tableChecks } = bindEvidence(read(), [drawn([NAMELESS, ...rows], dir)]);
+    expect(tableChecks).toHaveLength(1);
+    for (const f of FIELDS) expect(at(ev, f), f).toMatchObject({ status: "ungrounded", held: tableChecks[0]!.id, printed: null });
+  });
+
+  it("confirms each total outright when the headers name the visits and its parts are confirmed", () => {
+    const named = [HEAD, ...rows.map((r): Printed[] => [...r, null])];
+    const ev = bind(read(), drawn(named, dir));
+    for (const f of FIELDS) expect(at(ev, f)?.status, f).toBe("confirmed");
+  });
+
+  it("settles nothing when a part is not confirmed or held, though the totals add up and the page prints them", () => {
+    // the scan is unsure of one cell (T4 of the first row), so that cell is asked and its subtotal and total can't rest on it
+    const unsure = rows.map((r, i) => (i === 0 ? ["Venipuncture", "100.00", ["100.00", 0.5], "200.00", "300.00"] : r) as Printed[]);
+    const ev = bindEvidence(read(), [drawn([NAMELESS, ...unsure], dir)]).evidence;
+    expect(at(ev, "procedures/0/cells/T4")?.held).toBeUndefined();
+    for (const f of ["visits/0/procedureSubtotalCents", "visits/0/totalCents"]) {
+      expect(at(ev, f)?.held, f).toBeUndefined();
+      expect(at(ev, f)?.status, f).not.toBe("confirmed");
+    }
+    // the other visits' totals don't depend on it
+    expect(at(ev, "visits/1/procedureSubtotalCents")?.held).toBeDefined();
+  });
+
+  it("settles nothing when the read's parts don't add up to the total, though the page prints it", () => {
+    const rb = read();
+    rb.budgetGrids[0]!.visits[1]!.procedureSubtotalCents = 19000;
+    const ev = bindEvidence(rb, [drawn([NAMELESS, ...rows], dir)]).evidence;
+    expect(at(ev, "visits/1/procedureSubtotalCents")?.held).toBeUndefined();
+    expect(at(ev, "visits/1/totalCents")?.held).toBeUndefined();
+  });
+
+  it("settles nothing when the page prints another number at the total's spot", () => {
+    const off = rows.map((r) => (r[0] === "Total" ? ["Total", null, "180.00", "241.00", "540.00"] : r) as Printed[]);
+    const ev = bindEvidence(read(), [drawn([NAMELESS, ...off], dir)]).evidence;
+    expect(at(ev, "visits/1/totalCents")?.held).toBeUndefined();
+    expect(at(ev, "visits/0/totalCents")?.held).toBeDefined();
+  });
+
+  it("settles nothing when two rows carry the same label, or the digits are unsure", () => {
+    const twice = [...rows, ["Total", null, "180.00", "240.00", "540.00"] as Printed[]];
+    expect(at(bindEvidence(read(), [drawn([NAMELESS, ...twice], dir)]).evidence, "visits/0/totalCents")?.held).toBeUndefined();
+    const unsure = rows.map((r) => (r[0] === "Total" ? ["Total", null, ["180.00", 0.5], "240.00", "540.00"] : r) as Printed[]);
+    expect(at(bindEvidence(read(), [drawn([NAMELESS, ...unsure], dir)]).evidence, "visits/0/totalCents")?.held).toBeUndefined();
+  });
+
+  it("a total never confirms a part: a wrong cell stays unconfirmed beside totals that fit it", () => {
+    const rb = read();
+    rb.budgetGrids[0]!.procedures[0]!.cells.T8 = 25000;
+    const ev = bindEvidence(rb, [drawn([NAMELESS, ...rows], dir)]).evidence;
+    expect(at(ev, "procedures/0/cells/T8")?.held).toBeUndefined();
+    expect(at(ev, "procedures/0/cells/T8")?.status).not.toBe("confirmed");
+  });
+});
+
+/** Two costs before the visits (unit price, and one with overhead) and a row with no visit price to tell them apart: the unit column the headers name. */
+describe.each([0, 3] as const)("a unit price by its column, text reading direction %i", (dir) => {
+  const table: Printed[][] = [
+    ["Procedure", "Unit cost", "Cost with OH", "Alpha", "Beta", "Gamma"],
+    ["Venipuncture", "100.00", "130.00", "100.00", "200.00", "300.00"],
+    ["Vital signs", "40.00", "52.00", "Invoiceable", null, null],
+    ["ECG tracing", "50.00", "65.00", "50.00", null, "150.00"],
+  ];
+  const read = (unitCents: number): Rulebook => {
+    const rb = grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Pulse and BP", 0, {}], ["Electrocardiogram", 50, { T4: 50, T12: 150 }]]);
+    const p = rb.budgetGrids[0]!.procedures[1]!;
+    p.cells = { T4: "invoiceable" };
+    p.unitCents = unitCents;
+    return rb;
+  };
+  const unitEv = (rb: Rulebook) => bindEvidence(rb, [drawn(table, dir)]).evidence.find((e) => e.path === "/budgetGrids/0/procedures/1/unitCents");
+
+  it("holds the unit price the column's header names, not the one with overhead", () => {
+    expect(unitEv(read(4000))).toMatchObject({ status: "ungrounded", printed: null });
+    expect(unitEv(read(4000))?.held).toBeDefined();
+    expect(unitEv(read(5200))?.held).toBeUndefined();
+    expect(unitEv(read(5200))?.status).not.toBe("confirmed");
+  });
+});

@@ -449,7 +449,8 @@ function tablesOn(p: TextPage, dir: Word["dir"]): { t: Piece; i: number }[] {
 
 const TOTALISH = /total|overhead|indirect|f\s?&\s?a\b/i;
 /** `rows`: the AI's procedure index → the table's row. `cols`: visit code → the table's column; `first`/`last`: the visit columns' ends. */
-type Plan = { rows: Map<number, number>; cols: Map<string, number>; first: number; last: number; held: boolean; headed: boolean; unfit: (pi: number, j: number, byPrice: boolean) => boolean };
+/** `unitCol`: the one column left of the visits that the headers name a unit price (not one with overhead), else -1. */
+type Plan = { rows: Map<number, number>; cols: Map<string, number>; first: number; last: number; held: boolean; headed: boolean; unitCol: number; unfit: (pi: number, j: number, byPrice: boolean) => boolean };
 
 /**
  * Each header cell against its visit: a "word+number" tag with other digits ("Week 12" over "Week 4") contradicts it, and
@@ -545,6 +546,8 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
   const visitCols = pick(fits) ?? loose ?? [];
   if (visitCols.length !== visits.length) return null;
   const held = !!loose;
+  const plain = data.filter((c) => c < visitCols[0]! && UNIT.test(head(c)) && !/total|overhead|incl|with|\boh\b|w\//i.test(head(c)));
+  const unitCol = plain.length === 1 ? plain[0]! : -1;
   // a page without its own header (a continuation) can't say a price under a visit is that visit's
   const headed = !held || visitCols.filter((c) => head(c).trim()).length * 2 >= visitCols.length;
   // A row the prices fit by chance (one price printed all along it) is no match: a value the read has never sits on a blank
@@ -564,7 +567,7 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
   };
   for (const [pi, j] of found) if (unfit(pi, j, true)) found.delete(pi);
   if (!found.size) return null;
-  return { rows: found, cols, first: visitCols[0]!, last: visitCols.at(-1)!, held, headed, unfit };
+  return { rows: found, cols, first: visitCols[0]!, last: visitCols.at(-1)!, held, headed, unitCol, unfit };
 }
 
 /**
@@ -848,6 +851,8 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     // made only when some cell is held by it. Rows in a held table aren't `viaGrid`, so the label path judges them all.
     const heldRows = new Set<number>();
     const queued: { path: string; j: Judged; check: () => string; row?: NonNullable<TableCheck["rows"]>[number] }[] = [];
+    // the drawn tables this grid's rows were placed in: where the totals cascade looks for what the page prints
+    const planned: { pg: Page; t: Table; pl: Plan; check: () => string; peek: () => string | undefined }[] = [];
     const byPage = new Map<string, number[]>();
     g.procedures.forEach((p, pi) => p.prov.source && byPage.set(`${p.prov.source.documentId}#${p.prov.source.page}`, [...(byPage.get(`${p.prov.source.documentId}#${p.prov.source.page}`) ?? []), pi]));
     for (const [k, idx] of byPage) {
@@ -862,6 +867,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         if (!t || !pl) continue;
         let id: string | undefined;
         const check = () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir));
+        planned.push({ pg, t, pl, check, peek: () => id });
         // rows the prices don't place, placed by order between the firm ones: held on their rows, whatever the columns
         const byOrder = place(t, idx, pl.rows, (pi, j) => !viaGrid.has(pi) && !heldRows.has(pi) && !gridTaken.has(`${k}#${ti}#${j}`));
         for (const [pi, j] of byOrder) if (pl.unfit(pi, j, false)) byOrder.delete(pi);
@@ -885,7 +891,9 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
             const left = row.slice(0, pl.first).filter((ws, c) => t.printed[j]![c] !== null);
             const seen = [...pl.cols.values()].flatMap((c) => (t.printed[j]![c] === null ? [] : [t.printed[j]![c]!]));
             const top = [...new Set(seen)].map((v) => ({ v, n: seen.filter((x) => x === v).length })).sort((a, b) => b.n - a.n);
-            const pick = left.length === 1 ? left[0] : top.length && !(top[1] && top[1].n === top[0]!.n) ? left.find((ws) => cents(txt(ws)) === top[0]!.v) : undefined;
+            // with several costs and no visit price to tell which is the unit price (an invoiceable-only row), the unit column the headers name, if no cell of the row contradicts the mapping
+            const named = pl.unitCol >= 0 && t.printed[j]![pl.unitCol] !== null && ![...out.values()].some((x) => x.status === "conflict") ? row[pl.unitCol] : undefined;
+            const pick = (left.length === 1 ? left[0] : top.length && !(top[1] && top[1].n === top[0]!.n) ? left.find((ws) => cents(txt(ws)) === top[0]!.v) : undefined) ?? named;
             out.set(`${pp}/unitCents`, pick ? judge(pg.p, pick, rowWords, p.unitCents, [], true, null) : { status: "ungrounded", where: [boxOf(pg.p, rowWords)], printed: null, note: null, used: [] });
           }
           // Third check, from the printed page alone: the row's own total. With every other visit cell confirmed (or blank on
@@ -1014,6 +1022,63 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       emit(path, { ...j, held: id });
       const rows = (tableChecks.find((c) => c.id === id)!.rows ??= []);
       if (row && !rows.some((r) => r.procedure === row.procedure)) rows.push(row);
+    }
+
+    /**
+     * The totals cascade. A visit's overhead, subtotal, non-procedure amount and total, and a per-patient total, that the label
+     * path left unfound: in a planned table, the one row labelled for it prints the read's amount (OCR digits, conf >= 0.8) in
+     * the visit's column. A subtotal, non-procedure amount, total or per-patient total also has to add up from its parts, each
+     * confirmed or held (never the other way round: a total confirms no part). Confirmed when every part is; held when any part,
+     * or the table's column mapping, is, and then all by one table check, else it stays asked.
+     */
+    {
+      const live = (path: string) => evidence.find((e) => e.path === path);
+      const sure = (path: string) => {
+        const e = live(path);
+        return !!e && (e.status === "confirmed" || !!e.held);
+      };
+      const open = (path: string) => live(path)?.status === "ungrounded" && !live(path)!.held;
+      const rowsLabelled = (find: (label: string) => boolean) => planned.flatMap((d) => d.t.cells.flatMap((row, j) => (find(txt(row.slice(0, d.pl.first).flat())) ? [{ d, row }] : [])));
+      const agrees = (ws: Word[], value: number) => ws.length > 0 && cents(txt(ws)) === value && ws.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF);
+      const settleOn = (path: string, found: { d: (typeof planned)[number]; ws: Word[] }, parts: string[], byMapping: boolean) => {
+        const ids = new Set(parts.flatMap((x) => live(x)?.held ?? []));
+        if (ids.size > 1) return;
+        let id = [...ids][0];
+        // a held mapping puts the printed cell under that table's check, which can't be another check than the parts'
+        if (byMapping && found.d.pl.held) {
+          if (ids.size && found.d.peek() !== id) return;
+          id = found.d.check();
+        }
+        evidence.splice(evidence.findIndex((e) => e.path === path), 1);
+        put(path, id === undefined ? "confirmed" : "ungrounded", [boxOf(found.d.pg.p, found.ws)], txt(found.ws), "its parts are confirmed and add up to it, and the page prints it", found.ws, id);
+      };
+      const cellsAt = (code: string, category: "procedure" | "non_procedure") => g.procedures.flatMap((p, pi) => (p.category === category && typeof p.cells[code] === "number" ? [{ path: `${gp}/procedures/${pi}/cells/${ptr(code)}`, v: p.cells[code] as number }] : []));
+      g.visits.forEach((v, vi) => {
+        const at = (f: keyof typeof LABELS) => `${gp}/visits/${vi}/${f}`;
+        const sumOf = (xs: { v: number }[]) => xs.reduce((a, x) => a + x.v, 0);
+        const fields: [keyof typeof LABELS, string[], number][] = [
+          ["overheadCents", [], v.overheadCents ?? 0],
+          ["nonProcedureCents", cellsAt(v.code, "non_procedure").map((x) => x.path), sumOf(cellsAt(v.code, "non_procedure"))],
+          ["procedureSubtotalCents", cellsAt(v.code, "procedure").map((x) => x.path), sumOf(cellsAt(v.code, "procedure"))],
+          ["totalCents", [at("procedureSubtotalCents"), at("overheadCents"), ...(v.nonProcedureCents !== null ? [at("nonProcedureCents")] : [])], (v.procedureSubtotalCents ?? 0) + (v.overheadCents ?? 0) + (v.nonProcedureCents ?? 0)],
+        ];
+        for (const [f, parts, total] of fields) {
+          const value = v[f];
+          if (value === null || !open(at(f))) continue;
+          // the parts add up to it and are all in hand (a total with no overhead or no subtotal read has no parts to add)
+          if (f !== "overheadCents" && (value !== total || !parts.length || !parts.every(sure) || (f === "totalCents" && (v.procedureSubtotalCents === null || v.overheadCents === null)))) continue;
+          const hits = rowsLabelled(LABELS[f]).flatMap(({ d, row }) => (d.pl.cols.has(v.code) ? [{ d, ws: row[d.pl.cols.get(v.code)!]! }] : []));
+          if (hits.length === 1 && agrees(hits[0]!.ws, value)) settleOn(at(f), hits[0]!, parts, true);
+        }
+      });
+      // a per-patient total: the sum of every visit's total, printed on its own labelled row
+      g.perPatientTotals.forEach((pt, ti) => {
+        const path = `${gp}/perPatientTotals/${ti}/cents`;
+        const parts = g.visits.map((_, vi) => `${gp}/visits/${vi}/totalCents`);
+        if (!open(path) || !parts.every(sure) || g.visits.reduce((a, v) => a + v.totalCents, 0) !== pt.cents) return;
+        const hits = rowsLabelled((l) => /total/i.test(l) && /patient|subject/i.test(l)).flatMap(({ d, row }) => row.slice(d.pl.first).filter((ws) => agrees(ws, pt.cents)).map((ws) => ({ d, ws })));
+        if (hits.length === 1) settleOn(path, hits[0]!, parts, false);
+      });
     }
 
     // The overhead % the grid states: a % within 3 words of "overhead" on a line of the grid's pages ("Overhead (30%)",
