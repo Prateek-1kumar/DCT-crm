@@ -29,6 +29,10 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
       return "The wording can be read more than one way. Read the spot and pick what the contract means; we don't show our reading.";
     case "RETROACTIVE_NO_DATE":
       return "Without a start date, the new prices would be billed from the original contract's date. Type the date they apply from, or pick prospective only.";
+    case "BLANK_REJECTED":
+      return "We could not tell how the table bills this item, so it has to be read one cell at a time. Type what the contract prints here.";
+    case "BLANK_INVOICEABLE":
+      return "The table prints no price at the visits for these items, so the numbers can't be checked against the page. A person has to say how the contract bills them. We don't show our reading, so it can't steer you.";
     case "TABLE_REJECTED":
       return "The table's columns didn't line up with the visits we read, so this price can't be taken from it. Type what the contract prints.";
     case "CORRECTION_NOT_CARRIED":

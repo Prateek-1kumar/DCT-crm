@@ -83,6 +83,7 @@ export function layoutPage(rb: Rulebook, items: LayoutItem[], truthOf: (path: st
         const c = p.cells[v.code];
         if (c === undefined) return;
         const path = `${base}/cells/${v.code}`;
+        if (c === "invoiceable" && items.some((x) => x.id.startsWith("blank-"))) return; // a table whose "invoiceable" cells print nothing (a blank check)
         out.push(c === "invoiceable" ? { text: "Inv.", box: cell(i), anchor: "end", muted: true } : { text: cellText(path), box: cell(i), path, anchor: "end" });
       });
       y += rowH;

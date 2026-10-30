@@ -109,4 +109,24 @@ describe("answering on the review page", () => {
     await waitFor(() => expect(sent).toHaveBeenCalledWith("st-cobalt", 1, q.id, expect.objectContaining({ optionId: q.options[0]!.id })), { timeout: 10_000 });
     await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-cobalt/versions/1")).review.find((i) => i.id === q.id)!.outcome).not.toBeNull(), { timeout: 10_000 });
   }, 60_000);
+
+  it("a table that prints no prices at the visits: one question naming the page, the table and its rows to look at, two radios and nothing picked; the pick is sent", async () => {
+    const v = await get<RulebookVersionDto>("/studies/st-cobalt/versions/1");
+    const q = v.review.find((i) => i.reason === "BLANK_INVOICEABLE")!;
+    const sent = renderPage("st-cobalt", q.id);
+    expect((await screen.findByRole("heading", { name: /^On page \d+, the highlighted items print no price at the scheduled visits\. How are they billed\?$/ }, { timeout: 10_000 })).id).toBe(`q-${q.id}`);
+    // the table, then each row, as places to look at
+    const places = screen.getByRole("group", { name: "Places in the contract" });
+    expect([...places.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["The table", ...q.where.slice(1).map((_, i) => `Row ${i + 1}`)]);
+    expect(screen.getByText(/We don't show our reading/, { selector: "p" })).toBeTruthy();
+    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((r) => r.closest("label")?.textContent)).toEqual(["Only where the contract prints a price", "At every scheduled visit shown"]);
+    expect(radios.some((r) => r.checked)).toBe(false);
+    // the page never says what was read
+    expect(document.body.textContent).not.toMatch(/Inv\.|invoiceable/);
+    fireEvent.click(radios[0]!);
+    fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
+    await waitFor(() => expect(sent).toHaveBeenCalledWith("st-cobalt", 1, q.id, expect.objectContaining({ optionId: "printed_only" })), { timeout: 10_000 });
+    await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-cobalt/versions/1")).review.find((i) => i.id === q.id)!.outcome).toBe("chosen"), { timeout: 10_000 });
+  }, 60_000);
 });

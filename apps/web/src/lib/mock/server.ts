@@ -215,7 +215,7 @@ function seed(): Db {
   {
     const sd = SEEDS.cobalt;
     const st = study(sd.id, sd.cfg!, "needs_review", ["doc-cb-cta"], daysAgo(3));
-    version(st, 1, buildDraft(makeRulebook(sd.cfg!), cobaltSpecs(), { scan: true, table: true }), daysAgo(3));
+    version(st, 1, buildDraft(makeRulebook(sd.cfg!), cobaltSpecs(), { scan: true, table: true, blank: true }), daysAgo(3));
     log(d, "system", st.id, "extraction.succeeded", { version: 1 }, daysAgo(3));
   }
 

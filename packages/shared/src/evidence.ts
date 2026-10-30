@@ -30,8 +30,25 @@ export const ValueEvidence = z.object({
    * and it counts as confirmed only once a person confirms the mapping. The status stays not-confirmed until then.
    */
   held: z.string().optional(),
+  /**
+   * The read marks this cell "invoiceable" but the page prints nothing in it: the id of the blank check it's asked under
+   * (one question per table, never one per cell). Withheld while that question is open, as `held` is.
+   */
+  blank: z.string().optional(),
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
+
+/** Cells the read calls "invoiceable" in a table that prints them blank: one blind question per table (reason BLANK_INVOICEABLE, its id = `id`). */
+export type BlankCheck = {
+  id: string;
+  grid: number;
+  page: number;
+  table: PageBox;
+  /** Indexes into the grid's procedures. */
+  rows: number[];
+  /** The cells' evidence paths; each is marked `blank: id`. */
+  cells: string[];
+};
 
 /** A scanned table whose columns line up with the visits by count and order though its headers don't match their names: one person confirms the mapping (a table check). */
 export type TableCheck = {

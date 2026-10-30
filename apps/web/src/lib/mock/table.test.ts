@@ -77,7 +77,7 @@ describe("mock API table check", () => {
     await pick((await picks())[1]!.id, right1[0]!);
     const v = await version();
     expect(v.evidence.some((e) => e.held)).toBe(false);
-    expect(v.evidence.filter((e) => e.path.includes("/cells/")).every((e) => e.status === "confirmed")).toBe(true);
+    expect(v.evidence.filter((e) => e.path.startsWith("/budgetGrids/0/") && e.path.includes("/cells/")).every((e) => e.status === "confirmed")).toBe(true);
     expect(await actions()).toContain("review.table_confirmed");
     // the answer is final: no second answer, no send-back
     expect((await pick((await picks())[0]!.id, right0[0]!, "Morgan Lee")).status).toBe(409);
