@@ -63,6 +63,101 @@ function largePicture(images, chars, [px0, py0, px1, py1]) {
   });
 }
 
+const MIN_RULE = 5;
+const MIN_DRAWN_FILLS = 300;
+const MAX_RULES = 20000;
+const tf = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+
+/** A path's subpaths as point lists in page points; one with a curve is a glyph or a shape, not a rule, and is dropped. */
+function subpaths(path, ctm) {
+  const out = [];
+  let cur = [];
+  let curved = false;
+  const end = () => {
+    if (cur.length && !curved) out.push(cur);
+    cur = [];
+    curved = false;
+  };
+  path.walk({
+    moveTo: (x, y) => {
+      end();
+      cur.push(tf(ctm, x, y));
+    },
+    lineTo: (x, y) => void cur.push(tf(ctm, x, y)),
+    curveTo: () => void (curved = true),
+    closePath: () => void (cur.length && cur.push(cur[0])),
+  });
+  end();
+  return out;
+}
+
+/** Rule segments of one drawn path: the straight sides of a stroke, or a thin filled rectangle (a rule drawn as a shape). */
+function addRules(rules, path, ctm, stroked) {
+  for (const sp of subpaths(path, ctm)) {
+    const [xs, ys] = [sp.map((p) => p[0]), sp.map((p) => p[1])];
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    if (stroked) {
+      for (let i = 1; i < sp.length; i++) {
+        const [[ax, ay], [bx, by]] = [sp[i - 1], sp[i]];
+        if (Math.abs(ay - by) < 0.5 && Math.abs(ax - bx) > MIN_RULE) rules.push({ dir: "h", at: ay, from: Math.min(ax, bx), to: Math.max(ax, bx) });
+        else if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) > MIN_RULE) rules.push({ dir: "v", at: ax, from: Math.min(ay, by), to: Math.max(ay, by) });
+      }
+    } else if (sp.length <= 5 && sp.every(([x, y]) => (Math.abs(x - x0) < 0.01 || Math.abs(x - x1) < 0.01) && (Math.abs(y - y0) < 0.01 || Math.abs(y - y1) < 0.01))) {
+      if (y1 - y0 < 1.5 && x1 - x0 > MIN_RULE) rules.push({ dir: "h", at: (y0 + y1) / 2, from: x0, to: x1 });
+      else if (x1 - x0 < 1.5 && y1 - y0 > MIN_RULE) rules.push({ dir: "v", at: (x0 + x1) / 2, from: y0, to: y1 });
+    }
+  }
+}
+
+/** Positions of one direction's rules, within 1 pt merged, each kept only if its segments cover at least 30% of `extent`. */
+function positions(rules, extent) {
+  const out = [];
+  const sorted = [...rules].sort((a, b) => a.at - b.at);
+  for (let i = 0; i < sorted.length; ) {
+    let j = i + 1;
+    while (j < sorted.length && sorted[j].at - sorted[j - 1].at <= 1) j++;
+    const group = sorted.slice(i, j).sort((a, b) => a.from - b.from);
+    let covered = 0;
+    let end = -Infinity;
+    for (const r of group) {
+      covered += Math.max(0, r.to - Math.max(r.from, end));
+      end = Math.max(end, r.to);
+    }
+    if (covered >= 0.3 * extent) out.push(group.reduce((s, r) => s + r.at, 0) / group.length);
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * The ruled tables on a page (TextPage.grids): segments that touch within 2 pt are one table; a table needs 3 vertical
+ * and 3 horizontal rule positions. Everything is in page points, so a table drawn sideways comes out upright.
+ * ponytail: touching is tested pairwise (quadratic), so a page with more than MAX_RULES segments gets none. Upgrade: sort
+ * and sweep.
+ */
+function gridsOf(rules) {
+  if (rules.length > MAX_RULES) return [];
+  const root = rules.map((_, i) => i);
+  const find = (i) => (root[i] === i ? i : (root[i] = find(root[i])));
+  const near = (a, b) =>
+    a.dir === b.dir
+      ? Math.abs(a.at - b.at) <= 1 && a.from <= b.to + 2 && b.from <= a.to + 2
+      : a.at >= b.from - 2 && a.at <= b.to + 2 && b.at >= a.from - 2 && b.at <= a.to + 2;
+  for (let i = 0; i < rules.length; i++) for (let j = i + 1; j < rules.length; j++) if (near(rules[i], rules[j])) root[find(i)] = find(j);
+  const tables = new Map();
+  rules.forEach((r, i) => tables.set(find(i), [...(tables.get(find(i)) ?? []), r]));
+  const out = [];
+  for (const t of tables.values()) {
+    const [h, v] = [t.filter((r) => r.dir === "h"), t.filter((r) => r.dir === "v")];
+    if (!h.length || !v.length) continue;
+    const width = Math.max(...h.map((r) => r.to)) - Math.min(...h.map((r) => r.from));
+    const height = Math.max(...v.map((r) => r.to)) - Math.min(...v.map((r) => r.from));
+    const [xs, ys] = [positions(v, height), positions(h, width)];
+    if (xs.length >= 3 && ys.length >= 3) out.push({ box: [xs[0], ys[0], xs[xs.length - 1], ys[ys.length - 1]], xs, ys });
+  }
+  return out.sort((a, b) => a.box[1] - b.box[1] || a.box[0] - b.box[0]);
+}
+
 /** One page of the PDF's own text; see textlayer.ts (TextPage, Word) for the shape and the rules. */
 function textPage(page, documentId, n, minVisiblePt, minPageText) {
   const [px0, py0, px1, py1] = page.getBounds();
@@ -70,7 +165,15 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   // ponytail: glyphs matched to chars by origin on a 0.5 pt grid. Upgrade: compare the render under each word.
   const key = (x, y) => `${Math.round(x * 2)},${Math.round(y * 2)}`;
   const invisible = new Set();
+  // The same run collects the page's rules and counts its filled paths: text turned to outlines is thousands of them.
+  const rules = [];
+  let fills = 0;
   const dev = new mupdf.Device({
+    fillPath: (path, _eo, ctm) => {
+      fills++;
+      addRules(rules, path, ctm, false);
+    },
+    strokePath: (path, _stroke, ctm) => addRules(rules, path, ctm, true),
     ignoreText: (text, m) => text.walk({ showGlyph: (_f, t) => void invisible.add(key(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5])) }),
   });
   page.run(dev, mupdf.Matrix.identity);
@@ -115,7 +218,9 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   const [width, height] = [px1 - px0, py1 - py0];
   // ponytail: a genuine text page under minPageText characters reads as image_only, so it goes to page attestation.
   const source = chars < minPageText ? "image_only" : imageArea > 0.8 * width * height ? "ocr_layer" : "text";
-  return { documentId, page: n, width, height, source, words, hidden: words.filter((w) => w.hidden).length, largePicture: source === "text" && largePicture(images, seen, [px0, py0, px1, py1]) };
+  // ponytail: "few characters, many filled paths, no big picture"; vector art with no text passes too and is read as a scan.
+  const drawn = chars < minPageText && fills >= MIN_DRAWN_FILLS && imageArea <= 0.5 * width * height;
+  return { documentId, page: n, width, height, source, words, hidden: words.filter((w) => w.hidden).length, largePicture: source === "text" && largePicture(images, seen, [px0, py0, px1, py1]), drawn, grids: gridsOf(rules) };
 }
 
 const ops = {

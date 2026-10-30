@@ -49,7 +49,7 @@ export type TextPage = {
    */
   drawn?: boolean;
   /**
-   * The ruled tables drawn on this page (grid.ts), each: its outline and its rules, in page points like `Word.rect`,
+   * The ruled tables drawn on this page (read in mupdf-worker.mjs), each: its outline and its rules, in page points like `Word.rect`,
    * ascending: the x of every vertical rule and the y of every horizontal one. A table's cells are what they enclose; on a
    * sideways table the text's reading frame (frame()) turns these into its rows and columns.
    */
