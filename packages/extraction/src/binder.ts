@@ -449,24 +449,28 @@ function tablesOn(p: TextPage, dir: Word["dir"]): { t: Piece; i: number }[] {
 
 const TOTALISH = /total|overhead|indirect|f\s?&\s?a\b/i;
 /** `rows`: the AI's procedure index → the table's row. `cols`: visit code → the table's column; `first`/`last`: the visit columns' ends. */
-type Plan = { rows: Map<number, number>; cols: Map<string, number>; first: number; last: number };
+type Plan = { rows: Map<number, number>; cols: Map<string, number>; first: number; last: number; held: boolean; headed: boolean };
 
 /**
  * Each header cell against its visit: a "word+number" tag with other digits ("Week 12" over "Week 4") contradicts it, and
  * at least half the visits must positively match (their code as a word, their name, or a tag).
  */
-function headerAgrees(visits: BudgetGrid["visits"], heads: string[]): boolean {
+function headerFit(visits: BudgetGrid["visits"], heads: string[]): { contradicts: boolean; hits: number } {
   let hits = 0;
   for (const [k, v] of visits.entries()) {
     const h = heads[k]!;
     const [have, want] = [tagsOf(h), new Set([...tagsOf(v.name), ...tagsOf(v.code)])];
     const word = (t: string) => t.replace(/\d+$/, "");
-    if ([...have].some((t) => !want.has(t) && [...want].some((x) => word(x) === word(t)))) return false;
+    if ([...have].some((t) => !want.has(t) && [...want].some((x) => word(x) === word(t)))) return { contradicts: true, hits };
     const code = norm(v.code);
     if ([...want].some((t) => have.has(t)) || (code && h.split(/\s+/).map(norm).includes(code)) || (norm(v.name).length >= 4 && norm(h).includes(norm(v.name)))) hits++;
   }
-  return hits >= Math.ceil(visits.length / 2);
+  return { contradicts: false, hits };
 }
+const headerAgrees = (visits: BudgetGrid["visits"], heads: string[]) => {
+  const f = headerFit(visits, heads);
+  return !f.contradicts && f.hits >= Math.ceil(visits.length / 2);
+};
 
 /**
  * The AI's rows (`rows`, in its order) lined up with the table's, and its visits with the table's visit columns; null
@@ -476,6 +480,8 @@ function headerAgrees(visits: BudgetGrid["visits"], heads: string[]): boolean {
  * each find the other's. Rows are the longest in-order matching of those fits, one table row each. Visit columns are a run of
  * columns right of the unit/cost ones, as many as there are visits, with a header over each that doesn't contradict its
  * visit. A fit by prices alone is dropped again once the columns are known (see the end).
+ * When no run's headers agree but none contradicts, and the run is the one the printed columns span (or the only one),
+ * the mapping is `held`: every check applies, but which visit each column is waits for a person (a table check).
  * ponytail: a visit column blank in every matched row, outside the span of the printed ones, is found only if the headers pick the run. Upgrade: columns from the rules' own spacing.
  */
 function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean): Plan | null {
@@ -519,9 +525,16 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
   const pool = t.u.flatMap((_, c) => (c > unit && t.cells.some((row) => row[c]!.length) && !/total/i.test(head(c)) ? [c] : []));
   const runs = pool.flatMap((_, i) => (i + visits.length <= pool.length ? [pool.slice(i, i + visits.length)] : []));
   const [first, last] = [data.find((c) => c > unit) ?? -1, pool.filter((c) => c <= data.at(-1)!).at(-1)];
-  const fits = runs.filter((r) => data.every((c) => c <= unit || c < r[0]! || r.includes(c) || /total/i.test(head(c))) && headerAgrees(visits, r.map(head)));
-  const visitCols = (fits.length === 1 ? fits[0] : fits.find((r) => r[0] === first && r.at(-1) === last)) ?? [];
+  const clear = runs.filter((r) => data.every((c) => c <= unit || c < r[0]! || r.includes(c) || /total/i.test(head(c))));
+  const pick = (rs: number[][]) => (rs.length === 1 ? rs[0] : rs.find((r) => r[0] === first && r.at(-1) === last));
+  const fits = clear.filter((r) => headerAgrees(visits, r.map(head)));
+  // ponytail: held only when no run's headers agree at all; several that do, none the printed span, stay unmapped. Upgrade: ask which run.
+  const loose = fits.length ? undefined : pick(clear.filter((r) => !headerFit(visits, r.map(head)).contradicts));
+  const visitCols = pick(fits) ?? loose ?? [];
   if (visitCols.length !== visits.length) return null;
+  const held = !!loose;
+  // a page without its own header (a continuation) can't say a price under a visit is that visit's
+  const headed = !held || visitCols.filter((c) => head(c).trim()).length * 2 >= visitCols.length;
   // A row the prices fit by chance (one price printed all along it) is no match: a value the read has never sits on a blank
   // cell, and a row no label of its own vouches for prints nothing at a visit the read leaves empty.
   const cols = new Map(visits.map((v, k) => [v.code, visitCols[k]!]));
@@ -530,10 +543,14 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
     const named = tokens(p.name);
     const [at, alone] = [Object.keys(p.cells).map((code) => cols.get(code)), named.filter((n) => label[j]!.some((l) => sameToken(n, l))).length * 2 <= named.length];
     const blank = Object.entries(p.cells).some(([code, v]) => typeof v === "number" && t.printed[j]![cols.get(code) ?? -1] == null);
-    if (blank || (alone && [...cols.values()].some((c) => t.printed[j]![c] != null && !at.includes(c)))) found.delete(pi);
+    // Held: the columns aren't vouched for, so a row the read gives fewer than two prices (the unit price counts) must print
+    // something in every cell the read gives it, "invoiceable" ones too. One price and a shared word of its name fit a
+    // sibling row too (a planted digit in a unit price did), and only the pattern of printed cells tells them apart.
+    const thin = held && Object.values(p.cells).filter((v) => typeof v === "number").length + (p.unitCents !== null ? 1 : 0) < 2 && Object.keys(p.cells).some((code) => !t.cells[j]![cols.get(code) ?? -1]?.length);
+    if (blank || thin || (alone && [...cols.values()].some((c) => t.printed[j]![c] != null && !at.includes(c)))) found.delete(pi);
   }
   if (!found.size) return null;
-  return { rows: found, cols, first: visitCols[0]!, last: visitCols.at(-1)! };
+  return { rows: found, cols, first: visitCols[0]!, last: visitCols.at(-1)!, held, headed };
 }
 
 // ---------- quotes ----------
@@ -662,19 +679,30 @@ const ABOUT = {
   } satisfies Record<Rulebook["deadlines"][number]["kind"], RegExp>,
 };
 
-type Bound = { evidence: ValueEvidence[]; unaccounted: Span[] };
+/**
+ * A table whose columns line up with the read's visits by count and order but whose headers don't say which is which: a
+ * person confirms the mapping, blind (one question per check). `columns`: each visit's column, in visit order; `table`:
+ * the table's box, which the question shows. Every cell of the table that would be confirmed is held by `id`.
+ */
+export type TableCheck = { id: string; grid: number; page: number; table: PageBox; columns: { box: PageBox; visit: string }[] };
+type Bound = { evidence: ValueEvidence[]; unaccounted: Span[]; tableChecks: TableCheck[] };
 
 export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   const data = new Map(pages.filter((p) => p.source === "text" || p.source === "ocr").map((p) => [`${p.documentId}#${p.page}`, pageData(p)]));
   const pageAt = (src: Provenance["source"]) => (src ? data.get(`${src.documentId}#${src.page}`) : undefined);
   const evidence: ValueEvidence[] = [];
   const bound = new Set<Word>();
-  const put = (path: string, status: ValueEvidence["status"], where: PageBox[], printed: string | null, note: string | null = null, used: Word[] = []) => {
+  const put = (path: string, status: ValueEvidence["status"], where: PageBox[], printed: string | null, note: string | null = null, used: Word[] = [], held?: string) => {
     used.forEach((w) => bound.add(w));
     // OCR that wasn't sure of a word confirms nothing with it: the value is asked, or the contract's totals decide
     if (status === "confirmed" && used.some((w) => (w.conf ?? 1) < MIN_OCR_CONF)) return evidence.push({ path, status: "ungrounded", where, printed: null, note: "the scan is unclear here" });
-    evidence.push({ path, status, where, printed, note });
+    // held: not shown what the page prints (blind entry), and not asked: its table's check is
+    evidence.push({ path, status, where, printed: held ? null : printed, note, ...(held ? { held } : {}) });
   };
+  const tableChecks: TableCheck[] = [];
+  // a held table's visit columns' rules (reading frame), to tell whether a continuation page's columns are the same ones
+  const ruling = new Map<string, { dir: Word["dir"]; rules: [number, number][] }>();
+  const ALIGNED = 3;
   const nowhere = (src: Provenance["source"]): PageBox[] => (src ? [{ documentId: src.documentId, page: src.page, box: null }] : []);
   /**
    * A value against the figures of its kind printed where it's stated: confirmed only when every one of them says exactly
@@ -732,7 +760,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const cands = lines.filter((l) => l.dir === cols.dir && l.words.some((w) => (NUMBER.test(bare(w.text)) || /invoic/i.test(w.text)) && columnOf(cols, w)));
       return { pg, cols, lines, band, cands };
     };
-    type Judged = { status: ValueEvidence["status"]; where: PageBox[]; printed: string | null; note: string | null; used: Word[] };
+    type Judged = { status: ValueEvidence["status"]; where: PageBox[]; printed: string | null; note: string | null; used: Word[]; held?: string };
     const judge = (pg: TextPage, ws: Word[], rowWords: Word[], value: number | "invoiceable", used: Word[], own: boolean, unitCents: number | null): Judged => {
       const printed = ws.length ? txt(ws) : null;
       // An "invoiceable" cell is there when the cell says so, or prints the row's price: tables print a price only under the
@@ -751,13 +779,31 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       if (ok && [...ws, ...used].some((w) => (w.conf ?? 1) < MIN_OCR_CONF)) return { status: "ungrounded", where, printed: null, note: "the scan is unclear here", used: [...ws, ...used] };
       return { status: ok ? "confirmed" : "conflict", where, printed, note: null, used: [...ws, ...used] };
     };
-    const emit = (path: string, j: Judged) => put(path, j.status, j.where, j.printed, j.note, j.used);
+    const emit = (path: string, j: Judged) => put(path, j.status, j.where, j.printed, j.note, j.used, j.held);
+    /** The table check a held table's cells ride on: an earlier one of this grid whose visit columns have the same rules, else a new one. */
+    const checkFor = (pg: Page, k: string, ti: number, ruled: Piece, t: Table, pl: Plan, dir: Word["dir"]): string => {
+      const order = [...g.visits].sort((a, b) => a.order - b.order);
+      const rules = order.map((v): [number, number] => [ruled.us[pl.cols.get(v.code)!]!, ruled.us[pl.cols.get(v.code)! + 1]!]);
+      const same = tableChecks.find((c) => {
+        const r = ruling.get(c.id)!;
+        return c.grid === gi && r.dir === dir && r.rules.every((x, i) => Math.abs(x[0] - rules[i]![0]) <= ALIGNED && Math.abs(x[1] - rules[i]![1]) <= ALIGNED);
+      });
+      if (same) return same.id;
+      const id = `table:${gi}:${k}:${ti}`;
+      ruling.set(id, { dir, rules });
+      tableChecks.push({ id, grid: gi, page: pg.p.page, table: boxOf(pg.p, t.cells.flat(2)), columns: order.map((v) => ({ box: boxOf(pg.p, t.cells.flatMap((row) => row[pl.cols.get(v.code)!]!)), visit: v.code })) });
+      return id;
+    };
     const cell = (path: string, c: NonNullable<ReturnType<typeof ctx>>, row: Line, key: string, value: number | "invoiceable", used: Word[] = [], unitCents: number | null = null) =>
       emit(path, judge(c.pg.p, cellWords(c.cols, row, key), row.words, value, used, c.pg.lines.includes(c.cols.line), unitCents));
 
     // Cells by the table's drawn grid, where the cited page has one that holds the table: rows lined up in order by what
     // they print, visits by their columns' headers. Anything it can't do cleanly is left to the label path below.
     const viaGrid = new Set<number>();
+    // A held table's cells wait for the label path below: a cell it confirms on its own needs no person, and a table check is
+    // made only when some cell is held by it. Rows in a held table aren't `viaGrid`, so the label path judges them all.
+    const heldRows = new Set<number>();
+    const queued: { path: string; j: Judged; check: () => string }[] = [];
     const byPage = new Map<string, number[]>();
     g.procedures.forEach((p, pi) => p.prov.source && byPage.set(`${p.prov.source.documentId}#${p.prov.source.page}`, [...(byPage.get(`${p.prov.source.documentId}#${p.prov.source.page}`) ?? []), pi]));
     for (const [k, idx] of byPage) {
@@ -767,21 +813,24 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       const dir = dirs.indexOf(Math.max(...dirs)) as Word["dir"];
       for (const { t: ruled, i: ti } of tablesOn(pg.p, dir)) {
         const t = tableOf(pg.p, ruled, dir);
-        const pl = t && plan(t, g, idx, (r) => gridTaken.has(`${k}#${ti}#${r}`));
+        const rest = idx.filter((pi) => !viaGrid.has(pi) && !heldRows.has(pi));
+        const pl = t && rest.length ? plan(t, g, rest, (r) => gridTaken.has(`${k}#${ti}#${r}`)) : null;
         if (!t || !pl) continue;
+        let id: string | undefined;
+        const heldBy = pl.held ? () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir)) : undefined;
         for (const [pi, j] of pl.rows) {
           gridTaken.add(`${k}#${ti}#${j}`);
-          viaGrid.add(pi);
+          (heldBy ? heldRows : viaGrid).add(pi);
           const p = g.procedures[pi]!;
           const pp = `${gp}/procedures/${pi}`;
           const row = t.cells[j]!;
           const rowWords = row.flat();
           // codes and counts left of the visit columns belong to this row; its prices are bound only where a value is read
-          row.slice(0, pl.first).flat().forEach((w) => NUMBER.test(bare(w.text)) && !priceLike(w) && bound.add(w));
+          if (!heldBy) row.slice(0, pl.first).flat().forEach((w) => NUMBER.test(bare(w.text)) && !priceLike(w) && bound.add(w));
           const out = new Map<string, Judged>();
           for (const [key, value] of Object.entries(p.cells)) {
             const col = pl.cols.get(key);
-            out.set(`${pp}/cells/${ptr(key)}`, col === undefined ? { status: "ungrounded", where: [boxOf(pg.p, rowWords)], printed: null, note: null, used: [] } : judge(pg.p, row[col]!, rowWords, value, [], true, p.unitCents));
+            out.set(`${pp}/cells/${ptr(key)}`, col === undefined ? { status: "ungrounded", where: [boxOf(pg.p, rowWords)], printed: null, note: null, used: [] } : judge(pg.p, row[col]!, rowWords, value, [], pl.headed, p.unitCents));
           }
           // The unit price: the one price left of the visit columns, or of several the one its own visit cells print most often.
           if (p.unitCents !== null) {
@@ -815,9 +864,12 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
               out.set(path, { status: "confirmed", where: was.where, printed: null, note: "the row's printed total confirms it", used: total });
             }
           }
-          for (const [path, j2] of out) emit(path, j2);
+          // held: what would be confirmed waits for the person's word on the columns; anything else is left to the label path
+          for (const [path, j2] of out) {
+            if (!heldBy) emit(path, j2);
+            else if (j2.status === "confirmed") queued.push({ path, j: { ...j2, status: "ungrounded", note: "waiting for someone to confirm which visit each column is" }, check: heldBy });
+          }
         }
-        break;
       }
     }
 
@@ -904,6 +956,14 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       }
     });
     g.perPatientTotals.forEach((t, ti) => item(`${gp}/perPatientTotals/${ti}`, null, t.label, t.prov, [["cents", t.cents]], ctx(t.prov.source)?.band));
+
+    // What the label path left unconfirmed (and didn't see conflict) in a held table is held; the rest stays as it judged it.
+    for (const { path, j, check } of queued) {
+      const at = evidence.findIndex((e) => e.path === path);
+      if (at >= 0 && evidence[at]!.status !== "ungrounded") continue;
+      if (at >= 0) evidence.splice(at, 1);
+      emit(path, { ...j, held: check() });
+    }
 
     // The overhead % the grid states: a % within 3 words of "overhead" on a line of the grid's pages ("Overhead (30%)",
     // "30% overhead", "Indirect costs @ 30%"), so another % on the same line can't back it.
@@ -1015,7 +1075,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   if (rulebook.screenFail) cap("/screenFail", rulebook.screenFail.cap, rulebook.screenFail.prov, ABOUT.screenFail);
 
   const unaccounted = inventory(pages).filter((s) => !s.words.some((w) => bound.has(w)));
-  return { evidence, unaccounted };
+  return { evidence, unaccounted, tableChecks };
 }
 
 // ---------- review queue ----------
@@ -1080,10 +1140,22 @@ const UNACCOUNTED_OPTIONS = [
  * The review queue for a draft: a blind "type what the page says" item for every value the text didn't confirm, and
  * one item per line or sentence of the contract with money terms the master doesn't hold.
  */
-export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[], rulebook: Rulebook): ReviewItem[] {
+export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[], rulebook: Rulebook, tableChecks: TableCheck[] = []): ReviewItem[] {
   const base = { answer: null, outcome: null, compare: null, blocking: true, sentBack: null } as const;
+  // a held value has no question of its own: its table's check is asked once for all of them
+  const tables: ReviewItem[] = tableChecks.map((c) => ({
+    ...base,
+    id: c.id,
+    kind: "confirm_value",
+    reason: "TABLE_CHECK",
+    path: null,
+    question: "Which visit is each highlighted column?",
+    input: null,
+    options: [],
+    where: [c.table],
+  }));
   const confirm: ReviewItem[] = evidence
-    .filter((e) => e.status === "conflict" || e.status === "ungrounded")
+    .filter((e) => (e.status === "conflict" || e.status === "ungrounded") && !e.held)
     .map((e) => ({ ...base, id: `confirm:${e.path}`, kind: "confirm_value", reason: e.status === "conflict" ? "VALUE_CONFLICT" : "UNGROUNDED_VALUE", path: e.path, ...ask(rulebook, e.path), options: [], where: e.where }));
   // One item per line or sentence: a row the master missed is one question, not one per number.
   const groups = new Map<string, Span[]>();
@@ -1111,5 +1183,5 @@ export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[
       quoted: [...new Map(ss.flatMap((s) => s.lines).map((l) => [JSON.stringify(l), l])).values()],
     };
   });
-  return [...confirm, ...terms];
+  return [...tables, ...confirm, ...terms];
 }

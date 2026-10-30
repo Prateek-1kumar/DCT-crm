@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Rulebook, ValueEvidence } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { describe, expect, it } from "vitest";
-import { bindEvidence } from "../src/binder";
+import { bindEvidence, reviewFromEvidence } from "../src/binder";
 import { readTextLayer, type TextPage } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
@@ -469,5 +469,108 @@ describe("a row the prices fit only by chance", () => {
   it("is no match when a value the read has sits on a blank cell", () => {
     const rb = grid(VISITS, [["Physical exam", 100, { T4: 100, T8: 100 }]]);
     expect(statuses(bind(rb, drawn([HEAD, ["Venipuncture", "100", "100", null, "100", "200"]])), 0, ["T4", "T8"])).not.toContain("confirmed");
+  });
+});
+
+/**
+ * A held mapping: the table's columns line up with the read's visits by count and order, but its headers don't say which
+ * is which. Every check still applies; what would be confirmed is held by one table check, and a person says which visit
+ * each column is. Headers here name no visit ("Alpha"), so only the count and order can map them.
+ */
+describe.each([0, 3] as const)("a held mapping, text reading direction %i", (dir) => {
+  const NAMELESS: Printed[] = ["Procedure", "Cost", "Alpha", "Beta", "Gamma"];
+  const body: Printed[][] = [["Venipuncture", "100.00", "100.00", "200.00", "300.00"], ["ECG tracing", "50.00", "50.00", null, "150.00"]];
+  const rb = (): Rulebook => grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Electrocardiogram", 50, { T4: 50, T12: 150 }]]);
+  const heldOf = (ev: ValueEvidence[], row: number, visit: string) => ev.find((e) => e.path === `/budgetGrids/0/procedures/${row}/cells/${visit}`)?.held;
+  const cell = (ev: ValueEvidence[], row: number, visit: string) => ev.find((e) => e.path === `/budgetGrids/0/procedures/${row}/cells/${visit}`);
+
+  it("headers that don't match: the cells are held, never confirmed, and there is one table check", () => {
+    const { evidence: ev, tableChecks } = bindEvidence(rb(), [drawn([NAMELESS, ...body], dir)]);
+    expect(tableChecks).toHaveLength(1);
+    expect(tableChecks[0]!.columns.map((c) => c.visit)).toEqual(["T4", "T8", "T12"]);
+    expect(tableChecks[0]).toMatchObject({ grid: 0, page: 1 });
+    for (const [row, visit] of [[0, "T4"], [0, "T8"], [0, "T12"], [1, "T4"], [1, "T12"]] as const) {
+      expect(heldOf(ev, row, visit)).toBe(tableChecks[0]!.id);
+      // not confirmed, and not showing what the page prints
+      expect(cell(ev, row, visit)).toMatchObject({ status: "ungrounded", printed: null });
+    }
+    expect(ev.find((e) => e.path === "/budgetGrids/0/procedures/0/unitCents")?.held).toBe(tableChecks[0]!.id);
+    // the same table with headers that do say the visits is simply confirmed
+    const named = bindEvidence(rb(), [drawn(TABLE.slice(0, 3), dir)]);
+    expect(named.tableChecks).toEqual([]);
+    expect(cell(named.evidence, 0, "T8")).toMatchObject({ status: "confirmed" });
+  });
+
+  it("no question of its own for a held cell: one placeholder for the table", () => {
+    const { evidence, tableChecks } = bindEvidence(rb(), [drawn([NAMELESS, ...body], dir)]);
+    const items = reviewFromEvidence(evidence, [], rb(), tableChecks);
+    expect(items.filter((i) => i.reason === "TABLE_CHECK")).toHaveLength(1);
+    expect(items.find((i) => i.reason === "TABLE_CHECK")).toMatchObject({ path: null, where: [tableChecks[0]!.table], blocking: true });
+    expect(items.filter((i) => i.path?.startsWith("/budgetGrids/0/procedures/"))).toEqual([]);
+  });
+
+  it("a count that doesn't line up is not held", () => {
+    // the read has a fourth visit the table has no column for
+    const more = grid([...VISITS, ["T16", "Week 16"]], [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Electrocardiogram", 50, { T4: 50, T12: 150 }]]);
+    const r = bindEvidence(more, [drawn([NAMELESS, ...body], dir)]);
+    expect(r.tableChecks).toEqual([]);
+    expect(r.evidence.some((e) => e.held)).toBe(false);
+    // fewer
+    const fewer = grid(VISITS.slice(0, 2), [["Blood draw", 100, { T4: 100, T8: 200 }], ["Electrocardiogram", 50, { T4: 50 }]]);
+    expect(bindEvidence(fewer, [drawn([NAMELESS, ...body], dir)]).tableChecks).toEqual([]);
+  });
+
+  it("a planted digit in a held cell is not held", () => {
+    for (const [row, visit] of [[0, "T4"], [0, "T8"], [0, "T12"], [1, "T4"], [1, "T12"]] as const)
+      for (const d of [10, -10, 1, -1, 100, 1000]) {
+        const bad = rb();
+        const cells = bad.budgetGrids[0]!.procedures[row]!.cells;
+        cells[visit] = (cells[visit] as number) + d * 100;
+        const { evidence } = bindEvidence(bad, [drawn([NAMELESS, ...body], dir)]);
+        expect(heldOf(evidence, row, visit)).toBeUndefined();
+        expect(cell(evidence, row, visit)?.status).not.toBe("confirmed");
+      }
+  });
+
+  it("a visit's cell read one column over is not held", () => {
+    const shifted = rb();
+    shifted.budgetGrids[0]!.procedures[0]!.cells = { T8: 10000, T12: 20000 };
+    const ev = bindEvidence(shifted, [drawn([NAMELESS, ...body], dir)]).evidence;
+    expect(heldOf(ev, 0, "T8")).toBeUndefined();
+    expect(heldOf(ev, 0, "T12")).toBeUndefined();
+  });
+
+  describe("a continuation page that prints no header", () => {
+    const more: Printed[][] = [["Tracing", "50.00", "50.00", null, "150.00"], ["Screen", "25.00", null, "25.00", "25.00"]];
+    const two = (): Rulebook => {
+      const r = grid(VISITS, [["Blood draw", 100, { T4: 100, T8: 200, T12: 300 }], ["Electrocardiogram", 50, { T4: 50, T12: 150 }], ["Urinalysis", 25, { T8: 25, T12: 25 }]]);
+      for (const i of [1, 2]) r.budgetGrids[0]!.procedures[i]!.prov = { ...on, source: { documentId: "d1", page: 2 } };
+      return r;
+    };
+    const first = (): TextPage => drawn([NAMELESS, ...body.slice(0, 1)], dir);
+    const second = (skew = 0): TextPage => ({ ...drawn(more, dir, "ocr", [], skew), page: 2 });
+
+    it("rides on the same check when its column rules line up with the header page's", () => {
+      const { evidence, tableChecks } = bindEvidence(two(), [first(), second()]);
+      expect(tableChecks).toHaveLength(1);
+      expect(heldOf(evidence, 2, "T8")).toBe(tableChecks[0]!.id);
+      expect(heldOf(evidence, 0, "T8")).toBe(tableChecks[0]!.id);
+    });
+
+    it("has its own check when its columns sit elsewhere", () => {
+      const { evidence, tableChecks } = bindEvidence(two(), [first(), second(10)]);
+      expect(tableChecks).toHaveLength(2);
+      expect(heldOf(evidence, 2, "T8")).toBe(tableChecks[1]!.id);
+      expect(heldOf(evidence, 0, "T8")).toBe(tableChecks[0]!.id);
+      expect(tableChecks[1]).toMatchObject({ page: 2 });
+    });
+
+    it("confirms an invoiceable cell only by the word, since the page has no header of its own", () => {
+      const r = two();
+      r.budgetGrids[0]!.procedures[2]!.cells = { T8: "invoiceable", T12: 2500 };
+      const ev = bindEvidence(r, [first(), second()]).evidence;
+      expect(heldOf(ev, 2, "T8")).toBeUndefined();
+      expect(heldOf(ev, 2, "T12")).toBeDefined();
+    });
   });
 });

@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { rulebookVersions } from "../src/db/schema.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { reviewDraft, sampling } from "../src/review.js";
+import { at, reviewDraft, sampling } from "../src/review.js";
 import { type App, type Built, extract, newStudy, resetDb, settleAll, signOff, storedVersion, testApp } from "./helpers.js";
 
 // The table check (ADR-001): a scanned table whose columns line up with the visits by count and order, though its
@@ -65,6 +65,45 @@ describe("the table check, over the API", () => {
     expect(refused.statusCode).toBe(409);
   });
 
+  it("withholds every held price while its table is open: not in the master, the evidence's text or spot, or a search", async () => {
+    const { studyId, grid } = await held();
+    const stored = await storedVersion(built, studyId, 1);
+    const amounts = grid.map((p) => at(stored.rulebook, p) as number);
+    const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`)); // valid: null only where withheld
+    for (const p of grid) {
+      expect(at(v.rulebook, p), p).toBeNull();
+      expect(v.evidence.find((e) => e.path === p), p).toMatchObject({ printed: null, held: "t1" });
+      expect(v.evidence.find((e) => e.path === p)!.where.every((w) => w.box === null)).toBe(true);
+    }
+    // a price held is no more findable by its amount than an asked one
+    for (const cents of new Set(amounts)) {
+      const hits = (await get<{ hits: { path: string }[] }>(`/studies/${studyId}/versions/1/search?q=${(cents / 100).toFixed(2)}`)).hits.map((h) => h.path);
+      for (const p of grid) expect(hits, `${p} by ${cents}`).not.toContain(p.replace(/\/cells\/.*$/, ""));
+    }
+    // once the table is confirmed they show
+    for (const q of stored.review.filter((i) => i.table)) await answer(studyId, q.id, q.table!.expect);
+    const after = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
+    for (const p of grid) expect(at(after.rulebook, p)).toBe(at(stored.rulebook, p));
+  });
+
+  it("settles only by a real pick; “can't tell” rejects the mapping and the prices are asked blind", async () => {
+    const { studyId, grid, expect: right } = await held();
+    const [first] = Object.keys(right);
+    const url = `/studies/${studyId}/versions/1/review/${encodeURIComponent(first!)}`;
+    const before = await storedVersion(built, studyId, 1);
+    for (const body of [{}, { value: right[first!] }, { optionId: "nope" }, { optionId: right[first!], note: "it's this" }]) expect((await post(url, { by: "Asha", ...body })).statusCode, JSON.stringify(body)).toBe(400);
+    const same = await storedVersion(built, studyId, 1);
+    expect([same.review, same.evidence, same.editors]).toEqual([before.review, before.evidence, before.editors]);
+    expect((await post(url, { by: "Asha", cantTell: true })).statusCode).toBe(200);
+    const stored = await storedVersion(built, studyId, 1);
+    expect(stored.evidence.some((e) => e.held)).toBe(false);
+    expect(stored.review.some((i) => i.reason === TABLE_CHECK)).toBe(false);
+    expect(stored.review.filter((i) => i.reason === "TABLE_REJECTED").map((i) => i.path).sort()).toEqual([...grid].sort());
+    const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
+    for (const p of grid) expect(at(v.rulebook, p)).toBeNull(); // still blind: now by their own questions
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);
+  });
+
   it("every pick right confirms the table's prices in the same write, and the contract can be approved", async () => {
     const { studyId, grid, expect: right } = await held();
     const before = await storedVersion(built, studyId, 1);
@@ -115,13 +154,10 @@ describe("reviewDraft with table checks", () => {
       bindEvidence: (r: Rulebook, pages: Parameters<typeof bindEvidence>[1]) => {
         const b = bindEvidence(r, pages);
         const evidence = [...b.evidence.filter((e) => !grid.has(e.path)), ...[...grid].map((path): ValueEvidence => ({ path, status: "ungrounded", where: [], printed: null, note: null, held: "t1" }))];
-        return { ...b, evidence, tableChecks: [check] };
+        return { ...b, evidence, tableChecks: [{ ...check, table: check.columns[0]?.box ?? boxFor(rb.documents[0]!.id, 0) }] };
       },
-      reviewFromEvidence: (e: ValueEvidence[], u: Parameters<typeof reviewFromEvidence>[1], r: Rulebook): ReviewItem[] => [
-        // a held price isn't asked one by one: its table is
-        ...reviewFromEvidence(e.filter((x) => !x.held), u, r),
-        { id: "table:t1", kind: "confirm_value", reason: TABLE_CHECK, path: null, question: "placeholder", input: null, options: [], where: [], blocking: true, answer: null, outcome: null, compare: null, sentBack: null },
-      ],
+      // the binder's own: one placeholder per check, and no question for a held price
+      reviewFromEvidence,
     };
     return { rb, grid, out: reviewDraft(port, rb, [], [], []) };
   }
@@ -130,7 +166,7 @@ describe("reviewDraft with table checks", () => {
     sampling.random = () => 0.5;
     const { out, grid } = await bound((rb) => checkOf(rb).columns);
     expect(out.review.filter((i) => i.reason === TABLE_CHECK).map((i) => i.question)).toEqual(Array(2).fill(expect.stringMatching(/^Which visit is the highlighted column/)));
-    expect(out.review.some((i) => i.question === "placeholder")).toBe(false);
+    expect(out.review.some((i) => i.id === "t1")).toBe(false); // the binder's placeholder
     expect(out.review.some((i) => grid.has(i.path ?? ""))).toBe(false); // neither asked one by one, nor sampled
     expect(out.evidence.filter((e) => e.held === "t1")).toHaveLength(grid.size);
     expect(out.evidence.filter((e) => e.held).every((e) => e.status !== "confirmed")).toBe(true);

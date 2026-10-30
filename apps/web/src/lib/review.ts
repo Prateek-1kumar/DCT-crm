@@ -29,8 +29,6 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
       return "The wording can be read more than one way. Read the spot and pick what the contract means; we don't show our reading.";
     case "RETROACTIVE_NO_DATE":
       return "Without a start date, the new prices would be billed from the original contract's date. Type the date they apply from, or pick prospective only.";
-    case "TABLE_CHECK":
-      return "Confirm the table's columns. The headers on this scan don't match the visit names we read, so we check that its columns line up with the visits. Look at the highlighted column and pick its visit; we don't show our reading.";
     case "TABLE_REJECTED":
       return "The table's columns didn't line up with the visits we read, so this price can't be taken from it. Type what the contract prints.";
     case "CORRECTION_NOT_CARRIED":
@@ -47,6 +45,8 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
     case "ungrounded":
     case "UNGROUNDED_VALUE":
       return "We couldn't find this number where the contract should print it.";
+    case "TABLE_CHECK":
+      return "The numbers in this table match what we read, but the table doesn't say which visit each column is. A person has to say, so a column can't be mistaken for the one next to it.";
     case "SCAN_VALUE":
       return "This contract is a scan, so this number can't be checked against its text.";
     case "SCAN_PAGE":

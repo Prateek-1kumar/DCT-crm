@@ -100,7 +100,7 @@ describe("answering on the review page", () => {
     const q = v.review.find((i) => i.reason === "TABLE_CHECK")!;
     const sent = renderPage("st-cobalt", q.id);
     expect((await screen.findByRole("heading", { name: /^Which visit is the highlighted column of the table on page \d+\?$/ }, { timeout: 10_000 })).id).toBe(`q-${q.id}`);
-    expect(screen.getByText(/Confirm the table's columns/, { selector: "p" })).toBeTruthy();
+    expect(screen.getByText(/doesn't say which visit each column is/, { selector: "p" })).toBeTruthy();
     const radios = screen.getAllByRole("radio") as HTMLInputElement[];
     expect(radios.map((r) => r.closest("label")?.textContent)).toEqual(q.options.map((o) => o.label));
     expect(radios.some((r) => r.checked)).toBe(false);

@@ -7,7 +7,7 @@ export { norm, sameName, sharesWord } from "./checks";
 export { pageCount, RENDER_LIMITS, RenderTimeoutError } from "./render";
 export { readTextLayer, type TextPage, type Span } from "./textlayer";
 export { ocrPage, type OcrReading, type OcrWord } from "./ocr";
-export { bindEvidence, reviewFromEvidence } from "./binder";
+export { bindEvidence, reviewFromEvidence, type TableCheck } from "./binder";
 
 /** PNG of one page (1-based), for the page viewer. Rejects bad page numbers; DPI and pixel size are capped (RENDER_LIMITS). */
 export const renderPage = (pdfPath: string, page: number, dpi = 150): Promise<Buffer> => renderPng(pdfPath, page, { dpi });

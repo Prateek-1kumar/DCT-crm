@@ -4,16 +4,23 @@ import {
   answerQuestion,
   askAbout,
   at,
+  blindEvidence,
   blindReview,
   followUps,
   isoDate,
+  mask,
+  type ReviewItem,
   type Rulebook,
+  searchVersion,
+  shownAppliesFrom,
   signOffRefusal,
   TABLE_CHECK,
   type TableCheck,
   tableQuestions,
   tableSendBackRefusal,
   type ValueEvidence,
+  versionDiff,
+  withheldPaths,
 } from "../src";
 
 // A scanned table whose headers don't match the read's visit names is held for one blind confirmation of its columns
@@ -153,11 +160,35 @@ describe("answering a table check", () => {
     expect(tableSendBackRefusal(d.review.filter((i) => !i.table))).toBeNull();
   });
 
-  it("a pick that the person can't tell leaves the table held and open", () => {
+  it("“can't tell” rejects the mapping like a wrong pick: the prices are asked blind, and nothing is left held or open", () => {
     const d = fresh();
     const [a] = picks(d);
-    expect(answerQuestion(d, a!.id, { cantTell: true, by: "Asha" }, { isoDate, now: "t" })).toMatchObject({ outcome: "cant_tell" });
-    expect(d.evidence.every((e) => e.held === "t1")).toBe(true);
+    const r = answerIt(d, a!.id, "") as never;
+    expect(r).toMatchObject({ refusal: { status: 400 } }); // not a pick
+    const c = answerQuestion(d, a!.id, { cantTell: true, by: "Asha" }, { isoDate, now: "t" });
+    expect(c).toMatchObject({ outcome: "cant_tell" });
+    if ("refusal" in c || c.unchanged) throw new Error("unreachable");
+    const log = followUps({ ...d, anomalies: [] }, c, () => [], ask(d));
+    expect(log).toEqual([{ action: "review.table_rejected", detail: { "prices to type": 4, "picks closed": 2 } }]);
+    expect(d.evidence.some((e) => e.held)).toBe(false);
+    expect(picks(d)).toEqual([]);
+    expect(d.review.filter((i) => i.reason === "TABLE_REJECTED").map((i) => i.path)).toEqual(HELD);
+  });
+
+  it("only a real pick settles it: never nothing, free text, a value, a note, an option that isn't listed, or a question with no expected visit", () => {
+    const d = fresh();
+    const [a] = picks(d);
+    const snapshot = JSON.stringify([d.review, d.evidence, d.editors]);
+    const answerWith = (body: object, id = a!.id) => answerQuestion(d, id, { by: "Asha", ...body }, { isoDate, now: "t" });
+    for (const body of [{}, { value: "V2" }, { value: a!.table!.expect }, { optionId: a!.table!.expect, value: "x" }, { optionId: a!.table!.expect, note: "it's this one" }, { note: "V1" }])
+      expect(answerWith(body), JSON.stringify(body)).toMatchObject({ refusal: { status: 400 } });
+    expect(answerWith({ optionId: "V9" })).toMatchObject({ refusal: { status: 400 } });
+    // a placeholder with no expected visit (what the binder asks) settles nothing
+    const placeholder: ReviewItem = { ...a!, id: "t1", table: undefined, options: a!.options };
+    d.review.push(placeholder);
+    expect(answerWith({ optionId: "V1" }, "t1")).toMatchObject({ refusal: { status: 409 } });
+    d.review.pop();
+    expect(JSON.stringify([d.review, d.evidence, d.editors])).toBe(snapshot);
   });
 
   it("whoever picks is an editor, so maker-checker keeps them from approving", () => {
@@ -165,6 +196,57 @@ describe("answering a table check", () => {
     const [a] = picks(d);
     answerIt(d, a!.id, a!.table!.expect, "Asha");
     expect(d.editors).toEqual(["Asha"]);
+  });
+});
+
+describe("blind entry while a table is held", () => {
+  const nowDraft = (d: AnswerDraft) => ({ ...d, status: "draft" });
+
+  it("every held price is withheld, masked in the master, and its evidence goes out without printed text at its page only", () => {
+    const d = fresh();
+    const ev = d.evidence.map((e) => ({ ...e, printed: "400.00", where: [{ documentId: "d1", page: 3, box: [0.2, 0.2, 0.1, 0.1] as [number, number, number, number] }] }));
+    const hidden = withheldPaths({ ...nowDraft(d), evidence: ev });
+    expect(hidden).toEqual(expect.arrayContaining(HELD));
+    // the price outside the table isn't held, so it shows
+    expect(hidden).not.toContain("/budgetGrids/0/procedures/0/cells/V3");
+    const shown = mask(d.rulebook, hidden, { evidence: ev, review: d.review });
+    for (const p of HELD) expect(at(shown, p)).toBeNull();
+    expect(at(shown, "/budgetGrids/0/procedures/0/cells/V3")).toBe(600);
+    for (const e of blindEvidence(ev, hidden).filter((x) => HELD.includes(x.path))) expect(e).toMatchObject({ printed: null, where: [{ box: null }] });
+    // and nothing else shows them: not the sign-off diff, nor a search for a held amount
+    const view = { ...nowDraft(d), evidence: ev, updatedAt: "x", appliesFrom: null };
+    expect(shownAppliesFrom(view)).toBeNull();
+    expect(searchVersion(view as never, "4.00").map((h) => h.path)).not.toContain("/budgetGrids/0/procedures/0");
+    const diff = versionDiff({ ...nowDraft(d), evidence: ev }, { ...nowDraft(d), rulebook: { ...d.rulebook, budgetGrids: [{ ...d.rulebook.budgetGrids[0]!, procedures: [{ ...d.rulebook.budgetGrids[0]!.procedures[0]!, cells: { V1: 1, V2: 2, V3: 600 } }, d.rulebook.budgetGrids[0]!.procedures[1]!] }] }, evidence: ev });
+    expect(Array.isArray(diff) ? diff.filter((e) => HELD.includes(e.path)) : null).toEqual([]);
+  });
+
+  it("a settled-right table shows its prices again; a rejected one keeps them blind, asked one by one", () => {
+    const right = fresh();
+    for (const q of picks(right)) answerIt(right, q.id, q.table!.expect);
+    expect(withheldPaths({ ...nowDraft(right) })).toEqual([]);
+
+    const d = fresh();
+    const [a] = picks(d);
+    answerIt(d, a!.id, ["V1", "V2", "V3"].find((v) => v !== a!.table!.expect)!);
+    // the questions are open, so the same paths stay withheld, and their questions carry no value
+    expect(withheldPaths(nowDraft(d))).toEqual(expect.arrayContaining(HELD));
+    for (const q of d.review.filter((i) => i.reason === "TABLE_REJECTED")) {
+      expect(q.question).toMatch(/^What amount is printed for /);
+      expect(q.question).not.toMatch(/\d{3}/);
+    }
+  });
+
+  it("the pick ids and their order say nothing about which visit a column is", () => {
+    const first = new Set<string>();
+    for (let seed = 1; seed <= 20; seed++) {
+      let x = seed; // a small seeded generator: different draws, repeatable
+      const qs = tableQuestions(rulebook(), held(), [check], () => (x = (x * 16807) % 2147483647) / 2147483647);
+      expect(qs.map((q) => q.id)).toEqual(["table:t1:0", "table:t1:1"]);
+      first.add(qs[0]!.table!.expect);
+    }
+    // under different draws the first pick is a different column
+    expect(first.size).toBeGreaterThan(1);
   });
 });
 

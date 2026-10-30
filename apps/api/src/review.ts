@@ -28,7 +28,6 @@ import {
   type RulebookVersionDto,
   SAMPLE,
   TABLE_CHECK,
-  type TableCheck,
   tableQuestions,
   type ValueEvidence,
   withheldPaths,
@@ -209,14 +208,13 @@ export function reviewDraft(
   const totals = byTotals(rb);
   // A cited page that doesn't exist is neither: its values stay ungrounded and are asked.
   const onScan = (e: ValueEvidence) => scanPages.has(key(e.where[0]));
-  // a price held for its table's columns stays held, whatever else agrees: only a person confirms the mapping
-  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && !e.held && totals(e.path) ? { ...e, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
+  // (a held value the totals confirm is confirmed outright: it no longer waits for its table's check)
+  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && totals(e.path) ? { path: e.path, where: e.where, printed: e.printed, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
   const spans = new Map(bound.unaccounted.map((s) => [whereKey(s.where), s]));
-  // the table checks are asked below, as picks; the binder's placeholder question for each is dropped
-  const tables = (bound as { tableChecks?: TableCheck[] }).tableChecks ?? [];
-  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb).filter((i) => i.reason !== TABLE_CHECK).map((i): ReviewItem => {
+  // each table check is asked below as two blind picks; the binder's placeholder question for it is dropped
+  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb, bound.tableChecks).filter((i) => i.reason !== TABLE_CHECK).map((i): ReviewItem => {
     if (i.path && scan.has(i.path)) return { ...i, reason: "SCAN_VALUE" };
     if (i.reason !== "UNACCOUNTED_TERM") return i;
     const term = termOf(i.where.flatMap((w) => spans.get(whereKey(w)) ?? []));
@@ -232,7 +230,7 @@ export function reviewDraft(
     ...fromAnomalies(anomalies.filter((a) => !askedAsInterpretation(a, asking)), rb, asked),
     ...interp,
     ...pageItems(pages, docs),
-    ...tableQuestions(rb, evidence, tables, sampling.random),
+    ...tableQuestions(rb, evidence, bound.tableChecks, sampling.random),
   ];
   // a table with nothing to pick from (no columns, or none given) can't confirm its prices: they're typed instead, never left held
   for (const id of new Set(evidence.flatMap((e) => (e.held ? [e.held] : []))))

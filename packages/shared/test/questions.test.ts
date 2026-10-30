@@ -110,7 +110,7 @@ describe("withheld while asked", () => {
   it("an interpretation's value, and a cap's figures while its kind is asked; the version still parses", () => {
     const rb = rulebook();
     const review = interpretations(rb, { amendment: false });
-    const v = { status: "draft", review };
+    const v = { status: "draft", review, evidence: [] };
     const hidden = withheldPaths(v);
     expect(hidden).toEqual(expect.arrayContaining(["/payment/visitPayment/value", "/invoiceables/0/cap/kind", "/invoiceables/0/cap/n", "/invoiceables/0/cap/ratio"]));
     const shown = mask(rb, hidden, { evidence: [], review });

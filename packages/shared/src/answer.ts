@@ -7,7 +7,7 @@ import { AnswerReviewBody, BODY_WORDS, bodyProblem, type ProofreadMark, type Rev
 import { parseCents, parsePercent } from "./money";
 import { at, parsePointer, setAt } from "./pointer";
 import { ARITHMETIC, fromAnomalies, gridConflicts, recheck, sumAt } from "./problems";
-import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords, settleTable } from "./questions";
+import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords, settleTable, TABLE_CHECK } from "./questions";
 import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
@@ -172,6 +172,10 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   // A table pick settles its table's columns for good (followUps): confirmed, or rejected and the prices typed. Changing
   // it afterwards would undo prices already confirmed, so it stands, whoever looks at it again.
   if (item.table && settled(item)) return refuse(409, "This answer is final. If a price in this table looks wrong, use “This looks wrong” on it.");
+  // Only a pick of the visit settles a table's columns: never a typed value, a note or a reason, and a question with no
+  // expected visit (a placeholder) can't be answered at all, or it would settle while its prices stayed unconfirmed and unasked.
+  if (item.reason === TABLE_CHECK && !item.table) return refuse(409, "This question can't be answered. Read the contract again.");
+  if (item.table && !b.cantTell && (b.value !== undefined || note || b.optionId === undefined)) return refuse(400, "Pick the visit. This question is answered by picking, not by typing.");
   // a cap with no limit is billed by nothing else: a figure written there would be approved as a limit nobody set
   if (!b.cantTell && item.path && noLimit(v.rulebook, item.path))
     return refuse(409, "This cap was answered “No limit”, so there's no limit to type here. If the contract does set one, change that answer first.");
@@ -317,7 +321,8 @@ export function followUps(
   const answered = new Set(v.review.filter(settled).map((i) => i.id));
   if (a.set) v.review.push(...recheck(checks, v, a.set.path), ...gridConflicts(checks, v, a.set.path));
   v.review.push(...capFollowUps(v, a.item, !!a.set && !deepEqual(a.set.before, a.set.after), ask));
-  const table = (a.item.table && settled(a.item) && settleTable(v, a.item.table.id, ask)) || undefined;
+  // "can't tell" on a table's columns settles nothing and leaves its prices unconfirmed: it rejects the mapping, as a wrong pick does
+  const table = (a.item.table && (settled(a.item) || a.item.outcome === "cant_tell") && settleTable(v, a.item.table.id, ask)) || undefined;
   return [
     ...(table ? [table] : []),
     ...v.review.filter((i) => answered.has(i.id) && !settled(i)).map((i) => ({ action: "review.reopened", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question } })),

@@ -305,7 +305,7 @@ describe("10. what a withheld interpretation decides, row by row, is withheld wi
   it("each visit's 'paid automatically' with how visits are paid, each row's overhead with its scope; the version still parses", () => {
     const rb = rulebook();
     const review = interpretations(rb, { amendment: false });
-    const v = { status: "draft", review, rulebook: rb };
+    const v = { status: "draft", review, evidence: [], rulebook: rb };
     const hidden = withheldPaths(v);
     expect(hidden).toEqual(expect.arrayContaining(["/payment/visitPayment/value", `${V}/autopay`, "/overhead/appliesTo/value", "/budgetGrids/0/procedures/0/overheadApplied"]));
     const shown = mask(rb, hidden, { evidence: [], review });
@@ -514,7 +514,7 @@ describe("M2. the amendment's own date while the start date is typed blind", () 
     const rb = rulebook();
     rb.documents.push({ id: "d2", kind: "amendment", title: "Amendment 1", date: "2026-03-15" });
     const review = interpretations(rb, { amendment: true });
-    const v = { status: "draft", review, rulebook: rb };
+    const v = { status: "draft", review, evidence: [], rulebook: rb };
     expect(withheldPaths(v)).toEqual(expect.arrayContaining(["/appliesFrom/value", "/documents/1/date"]));
     expect(withheldPaths(v)).not.toContain("/documents/0/date"); // the work order's date isn't what it's checked against
     const shown = mask(rb, withheldPaths(v), { evidence: [], review });

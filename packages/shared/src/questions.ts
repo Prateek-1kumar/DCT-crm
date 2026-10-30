@@ -390,15 +390,19 @@ export function tableQuestions(rb: Pick<Rulebook, "budgetGrids">, evidence: Valu
     const held = new Set(evidence.filter((e) => e.held === c.id).flatMap((e) => cellVisit(e.path) ?? []));
     const cols = c.columns.map((col, i) => ({ col, i }));
     const seen = new Set<string>();
-    const picks = [...shuffle(cols.filter((x) => held.has(x.col.visit)), random), ...shuffle(cols.filter((x) => !held.has(x.col.visit)), random)]
-      .filter((x) => !seen.has(x.col.visit) && !!seen.add(x.col.visit))
-      .slice(0, 2)
-      .sort((a, b) => a.i - b.i);
+    // Drawn in a random order, and numbered in that order: columns run in visit order, so an id or a list position that
+    // followed the column would give its visit away.
+    const picks = shuffle(
+      [...shuffle(cols.filter((x) => held.has(x.col.visit)), random), ...shuffle(cols.filter((x) => !held.has(x.col.visit)), random)]
+        .filter((x) => !seen.has(x.col.visit) && !!seen.add(x.col.visit))
+        .slice(0, 2),
+      random,
+    );
     const options = [...grid.visits].sort((a, b) => a.order - b.order).map((v) => ({ id: v.code, label: v.name }));
-    return picks.map(({ col, i }): ReviewItem => ({
-      ...BLANK, id: `table:${c.id}:${i}`, kind: "confirm_value", reason: TABLE_CHECK, path: null, blocking: true, input: null, options, where: [col.box],
+    return picks.map(({ col }, k): ReviewItem => ({
+      ...BLANK, id: `table:${c.id}:${k}`, kind: "confirm_value", reason: TABLE_CHECK, path: null, blocking: true, input: null, options, where: [col.box],
       question: `Which visit is the highlighted column of the table on page ${c.page}?`,
-      table: { id: c.id, expect: col.visit },
+      table: { id: c.id, axis: "column", expect: col.visit },
     }));
   });
 }
@@ -428,7 +432,8 @@ export function rejectTable(v: { review: ReviewItem[]; evidence: ValueEvidence[]
 export function settleTable(v: { review: ReviewItem[]; evidence: ValueEvidence[] }, id: string, ask: (path: string, id: string, reason: string) => ReviewItem): { action: string; detail: Record<string, unknown> } | null {
   const picks = v.review.filter((i) => i.table?.id === id);
   const done = picks.filter((i) => settled(i));
-  if (done.some((i) => i.answer?.optionId !== i.table!.expect)) {
+  // a wrong pick, or "can't tell": the mapping isn't confirmed, so it's rejected
+  if (done.some((i) => i.answer?.optionId !== i.table!.expect) || picks.some((i) => i.outcome === "cant_tell")) {
     const r = rejectTable(v, id, ask);
     return r && { action: "review.table_rejected", detail: { "prices to type": r.values, "picks closed": r.closed } };
   }

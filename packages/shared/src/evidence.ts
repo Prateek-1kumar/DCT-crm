@@ -25,7 +25,10 @@ export const ValueEvidence = z.object({
   printed: z.string().nullable(),
   /** e.g. "page reference corrected from 4 to 9". */
   note: z.string().nullable(),
-  /** The id of the table check that settles it (TableCheck): our own reading of the scan at this cell agrees, if a person confirms the table's columns. Never confirmed while set; cleared if they reject the columns. */
+  /**
+   * Every check passed except which visit each column of its table is (the headers didn't say): the id of that table check,
+   * and it counts as confirmed only once a person confirms the mapping. The status stays not-confirmed until then.
+   */
   held: z.string().optional(),
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
@@ -122,7 +125,7 @@ export const ReviewItem = z.object({
    * One of a table check's picks (reason TABLE_CHECK): which table, and the visit the read gave the highlighted column,
    * which the pick is compared with. Server-side only: blindReview takes it out of every response.
    */
-  table: z.object({ id: z.string(), expect: z.string() }).optional(),
+  table: z.object({ id: z.string(), axis: z.enum(["column"]), expect: z.string() }).optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

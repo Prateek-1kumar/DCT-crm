@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { AuditPage, RulebookVersionDto } from "@dct/shared";
+import { getAt } from "../pointer";
 import { mockSampling } from "./fixtures";
 import { mockRequest, mockReset } from "./server";
 
@@ -41,9 +42,29 @@ describe("mock API table check", () => {
     expect(raw).not.toContain('"expect"');
     expect(raw).not.toContain('"table":');
     expect(JSON.stringify((await pick(qs[0]!.id, qs[0]!.options[0]!.id)).json)).not.toContain('"expect"');
-    expect((await version()).evidence.filter((e) => e.held).length).toBeGreaterThan(0);
+    // every held price is withheld as an asked one is: null in the master, no printed text, no spot on the page
+    const v = await version();
+    const heldEv = v.evidence.filter((e) => e.held);
+    expect(heldEv.length).toBeGreaterThan(0);
+    for (const e of heldEv) {
+      expect(getAt(v.rulebook, e.path), e.path).toBeNull();
+      expect(e).toMatchObject({ printed: null });
+      expect(e.where.every((w) => w.box === null)).toBe(true);
+    }
     const asOf = (await version()).updatedAt;
     expect((await post(`${url}/sign-off`, { by: "Taylor Brooks", asOf })).status).toBe(409);
+  });
+
+  it("only a pick settles it, and “can't tell” rejects the mapping: its prices are asked blind", async () => {
+    const [a] = await picks();
+    for (const body of [{}, { value: "x" }, { optionId: "nope" }]) expect((await post(`${url}/review/${encodeURIComponent(a!.id)}`, { by: "Sam Rivera", ...body })).status).toBe(400);
+    expect((await post(`${url}/review/${encodeURIComponent(a!.id)}`, { by: "Sam Rivera", cantTell: true })).status).toBe(200);
+    const v = await version();
+    expect(v.evidence.some((e) => e.held)).toBe(false);
+    expect(v.review.some((i) => i.reason === "TABLE_CHECK")).toBe(false);
+    const typed = v.review.filter((i) => i.reason === "TABLE_REJECTED");
+    expect(typed.length).toBeGreaterThan(0);
+    for (const i of typed) expect(getAt(v.rulebook, i.path!), i.path!).toBeNull();
   });
 
   it("every pick right confirms the table's prices; a wrong one rejects the columns and asks each price", async () => {
