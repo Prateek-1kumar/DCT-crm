@@ -29,6 +29,10 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
       return "The wording can be read more than one way. Read the spot and pick what the contract means; we don't show our reading.";
     case "RETROACTIVE_NO_DATE":
       return "Without a start date, the new prices would be billed from the original contract's date. Type the date they apply from, or pick prospective only.";
+    case "TABLE_CHECK":
+      return "Confirm the table's columns. The headers on this scan don't match the visit names we read, so we check that its columns line up with the visits. Look at the highlighted column and pick its visit; we don't show our reading.";
+    case "TABLE_REJECTED":
+      return "The table's columns didn't line up with the visits we read, so this price can't be taken from it. Type what the contract prints.";
     case "CORRECTION_NOT_CARRIED":
       return "Someone corrected this on the version in use, but the amendment's reading has a different value here, so the correction wasn't copied over.";
     case "CORRECTION_LOST":

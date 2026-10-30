@@ -22,10 +22,14 @@ import {
   parsePercent,
   pickSample,
   provOf,
+  rejectTable,
   type ReviewItem,
   type Rulebook,
   type RulebookVersionDto,
   SAMPLE,
+  TABLE_CHECK,
+  type TableCheck,
+  tableQuestions,
   type ValueEvidence,
   withheldPaths,
 } from "@dct/shared";
@@ -205,11 +209,14 @@ export function reviewDraft(
   const totals = byTotals(rb);
   // A cited page that doesn't exist is neither: its values stay ungrounded and are asked.
   const onScan = (e: ValueEvidence) => scanPages.has(key(e.where[0]));
-  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && totals(e.path) ? { ...e, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
+  // a price held for its table's columns stays held, whatever else agrees: only a person confirms the mapping
+  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && !e.held && totals(e.path) ? { ...e, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
   const spans = new Map(bound.unaccounted.map((s) => [whereKey(s.where), s]));
-  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb).map((i): ReviewItem => {
+  // the table checks are asked below, as picks; the binder's placeholder question for each is dropped
+  const tables = (bound as { tableChecks?: TableCheck[] }).tableChecks ?? [];
+  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb).filter((i) => i.reason !== TABLE_CHECK).map((i): ReviewItem => {
     if (i.path && scan.has(i.path)) return { ...i, reason: "SCAN_VALUE" };
     if (i.reason !== "UNACCOUNTED_TERM") return i;
     const term = termOf(i.where.flatMap((w) => spans.get(whereKey(w)) ?? []));
@@ -225,7 +232,11 @@ export function reviewDraft(
     ...fromAnomalies(anomalies.filter((a) => !askedAsInterpretation(a, asking)), rb, asked),
     ...interp,
     ...pageItems(pages, docs),
+    ...tableQuestions(rb, evidence, tables, sampling.random),
   ];
+  // a table with nothing to pick from (no columns, or none given) can't confirm its prices: they're typed instead, never left held
+  for (const id of new Set(evidence.flatMap((e) => (e.held ? [e.held] : []))))
+    if (!review.some((i) => i.table?.id === id)) rejectTable({ review, evidence }, id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
   const lost = opts.carried ? uncarried(rb, evidence, opts.carried, new Set(review.flatMap((i) => (i.path ? [i.path] : []))), asking) : { items: [], warnings: [], skipped: [] };
   review.push(...lost.items);
   // Drawn once, here, and kept as questions: a reload or a repeat never draws again. Never a value with a question (nor

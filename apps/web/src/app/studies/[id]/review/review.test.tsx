@@ -94,4 +94,19 @@ describe("answering on the review page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
     await waitFor(() => expect(sent).toHaveBeenLastCalledWith("st-northwind", 1, id, expect.objectContaining({ optionId: "auto_edc", note: "§4.1, first line" })), { timeout: 10_000 });
   }, 60_000);
+
+  it("a table's columns: which visit is the highlighted column, real radios with the visits in order, nothing picked; the pick is sent and settles it", async () => {
+    const v = await get<RulebookVersionDto>("/studies/st-cobalt/versions/1");
+    const q = v.review.find((i) => i.reason === "TABLE_CHECK")!;
+    const sent = renderPage("st-cobalt", q.id);
+    expect((await screen.findByRole("heading", { name: /^Which visit is the highlighted column of the table on page \d+\?$/ }, { timeout: 10_000 })).id).toBe(`q-${q.id}`);
+    expect(screen.getByText(/Confirm the table's columns/, { selector: "p" })).toBeTruthy();
+    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((r) => r.closest("label")?.textContent)).toEqual(q.options.map((o) => o.label));
+    expect(radios.some((r) => r.checked)).toBe(false);
+    fireEvent.click(radios[0]!);
+    fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
+    await waitFor(() => expect(sent).toHaveBeenCalledWith("st-cobalt", 1, q.id, expect.objectContaining({ optionId: q.options[0]!.id })), { timeout: 10_000 });
+    await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-cobalt/versions/1")).review.find((i) => i.id === q.id)!.outcome).not.toBeNull(), { timeout: 10_000 });
+  }, 60_000);
 });

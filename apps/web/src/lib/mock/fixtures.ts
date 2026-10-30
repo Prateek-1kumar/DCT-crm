@@ -1,4 +1,4 @@
-import { alsoWithheld, armKey, askAbout as ask, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, pickSample, type Provenance, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
+import { alsoWithheld, armKey, askAbout as ask, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, pickSample, type Provenance, tableQuestions, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
 import { fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
@@ -428,7 +428,7 @@ const capWaits = (path: string | null, asking: Set<string>) => !!path && /\/cap\
  * `amendment`, `retroactive`: the start-date question), and the blind re-type of up to 10 confirmed values. Values
  * outside the questions match the PDF (or, on a scan, the grid totals).
  */
-export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean; amendment?: boolean; retroactive?: boolean; unclear?: { path: string; message: string }[] } = {}): Draft {
+export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean; table?: boolean; amendment?: boolean; retroactive?: boolean; unclear?: { path: string; message: string }[] } = {}): Draft {
   let rb = structuredClone(base);
   for (const x of specs) if (x.path && x.read !== undefined) rb = setAt(rb, x.path, x.read);
   const given = opts.scan ? [...specs, ...scanSpecs(rb, specs)] : specs;
@@ -440,8 +440,11 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies }).filter((i) => !have.has(i.path!));
   const asking = new Set(interp.map((i) => i.path!));
   const asked = [...given.filter((x) => !capWaits(x.path, asking)), ...interp.map((i) => asPrinted(rb, i))];
+  // `table`: the first grid's prices wait for one confirmation of its columns, as a scanned table whose headers don't match does
+  const HELD = "table-g0";
+  const heldPath = (path: string) => !!opts.table && /^\/budgetGrids\/0\/procedures\/\d+\/cells\//.test(path);
   const status = (path: string): ValueEvidence["status"] =>
-    asked.find((x) => x.path === path)?.reason === "VALUE_CONFLICT" ? "conflict" : opts.scan && !path.startsWith("/budgetGrids/") ? "ungrounded" : "confirmed";
+    asked.find((x) => x.path === path)?.reason === "VALUE_CONFLICT" ? "conflict" : heldPath(path) || (opts.scan && !path.startsWith("/budgetGrids/")) ? "ungrounded" : "confirmed";
   // drawn once, kept with the draft's questions; never a value with a question (nor one held back with it)
   const taken = new Set(asked.flatMap((x) => (x.path ? [x.path, ...alsoWithheld(x.path)] : [])));
   const sample = pickSample(numberPaths(rb).map((path) => ({ path, status: status(path), where: [], printed: null, note: null })), taken, mockSampling.random).map((p) => askAbout(rb, [], p, `sample:${p}`, SAMPLE));
@@ -464,13 +467,23 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
       path, status: status(path), note: null,
       where: src ? [pb(src.documentId, src.page, boxOn(spansOf(src.documentId, src.page), { path }))] : [],
       printed: opts.scan ? null : formatValue(path, truthOf(path)),
+      ...(heldPath(path) ? { held: HELD } : {}),
     };
   });
+  // each visit's column is the box around its prices on the page
+  const grid = rb.budgetGrids[0];
+  const columns = !opts.table || !grid ? [] : grid.visits.map((v) => {
+    const spots = evidence.filter((e) => e.path.startsWith("/budgetGrids/0/procedures/") && e.path.endsWith(`/cells/${v.code}`)).flatMap((e) => e.where);
+    const boxes = spots.flatMap((w) => (w.box ? [w.box] : []));
+    const [x0, y0, x1, y1] = [Math.min(...boxes.map((b) => b[0])), Math.min(...boxes.map((b) => b[1])), Math.max(...boxes.map((b) => b[0] + b[2])), Math.max(...boxes.map((b) => b[1] + b[3]))];
+    return { visit: v.code, box: pb(spots[0]?.documentId ?? grid.prov.source!.documentId, spots[0]?.page ?? grid.prov.source!.page, boxes.length ? [x0, y0, x1 - x0, y1 - y0] : null) };
+  });
+  const tableItems = tableQuestions(rb, evidence, columns.length ? [{ id: HELD, grid: 0, page: columns[0]!.box.page, columns }] : [], mockSampling.random);
   return {
     rulebook: rb,
     evidence,
     anomalies: mockChecks(rb),
-    review: placed.map(toItem),
+    review: [...placed.map(toItem), ...tableItems],
     pdfCheck: opts.scan ? null : { values: evidence.length, matched: evidence.filter((e) => e.status === "confirmed").length },
     secrets: Object.fromEntries(all.map((x) => [x.id, toSecret(x)])),
   };

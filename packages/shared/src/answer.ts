@@ -7,7 +7,7 @@ import { AnswerReviewBody, BODY_WORDS, bodyProblem, type ProofreadMark, type Rev
 import { parseCents, parsePercent } from "./money";
 import { at, parsePointer, setAt } from "./pointer";
 import { ARITHMETIC, fromAnomalies, gridConflicts, recheck, sumAt } from "./problems";
-import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords } from "./questions";
+import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords, settleTable } from "./questions";
 import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
@@ -169,6 +169,9 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   const a = item.answer;
   if (settled(item) && a && samePerson(a.by, b.by) && !b.cantTell && (a.optionId ?? null) === (b.optionId ?? null) && (a.note ?? "") === (note ?? "") && (pick || same(a.value, value)))
     return { item, outcome: item.outcome!, changed: false, set: undefined, listed: undefined, missed: false, unchanged: true as const };
+  // A table pick settles its table's columns for good (followUps): confirmed, or rejected and the prices typed. Changing
+  // it afterwards would undo prices already confirmed, so it stands, whoever looks at it again.
+  if (item.table && settled(item)) return refuse(409, "This answer is final. If a price in this table looks wrong, use “This looks wrong” on it.");
   // a cap with no limit is billed by nothing else: a figure written there would be approved as a limit nobody set
   if (!b.cantTell && item.path && noLimit(v.rulebook, item.path))
     return refuse(409, "This cap was answered “No limit”, so there's no limit to type here. If the contract does set one, change that answer first.");
@@ -194,7 +197,8 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     // a pick is never in the PDF's text
     if (item.outcome === "differs" && !note) return refuse(400, WHERE);
     noPdfText = item.outcome === "differs";
-    outcome = checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
+    // a table pick is compared with the visit the read gave the column; a wrong one isn't asked again (settleTable)
+    outcome = item.table ? (option.id === item.table.expect ? "matched" : "chosen") : checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
     if (outcome === "differs") set = undefined;
   } else {
     if (prospective && (value === undefined || value === null || value === "")) return refuse(400, "Type the amendment's own date, as it's printed on the amendment.");
@@ -313,7 +317,9 @@ export function followUps(
   const answered = new Set(v.review.filter(settled).map((i) => i.id));
   if (a.set) v.review.push(...recheck(checks, v, a.set.path), ...gridConflicts(checks, v, a.set.path));
   v.review.push(...capFollowUps(v, a.item, !!a.set && !deepEqual(a.set.before, a.set.after), ask));
+  const table = (a.item.table && settled(a.item) && settleTable(v, a.item.table.id, ask)) || undefined;
   return [
+    ...(table ? [table] : []),
     ...v.review.filter((i) => answered.has(i.id) && !settled(i)).map((i) => ({ action: "review.reopened", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question } })),
     ...(a.closed ?? []).map((i) => ({ action: "review.closed", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question, why: "The cap was answered “No limit”, so it has no limit to ask." } })),
   ];

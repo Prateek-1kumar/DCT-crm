@@ -132,7 +132,13 @@ export function blindItem(i: Pick<ReviewItem, "id" | "path">, hidden: Set<string
  * a page holding a withheld value found only by its page: any of them can print it. A total's printed value
  * (`asPrinted`) is left out while its grid holds a withheld value.
  */
-export function blindReview(review: ReviewItem[], hidden: string[], evidence: ValueEvidence[] = []): ReviewItem[] {
+export function blindReview(all: ReviewItem[], hidden: string[], evidence: ValueEvidence[] = []): ReviewItem[] {
+  // a table pick's expected visit (`table`) is the read's reading of a column: never sent, whatever else is withheld
+  const review = all.map((i) => {
+    if (!i.table) return i;
+    const { table: _table, ...rest } = i;
+    return rest;
+  });
   if (!hidden.length) return review;
   const h = new Set(hidden);
   // every note on a question: its answer's, a send-back's, the "This looks wrong" report's

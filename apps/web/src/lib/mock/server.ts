@@ -15,6 +15,7 @@ import {
   proofreadMarks,
   shownAppliesFrom,
   signOffRefusal,
+  tableSendBackRefusal,
   blindEvidence,
   blindReview,
   ByHandBody,
@@ -214,7 +215,7 @@ function seed(): Db {
   {
     const sd = SEEDS.cobalt;
     const st = study(sd.id, sd.cfg!, "needs_review", ["doc-cb-cta"], daysAgo(3));
-    version(st, 1, buildDraft(makeRulebook(sd.cfg!), cobaltSpecs(), { scan: true }), daysAgo(3));
+    version(st, 1, buildDraft(makeRulebook(sd.cfg!), cobaltSpecs(), { scan: true, table: true }), daysAgo(3));
     log(d, "system", st.id, "extraction.succeeded", { version: 1 }, daysAgo(3));
   }
 
@@ -584,7 +585,8 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
 function view(ver: RulebookVersionDto): RulebookVersionDto {
   const hidden = withheldPaths(ver);
   const rulebook = ver.rulebook && upgradeRulebook(ver.rulebook);
-  if (!hidden.length) return { ...ver, rulebook };
+  // never withholding nothing: a table pick's expected visit still stays out (blindReview)
+  if (!hidden.length) return { ...ver, rulebook, review: blindReview(ver.review, hidden, ver.evidence) };
   return {
     ...ver,
     appliesFrom: shownAppliesFrom(ver),
@@ -632,6 +634,8 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
   const items = itemIds.map((id) => ver.review.find((i) => i.id === id));
   if (items.some((i) => !i)) return err(400, "One of those questions isn't on this version.");
   if (items.some((i) => i!.outcome === null)) return err(409, "Only answered questions can be sent back.");
+  const final = tableSendBackRefusal(items as ReviewItem[]);
+  if (final) return err(409, final);
   for (const i of items as ReviewItem[]) {
     Object.assign(i, { outcome: null, answer: null, compare: null, sentBack: { by, note, at } });
     const ev = i.path ? ver.evidence.find((e) => e.path === i.path) : undefined;

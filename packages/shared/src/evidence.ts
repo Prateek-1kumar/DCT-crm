@@ -25,8 +25,13 @@ export const ValueEvidence = z.object({
   printed: z.string().nullable(),
   /** e.g. "page reference corrected from 4 to 9". */
   note: z.string().nullable(),
+  /** The id of the table check that settles it (TableCheck): our own reading of the scan at this cell agrees, if a person confirms the table's columns. Never confirmed while set; cleared if they reject the columns. */
+  held: z.string().optional(),
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
+
+/** A scanned table whose columns line up with the visits by count and order though its headers don't match their names: one person confirms the mapping (a table check). */
+export type TableCheck = { id: string; grid: number; page: number; columns: { box: PageBox; visit: string }[] };
 
 /**
  * confirm_value: type what the page says (conflicts, values not found, spot checks) · unaccounted: found in the contract but not in the master ·
@@ -113,6 +118,11 @@ export const ReviewItem = z.object({
    * so nobody can try values until one matches.
    */
   retyped: z.boolean().optional(),
+  /**
+   * One of a table check's picks (reason TABLE_CHECK): which table, and the visit the read gave the highlighted column,
+   * which the pick is compared with. Server-side only: blindReview takes it out of every response.
+   */
+  table: z.object({ id: z.string(), expect: z.string() }).optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

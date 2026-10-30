@@ -20,6 +20,7 @@ import {
   SignOffBody,
   searchVersion,
   signOffRefusal,
+  tableSendBackRefusal,
   typingDone,
   type ValueEvidence,
   versionDiff,
@@ -286,6 +287,8 @@ export const versionRoutes =
         if (items.some((i) => !i)) throw new HttpError(400, "One of those questions isn't on this version.");
         // an unanswered one (sent back already, or never answered): the state has moved on, as with any repeat
         if (items.some((i) => i!.outcome === null)) throw new HttpError(409, "Only answered questions can be sent back.");
+        const final = tableSendBackRefusal(items as ReviewItem[]);
+        if (final) throw new HttpError(409, final);
         const now = new Date().toISOString();
         for (const i of items as ReviewItem[]) {
           Object.assign(i, { outcome: null, answer: null, compare: null, sentBack: { by, note, at: now } });

@@ -1,7 +1,7 @@
 import type { ContractAnomaly } from "./anomaly";
 import { AMOUNT_IN_NAME, leaf } from "./blind";
 import { labelFor } from "./diff";
-import { blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type ValueEvidence } from "./evidence";
+import { blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
 import { at, parsePointer } from "./pointer";
 import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
@@ -364,3 +364,80 @@ export function sampleMisses(v: { review: ReviewItem[]; evidence: ValueEvidence[
 /** What a miss still holds back, in plain words: the approval's refusal and the approve page say the same. */
 export const sampleMissWords = (m: SampleMiss) =>
   `A random spot check found a wrong number among the ${m.label}, so each of them has to be proofread before approval: ${m.left.length} of ${m.total} still to check.`;
+
+// ---------- the table check ----------
+
+/** The question that confirms a scanned table's columns (TableCheck): which visit is the highlighted column. */
+export const TABLE_CHECK = "TABLE_CHECK";
+
+/** The send-back's refusal when any of its questions is a table pick (their answers are final, answerQuestion), or null. */
+export const tableSendBackRefusal = (items: Pick<ReviewItem, "table">[]) =>
+  items.some((i) => i.table) ? "A table's columns can't be sent back: the answer is final. If a price in the table looks wrong, use “This looks wrong” on it." : null;
+
+/** A grid cell's visit code: "/budgetGrids/0/procedures/3/cells/V2" → "V2". */
+const cellVisit = (path: string) => /^\/budgetGrids\/\d+\/procedures\/\d+\/cells\/(.+)$/.exec(path)?.[1]?.replace(/~1/g, "/").replace(/~0/g, "~");
+
+/**
+ * Two blind picks per table check, drawn with `random`: which visit the highlighted column is, among the grid's visits in
+ * order, none preselected. Two different visits, columns with held prices first. The read's visit for the column goes on
+ * the item as `table.expect`, which blindReview never sends. None when the table has no columns: the caller rejects the
+ * check at once (rejectTable), or its held prices could never be settled.
+ */
+export function tableQuestions(rb: Pick<Rulebook, "budgetGrids">, evidence: ValueEvidence[], checks: TableCheck[], random: () => number = cryptoRandom): ReviewItem[] {
+  return checks.flatMap((c) => {
+    const grid = rb.budgetGrids[c.grid];
+    if (!grid) return [];
+    const held = new Set(evidence.filter((e) => e.held === c.id).flatMap((e) => cellVisit(e.path) ?? []));
+    const cols = c.columns.map((col, i) => ({ col, i }));
+    const seen = new Set<string>();
+    const picks = [...shuffle(cols.filter((x) => held.has(x.col.visit)), random), ...shuffle(cols.filter((x) => !held.has(x.col.visit)), random)]
+      .filter((x) => !seen.has(x.col.visit) && !!seen.add(x.col.visit))
+      .slice(0, 2)
+      .sort((a, b) => a.i - b.i);
+    const options = [...grid.visits].sort((a, b) => a.order - b.order).map((v) => ({ id: v.code, label: v.name }));
+    return picks.map(({ col, i }): ReviewItem => ({
+      ...BLANK, id: `table:${c.id}:${i}`, kind: "confirm_value", reason: TABLE_CHECK, path: null, blocking: true, input: null, options, where: [col.box],
+      question: `Which visit is the highlighted column of the table on page ${c.page}?`,
+      table: { id: c.id, expect: col.visit },
+    }));
+  });
+}
+
+/**
+ * The check's held prices become ordinary blind "type what's printed" questions (`ask` words them) and their hold ends;
+ * its picks nobody answered yet are closed, since the columns are rejected. Returns what to log, or null when nothing was held.
+ */
+export function rejectTable(v: { review: ReviewItem[]; evidence: ValueEvidence[] }, id: string, ask: (path: string, id: string, reason: string) => ReviewItem): { values: number; closed: number } | null {
+  const held = v.evidence.filter((e) => e.held === id);
+  const open = v.review.filter((i) => i.table?.id === id && !settled(i));
+  if (!held.length && !open.length) return null;
+  for (const e of held) {
+    delete e.held;
+    if (!v.review.some((i) => i.path === e.path && !settled(i))) v.review.push(ask(e.path, `held:${e.path}`, "TABLE_REJECTED"));
+  }
+  // in place: the caller's list is the draft's own
+  for (const i of open) v.review.splice(v.review.indexOf(i), 1);
+  return { values: held.length, closed: open.length };
+}
+
+/**
+ * What a table pick settles. Every pick of the check right: its held prices are confirmed, noted as checked by those who
+ * picked (the scan's own reading agrees at each cell, and a person confirmed the columns). Any pick wrong: the columns are
+ * rejected for good, and each price is asked on its own (rejectTable). Otherwise the check waits for its other pick.
+ */
+export function settleTable(v: { review: ReviewItem[]; evidence: ValueEvidence[] }, id: string, ask: (path: string, id: string, reason: string) => ReviewItem): { action: string; detail: Record<string, unknown> } | null {
+  const picks = v.review.filter((i) => i.table?.id === id);
+  const done = picks.filter((i) => settled(i));
+  if (done.some((i) => i.answer?.optionId !== i.table!.expect)) {
+    const r = rejectTable(v, id, ask);
+    return r && { action: "review.table_rejected", detail: { "prices to type": r.values, "picks closed": r.closed } };
+  }
+  if (!picks.length || done.length < picks.length) return null;
+  const by = [...new Set(done.flatMap((i) => (i.answer ? [i.answer.by] : [])))].join(", ");
+  const held = v.evidence.filter((e) => e.held === id);
+  for (const e of held) {
+    delete e.held;
+    Object.assign(e, { status: "confirmed", note: `Checked by ${by}: the table's columns were confirmed, and our own reading of the scan agrees` });
+  }
+  return held.length ? { action: "review.table_confirmed", detail: { prices: held.length, by } } : null;
+}

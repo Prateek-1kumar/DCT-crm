@@ -119,6 +119,10 @@ The questions, in order:
 7. **The blind sample** (`SAMPLE`, blocking): 10 random `confirmed` values (all of them if fewer), taken in turn from four families (budget grid prices; visit and per-patient totals; fee and invoiceable amounts; percentages, days, limits and dates), never one asked already. Drawn once with a cryptographic random generator and stored as questions; not on a draft typed by hand or copied from the live version.
    - Shown at its page only, never at the spot the binder chose (a wrong binding would point at the wrong cell, and the person would type what's printed there), and never compared: an answer that differs from the confirmed value shows nothing of it. The item is marked `retyped` and asked once more, blind. That answer, and every later one, is final: the confirmed value settles it `matched` (a typo), anything else `chosen`, with no note asked. "Can't tell", a send-back or a changed answer don't reset `retyped`, so nobody can try values until one matches; "can't tell" leaves it unresolved (counted in Needs you, holding approval).
    - A **miss**: settled with a value other than the confirmed one, once `retyped`. The item gets `missed: true`, kept whatever the answer becomes. It logs `sample.missed` (an incident), raises a `sample_missed` alert, and sign-off waits until every value of that family is proofread or `attested`. That wait isn't counted in `needs_you`.
+8. **A table's columns** (`TABLE_CHECK`, blocking, `path: null`): a scanned table whose printed headers don't match the read's visit names but whose columns line up with the visits by count and order. The binder holds its prices (`ValueEvidence.held` = the check's id, status still `conflict` / `ungrounded`), and `reviewDraft` asks two picks per table (`tableQuestions`, drawn through `sampling`): "Which visit is the highlighted column of the table on page N?", the column's box in `where`, the grid's visits in order as options, none preselected; two different visits, columns with held prices first. The read's visit for the column is kept on the stored question (`table.expect`) and never sent (`blindReview`).
+   - Every pick right: in the answer's own transaction (`followUps` → `settleTable`) every held price becomes `confirmed`, noted "Checked by <who>: the table's columns were confirmed, and our own reading of the scan agrees", and `review.table_confirmed` is logged.
+   - Any pick wrong: the mapping is rejected for good (`review.table_rejected`). Each held price loses `held` and becomes a blind "type what's printed" question (`TABLE_REJECTED`, id `held:<path>`), and an unanswered pick of the table closes. A pick that settles is final: answering it again is a 409, and it can't be sent back (use "This looks wrong" on a price). A table with no column to pick (`rejectTable` in `reviewDraft`) is rejected at once, so held prices are never stranded.
+   - A held price is never `confirmed` until then, so the gate refuses sign-off with its open picks, and with any held price left. Whoever picks is an editor (maker-checker).
 
 | Item id | Reason |
 |---|---|
@@ -130,6 +134,7 @@ The questions, in order:
 | `page:` · `picture:` · `hidden:` + `<doc>:<page>` | `SCAN_PAGE` · `PICTURE_PAGE` · `HIDDEN_TEXT` |
 | `carried:<path>` · `lost:<path>` | `CORRECTION_NOT_CARRIED` · `CORRECTION_LOST` |
 | `sample:<path>` | `SAMPLE` |
+| `table:<check id>:<column>` · `held:<path>` | `TABLE_CHECK` · `TABLE_REJECTED` (a held price asked once its table is rejected) |
 | `reported:<n>` | `reported` ("This looks wrong") |
 | `spot:<path>` · `missing:<path>` | `spot_check` · `REQUIRED_MISSING` (typing by hand: a re-type; a value nobody typed or picked) |
 
@@ -203,7 +208,7 @@ The questions, in order:
 | POST `…/review/:itemId` | an answer that settled, sent again by the same person: no-op (no log entry). One that came back "differs", sent again, **settles it** as chosen (with a note where one is needed); on a spot check of the read, the same differing value sent again is final, so it's **a miss** | replayed |
 | POST `…/report` | 409 (an open question already; on the live version, the correction draft is in progress) | replayed |
 | POST `…/proofread` | marks already there by the same person: no-op | replayed |
-| POST `…/send-back` | 409 "Only answered questions can be sent back." | replayed |
+| POST `…/send-back` | 409 "Only answered questions can be sent back."; 409 for a table's columns (their answers are final) | replayed |
 | POST `…/sign-off` | 409 "signed and immutable" | replayed |
 | POST `/alerts/read` | no-op (`ON CONFLICT DO NOTHING`) | replayed |
 | PATCH `/settings` | the same settings again: no-op (no log entry) | replayed |
