@@ -126,6 +126,8 @@ const WHERE = "Add a short note saying where the page prints this value. The PDF
  * (rejectBlank). A settled pick is final (answerQuestion).
  */
 function answerBlank(v: AnswerDraft, item: ReviewItem, b: ReturnType<typeof AnswerReviewBody.parse>, now: string) {
+  // its table's columns come first: where the blank cells are depends on which column is which visit
+  if (item.after) return refuse(409, "Confirm the table's columns first. This question can be answered once the questions about the table's columns are.");
   if (!b.cantTell && (b.value !== undefined || b.note?.trim())) return refuse(400, "Pick one of the options. This question is answered by picking, not by typing.");
   if (!b.cantTell && !item.options.some((o) => o.id === b.optionId)) return refuse(400, "Pick one of the options.");
   const outcome = b.cantTell ? "cant_tell" : b.optionId === BLANK_READ ? "matched" : "chosen";

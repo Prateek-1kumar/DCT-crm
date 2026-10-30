@@ -23,6 +23,7 @@ import {
   parsePercent,
   pickSample,
   provOf,
+  rejectBlank,
   rejectTable,
   type ReviewItem,
   type Rulebook,
@@ -239,6 +240,8 @@ export function reviewDraft(
   // a table with nothing to pick from (no columns, or none given) can't confirm its prices: they're typed instead, never left held
   for (const id of new Set(evidence.flatMap((e) => (e.held ? [e.held] : []))))
     if (!review.some((i) => i.table?.id === id)) rejectTable({ review, evidence }, id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
+  // a blank group whose table has no picks to wait for (no columns to pick from) is typed cell by cell, as that table's held prices are
+  for (const c of bound.blankChecks) if (c.after && !review.some((i) => i.table?.id === c.after)) rejectBlank({ review, evidence }, c.id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
   const lost = opts.carried ? uncarried(rb, evidence, opts.carried, new Set(review.flatMap((i) => (i.path ? [i.path] : []))), asking) : { items: [], warnings: [], skipped: [] };
   review.push(...lost.items);
   // Drawn once, here, and kept as questions: a reload or a repeat never draws again. Never a value with a question (nor

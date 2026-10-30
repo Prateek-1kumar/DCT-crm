@@ -48,6 +48,8 @@ export type BlankCheck = {
   rows: number[];
   /** The cells' evidence paths; each is marked `blank: id`. */
   cells: string[];
+  /** A table check (its id) whose column mapping is held: the group waits for it, and is rejected with it. Absent: the columns were agreed. */
+  after?: string;
 };
 
 /** A scanned table whose columns line up with the visits by count and order though its headers don't match their names: one person confirms the mapping (a table check). */
@@ -150,6 +152,11 @@ export const ReviewItem = z.object({
    * which the pick is compared with. Server-side only: blindReview takes it out of every response.
    */
   table: z.object({ id: z.string(), axis: z.enum(["column"]), expect: z.string() }).optional(),
+  /**
+   * A blank check on a table whose columns are still to be confirmed (reason BLANK_INVOICEABLE): the id of that table check.
+   * Not answerable (409) while set; cleared when the table's picks are all right, and the question closed when they aren't.
+   */
+  after: z.string().optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

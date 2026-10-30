@@ -75,6 +75,18 @@ describe("blank cells the read calls invoiceable", () => {
     for (const p of c.cells) expect(ev(b.evidence, p)!.where[0]!.box).not.toBeNull();
   });
 
+  it("wait for the table's check where the columns are only held, and for nothing where the headers agree", () => {
+    const agreed = bindEvidence(read(), [drawn(TABLE)]);
+    expect(agreed.tableChecks).toEqual([]);
+    expect(agreed.blankChecks[0]!.after).toBeUndefined();
+    // headers that don't name the visits, though the columns line up with them by count and order: held
+    const held = bindEvidence(read(), [drawn([["Procedure", "Cost", "Col 1", "Col 2", "Col 3", "Total"], ...TABLE.slice(1)])]);
+    expect(held.tableChecks).toHaveLength(1);
+    expect(held.blankChecks).toHaveLength(1);
+    expect(held.blankChecks[0]!.after).toBe(held.tableChecks[0]!.id);
+    expect(held.blankChecks[0]!.cells).toHaveLength(4);
+  });
+
   it("are grouped on a text page too (there a blank cell is a real blank, so the cell is in conflict, not unread)", () => {
     const b = bindEvidence(read(), [drawn(TABLE, "text")]);
     expect(b.blankChecks).toHaveLength(1);

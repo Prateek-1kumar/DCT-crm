@@ -1,5 +1,5 @@
 import { bindEvidence, reviewFromEvidence } from "@dct/extraction";
-import { type AuditPage, BLANK_INVOICEABLE, type BlankCheck, blankQuestions, type ReviewItem, type Rulebook, RulebookVersionDto, settled, type ValueEvidence } from "@dct/shared";
+import { type AuditPage, BLANK_INVOICEABLE, type BlankCheck, blankQuestions, type ReviewItem, type Rulebook, RulebookVersionDto, settled, tableQuestions, type ValueEvidence } from "@dct/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { rulebookVersions } from "../src/db/schema.js";
@@ -157,5 +157,94 @@ describe("reviewDraft with blank checks", () => {
     // not asked one by one (the cells' status is ungrounded, which would ask each), nor drawn for the sample
     expect(out.review.some((i) => cells.includes(i.path ?? ""))).toBe(false);
     expect(out.evidence.filter((e) => e.blank === ID)).toHaveLength(cells.length);
+  });
+});
+
+describe("a blank check on a table whose columns are held, over the API", () => {
+  /** The blanked study, with the rest of its first grid held for the table's columns (a table check `t1`), and the group waiting for it. */
+  async function waiting() {
+    const { studyId, cells } = await blanked();
+    const row = await storedVersion(built, studyId, 1);
+    const rb = row.rulebook!;
+    const rest = new Set(rb.budgetGrids[0]!.procedures.flatMap((p, pi) => Object.keys(p.cells).map((code) => `/budgetGrids/0/procedures/${pi}/cells/${ptr(code)}`)).filter((p) => !cells.includes(p)));
+    const evidence = row.evidence.map((e): ValueEvidence => (rest.has(e.path) ? { ...e, status: "ungrounded", note: null, held: "t1" } : e));
+    const columns = rb.budgetGrids[0]!.visits.map((v, i) => ({ box: { documentId: rb.documents[0]!.id, page: 1, box: [0.1 + i * 0.1, 0.2, 0.08, 0.5] as [number, number, number, number] }, visit: v.code }));
+    const table = tableQuestions(rb, evidence, [{ id: "t1", grid: 0, page: 1, columns }], () => 1 - 2 ** -32);
+    const check: BlankCheck = { id: ID, grid: 0, page: 1, table: columns[0]!.box, rows: [0], cells, after: "t1" };
+    const review = [...row.review.filter((i) => i.reason !== BLANK_INVOICEABLE && !rest.has(i.path ?? "")), ...table, ...blankQuestions(evidence, [check])];
+    await built.ctx.db.update(rulebookVersions).set({ evidence, review }).where(eq(rulebookVersions.id, row.id));
+    return { studyId, cells, rest: [...rest], right: Object.fromEntries(table.map((i) => [i.id, i.table!.expect])) as Record<string, string> };
+  }
+
+  it("is refused with what to do first while the table's columns are open, and nothing changes", async () => {
+    const { studyId } = await waiting();
+    const before = await storedVersion(built, studyId, 1);
+    for (const body of [{ optionId: "printed_only" }, { optionId: "every_visit" }, { cantTell: true }]) {
+      const res = await answer(studyId, ID, body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(409);
+      expect(res.json<{ message: string }>().message).toMatch(/^Confirm the table's columns first/);
+    }
+    const same = await storedVersion(built, studyId, 1);
+    expect([same.review, same.evidence, same.editors, same.rulebook]).toEqual([before.review, before.evidence, before.editors, before.rulebook]);
+    // the response says it waits
+    const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
+    expect(v.review.find((i) => i.id === ID)!.after).toBe("t1");
+  });
+
+  it("becomes answerable once the table's columns are confirmed, and not before", async () => {
+    const { studyId, cells, right } = await waiting();
+    const [first, second] = Object.keys(right);
+    expect((await answer(studyId, first!, { optionId: right[first!] })).statusCode).toBe(200);
+    expect((await answer(studyId, ID, { optionId: "printed_only" })).statusCode).toBe(409);
+    expect((await answer(studyId, second!, { optionId: right[second!] })).statusCode).toBe(200);
+    expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === ID)!.after).toBeUndefined();
+    expect((await answer(studyId, ID, { optionId: "printed_only" })).statusCode).toBe(200);
+    for (const p of cells) expect(at((await storedVersion(built, studyId, 1)).rulebook, p)).toBeUndefined();
+  });
+
+  it.each(["a wrong pick", "can't tell"])("is rejected with the table (%s): its cells are asked blind, as the held prices are", async (how) => {
+    const { studyId, cells, rest, right } = await waiting();
+    const [first] = Object.keys(right);
+    const body = how === "a wrong pick"
+      ? { optionId: (await get<RulebookVersionDto>(`/studies/${studyId}/versions/1`)).review.find((i) => i.id === first)!.options.find((o) => o.id !== right[first!])!.id }
+      : { cantTell: true };
+    expect((await answer(studyId, first!, body)).statusCode).toBe(200);
+    const stored = await storedVersion(built, studyId, 1);
+    expect(stored.review.some((i) => i.reason === BLANK_INVOICEABLE)).toBe(false);
+    expect(stored.review.filter((i) => i.reason === "BLANK_REJECTED").map((i) => i.path).sort()).toEqual([...cells].sort());
+    expect(stored.review.filter((i) => i.reason === "TABLE_REJECTED").map((i) => i.path).sort()).toEqual([...rest].sort());
+    expect(stored.evidence.some((e) => e.blank || e.held)).toBe(false);
+    // every one is withheld by its own question; the master keeps what the read had
+    const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
+    for (const p of cells) expect(at(v.rulebook, p), p).toBeNull();
+    expect(at(stored.rulebook, cells[0]!)).toBe("invoiceable");
+    expect(await actions(studyId)).toContain("review.table_rejected");
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);
+  });
+
+  it("reviewDraft rejects a group whose table has no columns to pick from, and keeps one whose table has them", async () => {
+    const { studyId, cells } = await blanked();
+    const rb = (await storedVersion(built, studyId, 1)).rulebook as Rulebook;
+    const doc = rb.documents[0]!.id;
+    const box = { documentId: doc, page: 1, box: [0.1, 0.2, 0.8, 0.5] as [number, number, number, number] };
+    const out = (columns: { box: typeof box; visit: string }[]) =>
+      reviewDraft(
+        {
+          bindEvidence: (r: Rulebook, pages: Parameters<typeof bindEvidence>[1]) => {
+            const b = bindEvidence(r, pages);
+            const mark = new Set(cells);
+            const evidence = b.evidence.filter((e) => !mark.has(e.path)).concat(cells.map((path): ValueEvidence => ({ path, status: "ungrounded", where: [], printed: null, note: null, blank: ID })));
+            return { ...b, evidence, tableChecks: [{ id: "t1", grid: 0, page: 1, table: box, columns }], blankChecks: [{ id: ID, grid: 0, page: 1, table: box, rows: [0], cells, after: "t1" }] };
+          },
+          reviewFromEvidence,
+        },
+        rb, [], [], [],
+      );
+    const waits = out(rb.budgetGrids[0]!.visits.map((v) => ({ box, visit: v.code })));
+    expect(waits.review.find((i) => i.id === ID)!.after).toBe("t1");
+    const none = out([]);
+    expect(none.review.some((i) => i.reason === BLANK_INVOICEABLE)).toBe(false);
+    expect(none.review.filter((i) => i.reason === "BLANK_REJECTED").map((i) => i.path).sort()).toEqual([...cells].sort());
+    expect(none.evidence.some((e) => e.blank)).toBe(false);
   });
 });

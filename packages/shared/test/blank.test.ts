@@ -14,7 +14,9 @@ import {
   mask,
   type Rulebook,
   searchVersion,
+  settled,
   signOffRefusal,
+  tableQuestions,
   tableSendBackRefusal,
   type ValueEvidence,
   versionDiff,
@@ -256,5 +258,73 @@ describe("the gate", () => {
     const d = fresh();
     answerIt(d, { optionId: "printed_only" });
     expect(signOffRefusal({ version: 1, status: "draft", rulebook: d.rulebook, updatedAt: "t", byHand: false, review: d.review, evidence: d.evidence, editors: d.editors }, { asOf: "t", by: "asha", makerChecker: true })).toMatch(/Maker-checker/);
+  });
+});
+
+describe("a blank check on a table whose columns are held", () => {
+  const colBox = (x: number) => ({ documentId: "d1", page: 3, box: [x, 0.1, 0.1, 0.5] as [number, number, number, number] });
+  const columns = { id: "t1", grid: 0, page: 3, columns: [{ box: colBox(0.2), visit: "V1" }, { box: colBox(0.4), visit: "V2" }, { box: colBox(0.6), visit: "V3" }] };
+  const HELD = ["/budgetGrids/0/procedures/0/cells/V3", "/budgetGrids/0/procedures/1/cells/V3"];
+  function waiting(): AnswerDraft {
+    const ev = [...evidence().filter((e) => !HELD.includes(e.path)), ...HELD.map((p) => cell(p, { held: "t1" }))];
+    return { version: 1, byHand: false, rulebook: rulebook(), review: [...tableQuestions(rulebook(), ev, [columns], () => 0.999), ...blankQuestions(ev, [{ ...check, after: "t1" }])], evidence: ev, editors: [] };
+  }
+  const picks = (d: AnswerDraft) => d.review.filter((i) => i.table);
+  const pickIt = (d: AnswerDraft, id: string, optionId: string) => {
+    const r = answerQuestion(d, id, { optionId, by: "Asha" }, { isoDate, now: "t" });
+    if ("refusal" in r || r.unchanged) return r;
+    return { ...r, followLog: followUps({ ...d, anomalies: [] }, r, noFindings, ask(d)) };
+  };
+
+  it("is refused with what to do first while the table's columns are open, and nothing changes", () => {
+    const d = waiting();
+    expect(group(d).after).toBe("t1");
+    const snapshot = JSON.stringify([d.review, d.evidence, d.rulebook, d.editors]);
+    for (const body of [{ optionId: "printed_only" }, { optionId: "every_visit" }, { cantTell: true }])
+      expect(answerIt(d, body), JSON.stringify(body)).toMatchObject({ refusal: { status: 409, message: expect.stringMatching(/^Confirm the table's columns first/) } });
+    expect(JSON.stringify([d.review, d.evidence, d.rulebook, d.editors])).toBe(snapshot);
+    // still withheld
+    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual(expect.arrayContaining(check.cells));
+  });
+
+  it("becomes answerable once every column pick is right, and not before", () => {
+    const d = waiting();
+    const [a, b] = picks(d);
+    pickIt(d, a!.id, a!.table!.expect);
+    expect(group(d).after).toBe("t1");
+    expect(answerIt(d, { optionId: "printed_only" })).toMatchObject({ refusal: { status: 409 } });
+    pickIt(d, b!.id, b!.table!.expect);
+    expect(group(d).after).toBeUndefined();
+    expect(answerIt(d, { optionId: "printed_only" })).toMatchObject({ outcome: "chosen" });
+    expect(cellsOf(d)).toEqual([undefined, undefined, undefined]);
+    // the table's own held prices were confirmed by the picks
+    expect(d.evidence.filter((e) => HELD.includes(e.path)).every((e) => e.status === "confirmed")).toBe(true);
+  });
+
+  it.each(["a wrong pick", "can't tell"])("is rejected with the table (%s): its cells become blind questions to type, as the held prices do", (how) => {
+    const d = waiting();
+    const [a] = picks(d);
+    let log: { action: string; detail: Record<string, unknown> }[];
+    if (how === "a wrong pick") log = (pickIt(d, a!.id, ["V1", "V2", "V3"].find((v) => v !== a!.table!.expect)!) as { followLog: typeof log }).followLog;
+    else {
+      const c = answerQuestion(d, a!.id, { cantTell: true, by: "Asha" }, { isoDate, now: "t" });
+      if ("refusal" in c || c.unchanged) throw new Error("unreachable");
+      log = followUps({ ...d, anomalies: [] }, c, noFindings, ask(d));
+    }
+    expect(log[0]).toMatchObject({ action: "review.table_rejected", detail: { "prices to type": HELD.length + check.cells.length } });
+    expect(d.review.some((i) => i.reason === BLANK_INVOICEABLE || (i.table && !settled(i)))).toBe(false);
+    expect(d.review.filter((i) => i.reason === "BLANK_REJECTED").map((i) => i.path)).toEqual(check.cells);
+    expect(d.review.filter((i) => i.reason === "TABLE_REJECTED").map((i) => i.path)).toEqual(HELD);
+    expect(d.evidence.some((e) => e.blank || e.held)).toBe(false);
+    for (const p of check.cells) expect(d.evidence.find((e) => e.path === p)).toMatchObject({ status: "ungrounded" });
+    // the master is untouched and every one of them is withheld by its own question
+    expect(cellsOf(d)).toEqual([INV, INV, INV]);
+    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook }).sort()).toEqual([...check.cells, ...HELD].sort());
+  });
+
+  it("is untouched on a table whose columns were agreed (no check): answerable at once", () => {
+    const d = fresh();
+    expect(group(d).after).toBeUndefined();
+    expect(answerIt(d, { optionId: "every_visit" })).toMatchObject({ outcome: "matched" });
   });
 });

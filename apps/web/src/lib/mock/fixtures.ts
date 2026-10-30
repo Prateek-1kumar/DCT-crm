@@ -491,7 +491,7 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   if (bg && blankCells.length && gridSpots.length) {
     const [x0, y0, x1, y1] = [Math.min(...gridSpots.map((w) => w.box![0])), Math.min(...gridSpots.map((w) => w.box![1])), Math.max(...gridSpots.map((w) => w.box![0] + w.box![2])), Math.max(...gridSpots.map((w) => w.box![1] + w.box![3]))];
     for (const c of blankCells) evidence.push({ path: c.path, status: "ungrounded", where: [rowOf(c.pi)], printed: null, note: null, blank: BLANK_ID });
-    blankChecks.push({ id: BLANK_ID, grid: 1, page: bg.prov.source!.page, table: pb(bg.prov.source!.documentId, bg.prov.source!.page, [x0, y0, x1 - x0, y1 - y0]), rows: [...new Set(blankCells.map((c) => c.pi))], cells: blankCells.map((c) => c.path) });
+    blankChecks.push({ id: BLANK_ID, grid: 1, page: bg.prov.source!.page, table: pb(bg.prov.source!.documentId, bg.prov.source!.page, [x0, y0, x1 - x0, y1 - y0]), rows: [...new Set(blankCells.map((c) => c.pi))], cells: blankCells.map((c) => c.path), ...(opts.table ? { after: HELD } : {}) });
   }
   const tableItems = tableQuestions(rb, evidence, columns.length ? [{ id: HELD, grid: 0, page: columns[0]!.box.page, columns }] : [], mockSampling.random);
   return {

@@ -735,7 +735,7 @@ export type TableCheck = {
 type Bound = { evidence: ValueEvidence[]; unaccounted: Span[]; tableChecks: TableCheck[]; blankChecks: BlankCheck[] };
 
 /** The planned tables of one grid, with the rows the plan and the placing by order gave them (`placed`: procedure → table row). */
-type Planned = { pg: Page; t: Table; pl: Plan; ruled: Piece; dir: Word["dir"]; placed: Map<number, number> };
+type Planned = { pg: Page; t: Table; pl: Plan; ruled: Piece; dir: Word["dir"]; placed: Map<number, number>; check: () => string };
 type Box4 = [number, number, number, number];
 
 /** A box in a text's reading frame, back in page points (the inverse of frame()). */
@@ -748,7 +748,7 @@ const overlap = (r: Box4, [a0, b0, a1, b1]: Box4) => r[0] < a1 && a0 < r[2] && r
  * apps/api/src/review.ts), with none of the page's unread ink in it. The AI marks a table's empty cells that way, and a blank cell can't
  * confirm "invoiceable", so each would be asked on its own; they're one question per table instead (BLANK_INVOICEABLE): how
  * the table bills them. A cell that prints anything, or that the scan leaves unclear, is never grouped. Marks each cell's
- * evidence `blank` (its status stays not confirmed) and its `where` at its row; returns the groups.
+ * evidence `blank` (its status stays not confirmed) and its `where` at its row; returns the groups. On a table whose mapping is held, a group waits for that table's check (`after`).
  */
 function blankInvoiceable(gi: number, g: BudgetGrid, tables: Planned[], evidence: ValueEvidence[]): BlankCheck[] {
   const out: BlankCheck[] = [];
@@ -776,7 +776,8 @@ function blankInvoiceable(gi: number, g: BudgetGrid, tables: Planned[], evidence
     if (!cells.length) return;
     const id = `blank:${gi}:${p.documentId}#${p.page}:${n}`;
     for (const e of found) e.blank = id;
-    out.push({ id, grid: gi, page: p.page, table: boxOf(p, d.t.cells.flat(2)), rows: [...rows].sort((a, b) => a - b), cells });
+    // a held mapping: which column is which visit is still to be confirmed, so the group waits for (and is rejected with) that table's check
+    out.push({ id, grid: gi, page: p.page, table: boxOf(p, d.t.cells.flat(2)), rows: [...rows].sort((a, b) => a - b), cells, ...(d.pl.held ? { after: d.check() } : {}) });
   });
   return out;
 }
@@ -900,7 +901,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const heldRows = new Set<number>();
     const queued: { path: string; j: Judged; check: () => string; row?: NonNullable<TableCheck["rows"]>[number] }[] = [];
     // the drawn tables this grid's rows were placed in: where the totals cascade looks for what the page prints
-    const planned: (Planned & { check: () => string; peek: () => string | undefined })[] = [];
+    const planned: (Planned & { peek: () => string | undefined })[] = [];
     const byPage = new Map<string, number[]>();
     g.procedures.forEach((p, pi) => p.prov.source && byPage.set(`${p.prov.source.documentId}#${p.prov.source.page}`, [...(byPage.get(`${p.prov.source.documentId}#${p.prov.source.page}`) ?? []), pi]));
     for (const [k, idx] of byPage) {

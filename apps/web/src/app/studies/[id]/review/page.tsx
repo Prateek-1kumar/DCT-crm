@@ -251,12 +251,13 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                   index={order.indexOf(current)}
                   total={order.length}
                   busy={answer.isPending}
-                  canAnswer={!!by && !(typist && current.reason === "spot_check")}
+                  canAnswer={!!by && !current.after && !(typist && current.reason === "spot_check")}
                   error={answer.error}
                   onAnswer={(b) => send(current, b)}
                   onCancel={changing === current.id ? () => setChanging(null) : undefined}
                 />
               )}
+              {current.after && <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">Confirm the table&apos;s columns first. This question opens once the questions about the columns are answered.</p>}
               {typist && current.reason === "spot_check" && (
                 <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">You typed this contract in, so someone else has to re-type these values. Switch to another person first.</p>
               )}

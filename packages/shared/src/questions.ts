@@ -416,14 +416,17 @@ export function tableQuestions(rb: Pick<Rulebook, "budgetGrids">, evidence: Valu
 export function rejectTable(v: { review: ReviewItem[]; evidence: ValueEvidence[] }, id: string, ask: (path: string, id: string, reason: string) => ReviewItem): { values: number; closed: number } | null {
   const held = v.evidence.filter((e) => e.held === id);
   const open = v.review.filter((i) => i.table?.id === id && !settled(i));
-  if (!held.length && !open.length) return null;
+  const waiting = v.review.filter((i) => i.reason === BLANK_INVOICEABLE && i.after === id);
+  if (!held.length && !open.length && !waiting.length) return null;
   for (const e of held) {
     delete e.held;
     if (!v.review.some((i) => i.path === e.path && !settled(i))) v.review.push(ask(e.path, `held:${e.path}`, "TABLE_REJECTED"));
   }
   // in place: the caller's list is the draft's own
   for (const i of open) v.review.splice(v.review.indexOf(i), 1);
-  return { values: held.length, closed: open.length };
+  // a blank group on this table can't be trusted either: its cells are typed blind too
+  const blank = waiting.reduce((n, g) => n + (rejectBlank(v, g.id, ask)?.values ?? 0), 0);
+  return { values: held.length + blank, closed: open.length };
 }
 
 /**
@@ -440,6 +443,8 @@ export function settleTable(v: { review: ReviewItem[]; evidence: ValueEvidence[]
     return r && { action: "review.table_rejected", detail: { "prices to type": r.values, "picks closed": r.closed } };
   }
   if (!picks.length || done.length < picks.length) return null;
+  // the columns are right: a blank group on this table can be answered now
+  for (const i of v.review) if (i.reason === BLANK_INVOICEABLE && i.after === id) delete i.after;
   const by = [...new Set(done.flatMap((i) => (i.answer ? [i.answer.by] : [])))].join(", ");
   const held = v.evidence.filter((e) => e.held === id);
   for (const e of held) {
@@ -469,7 +474,7 @@ export function blankQuestions(evidence: ValueEvidence[], checks: BlankCheck[]):
   return checks.map((c): ReviewItem => {
     const rows = evidence.filter((e) => e.blank === c.id).flatMap((e) => e.where.filter((w) => w.box));
     return {
-      ...BLANK, id: c.id, kind: "confirm_value", reason: BLANK_INVOICEABLE, path: null, blocking: true, input: null, options: BLANK_OPTIONS,
+      ...BLANK, id: c.id, kind: "confirm_value", reason: BLANK_INVOICEABLE, path: null, blocking: true, input: null, options: BLANK_OPTIONS, ...(c.after ? { after: c.after } : {}),
       where: [c.table, ...new Map(rows.map((w) => [JSON.stringify(w), w])).values()],
       question: `On page ${c.page}, the highlighted items print no price at the scheduled visits. How are they billed?`,
     };

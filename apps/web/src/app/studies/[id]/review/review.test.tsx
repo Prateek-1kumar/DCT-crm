@@ -110,7 +110,7 @@ describe("answering on the review page", () => {
     await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-cobalt/versions/1")).review.find((i) => i.id === q.id)!.outcome).not.toBeNull(), { timeout: 10_000 });
   }, 60_000);
 
-  it("a table that prints no prices at the visits: one question naming the page, the table and its rows to look at, two radios and nothing picked; the pick is sent", async () => {
+  it("a table that prints no prices at the visits: one question naming the page, the table and its rows to look at, two radios and nothing picked; it waits for the table's columns", async () => {
     const v = await get<RulebookVersionDto>("/studies/st-cobalt/versions/1");
     const q = v.review.find((i) => i.reason === "BLANK_INVOICEABLE")!;
     const sent = renderPage("st-cobalt", q.id);
@@ -124,9 +124,9 @@ describe("answering on the review page", () => {
     expect(radios.some((r) => r.checked)).toBe(false);
     // the page never says what was read
     expect(document.body.textContent).not.toMatch(/Inv\.|invoiceable/);
-    fireEvent.click(radios[0]!);
-    fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
-    await waitFor(() => expect(sent).toHaveBeenCalledWith("st-cobalt", 1, q.id, expect.objectContaining({ optionId: "printed_only" })), { timeout: 10_000 });
-    await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-cobalt/versions/1")).review.find((i) => i.id === q.id)!.outcome).toBe("chosen"), { timeout: 10_000 });
+    // it waits for the table's columns: said so, and nothing can be sent yet
+    expect(screen.getByText(/Confirm the table's columns first/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Save and next/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(sent).not.toHaveBeenCalled();
   }, 60_000);
 });
