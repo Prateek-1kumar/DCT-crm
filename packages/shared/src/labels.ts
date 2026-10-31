@@ -61,6 +61,8 @@ export const ACTION_LABELS: Record<string, string> = {
   "review.closed": "Question closed",
   "review.table_confirmed": "Table's columns confirmed",
   "review.table_rejected": "Table's columns rejected",
+  "review.blank_removed": "Blank table cells removed",
+  "review.blank_rejected": "Blank table cells sent to be typed",
   "sample.missed": "Spot check found a wrong number",
   "value.corrected": "Value corrected",
   "anomaly.resolved": "Problem settled",

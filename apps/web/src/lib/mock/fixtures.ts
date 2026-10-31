@@ -1,4 +1,4 @@
-import { alsoWithheld, armKey, askAbout as ask, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, pickSample, type Provenance, tableQuestions, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
+import { alsoWithheld, armKey, askAbout as ask, type BlankCheck, blankQuestions, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, pickSample, type Provenance, tableQuestions, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
 import { fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
@@ -282,7 +282,7 @@ export const SEEDS: Record<"halcyon" | "northwind" | "cobalt" | "meridian" | "so
       docs: [{ id: "doc-cb-cta", kind: "master_agreement", title: "Clinical Trial Agreement CBL-0931", date: "2025-09-02" }],
       grids: [
         { id: "g-cb-a", label: "Exhibit A – Arm A", arm: "Arm A (De novo)", docId: "doc-cb-cta", page: 9, overheadPct: 28 },
-        { id: "g-cb-b", label: "Exhibit A – Arm B", arm: "Arm B (Extension)", docId: "doc-cb-cta", page: 10, overheadPct: 28, header: { investigator: "Dr. Owen Pratt", siteName: "DCT Eastfield" }, prices: { "94010": 9200 } },
+        { id: "g-cb-b", label: "Exhibit A – Arm B", arm: "Arm B (Extension)", docId: "doc-cb-cta", page: 10, overheadPct: 28, header: { investigator: "Dr. Owen Pratt", siteName: "DCT Eastfield" }, prices: { "94010": 9200 }, etInvoiceable: true },
       ],
     },
     files: { "doc-cb-cta": ["CBL-0931_CTA_signed-scan.pdf", 16] },
@@ -428,7 +428,7 @@ const capWaits = (path: string | null, asking: Set<string>) => !!path && /\/cap\
  * `amendment`, `retroactive`: the start-date question), and the blind re-type of up to 10 confirmed values. Values
  * outside the questions match the PDF (or, on a scan, the grid totals).
  */
-export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean; table?: boolean; amendment?: boolean; retroactive?: boolean; unclear?: { path: string; message: string }[] } = {}): Draft {
+export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean; table?: boolean; blank?: boolean; amendment?: boolean; retroactive?: boolean; unclear?: { path: string; message: string }[] } = {}): Draft {
   let rb = structuredClone(base);
   for (const x of specs) if (x.path && x.read !== undefined) rb = setAt(rb, x.path, x.read);
   const given = opts.scan ? [...specs, ...scanSpecs(rb, specs)] : specs;
@@ -442,6 +442,7 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   const asked = [...given.filter((x) => !capWaits(x.path, asking)), ...interp.map((i) => asPrinted(rb, i))];
   // `table`: the first grid's prices wait for one confirmation of its columns, as a scanned table whose headers don't match does
   const HELD = "table-g0";
+  const blankChecks: BlankCheck[] = [];
   const heldPath = (path: string) => !!opts.table && /^\/budgetGrids\/0\/procedures\/\d+\/cells\//.test(path);
   const status = (path: string): ValueEvidence["status"] =>
     asked.find((x) => x.path === path)?.reason === "VALUE_CONFLICT" ? "conflict" : heldPath(path) || (opts.scan && !path.startsWith("/budgetGrids/")) ? "ungrounded" : "confirmed";
@@ -478,12 +479,26 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
     const [x0, y0, x1, y1] = [Math.min(...boxes.map((b) => b[0])), Math.min(...boxes.map((b) => b[1])), Math.max(...boxes.map((b) => b[0] + b[2])), Math.max(...boxes.map((b) => b[1] + b[3]))];
     return { visit: v.code, box: pb(spots[0]?.documentId ?? grid.prov.source!.documentId, spots[0]?.page ?? grid.prov.source!.page, boxes.length ? [x0, y0, x1 - x0, y1 - y0] : null) };
   });
+  // `blank`: the second grid's "invoiceable" cells print nothing in the table: one question for all of them, as the real binder groups them
+  const bg = opts.blank ? rb.budgetGrids[1] : undefined;
+  const BLANK_ID = "blank-g1";
+  const gridSpots = evidence.filter((e) => e.path.startsWith("/budgetGrids/1/")).flatMap((e) => e.where.flatMap((w) => (w.box ? [w] : [])));
+  const blankCells = (bg?.procedures ?? []).flatMap((p, pi) => Object.entries(p.cells).flatMap(([k, c]) => (c === "invoiceable" ? [{ pi, path: `/budgetGrids/1/procedures/${pi}/cells/${k}` }] : [])));
+  const rowOf = (pi: number): PageBox => {
+    const unit = evidence.find((e) => e.path === `/budgetGrids/1/procedures/${pi}/unitCents`)?.where[0];
+    return pb(bg!.prov.source!.documentId, bg!.prov.source!.page, unit?.box ? [0.05, unit.box[1], 0.9, unit.box[3]] : null);
+  };
+  if (bg && blankCells.length && gridSpots.length) {
+    const [x0, y0, x1, y1] = [Math.min(...gridSpots.map((w) => w.box![0])), Math.min(...gridSpots.map((w) => w.box![1])), Math.max(...gridSpots.map((w) => w.box![0] + w.box![2])), Math.max(...gridSpots.map((w) => w.box![1] + w.box![3]))];
+    for (const c of blankCells) evidence.push({ path: c.path, status: "ungrounded", where: [rowOf(c.pi)], printed: null, note: null, blank: BLANK_ID });
+    blankChecks.push({ id: BLANK_ID, grid: 1, page: bg.prov.source!.page, table: pb(bg.prov.source!.documentId, bg.prov.source!.page, [x0, y0, x1 - x0, y1 - y0]), rows: [...new Set(blankCells.map((c) => c.pi))], cells: blankCells.map((c) => c.path), ...(opts.table ? { after: HELD } : {}) });
+  }
   const tableItems = tableQuestions(rb, evidence, columns.length ? [{ id: HELD, grid: 0, page: columns[0]!.box.page, columns }] : [], mockSampling.random);
   return {
     rulebook: rb,
     evidence,
     anomalies: mockChecks(rb),
-    review: [...placed.map(toItem), ...tableItems],
+    review: [...placed.map(toItem), ...tableItems, ...blankQuestions(evidence, blankChecks)],
     pdfCheck: opts.scan ? null : { values: evidence.length, matched: evidence.filter((e) => e.status === "confirmed").length },
     secrets: Object.fromEntries(all.map((x) => [x.id, toSecret(x)])),
   };

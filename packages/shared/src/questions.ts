@@ -1,7 +1,7 @@
 import type { ContractAnomaly } from "./anomaly";
 import { AMOUNT_IN_NAME, leaf } from "./blind";
 import { labelFor } from "./diff";
-import { blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
+import { type BlankCheck, blankNumbers, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
 import { at, parsePointer } from "./pointer";
 import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
@@ -370,9 +370,11 @@ export const sampleMissWords = (m: SampleMiss) =>
 /** The question that confirms a scanned table's columns (TableCheck): which visit is the highlighted column. */
 export const TABLE_CHECK = "TABLE_CHECK";
 
-/** The send-back's refusal when any of its questions is a table pick (their answers are final, answerQuestion), or null. */
-export const tableSendBackRefusal = (items: Pick<ReviewItem, "table">[]) =>
-  items.some((i) => i.table) ? "A table's columns can't be sent back: the answer is final. If a price in the table looks wrong, use “This looks wrong” on it." : null;
+/** The send-back's refusal when any of its questions is a table pick or a blank check's (their answers are final, answerQuestion), or null. */
+export const tableSendBackRefusal = (items: Pick<ReviewItem, "table" | "reason">[]) =>
+  items.some((i) => i.table) ? "A table's columns can't be sent back: the answer is final. If a price in the table looks wrong, use “This looks wrong” on it."
+  : items.some((i) => i.reason === BLANK_INVOICEABLE) ? "How a table bills its blank items can't be sent back: the answer is final. If a price in the table looks wrong, use “This looks wrong” on it."
+  : null;
 
 /** A grid cell's visit code: "/budgetGrids/0/procedures/3/cells/V2" → "V2". */
 const cellVisit = (path: string) => /^\/budgetGrids\/\d+\/procedures\/\d+\/cells\/(.+)$/.exec(path)?.[1]?.replace(/~1/g, "/").replace(/~0/g, "~");
@@ -414,14 +416,17 @@ export function tableQuestions(rb: Pick<Rulebook, "budgetGrids">, evidence: Valu
 export function rejectTable(v: { review: ReviewItem[]; evidence: ValueEvidence[] }, id: string, ask: (path: string, id: string, reason: string) => ReviewItem): { values: number; closed: number } | null {
   const held = v.evidence.filter((e) => e.held === id);
   const open = v.review.filter((i) => i.table?.id === id && !settled(i));
-  if (!held.length && !open.length) return null;
+  const waiting = v.review.filter((i) => i.reason === BLANK_INVOICEABLE && i.after === id);
+  if (!held.length && !open.length && !waiting.length) return null;
   for (const e of held) {
     delete e.held;
     if (!v.review.some((i) => i.path === e.path && !settled(i))) v.review.push(ask(e.path, `held:${e.path}`, "TABLE_REJECTED"));
   }
   // in place: the caller's list is the draft's own
   for (const i of open) v.review.splice(v.review.indexOf(i), 1);
-  return { values: held.length, closed: open.length };
+  // a blank group on this table can't be trusted either: its cells are typed blind too
+  const blank = waiting.reduce((n, g) => n + (rejectBlank(v, g.id, ask)?.values ?? 0), 0);
+  return { values: held.length + blank, closed: open.length };
 }
 
 /**
@@ -438,6 +443,8 @@ export function settleTable(v: { review: ReviewItem[]; evidence: ValueEvidence[]
     return r && { action: "review.table_rejected", detail: { "prices to type": r.values, "picks closed": r.closed } };
   }
   if (!picks.length || done.length < picks.length) return null;
+  // the columns are right: a blank group on this table can be answered now
+  for (const i of v.review) if (i.reason === BLANK_INVOICEABLE && i.after === id) delete i.after;
   const by = [...new Set(done.flatMap((i) => (i.answer ? [i.answer.by] : [])))].join(", ");
   const held = v.evidence.filter((e) => e.held === id);
   for (const e of held) {
@@ -445,4 +452,48 @@ export function settleTable(v: { review: ReviewItem[]; evidence: ValueEvidence[]
     Object.assign(e, { status: "confirmed", note: `Checked by ${by}: the table's columns were confirmed, and our own reading of the scan agrees` });
   }
   return held.length ? { action: "review.table_confirmed", detail: { prices: held.length, by } } : null;
+}
+
+// ---------- the blank check ----------
+
+/** The question about a table's cells the read calls "invoiceable" where the page prints no price (BlankCheck). */
+export const BLANK_INVOICEABLE = "BLANK_INVOICEABLE";
+/** The reading of those cells the AI made, "billed at every scheduled visit"; never shown, so a pick that differs is a correction. */
+export const BLANK_READ = "every_visit";
+const BLANK_OPTIONS = [
+  { id: "printed_only", label: "Only where the contract prints a price" },
+  { id: BLANK_READ, label: "At every scheduled visit shown" },
+];
+
+/**
+ * One blind pick per blank check, none preselected: how the highlighted items are billed where the table prints no price.
+ * The question shows the table and the rows' boxes (their cells' evidence), never the read's choice; the cells are
+ * withheld while it's open (`ValueEvidence.blank`, withheldPaths).
+ */
+export function blankQuestions(evidence: ValueEvidence[], checks: BlankCheck[]): ReviewItem[] {
+  return checks.map((c): ReviewItem => {
+    const rows = evidence.filter((e) => e.blank === c.id).flatMap((e) => e.where.filter((w) => w.box));
+    return {
+      ...BLANK, id: c.id, kind: "confirm_value", reason: BLANK_INVOICEABLE, path: null, blocking: true, input: null, options: BLANK_OPTIONS, ...(c.after ? { after: c.after } : {}),
+      where: [c.table, ...new Map(rows.map((w) => [JSON.stringify(w), w])).values()],
+      question: `On page ${c.page}, the highlighted items print no price at the scheduled visits. How are they billed?`,
+    };
+  });
+}
+
+/**
+ * "Can't tell" on a blank check: its cells become ordinary blind "type what's printed" questions (`ask` words them) and
+ * their mark ends; the check's own question is closed, since its cells are asked one by one now. Returns what to log.
+ */
+export function rejectBlank(v: { review: ReviewItem[]; evidence: ValueEvidence[] }, id: string, ask: (path: string, id: string, reason: string) => ReviewItem): { values: number } | null {
+  const cells = v.evidence.filter((e) => e.blank === id);
+  const item = v.review.find((i) => i.id === id && i.reason === BLANK_INVOICEABLE);
+  if (!cells.length && !item) return null;
+  for (const e of cells) {
+    delete e.blank;
+    if (!v.review.some((i) => i.path === e.path && !settled(i))) v.review.push(ask(e.path, `blank:${e.path}`, "BLANK_REJECTED"));
+  }
+  // in place: the caller's list is the draft's own
+  if (item) v.review.splice(v.review.indexOf(item), 1);
+  return { values: cells.length };
 }

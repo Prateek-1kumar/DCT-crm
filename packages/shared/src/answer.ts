@@ -7,7 +7,7 @@ import { AnswerReviewBody, BODY_WORDS, bodyProblem, type ProofreadMark, type Rev
 import { parseCents, parsePercent } from "./money";
 import { at, parsePointer, setAt } from "./pointer";
 import { ARITHMETIC, fromAnomalies, gridConflicts, recheck, sumAt } from "./problems";
-import { alsoWithheld, amendmentDate, askAbout, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords, settleTable, TABLE_CHECK } from "./questions";
+import { alsoWithheld, amendmentDate, askAbout, BLANK_INVOICEABLE, BLANK_READ, rejectBlank, capFollowUps, empty, familyOf, noLimit, pickRetype, placeholders, PROSPECTIVE, SAMPLE, sampleMisses, sampleMissWords, settleTable, TABLE_CHECK } from "./questions";
 import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
@@ -119,6 +119,47 @@ const WHY = "Add a short note saying why the PDF text is wrong here.";
 const WHERE = "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note.";
 
 /**
+ * The answer to a blank check (BLANK_INVOICEABLE): how a table bills the cells the read calls "invoiceable" where the page
+ * prints no price. Only a pick settles it, never a typed value or a note. "Every scheduled visit" is the read's own choice
+ * (matched): the cells are attested by the person. "Only where printed" differs from it (chosen): the cells are removed
+ * from the grid, and the person has corrected the master. "Can't tell" leaves it open; followUps then asks each cell
+ * (rejectBlank). A settled pick is final (answerQuestion).
+ */
+function answerBlank(v: AnswerDraft, item: ReviewItem, b: ReturnType<typeof AnswerReviewBody.parse>, now: string) {
+  // its table's columns come first: where the blank cells are depends on which column is which visit
+  if (item.after) return refuse(409, "Confirm the table's columns first. This question can be answered once the questions about the table's columns are.");
+  if (!b.cantTell && (b.value !== undefined || b.note?.trim())) return refuse(400, "Pick one of the options. This question is answered by picking, not by typing.");
+  if (!b.cantTell && !item.options.some((o) => o.id === b.optionId)) return refuse(400, "Pick one of the options.");
+  const outcome = b.cantTell ? "cant_tell" : b.optionId === BLANK_READ ? "matched" : "chosen";
+  const cells = v.evidence.filter((e) => e.blank === item.id);
+  const rb = structuredClone(v.rulebook);
+  if (outcome === "chosen")
+    for (const e of cells) {
+      const keys = parsePointer(e.path);
+      const holder = keys.slice(0, -1).reduce<unknown>((n, k) => (n as Record<string, unknown>)?.[k], rb) as Record<string, unknown> | undefined;
+      if (holder) delete holder[keys.at(-1)!];
+    }
+  const next = Rulebook.safeParse(rb);
+  if (!next.success) return refuse(409, "This question can't be answered. Read the contract again.");
+  item.answer = { value: undefined, optionId: b.optionId, cantTell: b.cantTell, note: undefined, by: b.by, at: now };
+  item.compare = null;
+  item.sentBack = null;
+  item.outcome = outcome;
+  let set: { path: string; before: unknown; after: unknown } | undefined;
+  if (outcome === "matched") for (const e of cells) (delete e.blank, Object.assign(e, { status: "attested", note: `Typed by ${b.by}` }));
+  if (outcome === "chosen" && cells.length) {
+    v.rulebook = next.data;
+    v.evidence = v.evidence.filter((e) => e.blank !== item.id);
+    set = { path: cells[0]!.path, before: "invoiceable", after: null };
+  }
+  // everyone who decides something is an editor (maker-checker)
+  if (outcome !== "cant_tell" && !v.editors.some((e) => samePerson(e, b.by))) v.editors.push(b.by);
+  const detail = { version: v.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " ") };
+  const log = set ? { by: b.by, action: "review.blank_removed", detail: { ...detail, cells: cells.length } } : { by: b.by, action: "review.answered", detail };
+  return { item, outcome, changed: false, set, listed: undefined, missed: false, unchanged: false as const, log, incident: undefined, closed: undefined };
+}
+
+/**
  * POST .../review/:itemId on a draft. Mutates `v` (callers pass a draft they own) and returns what it did, or a refusal,
  * before changing anything. A typed value is compared with the PDF's own text at its spot, or, where nothing is printed
  * there, with the value we hold: matched, or differs (then picking a value settles it as chosen). Settling a differs
@@ -171,7 +212,8 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     return { item, outcome: item.outcome!, changed: false, set: undefined, listed: undefined, missed: false, unchanged: true as const };
   // A table pick settles its table's columns for good (followUps): confirmed, or rejected and the prices typed. Changing
   // it afterwards would undo prices already confirmed, so it stands, whoever looks at it again.
-  if (item.table && settled(item)) return refuse(409, "This answer is final. If a price in this table looks wrong, use “This looks wrong” on it.");
+  if ((item.table || item.reason === BLANK_INVOICEABLE) && settled(item)) return refuse(409, "This answer is final. If a price in this table looks wrong, use “This looks wrong” on it.");
+  if (item.reason === BLANK_INVOICEABLE) return answerBlank(v, item, b, now);
   // Only a pick of the visit settles a table's columns: never a typed value, a note or a reason, and a question with no
   // expected visit (a placeholder) can't be answered at all, or it would settle while its prices stayed unconfirmed and unasked.
   if (item.reason === TABLE_CHECK && !item.table) return refuse(409, "This question can't be answered. Read the contract again.");
@@ -322,9 +364,12 @@ export function followUps(
   if (a.set) v.review.push(...recheck(checks, v, a.set.path), ...gridConflicts(checks, v, a.set.path));
   v.review.push(...capFollowUps(v, a.item, !!a.set && !deepEqual(a.set.before, a.set.after), ask));
   // "can't tell" on a table's columns settles nothing and leaves its prices unconfirmed: it rejects the mapping, as a wrong pick does
+  // "can't tell" on a blank check: each of its cells is asked on its own
+  const blank = (a.item.reason === BLANK_INVOICEABLE && a.item.outcome === "cant_tell" && rejectBlank(v, a.item.id, ask)) || undefined;
   const table = (a.item.table && (settled(a.item) || a.item.outcome === "cant_tell") && settleTable(v, a.item.table.id, ask)) || undefined;
   return [
     ...(table ? [table] : []),
+    ...(blank ? [{ action: "review.blank_rejected", detail: { version: v.version, "prices to type": blank.values } }] : []),
     ...v.review.filter((i) => answered.has(i.id) && !settled(i)).map((i) => ({ action: "review.reopened", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question } })),
     ...(a.closed ?? []).map((i) => ({ action: "review.closed", detail: { version: v.version, itemId: i.id, path: i.path, question: i.question, why: "The cap was answered “No limit”, so it has no limit to ask." } })),
   ];

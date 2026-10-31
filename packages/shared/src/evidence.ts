@@ -30,8 +30,27 @@ export const ValueEvidence = z.object({
    * and it counts as confirmed only once a person confirms the mapping. The status stays not-confirmed until then.
    */
   held: z.string().optional(),
+  /**
+   * The read marks this cell "invoiceable" but the page prints nothing in it: the id of the blank check it's asked under
+   * (one question per table, never one per cell). Withheld while that question is open, as `held` is.
+   */
+  blank: z.string().optional(),
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
+
+/** Cells the read calls "invoiceable" in a table that prints them blank: one blind question per table (reason BLANK_INVOICEABLE, its id = `id`). */
+export type BlankCheck = {
+  id: string;
+  grid: number;
+  page: number;
+  table: PageBox;
+  /** Indexes into the grid's procedures. */
+  rows: number[];
+  /** The cells' evidence paths; each is marked `blank: id`. */
+  cells: string[];
+  /** A table check (its id) whose column mapping is held: the group waits for it, and is rejected with it. Absent: the columns were agreed. */
+  after?: string;
+};
 
 /** A scanned table whose columns line up with the visits by count and order though its headers don't match their names: one person confirms the mapping (a table check). */
 export type TableCheck = {
@@ -133,6 +152,11 @@ export const ReviewItem = z.object({
    * which the pick is compared with. Server-side only: blindReview takes it out of every response.
    */
   table: z.object({ id: z.string(), axis: z.enum(["column"]), expect: z.string() }).optional(),
+  /**
+   * A blank check on a table whose columns are still to be confirmed (reason BLANK_INVOICEABLE): the id of that table check.
+   * Not answerable (409) while set; cleared when the table's picks are all right, and the question closed when they aren't.
+   */
+  after: z.string().optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

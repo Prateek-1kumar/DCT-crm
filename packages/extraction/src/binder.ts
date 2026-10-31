@@ -1,4 +1,4 @@
-import { AMOUNT_IN_NAME, type BudgetGrid, datesIn, type PageBox, type Provenance, type ReviewItem, type Rulebook, type ValueEvidence } from "@dct/shared";
+import { AMOUNT_IN_NAME, type BlankCheck, type BudgetGrid, datesIn, type PageBox, type Provenance, type ReviewItem, type Rulebook, type ValueEvidence } from "@dct/shared";
 import { amounts, bare, boxOf, centsOf, frame, inventory, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
 /**
@@ -871,7 +871,56 @@ export type TableCheck = {
   /** The read's rows placed on the grid's rows by order, not by what they print (`procedure`: index into the grid's procedures); absent: none. */
   rows?: { box: PageBox; procedure: number }[];
 };
-type Bound = { evidence: ValueEvidence[]; unaccounted: Span[]; tableChecks: TableCheck[] };
+type Bound = { evidence: ValueEvidence[]; unaccounted: Span[]; tableChecks: TableCheck[]; blankChecks: BlankCheck[] };
+
+/** The planned tables of one grid, with the rows the plan and the placing by order gave them (`placed`: procedure → table row). */
+/** `k`, `ti`: the page (document#page) and which of its drawn tables. */
+type Planned = { pg: Page; t: Table; pl: Plan; ruled: Piece; dir: Word["dir"]; placed: Map<number, number>; check: () => string; k: string; ti: number };
+type Box4 = [number, number, number, number];
+
+/** A box in a text's reading frame, back in page points (the inverse of frame()). */
+const unframe = (dir: Word["dir"], [u0, v0, u1, v1]: Box4): Box4 => [[u0, v0, u1, v1], [-v1, u0, -v0, u1], [-u1, -v1, -u0, -v0], [v0, -u1, v1, -u0]][dir] as Box4;
+const overlap = (r: Box4, [a0, b0, a1, b1]: Box4) => r[0] < a1 && a0 < r[2] && r[1] < b1 && b0 < r[3];
+
+/**
+ * Cells the read marks "invoiceable" where the page prints nothing: in a planned table (its mapping held or agreed), a read
+ * cell whose drawn cell is blank, on a text page or a clear OCR page (the review's own test, `clear` in
+ * apps/api/src/review.ts), with none of the page's unread ink in it. The AI marks a table's empty cells that way, and a blank cell can't
+ * confirm "invoiceable", so each would be asked on its own; they're one question per table instead (BLANK_INVOICEABLE): how
+ * the table bills them. A cell that prints anything, or that the scan leaves unclear, is never grouped. Marks each cell's
+ * evidence `blank` (its status stays not confirmed) and its `where` at its row; returns the groups. On a table whose mapping is held, a group waits for that table's check (`after`).
+ */
+function blankInvoiceable(gi: number, g: BudgetGrid, tables: Planned[], evidence: ValueEvidence[]): BlankCheck[] {
+  const out: BlankCheck[] = [];
+  tables.forEach((d, n) => {
+    const p = d.pg.p;
+    // a clear OCR page: as the review's own test of one (reviewDraft's `clear`: 70% of its words read with confidence)
+    if (!(p.source === "text" || (p.source === "ocr" && p.words.length > 0 && p.words.filter((w) => (w.conf ?? 1) >= MIN_OCR_CONF).length >= 0.7 * p.words.length))) return;
+    const [rows, cells, found] = [new Set<number>(), [] as string[], [] as ValueEvidence[]];
+    for (const [pi, j] of [...d.placed].sort((x, y) => x[0] - y[0]))
+      for (const [key, value] of Object.entries(g.procedures[pi]!.cells)) {
+        const c = d.pl.cols.get(key);
+        const path = `/budgetGrids/${gi}/procedures/${pi}/cells/${ptr(key)}`;
+        const e = evidence.find((x) => x.path === path);
+        if (value !== "invoiceable" || c === undefined || d.t.cells[j]![c]!.length || !e || e.held || (e.status !== "ungrounded" && e.status !== "conflict")) continue;
+        // the drawn cell: no word of the page (any direction) a little in from its rules, and no unread ink in it
+        const cell = unframe(d.dir, [d.ruled.us[c]!, d.ruled.vs[j]!, d.ruled.us[c + 1]!, d.ruled.vs[j + 1]!]);
+        const [dx, dy] = [(cell[2] - cell[0]) / 10, (cell[3] - cell[1]) / 10];
+        if (p.words.some((w) => !w.hidden && overlap(w.rect, [cell[0] + dx, cell[1] + dy, cell[2] - dx, cell[3] - dy]))) continue;
+        if ((p.unread ?? []).some((u) => u.box && overlap([u.box[0] * p.width, u.box[1] * p.height, (u.box[0] + u.box[2]) * p.width, (u.box[1] + u.box[3]) * p.height], cell))) continue;
+        rows.add(pi);
+        cells.push(path);
+        found.push(e);
+        e.where = [boxOf(p, d.t.cells[j]!.flat())];
+      }
+    if (!cells.length) return;
+    const id = `blank:${gi}:${p.documentId}#${p.page}:${n}`;
+    for (const e of found) e.blank = id;
+    // a held mapping: which column is which visit is still to be confirmed, so the group waits for (and is rejected with) that table's check
+    out.push({ id, grid: gi, page: p.page, table: boxOf(p, d.t.cells.flat(2)), rows: [...rows].sort((a, b) => a - b), cells, ...(d.pl.held ? { after: d.check() } : {}) });
+  });
+  return out;
+}
 
 export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   const data = new Map(pages.filter((p) => p.source === "text" || p.source === "ocr").map((p) => [`${p.documentId}#${p.page}`, pageData(p)]));
@@ -886,6 +935,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     evidence.push({ path, status, where, printed: held ? null : printed, note, ...(held ? { held } : {}) });
   };
   const tableChecks: TableCheck[] = [];
+  const blankChecks: BlankCheck[] = [];
   // a held table's visit columns' rules (reading frame), to tell whether a continuation page's columns are the same ones
   const ruling = new Map<string, { dir: Word["dir"]; rules: [number, number][] }>();
   const ALIGNED = 3;
@@ -997,7 +1047,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
     const heldRows = new Set<number>();
     const queued: { path: string; j: Judged; check: () => string; row?: NonNullable<TableCheck["rows"]>[number] }[] = [];
     // the drawn tables this grid's rows were placed in: where the totals cascade looks for what the page prints
-    const planned: { pg: Page; t: Table; pl: Plan; check: () => string; peek: () => string | undefined; k: string; ti: number }[] = [];
+    const planned: (Planned & { peek: () => string | undefined })[] = [];
     const byPage = new Map<string, number[]>();
     g.procedures.forEach((p, pi) => p.prov.source && byPage.set(`${p.prov.source.documentId}#${p.prov.source.page}`, [...(byPage.get(`${p.prov.source.documentId}#${p.prov.source.page}`) ?? []), pi]));
     for (const [k, idx] of byPage) {
@@ -1012,10 +1062,11 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         if (!t || !pl) continue;
         let id: string | undefined;
         const check = () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir));
-        planned.push({ pg, t, pl, check, peek: () => id, k, ti });
+        planned.push({ pg, t, pl, ruled, dir, placed: new Map(pl.rows), check, peek: () => id, k, ti });
         // rows the prices don't place, placed by order between the firm ones: held on their rows, whatever the columns
         const byOrder = place(t, idx, pl.rows, (pi, j) => !viaGrid.has(pi) && !heldRows.has(pi) && !gridTaken.has(`${k}#${ti}#${j}`));
         for (const [pi, j] of byOrder) if (pl.unfit(pi, j, false)) byOrder.delete(pi);
+        for (const [pi, j] of byOrder) planned.at(-1)!.placed.set(pi, j);
         for (const [pi, j] of [...pl.rows, ...byOrder]) {
           const heldBy = pl.held || byOrder.has(pi) ? check : undefined;
           gridTaken.add(`${k}#${ti}#${j}`);
@@ -1181,6 +1232,8 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
       if (row && !rows.some((r) => r.procedure === row.procedure)) rows.push(row);
     }
 
+    blankChecks.push(...blankInvoiceable(gi, g, planned, evidence));
+
     /**
      * The totals cascade. A visit's overhead, subtotal, non-procedure amount and total, and a per-patient total, that the label
      * path left unfound: in a planned table, the one row labelled for it prints the read's amount (OCR digits, conf >= 0.8) in
@@ -1200,7 +1253,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
         if (!t || !pl) continue;
         summaryTaken.add(`${k}#${ti}`);
         let id: string | undefined;
-        planned.push({ pg, t, pl, check: () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir)), peek: () => id, k, ti });
+        planned.push({ pg, t, pl, ruled, dir, placed: new Map(), check: () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir)), peek: () => id, k, ti });
       }
     }
 
@@ -1417,7 +1470,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[]): Bound {
   if (rulebook.screenFail) cap("/screenFail", rulebook.screenFail.cap, rulebook.screenFail.prov, ABOUT.screenFail);
 
   const unaccounted = inventory(pages).filter((s) => !s.words.some((w) => bound.has(w)));
-  return { evidence, unaccounted, tableChecks };
+  return { evidence, unaccounted, tableChecks, blankChecks };
 }
 
 // ---------- review queue ----------

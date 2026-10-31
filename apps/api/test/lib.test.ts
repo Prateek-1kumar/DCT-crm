@@ -237,7 +237,7 @@ describe("contract problems are never dropped", () => {
   const read = (rb: Rulebook, asked: string[]) => {
     const evidence = asked.map((path) => ({ path, status: "ungrounded" as const, where: [], printed: null, note: null }));
     const anomalies = runContractChecks(rb);
-    const bind = (() => ({ evidence, unaccounted: [], tableChecks: [] })) as unknown as typeof bindEvidence;
+    const bind = (() => ({ evidence, unaccounted: [], tableChecks: [], blankChecks: [] })) as unknown as typeof bindEvidence;
     return { anomalies, ...reviewDraft({ bindEvidence: bind, reviewFromEvidence }, rb, anomalies, [], []) };
   };
   const gridIds = (items: { id: string }[]) => items.map((i) => i.id).filter((id) => id.includes("budgetGrids"));

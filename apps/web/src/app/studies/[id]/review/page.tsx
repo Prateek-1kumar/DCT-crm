@@ -224,7 +224,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                       onClick={() => setSpotAt({ item: current.id, i })}
                       className={cx("h-8 rounded-full px-3 text-small font-medium transition-colors", i === spotIdx ? "bg-ink text-surface" : "bg-ink/[0.05] text-ink-2 hover:bg-ink/[0.08]")}
                     >
-                      Page {w.page}
+                      {current.reason === "BLANK_INVOICEABLE" ? (i === 0 ? "The table" : `Row ${i}`) : `Page ${w.page}`}
                     </button>
                   ))}
                 </div>
@@ -251,12 +251,13 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                   index={order.indexOf(current)}
                   total={order.length}
                   busy={answer.isPending}
-                  canAnswer={!!by && !(typist && current.reason === "spot_check")}
+                  canAnswer={!!by && !current.after && !(typist && current.reason === "spot_check")}
                   error={answer.error}
                   onAnswer={(b) => send(current, b)}
                   onCancel={changing === current.id ? () => setChanging(null) : undefined}
                 />
               )}
+              {current.after && <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">Confirm the table&apos;s columns first. This question opens once the questions about the columns are answered.</p>}
               {typist && current.reason === "spot_check" && (
                 <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">You typed this contract in, so someone else has to re-type these values. Switch to another person first.</p>
               )}
@@ -300,6 +301,7 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
         {(item.reason === "spot_check" || item.reason === "SAMPLE") && <Badge tone="info">Random spot check</Badge>}
         {item.reason === "AMBIGUOUS_TERM" && <Badge tone="warn">Unclear wording</Badge>}
         {item.reason === "TABLE_CHECK" && <Badge tone="info">Confirm the table&apos;s columns</Badge>}
+        {item.reason === "BLANK_INVOICEABLE" && <Badge tone="info">Table with no prices</Badge>}
         {index !== undefined && (
           <span className="num ml-auto text-small text-faint">
             {index + 1} of {total}

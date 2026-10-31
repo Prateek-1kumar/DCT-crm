@@ -63,15 +63,16 @@ export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
  * (alsoWithheld: some are found in the master, `rulebook`). So is every value held for its table's columns (`held`): the
  * check's picks are blind, and if the mapping is rejected each of those prices is typed blind too, so the read's value
  * mustn't have been shown meanwhile. A held value is withheld for as long as it is held, whatever its picks say. The web
- * masks the same paths.
+ * masks the same paths. So is every cell of a blank check (`blank`: the read calls it "invoiceable" where the table prints no
+ * price) while its question is open: the read's choice is what the question must not show.
  */
-export const withheldPaths = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string }[]; rulebook?: unknown }): string[] =>
+export const withheldPaths = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string; blank?: string }[]; rulebook?: unknown }): string[] =>
   v.status === "draft"
-    ? [...new Set([...v.review.flatMap((i) => (i.path && !settled(i) ? [i.path] : [])), ...v.evidence.flatMap((e) => (e.held ? [e.path] : []))].flatMap((p) => [p, ...alsoWithheld(p, v.rulebook)]))]
+    ? [...new Set([...v.review.flatMap((i) => (i.path && !settled(i) ? [i.path] : [])), ...v.evidence.flatMap((e) => (e.held || e.blank ? [e.path] : []))].flatMap((p) => [p, ...alsoWithheld(p, v.rulebook)]))]
     : [];
 
 /** `appliesFrom` as a response shows it: the start date, or the effective date it falls back to, withheld while either is asked blind. */
-export const shownAppliesFrom = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string }[]; appliesFrom: string | null }) =>
+export const shownAppliesFrom = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string; blank?: string }[]; appliesFrom: string | null }) =>
   withheldPaths(v).some((p) => p === "/appliesFrom/value" || p === "/study/effectiveDate/value") ? null : v.appliesFrom;
 
 const pointer = (path: PropertyKey[]) => path.map((k) => `/${String(k).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");

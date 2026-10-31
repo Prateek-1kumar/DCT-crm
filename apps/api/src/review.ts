@@ -1,6 +1,7 @@
 import type { Span, TextPage } from "@dct/extraction";
 import {
   alsoWithheld,
+  blankQuestions,
   type AnswerDraft,
   answerQuestion,
   askAbout,
@@ -22,6 +23,7 @@ import {
   parsePercent,
   pickSample,
   provOf,
+  rejectBlank,
   rejectTable,
   type ReviewItem,
   type Rulebook,
@@ -214,7 +216,9 @@ export function reviewDraft(
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
   const spans = new Map(bound.unaccounted.map((s) => [whereKey(s.where), s]));
   // each table check is asked below as two blind picks; the binder's placeholder question for it is dropped
-  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb, bound.tableChecks).filter((i) => i.reason !== TABLE_CHECK).map((i): ReviewItem => {
+  // a cell the read calls "invoiceable" where the table prints nothing has no question of its own: its table's is asked once for all of them
+  const blank = new Set(evidence.flatMap((e) => (e.blank ? [e.path] : [])));
+  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb, bound.tableChecks).filter((i) => i.reason !== TABLE_CHECK && !(i.path && blank.has(i.path))).map((i): ReviewItem => {
     if (i.path && scan.has(i.path)) return { ...i, reason: "SCAN_VALUE" };
     if (i.reason !== "UNACCOUNTED_TERM") return i;
     const term = termOf(i.where.flatMap((w) => spans.get(whereKey(w)) ?? []));
@@ -231,10 +235,13 @@ export function reviewDraft(
     ...interp,
     ...pageItems(pages, docs),
     ...tableQuestions(rb, evidence, bound.tableChecks, sampling.random),
+    ...blankQuestions(evidence, bound.blankChecks),
   ];
   // a table with nothing to pick from (no columns, or none given) can't confirm its prices: they're typed instead, never left held
   for (const id of new Set(evidence.flatMap((e) => (e.held ? [e.held] : []))))
     if (!review.some((i) => i.table?.id === id)) rejectTable({ review, evidence }, id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
+  // a blank group whose table has no picks to wait for (no columns to pick from) is typed cell by cell, as that table's held prices are
+  for (const c of bound.blankChecks) if (c.after && !review.some((i) => i.table?.id === c.after)) rejectBlank({ review, evidence }, c.id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
   const lost = opts.carried ? uncarried(rb, evidence, opts.carried, new Set(review.flatMap((i) => (i.path ? [i.path] : []))), asking) : { items: [], warnings: [], skipped: [] };
   review.push(...lost.items);
   // Drawn once, here, and kept as questions: a reload or a repeat never draws again. Never a value with a question (nor
