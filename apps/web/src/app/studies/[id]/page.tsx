@@ -164,7 +164,6 @@ function StageCard({ study, stage, draft }: { study: StudyDetailDto; stage: Stag
 function CheckLine({ draft }: { draft: RulebookVersionDto }) {
   const { pdfCheck, byHand } = draft;
   const good = pdfCheck || byHand;
-  const sample = draft.review.filter((i) => i.reason === "spot_check").length;
   return (
     <p className={cx("flex items-start gap-2 rounded-[10px] px-3.5 py-2.5 text-[13px]", good ? "bg-ok-soft" : "bg-warn-soft")}>
       <span aria-hidden className={good ? "text-ok" : "text-warn"}>
@@ -173,7 +172,7 @@ function CheckLine({ draft }: { draft: RulebookVersionDto }) {
       <span>
         <span className="eyebrow mr-2">{byHand ? "Typed by hand" : "Checking"}</span>
         {byHand
-          ? `Someone who didn't type it re-types ${sample} of the values without seeing them, to catch typos.`
+          ? "Someone who didn't type it approves it."
           : `${pdfCheckLine(pdfCheck)}${pdfCheck ? "." : ""}`}
       </span>
     </p>

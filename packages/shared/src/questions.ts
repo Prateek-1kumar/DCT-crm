@@ -1,7 +1,6 @@
 import type { ContractAnomaly } from "./anomaly";
-import { AMOUNT_IN_NAME, leaf } from "./blind";
 import { labelFor } from "./diff";
-import { type BlankCheck, blankNumbers, checkedByMachine, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
+import { type BlankCheck, checkedByMachine, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
 import { at, parsePointer } from "./pointer";
 import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
@@ -14,15 +13,13 @@ import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail,
 
 export const INTERPRETATION = "INTERPRETATION";
 /** A value of the read picked at random to be typed blind (ADR-001 §6 "Sample re-key"). */
-export const SAMPLE = "SAMPLE";
-const SAMPLE_SIZE = 10;
 /** The option of the start-date question that means "from the amendment's own date". */
 export const PROSPECTIVE = "prospective";
 
 const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as const;
 const sentence = (s: string) => (/[.?!]$/.test(s) ? s : `${s}.`);
 // An amount or % in a name would give a value away, as the value questions blank them.
-const named = (name: string) => `“${name.replace(AMOUNT_IN_NAME, "…").trim()}”`;
+const named = (name: string) => `“${name.trim()}”`;
 const listOf = (values: readonly string[], labels: Record<string, string> | undefined) => values.map((id) => ({ id, label: labels?.[id] ?? id }));
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -131,7 +128,7 @@ export function interpretations(rb: Rulebook, opts: { amendment: boolean; anomal
       kind: f.kind ?? "interpretation",
       reason: unclear ? "AMBIGUOUS_TERM" : (f.reason ?? INTERPRETATION),
       path: f.path,
-      question: [unclear && blankNumbers(sentence(unclear.message)), f.question, quote && `The contract says: “${blankNumbers(quote)}”`].filter(Boolean).join(" "),
+      question: [unclear && sentence(unclear.message), f.question, quote && `The contract says: “${quote}”`].filter(Boolean).join(" "),
       input: f.input ?? null,
       options: (f.options ?? []).filter((o) => !unclear || o.id !== "unspecified"),
       where: [...new Map(spots.map((r) => [`${r.documentId}#${r.page}`, pageOf(r)])).values()],
@@ -145,17 +142,12 @@ export const askedAsInterpretation = (a: Pick<ContractAnomaly, "code" | "path">,
   (a.code === "AMBIGUOUS_TERM" || a.code === "RETROACTIVE_NO_DATE") && [...paths].some((p) => about(a, p));
 
 /**
- * Values whose meaning an open question decides, withheld with it: a cap's limit and ratio while its kind is asked (the
- * limit is cents for an amount cap, a count otherwise, so a figure or its question would give the kind away); every
- * visit's "paid automatically" while how visits are paid is asked, and every grid row's "overhead added" while what the
- * overhead applies to is (`rb`'s grids): row by row, they restate the answer; and each amendment's own date while the
- * start date is asked: it's what a "prospective only" answer is checked against, and shown it would be typed back.
- * Not a withheld cell's visit subtotal and total, though the cell could be worked out from them and the row's other
- * cells: the person answering reads the page, which prints that subtotal too, and what blind entry guards against is
- * anchoring on a value shown, not sums done on purpose. Withholding them would hide numbers the PDF confirmed, and blank
- * most of a grid while a few of its cells are asked.
+ * Values whose meaning an open question decides: a cap's limit and ratio while its kind is asked (the limit is cents for
+ * an amount cap, a count otherwise); every visit's "paid automatically" while how visits are paid is asked, and every
+ * grid row's "overhead added" while what the overhead applies to is (`rb`'s grids); and each amendment's own date while
+ * the start date is asked. Marked as waiting with the question (openPaths), and cleared with a cap's "No limit".
  */
-export function alsoWithheld(path: string, rb?: unknown): string[] {
+export function decidedBy(path: string, rb?: unknown): string[] {
   if (/\/cap\/kind$/.test(path)) return [path.replace(/kind$/, "n"), path.replace(/kind$/, "ratio")];
   const r = rb as Partial<Rulebook> | null | undefined;
   if (path === "/appliesFrom/value") return (r?.documents ?? []).flatMap((d, i) => (d.kind === "amendment" ? [`/documents/${i}/date`] : []));
@@ -247,8 +239,6 @@ const inputFor = (rb: Rulebook, path: string, value: unknown): NonNullable<Revie
   return "text";
 };
 
-/** A value's label with any amount or % in its names blanked: they would give the answer away (as the binder's questions do). */
-export const blindLabel = (rb: unknown, path: string) => labelFor(rb, path).replace(AMOUNT_IN_NAME, "…");
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 /** Provenance of the nearest item on the path that carries one ("/payment/netDays/value" → payment.netDays.prov). */
@@ -266,15 +256,12 @@ export function provOf(rb: Rulebook, path: string): Provenance | null {
 export const choicesOf = (path: string) => ENUM_LABELS[/\/cap\/kind$/.test(path) ? "capKind" : fieldKey(path)];
 
 /**
- * A blind question about one value: "This looks wrong" (reason "reported"), the re-type sample of hand-typed values
- * ("spot_check") and of a read's confirmed values (SAMPLE), a required value the read didn't find. Yes/no and fixed-list
- * values are picked; the rest typed. The read's sample shows its page, never the spot the PDF check bound the value to:
- * a wrong binding would point at the wrong cell, and the person would type what's printed there, so a binder's mistake
- * would pass as confirmed. The question names the row and column (or the term) in words instead.
+ * A blind question about one value: "This looks wrong" (reason "reported"), a required value the read didn't find.
+ * Yes/no and fixed-list values are picked; the rest typed.
  */
 export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): ReviewItem {
   const value = at(rb, path);
-  const label = blindLabel(rb, path);
+  const label = labelFor(rb, path);
   const list = typeof value === "string" ? choicesOf(path) : undefined;
   const options =
     typeof value === "boolean" ? [{ id: "true", label: "Yes" }, { id: "false", label: "No" }]
@@ -286,28 +273,11 @@ export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, 
   return {
     ...BLANK, id, kind: "confirm_value", reason, path, blocking: true, input, options,
     question: `What ${input === "money" ? "amount" : input === "date" ? "date" : "value"} is printed for ${label}?`,
-    where: ev && reason !== SAMPLE ? [ev] : ev || src ? [pageOf((ev ?? src)!)] : [],
+    where: ev ? [ev] : src ? [pageOf(src)] : [],
   };
 }
 
-// ---------- the blind sample ----------
-
-/** Kinds of value, as ADR-001 §10 measures accuracy: a miss in one has all of that kind checked. */
-export type Family = "cells" | "totals" | "fees" | "rules";
-const FAMILY_LABEL: Record<Family, string> = {
-  cells: "budget grid prices",
-  totals: "visit and per-patient totals",
-  fees: "fee and invoiceable amounts",
-  rules: "percentages, days, limits and dates",
-};
-
-export function familyOf(path: string): Family {
-  if (/^\/budgetGrids\/\d+\/procedures\/\d+\/(?:cells\/|unitCents$)/.test(path)) return "cells";
-  // a grid's stated overhead is a percentage, checked with the rules, not a total
-  if (path.startsWith("/budgetGrids/") && !path.endsWith("/statedOverheadPct")) return "totals";
-  if (/^\/(?:siteFees|invoiceables)\/\d+\/amount(?:WithOverhead)?Cents$|^\/screenFail\/amountCents$/.test(path)) return "fees";
-  return "rules";
-}
+// ---------- randomness ----------
 
 /** Uniform in [0, 1), from the platform's cryptographic generator (Node and browsers alike). */
 export const cryptoRandom = () => globalThis.crypto.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
@@ -320,30 +290,6 @@ const shuffle = <T>(xs: T[], random: () => number) => {
   }
   return a;
 };
-
-/**
- * The blind sample of a read: `n` values the PDF check or the contract's own totals confirmed (the latter most need an independent look) (all of them if fewer), taken in turn from each family
- * in a random order and at random within it, so a contract's hundreds of grid cells don't fill it. `skip`: values that
- * already have a question. Drawn once, when the read completes, and stored as its questions: never drawn again.
- */
-export function pickSample(evidence: ValueEvidence[], skip: ReadonlySet<string>, random: () => number = cryptoRandom, n = SAMPLE_SIZE): string[] {
-  const pools = new Map<Family, string[]>();
-  for (const e of evidence) if (checkedByMachine(e.status) && !skip.has(e.path)) pools.set(familyOf(e.path), [...(pools.get(familyOf(e.path)) ?? []), e.path]);
-  const queues = shuffle([...pools.values()], random).map((p) => shuffle(p, random));
-  const out: string[] = [];
-  while (out.length < n && queues.some((q) => q.length)) for (const q of queues) if (q.length && out.length < n) out.push(q.shift()!);
-  return out;
-}
-
-/**
- * When typing by hand is marked done: the values a person typed (`typed`), and the `n` of them (all if fewer) someone else
- * re-types blind (`sample`), drawn like the read's sample. Every kind of typed value can be drawn: amounts, text, yes/no,
- * fixed-list and list values (re-picked or re-typed).
- */
-export function pickRetype(rb: Rulebook, evidence: ValueEvidence[], random: () => number = cryptoRandom, n = SAMPLE_SIZE): { typed: string[]; sample: string[] } {
-  const typed = evidence.filter((e) => e.status === "attested" && leaf(at(rb, e.path)) && !empty(at(rb, e.path))).map((e) => e.path);
-  return { typed, sample: shuffle(typed, random).slice(0, n) };
-}
 
 /**
  * What nobody decided in a contract typed by hand (no evidence row at its path): the blank form has to fill what the
@@ -366,25 +312,6 @@ export function placeholders(rb: Rulebook, evidence: ValueEvidence[]): string[] 
   walk(rb, "", "");
   return out;
 }
-
-export type SampleMiss = { family: Family; label: string; total: number; left: string[] };
-
-/**
- * A miss (ADR-001 §6): sign-off waits until every value of the missed sample's family is proofread ("Looks right") or was
- * typed by a person (attested). `left`: the family's values still only confirmed by the PDF check or the contract's own totals.
- */
-export function sampleMisses(v: { review: ReviewItem[]; evidence: ValueEvidence[]; proofread?: ProofreadMark[] }): SampleMiss[] {
-  const families = [...new Set(v.review.flatMap((i) => (i.missed && i.path ? [familyOf(i.path)] : [])))];
-  const marked = new Set((v.proofread ?? []).map((m) => m.path));
-  return families.map((family) => {
-    const all = v.evidence.filter((e) => familyOf(e.path) === family);
-    return { family, label: FAMILY_LABEL[family], total: all.length, left: all.filter((e) => checkedByMachine(e.status) && !marked.has(e.path)).map((e) => e.path) };
-  });
-}
-
-/** What a miss still holds back, in plain words: the approval's refusal and the approve page say the same. */
-export const sampleMissWords = (m: SampleMiss) =>
-  `A random spot check found a wrong number among the ${m.label}, so each of them has to be proofread before approval: ${m.left.length} of ${m.total} still to check.`;
 
 // ---------- the table check ----------
 

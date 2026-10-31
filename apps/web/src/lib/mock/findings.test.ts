@@ -1,4 +1,4 @@
-import { AuditPage, type ReviewItem, RulebookVersionDto, SAMPLE, settled, withheldPaths } from "@dct/shared";
+import { AuditPage, type ReviewItem, RulebookVersionDto, withheldPaths } from "@dct/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getAt } from "../pointer";
 import { makeRulebook, mockSampling, SEEDS } from "./fixtures";
@@ -35,15 +35,6 @@ describe("the sample server, by the API's rules", () => {
     expect(getAt((await version("st-halcyon", 2)).rulebook, TOTAL)).toBe(printed);
   });
 
-  it("5. the blind sample: its page only, nothing shown when it differs, and the second answer stands", async () => {
-    const v = await version("st-northwind");
-    const unit = v.review.find((i) => i.reason === SAMPLE && i.path!.endsWith("/unitCents"))!;
-    expect(unit.where.every((w) => w.box === null)).toBe(true);
-    const price = getAt(NW, unit.path!) as number;
-    expect(await answer("st-northwind", unit.id, { value: price + 100 })).toMatchObject({ outcome: "differs", compare: null });
-    expect(await answer("st-northwind", unit.id, { value: price + 200 })).toMatchObject({ outcome: "chosen", missed: true });
-  });
-
   it("6. 'prospective only' takes the amendment's own date typed", async () => {
     await post("/studies/st-halcyon/versions/2/send-back", { itemIds: ["interpret:/appliesFrom/value"], note: "Check §1", by: "Morgan Lee" });
     const res = await post(`/studies/st-halcyon/versions/2/review/${encodeURIComponent("interpret:/appliesFrom/value")}`, { optionId: "prospective", by: "Taylor Brooks" });
@@ -57,22 +48,21 @@ describe("the sample server, by the API's rules", () => {
       message: "Typing isn't marked done yet: change the value in the form instead.",
     });
     await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" });
-    await answer("st-solace", "spot:/payment/netDays/value", { value: 54 });
     const res = await post("/studies/st-solace/versions/1/report", { path: "/payment/netDays/value", note: "I typed 54; it's 45", by: "Avery Chen" });
     expect(res.status).toBe(200);
     expect(RulebookVersionDto.parse(res.json).review.at(-1)).toMatchObject({ id: expect.stringMatching(/^reported:/), reason: "reported", path: "/payment/netDays/value" });
   });
 
-  it("16. marking typing done: re-typed by path, the checks run, its questions counted in the log", async () => {
+  it("16. marking typing done: nothing re-typed, the checks run, its questions counted in the log", async () => {
     await typeByHand();
     const r = await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/budgetGrids/0/visits/0/totalCents", value: 15000, note: "x", by: "Avery Chen" });
     expect(r.status).toBe(200);
     await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/budgetGrids/0/visits/0/procedureSubtotalCents", value: 10000, note: "x", by: "Avery Chen" });
     await mockRequest("PATCH", "/studies/st-solace/versions/1/values", { path: "/budgetGrids/0/visits/0/overheadCents", value: 4000, note: "x", by: "Avery Chen" });
     const v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
-    expect(v.review.filter((i) => i.reason === "spot_check").map((i) => i.id).sort()).toEqual(["spot:/budgetGrids/0/visits/0/overheadCents", "spot:/budgetGrids/0/visits/0/procedureSubtotalCents", "spot:/budgetGrids/0/visits/0/totalCents", "spot:/payment/netDays/value"]);
+    expect(v.review.filter((i) => i.reason === "spot_check")).toEqual([]);
     const log = AuditPage.parse(await get("/audit?studyId=st-solace&limit=100")).items.find((e) => e.action === "byhand.done")!;
-    expect(log.detail).toEqual({ version: 1, typed: 4, "re-type": 4, questions: v.review.length - 4 });
+    expect(log.detail).toEqual({ version: 1, typed: 4, questions: v.review.length });
   });
 
   it("16. the diff refuses as the API does", async () => {
@@ -103,12 +93,6 @@ const settle = async (study: string, i: Pick<ReviewItem, "id" | "options" | "inp
   if (it.outcome === "differs" && !it.compare) await answer(study, i.id, { value: getAt(NW, it.path!) });
   else if (it.outcome === "differs") await answer(study, i.id, i.input ? { value: it.compare!.read, note: "checked" } : { optionId: String(it.compare!.read), note: "checked" });
 };
-/** Typing by hand on Solace, by Avery Chen: `values` in order (the pinned draw re-types the first 10), then marked done. */
-const typed = async (values: [string, unknown][]) => {
-  await post("/studies/st-solace/versions/by-hand", { by: "Avery Chen" });
-  for (const [path, value] of values) expect((await patch("/studies/st-solace/versions/1/values", { path, value, note: "x", by: "Avery Chen" })).status, path).toBe(200);
-  return RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
-};
 
 describe("the second review of 2026-10-29, by the API's rules", () => {
   it("C1, L4. two grids typed alike that an answer sets a cell apart: which to bill is asked", async () => {
@@ -118,7 +102,7 @@ describe("the second review of 2026-10-29, by the API's rules", () => {
     for (const g of [0, 1]) await patch("/studies/st-solace/versions/1/values", { path: `/budgetGrids/${g}/procedures/0/cells/V1`, value: 5500, note: "x", by: "Avery Chen" });
     const v = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/by-hand/done", { by: "Avery Chen" })).json);
     expect(v.review.some((i) => i.reason === "GRID_CONFLICT")).toBe(false); // typed alike: one is billed
-    const spot = "spot:/budgetGrids/1/procedures/0/cells/V1";
+    const spot = RulebookVersionDto.parse((await post("/studies/st-solace/versions/1/report", { path: "/budgetGrids/1/procedures/0/cells/V1", note: "check", by: "Avery Chen" })).json).review.at(-1)!.id;
     await answer("st-solace", spot, { value: 6000 });
     const after = await answer("st-solace", spot, { value: 6000, note: "the revised budget prints 60.00" });
     expect(after).toMatchObject({ outcome: "chosen" });
@@ -126,38 +110,11 @@ describe("the second review of 2026-10-29, by the API's rules", () => {
     expect(asked).toMatchObject({ outcome: null, options: [{ id: "g-hand" }, { id: "g-hand-2" }] });
   });
 
-  it("H1. the blind sample: “can't tell” after a differing answer doesn't reset it", async () => {
-    const unit = (await version("st-northwind")).review.find((i) => i.reason === SAMPLE && i.path!.endsWith("/unitCents"))!;
-    const price = getAt(NW, unit.path!) as number;
-    await answer("st-northwind", unit.id, { value: price + 100 });
-    expect(await answer("st-northwind", unit.id, { cantTell: true })).toMatchObject({ outcome: "cant_tell", retyped: true });
-    expect(await answer("st-northwind", unit.id, { value: price + 200 })).toMatchObject({ outcome: "chosen", missed: true });
-  });
-
-  it("M1. a sampled value's evidence shows its page, not the spot the check bound it to", async () => {
-    const v = await version("st-northwind");
-    const sampled = v.review.filter((i) => i.reason === SAMPLE).map((i) => i.path!);
-    expect(sampled.length).toBeGreaterThan(0);
-    for (const p of sampled) expect(v.evidence.find((e) => e.path === p)!.where.every((w) => w.box === null), p).toBe(true);
-  });
-
   it("M2. the amendment's own date is withheld while the start date is typed blind", async () => {
     const Q = "interpret:/appliesFrom/value";
     expect((await version("st-halcyon", 2)).rulebook!.documents.map((d) => d.date)).toContain("2026-09-30");
     await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [Q], note: "Check §1", by: "Morgan Lee" });
     expect((await version("st-halcyon", 2)).rulebook!.documents.map((d) => d.date)).not.toContain("2026-09-30");
-  });
-
-  it("M3. the log blanks a typed amount in its fee's typed name while it's re-typed blind", async () => {
-    const v = await typed([
-      ["/siteFees", [{ code: null, name: "", amountCents: null, trigger: "one_time", dueDays: null, prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } }]],
-      ["/siteFees/0/amountCents", 25000], ["/payment/netDays/value", 30], ["/budgetGrids/0/visits/0/name", "Screening"], ["/budgetGrids/0/visits/0/totalCents", 5500],
-      ["/budgetGrids/0/procedures/0/name", "Blood draw"], ["/budgetGrids/0/procedures/0/cells/V1", 5500], ["/budgetGrids/0/procedures/0/unitCents", 5500],
-      ["/budgetGrids/0/visits/0/autopay", true], ["/budgetGrids/0/procedures/0/overheadApplied", false], ["/budgetGrids/0/procedures/0/category", "procedure"],
-      ["/siteFees/0/name", "Archiving fee $250"],
-    ]);
-    expect(v.review.some((i) => i.id === "spot:/siteFees/0/amountCents" && !settled(i))).toBe(true);
-    expect((await log("st-solace")).find((e) => e.action === "value.typed" && e.detail.path === "/siteFees/0/name")!.detail).toMatchObject({ value: "Site fee › Archiving fee ••• › Name", after: "Archiving fee •••" });
   });
 
   it("L2. a cap with no limit has no limit to report", async () => {

@@ -13,7 +13,6 @@ import {
   type BudgetGrid,
   capFollowUps,
   type ContractAnomaly,
-  familyOf,
   followUps,
   fromAnomalies,
   gridChoice,
@@ -30,7 +29,6 @@ import {
   type ReviewItem,
   type Rulebook,
   RulebookVersionDto,
-  SAMPLE,
   settled,
   signOffRefusal,
   typingDone,
@@ -204,38 +202,6 @@ describe("4. a settled total is asked again once its answer no longer holds", ()
   });
 });
 
-describe("5. the blind sample measures the PDF check: it shows nothing of it", () => {
-  const cell = "/budgetGrids/0/procedures/0/cells/V1";
-  const sampled = () => {
-    const rb = rulebook();
-    const evidence = [ev(cell, "confirmed", "100.00"), ev("/budgetGrids/0/procedures/0/unitCents", "confirmed")];
-    return draft([askAbout(rb, evidence, cell, "q", SAMPLE)], evidence, rb);
-  };
-
-  it("points at its page, never at the spot the check bound it to; the question names row and column", () => {
-    const d = sampled();
-    expect(d.review[0]!.where).toEqual([{ documentId: "d1", page: 1, box: null }]);
-    expect(d.review[0]!.question).toBe("What amount is printed for Budget grid › Exhibit A › Procedures › Exam › V1?");
-    // other questions still point at their value's spot
-    expect(askAbout(d.rulebook, d.evidence, cell, "r", "reported").where).toEqual(box(0.5));
-  });
-
-  it("a differing answer shows nothing and is typed again blind: the confirmed value again is a typo, settled", () => {
-    const d = sampled();
-    expect(say(d, "q", { value: 10100 })).toMatchObject({ outcome: "differs" });
-    expect(d.review[0]!.compare).toBeNull();
-    expect(say(d, "q", { value: 10000 })).toMatchObject({ outcome: "matched", missed: false });
-  });
-
-  it("anything else the second time is a miss, whatever it is: nothing to try until it matches, no note asked", () => {
-    const d = sampled();
-    say(d, "q", { value: 10100 });
-    const r = say(d, "q", { value: 10200 });
-    expect(r).toMatchObject({ outcome: "chosen", missed: true, incident: { count: 1 } });
-    expect(d.rulebook.budgetGrids[0]!.procedures[0]!.cells.V1).toBe(10200);
-  });
-});
-
 describe("6. 'prospective only' never writes the read's date of the amendment as a person's", () => {
   const amended = () => {
     const rb = rulebook();
@@ -336,15 +302,15 @@ describe("11. typing by hand asks every default nobody chose", () => {
     expect(askAbout(rb, typed, "/budgetGrids/0/procedures/0/category", "m", "REQUIRED_MISSING").options.map((o) => o.id)).toEqual(["procedure", "non_procedure"]);
   });
 
-  it("marking typing done: the re-type sample by its path, the checks on what was typed, and the questions counted", () => {
+  it("marking typing done: the checks on what was typed, what nobody typed asked, and the questions counted; nothing re-typed", () => {
     const rb = blank();
     const d = { version: 1, status: "draft", byHand: true, rulebook: rb, review: [], evidence: [ev("/payment/netDays/value", "attested")] };
-    const done = typingDone(d, { random: () => 0.5, checks });
+    const done = typingDone(d, { checks });
     if ("refusal" in done) throw new Error(done.refusal.message);
-    expect(done.review[0]).toMatchObject({ id: "spot:/payment/netDays/value", reason: "spot_check" });
+    expect(done.review.some((i) => i.path === "/payment/netDays/value")).toBe(false);
     expect(done.anomalies.map((a) => a.code)).toEqual(["VISIT_TOTAL_MISMATCH"]);
-    expect(done.detail).toEqual({ version: 1, typed: 1, "re-type": 1, questions: done.review.length - 1 });
-    expect(typingDone({ ...d, review: done.review }, { random: () => 0.5, checks })).toEqual({ refusal: { status: 409, message: "Typing is already marked done." } });
+    expect(done.detail).toEqual({ version: 1, typed: 1, questions: done.review.length });
+    expect(typingDone({ ...d, review: done.review }, { checks })).toEqual({ refusal: { status: 409, message: "Typing is already marked done." } });
   });
 });
 
@@ -365,8 +331,6 @@ describe("13. 'needs you' and the gate agree", () => {
 });
 
 describe("15. lows", () => {
-  it("a grid's stated overhead is checked with the percentages", () => expect(familyOf("/budgetGrids/0/statedOverheadPct")).toBe("rules"));
-
   it("a money term's send-back note has its numbers blanked while it quotes a withheld value's line", () => {
     const t: ReviewItem = {
       id: "u1", kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, question: "Page 1 has an amount: \"Fee $100.00\".", input: null, options: [], where: box(0.5), blocking: true,
@@ -460,45 +424,6 @@ describe("C1. two grids for one arm that an answer makes differ", () => {
     expect(approvable(d)).toBe("Choose which budget grid to bill for Arm A.");
     d.rulebook.governingGridIds = ["g1"];
     expect(approvable(d)).toBeNull();
-  });
-});
-
-describe("H1. the blind sample's final answer can't be reset", () => {
-  const cell = "/budgetGrids/0/procedures/0/cells/V1";
-  const sampled = () => {
-    const rb = rulebook();
-    const evidence = [ev(cell, "confirmed", "100.00"), ev("/budgetGrids/0/procedures/0/unitCents", "confirmed")];
-    return draft([askAbout(rb, evidence, cell, "q", SAMPLE)], evidence, rb);
-  };
-
-  it("through can't tell: the next answer still stands, and a wrong one is a miss", () => {
-    const d = sampled();
-    expect(say(d, "q", { value: 10100 })).toMatchObject({ outcome: "differs" });
-    expect(say(d, "q", { cantTell: true })).toMatchObject({ outcome: "cant_tell" });
-    expect(d.review[0]).toMatchObject({ retyped: true });
-    expect(approvable(d)).toBe("1 question still needs an answer before this can be approved."); // unresolved: approval waits
-    expect(say(d, "q", { value: 10200 })).toMatchObject({ outcome: "chosen", missed: true, incident: { count: 1 } });
-  });
-
-  it("through a send-back, a repeat and a changed answer", () => {
-    const d = sampled();
-    say(d, "q", { value: 10100 });
-    // the approver sends it back (the route clears the answer)
-    Object.assign(d.review[0]!, { outcome: null, answer: null, compare: null, sentBack: { by: "Ben", note: "look again", at: "" } });
-    expect(say(d, "q", { value: 10200 })).toMatchObject({ outcome: "chosen", missed: true });
-    const e = sampled();
-    say(e, "q", { value: 10100 });
-    expect(say(e, "q", { value: 10000 })).toMatchObject({ outcome: "matched", missed: false }); // a typo, settled
-    expect(say(e, "q", { value: 10000 }).unchanged).toBe(true);
-    expect(say(e, "q", { value: 10300, note: "changed my mind" })).toMatchObject({ outcome: "chosen", missed: true });
-  });
-
-  it("an item stored before the mark: its 'differs' is the mark", () => {
-    const d = sampled();
-    Object.assign(d.review[0]!, { outcome: "differs", answer: { value: 10100, by: "Sam", at: "" } });
-    expect(say(d, "q", { cantTell: true }).item.retyped).toBeUndefined();
-    Object.assign(d.review[0]!, { outcome: "differs" });
-    expect(say(d, "q", { value: 10200 })).toMatchObject({ outcome: "chosen", missed: true });
   });
 });
 
@@ -614,7 +539,7 @@ describe("L2. a cap answered 'No limit'", () => {
 
 describe("F1. 'as printed' after a total is typed while its recheck waits", () => {
   const CELL = "/budgetGrids/0/procedures/0/cells/V1";
-  // printed one dollar over its parts; a cell of its grid is in the blind sample, so the recheck waits for it
+  // printed one dollar over its parts; a cell of its grid is asked, so the recheck waits for it
   const setUp = (keep = true) => {
     const rb = rulebook();
     rb.budgetGrids[0]!.visits[0]!.totalCents = 15100;
@@ -622,7 +547,7 @@ describe("F1. 'as printed' after a total is typed while its recheck waits", () =
     const [q] = fromAnomalies(found, rb, new Set());
     const { asPrinted: _, ...old } = q!;
     const evidence = [ev(TOTAL, "confirmed", "151.00"), ev(CELL, "confirmed", "100.00")];
-    const d = { ...draft([keep ? q! : old, askAbout(rb, evidence, CELL, `sample:${CELL}`, SAMPLE)], evidence, rb), anomalies: found };
+    const d = { ...draft([keep ? q! : old, askAbout(rb, evidence, CELL, `reported:${CELL}`, "reported")], evidence, rb), anomalies: found };
     return { d, id: q!.id };
   };
 
@@ -632,13 +557,13 @@ describe("F1. 'as printed' after a total is typed while its recheck waits", () =
       const { d, id } = setUp(keep);
       answerAndFollow(d, id, { optionId: "sum", note: "Ask the sponsor" });
       expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(14000);
-      // "This looks wrong" on the total, typed while the sample in its grid is still open
+      // "This looks wrong" on the total, typed while the question in its grid is still open
       d.review.push(askAbout(d.rulebook, d.evidence, TOTAL, "reported:1", "reported"));
       answerAndFollow(d, "reported:1", { value: 15200 });
       answerAndFollow(d, "reported:1", { value: 15200, note: "the signed page prints $152.00" });
       expect(d.review.find((i) => i.id === id)).toMatchObject({ asPrinted: 15200 });
-      // the sample's answer runs the recheck: "the sum" doesn't hold any more, so it's asked again
-      const { logged } = answerAndFollow(d, `sample:${CELL}`, { value: 10000 });
+      // the cell's answer runs the recheck: "the sum" doesn't hold any more, so it's asked again
+      const { logged } = answerAndFollow(d, `reported:${CELL}`, { value: 10000 });
       expect(logged).toEqual([expect.objectContaining({ action: "review.reopened", detail: expect.objectContaining({ itemId: id }) })]);
       expect(d.review.find((i) => i.id === id)).toMatchObject({ outcome: null, asPrinted: 15200 });
       // "as printed" puts back what the person typed, never the old printed total over it
@@ -649,7 +574,7 @@ describe("F1. 'as printed' after a total is typed while its recheck waits", () =
 
   it("'the sum' never becomes what's printed", () => {
     const { d, id } = setUp();
-    answerAndFollow(d, `sample:${CELL}`, { value: 10000 });
+    answerAndFollow(d, `reported:${CELL}`, { value: 10000 });
     answerAndFollow(d, id, { optionId: "sum", note: "Ask the sponsor" });
     expect(d.review.find((i) => i.id === id)).toMatchObject({ asPrinted: 15100 });
     answerAndFollow(d, id, { optionId: "printed", note: "Back to the printed total" });

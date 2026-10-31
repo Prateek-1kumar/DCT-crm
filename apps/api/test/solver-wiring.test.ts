@@ -52,8 +52,8 @@ const binding = (rb: Rulebook, noPage: string[] = [], unaccounted: Span[] = []) 
 const printedRows = (rb: Rulebook): RowBand[] =>
   rb.budgetGrids.flatMap((g, gi) => g.procedures.map((p, pi): RowBand => ({ grid: gi, procedure: pi, documentId: "d", page: 1, box: [0, 0, 1, 0.1], cells: [], total: Object.values(p.cells).reduce<number>((a, c) => a + (typeof c === "number" ? c : 0), 0), by: "row_total", covers: null })));
 const full = { reviewFromEvidence, solveGrids, gateSweep };
-// the blind sample asks about confirmed values on purpose; this is the questions about values nothing confirmed
-const asked = (review: { path: string | null; reason: string }[]) => new Set(review.flatMap((i) => (i.path && i.reason !== "SAMPLE" ? [i.path] : [])));
+// the questions about values nothing confirmed
+const asked = (review: { path: string | null; reason: string }[]) => new Set(review.flatMap((i) => (i.path ? [i.path] : [])));
 const statusOf = (ev: ValueEvidence[], path: string) => ev.find((e) => e.path === path)?.status;
 
 describe("the arithmetic referee in reviewDraft", () => {
@@ -93,16 +93,6 @@ describe("the arithmetic referee in reviewDraft", () => {
     expect(asked(out.review).has(lost)).toBe(true);
     expect(out.solver!.noPage).toBe(1);
     expect(out.solver!.upgraded.total).toBe(UPGRADABLE(rb).length - 1);
-  });
-
-  it("math-confirmed values are in the blind sample's pool", () => {
-    const rb = balanced();
-    const out = reviewDraft({ ...full, bindEvidence: binding(rb) }, rb, [], [], docs);
-    const sample = out.review.filter((i) => i.reason === "SAMPLE");
-    expect(sample.length).toBeGreaterThan(0);
-    for (const s of sample) expect(["confirmed", "confirmed_by_math"], s.path!).toContain(statusOf(out.evidence, s.path!));
-    // the pool is every machine-checked value, confirmed or proved; the draw is pinned to the first ten, so a proved one is in it
-    expect(sample.some((s) => statusOf(out.evidence, s.path!) === "confirmed_by_math")).toBe(true);
   });
 
   it("the audit gets counts only", () => {

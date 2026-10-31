@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ContractAnomaly } from "./anomaly";
 import { Person, ProofreadMark, ReviewItem, settled, ValueEvidence } from "./evidence";
 import { actionLabel } from "./labels";
-import { alsoWithheld } from "./questions";
+import { decidedBy } from "./questions";
 import { DocumentKind, Rulebook } from "./rulebook";
 
 /** HTTP contract between apps/api and apps/web. All routes are under /api/v1. */
@@ -58,33 +58,20 @@ export const StudyDetailDto = StudySummaryDto.extend({
 export type StudyDetailDto = z.infer<typeof StudyDetailDto>;
 
 /**
- * Blind entry: on a draft, the value at each open review question's path is withheld from every response until it is
- * answered (the API's versionDto, search, diff and audit), with the values its answer decides the meaning of
- * (alsoWithheld: some are found in the master, `rulebook`). So is every value held for its table's columns (`held`): the
- * check's picks are blind, and if the mapping is rejected each of those prices is typed blind too, so the read's value
- * mustn't have been shown meanwhile. A held value is withheld for as long as it is held, whatever its picks say. The web
- * masks the same paths. So is every cell of a blank check (`blank`: the read calls it "invoiceable" where the table prints no
- * price) while its question is open: the read's choice is what the question must not show.
+ * The values an open question on a draft is about, or decides (decidedBy: a cap's limit while its kind is asked, say),
+ * and every value held for its table's columns or its blank check (`held`, `blank`). Shown, and marked as waiting for an
+ * answer: nothing is withheld (ADR-003). "This looks wrong" refuses one of them (it's asked already).
  */
-export const withheldPaths = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string; blank?: string }[]; rulebook?: unknown }): string[] =>
+export const openPaths = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string; blank?: string }[]; rulebook?: unknown }): string[] =>
   v.status === "draft"
-    ? [...new Set([...v.review.flatMap((i) => (i.path && !settled(i) ? [i.path] : [])), ...v.evidence.flatMap((e) => (e.held || e.blank ? [e.path] : []))].flatMap((p) => [p, ...alsoWithheld(p, v.rulebook)]))]
+    ? [...new Set([...v.review.flatMap((i) => (i.path && !settled(i) ? [i.path] : [])), ...v.evidence.flatMap((e) => (e.held || e.blank ? [e.path] : []))].flatMap((p) => [p, ...decidedBy(p, v.rulebook)]))]
     : [];
-
-/** `appliesFrom` as a response shows it: the start date, or the effective date it falls back to, withheld while either is asked blind. */
-export const shownAppliesFrom = (v: { status: string; review: ReviewItem[]; evidence: { path: string; held?: string; blank?: string }[]; appliesFrom: string | null }) =>
-  withheldPaths(v).some((p) => p === "/appliesFrom/value" || p === "/study/effectiveDate/value") ? null : v.appliesFrom;
-
-const pointer = (path: PropertyKey[]) => path.map((k) => `/${String(k).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
 
 export const RulebookVersionDto = VersionSummaryDto.extend({
   studyId: z.string(),
-  /**
-   * A valid Rulebook, except that on a draft each withheld value (withheldPaths) is null, whatever its type, until its
-   * question is answered; its evidence's `printed` is null too. Checked below: nothing else may be null or invalid.
-   */
+  /** A valid Rulebook (checked below). */
   rulebook: z.custom<Rulebook>((v) => typeof v === "object" && v !== null).nullable(),
-  /** What the contract checks found; empty on a draft while any value is withheld (their messages carry the reading). */
+  /** What the contract checks found. */
   anomalies: z.array(ContractAnomaly),
   /** Names of people who corrected values in this version (for the optional maker-checker rule). */
   editors: z.array(z.string()),
@@ -104,10 +91,7 @@ export const RulebookVersionDto = VersionSummaryDto.extend({
 }).superRefine((v, ctx) => {
   if (!v.rulebook) return;
   const r = Rulebook.safeParse(v.rulebook);
-  if (r.success) return;
-  const withheld = new Set(withheldPaths(v));
-  const valueAt = (path: PropertyKey[]) => path.reduce<unknown>((n, k) => (n !== null && typeof n === "object" ? (n as Record<PropertyKey, unknown>)[k] : undefined), v.rulebook);
-  for (const i of r.error.issues) if (!(withheld.has(pointer(i.path)) && valueAt(i.path) === null)) ctx.addIssue({ code: "custom", message: i.message, path: ["rulebook", ...i.path] });
+  if (!r.success) for (const i of r.error.issues) ctx.addIssue({ code: "custom", message: i.message, path: ["rulebook", ...i.path] });
 });
 export type RulebookVersionDto = z.infer<typeof RulebookVersionDto>;
 
@@ -142,7 +126,6 @@ export const AuditEntryDto = z.object({
   protocol: z.string().nullable(),
   sponsor: z.string().nullable(),
   action: z.string(),
-  /** Withheld values left out and notes about them blanked (blankNumbers) while their question is open. */
   detail: z.record(z.string(), z.unknown()),
 });
 export type AuditEntryDto = z.infer<typeof AuditEntryDto>;

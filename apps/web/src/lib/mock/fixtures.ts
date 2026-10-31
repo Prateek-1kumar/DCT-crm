@@ -1,4 +1,4 @@
-import { alsoWithheld, armKey, askAbout as ask, type BlankCheck, blankQuestions, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, pickSample, type Provenance, tableQuestions, type ReviewItem, type Rulebook, type RulebookVersionDto, SAMPLE, type ValueEvidence } from "@dct/shared";
+import { armKey, askAbout as ask, type BlankCheck, blankQuestions, type BudgetGrid, type ContractAnomaly, cryptoRandom, type DocumentKind, gridPrices, interpretations, type PageBox, type Provenance, tableQuestions, type ReviewItem, type Rulebook, type RulebookVersionDto, type ValueEvidence } from "@dct/shared";
 import { fieldKey, formatValue, isMoneyPath, labelFor } from "../format";
 import { formatCents } from "../money";
 import { findProv, getAt, segments, setAt } from "../pointer";
@@ -385,7 +385,7 @@ const asPrinted = (rb: Rulebook, i: ReviewItem): Spec => {
   const quote = findProv(rb, i.path!)?.source?.quote;
   return { ...i, input: i.input, options: i.options, lines: i.where.map(() => `${labelFor(i.path!, rb)}: ${quote ?? formatValue(i.path!, getAt(rb, i.path!))}`) };
 };
-/** Test seam, as the real API's `sampling`: the randomness the blind sample and the by-hand re-type are drawn with. */
+/** Test seam, as the real API's `sampling`: the randomness a table check's columns are drawn with. */
 export const mockSampling: { random: () => number } = { random: cryptoRandom };
 
 /**
@@ -448,10 +448,7 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
   const heldPath = (path: string) => !!opts.table && /^\/budgetGrids\/0\/procedures\/\d+\/cells\//.test(path);
   const status = (path: string): ValueEvidence["status"] =>
     asked.find((x) => x.path === path)?.reason === "VALUE_CONFLICT" ? "conflict" : heldPath(path) || (opts.scan && !path.startsWith("/budgetGrids/")) ? "ungrounded" : "confirmed";
-  // drawn once, kept with the draft's questions; never a value with a question (nor one held back with it)
-  const taken = new Set(asked.flatMap((x) => (x.path ? [x.path, ...alsoWithheld(x.path)] : [])));
-  const sample = pickSample(numberPaths(rb).map((path) => ({ path, status: status(path), where: [], printed: null, note: null })), taken, mockSampling.random).map((p) => askAbout(rb, [], p, `sample:${p}`, SAMPLE));
-  const all = [...asked, ...sample];
+  const all = asked;
   const byPath = new Map(all.flatMap((x) => (x.path ? [[x.path, x] as const] : [])));
   // What each page prints, and where: the page shows the right answer where the reading got it wrong.
   const truthOf = (p: string) => (byPath.get(p)?.truth !== undefined ? byPath.get(p)!.truth : getAt(rb, p));
@@ -461,9 +458,8 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
     if (!pages.has(k)) pages.set(k, layoutPage(rb, all, truthOf, doc, page));
     return pages.get(k)!;
   };
-  // Questions point at the exact spot their number, or their own line, is printed; the blind sample at its page only,
-  // as the real API (askAbout): a spot from the check would show the person where the check looked.
-  const placed = all.map((x) => (x.reason === SAMPLE ? x : { ...x, where: x.where.map((w) => pb(w.documentId, w.page, boxOn(spansOf(w.documentId, w.page), { path: x.path, item: x.id }) ?? w.box)) }));
+  // Questions point at the exact spot their number, or their own line, is printed.
+  const placed = all.map((x) => ({ ...x, where: x.where.map((w) => pb(w.documentId, w.page, boxOn(spansOf(w.documentId, w.page), { path: x.path, item: x.id }) ?? w.box)) }));
   const evidence = numberPaths(rb).map((path): ValueEvidence => {
     const src = findProv(rb, path)?.source;
     return {

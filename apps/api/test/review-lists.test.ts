@@ -1,5 +1,5 @@
 import { bindEvidence, reviewFromEvidence, runContractChecks } from "@dct/extraction";
-import { type AlertPage, type AuditPage, capFollowUps, type ContractAnomaly, type DocumentDto, type ReviewItem, type Rulebook, RulebookVersionDto, SAMPLE } from "@dct/shared";
+import { type AlertPage, type AuditPage, capFollowUps, type ContractAnomaly, type DocumentDto, type ReviewItem, type Rulebook, RulebookVersionDto } from "@dct/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { appliesFromOf, manualRulebook } from "../src/domain.js";
 import { fakeControls } from "../src/extraction/fake.js";
@@ -240,84 +240,24 @@ describe("a clause that states its figure outright isn't asked (ADR-002 §4)", (
     return reviewDraft(port, rb, [], [], []).review;
   };
 
-  it("the amount limit's kind is not a question when its figure is confirmed from its quote, and its figure is drawn into the blind sample", () => {
+  it("the amount limit's kind is not a question when its figure is confirmed from its quote, and nothing is asked about its figure", () => {
     const review = stated("confirmed");
-    expect(review.some((i) => i.path === "/invoiceables/0/cap/kind")).toBe(false);
-    expect(review.filter((i) => i.reason === SAMPLE).map((i) => i.path)).toEqual(["/invoiceables/0/cap/n"]);
+    expect(review.filter((i) => i.path?.startsWith("/invoiceables/0/cap/"))).toEqual([]);
   });
 
   it("is asked, with its figure withheld, when the figure isn't confirmed", () => {
     const review = stated("conflict");
     expect(review.find((i) => i.path === "/invoiceables/0/cap/kind")).toMatchObject({ reason: "INTERPRETATION", blocking: true });
-    expect(review.some((i) => i.reason === SAMPLE)).toBe(false);
   });
 });
 
-describe("the blind sample of confirmed values (ADR-001 §6)", () => {
-  const CELL = "/budgetGrids/0/procedures/0/cells/V1"; // sampled with the draw pinned; the page prints 55.00
-
-  it("10 confirmed values, spread over the kinds of value, stored with the version and never drawn again", async () => {
+describe("no blind sample (ADR-003)", () => {
+  it("a read asks nothing about a value its page confirms", async () => {
     const { studyId } = await draft();
     const v = await version(studyId);
-    const sample = v.review.filter((i) => i.reason === SAMPLE);
-    expect(sample).toHaveLength(10);
-    // the rules family's first values with the draw pinned are the grids' stated overhead percentages
-    expect(new Set(sample.map((i) => i.path!.split("/")[1]))).toEqual(new Set(["budgetGrids", "invoiceables"]));
-    expect(sample.every((i) => i.kind === "confirm_value" && i.blocking && at(v.rulebook, i.path!) === null)).toBe(true);
-    // stored: a reload reads the same questions; nothing draws again
-    expect((await version(studyId)).review.filter((i) => i.reason === SAMPLE).map((i) => i.id)).toEqual(sample.map((i) => i.id));
-    expect((await storedVersion(built, studyId, 1)).review.filter((i) => i.reason === SAMPLE)).toHaveLength(10);
-  });
-
-  it("not on a draft typed by hand, nor on a correction copied from the live version", async () => {
-    const { studyId } = await liveStudy(built);
-    const res = await post(`/studies/${studyId}/versions/1/report`, { path: "/siteFees/0/amountCents", note: "check", by: "Sam" });
-    expect(res.json<RulebookVersionDto>().review.map((i) => i.reason)).toEqual(["reported"]);
-  });
-
-  it("a miss: kept after looking again, it blocks approval until its kind of value is proofread, is logged as an incident and alerted", async () => {
-    const { studyId } = await draft();
-    const id = `sample:${CELL}`;
-    // the first answer differs: typed again blind, with nothing shown of what the check confirmed; nothing has missed yet
-    expect(await answer(studyId, id, { value: 5600 })).toMatchObject({ outcome: "differs", compare: null });
-    expect((await auditOf(studyId)).map((e) => e.action)).not.toContain("sample.missed");
-    // the confirmed value typed the second time was a typo, not a miss
-    const other = `sample:/budgetGrids/0/procedures/0/cells/V2`;
-    await answer(studyId, other, { value: 5700 });
-    expect(await answer(studyId, other, { value: 5500 })).toMatchObject({ outcome: "matched" });
-    expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === other)!.missed).toBeUndefined();
-    // kept: the sample missed
-    expect(await answer(studyId, id, { value: 5600, note: "The page prints $56.00; the text layer is off" })).toMatchObject({ outcome: "chosen", missed: true });
-    const incident = (await auditOf(studyId)).filter((e) => e.action === "sample.missed");
-    expect(incident).toEqual([expect.objectContaining({ by: "Sam", detail: expect.objectContaining({ version: 1, itemId: id, path: CELL, values: "budget grid prices" }) })]);
-    const alert = (await get<AlertPage>("/alerts?for=Ben&limit=50")).items.find((a) => a.kind === "sample_missed")!;
-    expect(alert).toMatchObject({ studyId, version: 1, by: "Sam", read: false });
-
-    await settleRest(studyId);
-    // every grid price the PDF check confirmed and nobody typed: the other grid's three
-    const left = ["/budgetGrids/1/procedures/0/cells/V1", "/budgetGrids/1/procedures/0/cells/V2", "/budgetGrids/1/procedures/0/unitCents"];
-    const refused = await signOff(app, studyId, 1, { by: "Ben" });
-    expect(refused.statusCode).toBe(409);
-    expect(refused.json().message).toBe("A random spot check found a wrong number among the budget grid prices, so each of them has to be proofread before approval: 3 of 6 still to check.");
-    // changing the answer back doesn't undo it: the miss stands, and so does the check of its kind
-    await answer(studyId, id, { value: 5500, by: "Avery" });
-    expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === id)).toMatchObject({ outcome: "matched", missed: true });
-    expect((await auditOf(studyId)).filter((e) => e.action === "sample.missed")).toHaveLength(1);
-    await post(`/studies/${studyId}/versions/1/proofread`, { paths: left.slice(0, 2), by: "Avery" });
-    expect((await signOff(app, studyId, 1, { by: "Ben" })).json().message).toMatch(/: 1 of 6 still to check\.$/);
-    await post(`/studies/${studyId}/versions/1/proofread`, { paths: left.slice(2), by: "Avery" });
-    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
-  });
-
-  it("a re-typer who only re-typed the sample, as read, isn't an editor; one who changed a value is", async () => {
-    const { studyId } = await draft();
-    const sample = (await storedVersion(built, studyId, 1)).review.filter((i) => i.reason === SAMPLE);
-    const rb = (await storedVersion(built, studyId, 1)).rulebook;
-    for (const i of sample) await answer(studyId, i.id, { value: at(rb, i.path!), by: "Morgan" });
-    expect((await version(studyId)).editors).not.toContain("Morgan");
-    await answer(studyId, `sample:${CELL}`, { value: 5600, by: "Avery" });
-    await answer(studyId, `sample:${CELL}`, { value: 5600, note: "page 2", by: "Avery" });
-    expect((await version(studyId)).editors).toContain("Avery");
+    const confirmed = new Set(v.evidence.filter((e) => e.status === "confirmed").map((e) => e.path));
+    expect(confirmed.size).toBeGreaterThan(0);
+    expect(v.review.filter((i) => i.kind === "confirm_value" && i.path && confirmed.has(i.path))).toEqual([]);
   });
 });
 
@@ -326,16 +266,14 @@ describe("corrections an amendment's read couldn't carry over", () => {
 
   it("each is said on the draft, and asked again blind where the value is now (a moved item found by its identity)", async () => {
     const { studyId } = await draft();
-    // version 1: the admin fee (reported) and the unscheduled visit (re-typed in the sample) corrected, each kept over the
-    // PDF's text with a reason
+    // version 1: the admin fee and the unscheduled visit reported and corrected, each kept over the PDF's text with a reason
     const fee = (await post(`/studies/${studyId}/versions/1/report`, { path: FEE, note: "check", by: "Asha" })).json<RulebookVersionDto>().review.at(-1)!.id;
-    for (const [id, value] of [[fee, 1250000], ["sample:/invoiceables/0/amountWithOverheadCents", 85000]] as const) {
+    const visit = (await post(`/studies/${studyId}/versions/1/report`, { path: "/invoiceables/0/amountWithOverheadCents", note: "check", by: "Asha" })).json<RulebookVersionDto>().review.at(-1)!.id;
+    for (const [id, value] of [[fee, 1250000], [visit, 85000]] as const) {
       await answer(studyId, id, { value, by: "Asha" });
       await answer(studyId, id, { value, note: "the page prints it", by: "Asha" });
     }
     await settleRest(studyId);
-    // the sample missed, so the last fee amount nobody typed is proofread first
-    await post(`/studies/${studyId}/versions/1/proofread`, { paths: ["/screenFail/amountCents"], by: "Asha" });
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
 
     // the amendment's read adds a fee in front (so the admin fee is /siteFees/1 now) and reads the unscheduled visit anew

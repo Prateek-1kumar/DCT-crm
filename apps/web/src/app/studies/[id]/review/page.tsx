@@ -1,6 +1,6 @@
 "use client";
 
-import { PROSPECTIVE, type ReviewItem, type RulebookVersionDto, SAMPLE, type StudyDetailDto } from "@dct/shared";
+import { PROSPECTIVE, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Flag, Info, ListChecks, PartyPopper, Undo2, X } from "lucide-react";
 import Image from "next/image";
@@ -101,8 +101,6 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
   const spot = current?.where[spotIdx];
   const done = order.filter((i) => itemStatus(i) === "done").length;
   const left = needsYou(order).length;
-  // Hand-typed values must be re-typed by someone who didn't type them.
-  const typist = version.byHand && !!by && version.editors.includes(by);
 
   const say = (msg: string) => {
     setToast(msg);
@@ -168,7 +166,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
               >
                 <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center">{STATUS_ICON[itemStatus(i)]}</span>
                 <span className={cx("line-clamp-2 text-small", active ? "font-medium text-ink" : itemStatus(i) === "done" ? "text-faint" : "text-ink-2")}>
-                  <span className="sr-only">{itemStatus(i) === "differs" && i.reason === SAMPLE ? "Type it again" : STATUS_TEXT[itemStatus(i)]}: </span>
+                  <span className="sr-only">{STATUS_TEXT[itemStatus(i)]}: </span>
                   {i.question}
                 </span>
               </button>
@@ -239,8 +237,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
             </section>
 
             <section aria-label="Question" className="min-h-0 overflow-y-auto border-t border-line px-6 py-6 lg:border-t-0 lg:border-l">
-              {/* a spot check never shows what it's measured against: a differing answer is typed blind once more */}
-              {itemStatus(current) === "differs" && current.reason !== SAMPLE ? (
+              {itemStatus(current) === "differs" ? (
                 <Mismatch key={current.id} item={current} byHand={version.byHand} busy={answer.isPending} canAnswer={!!by} error={answer.error} onAnswer={(b) => send(current, b)} />
               ) : (itemStatus(current) === "done" || itemStatus(current) === "cant_tell") && changing !== current.id ? (
                 <Answered item={current} onChange={() => setChanging(current.id)} onNext={() => go(order.find(open)?.id ?? "__done")} />
@@ -251,16 +248,13 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                   index={order.indexOf(current)}
                   total={order.length}
                   busy={answer.isPending}
-                  canAnswer={!!by && !current.after && !(typist && current.reason === "spot_check")}
+                  canAnswer={!!by && !current.after}
                   error={answer.error}
                   onAnswer={(b) => send(current, b)}
                   onCancel={changing === current.id ? () => setChanging(null) : undefined}
                 />
               )}
               {current.after && <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">Confirm the table&apos;s columns first. This question opens once the questions about the columns are answered.</p>}
-              {typist && current.reason === "spot_check" && (
-                <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">You typed this contract in, so someone else has to re-type these values. Switch to another person first.</p>
-              )}
               {!by && (
                 <div className="mt-4">
                   <NeedsPerson />
@@ -298,7 +292,6 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={item.kind === "contract_problem" ? "danger" : item.kind === "confirm_value" ? "warn" : "accent"}>{KIND_LABEL[item.kind]}</Badge>
-        {(item.reason === "spot_check" || item.reason === "SAMPLE") && <Badge tone="info">Random spot check</Badge>}
         {item.reason === "AMBIGUOUS_TERM" && <Badge tone="warn">Unclear wording</Badge>}
         {item.reason === "TABLE_CHECK" && <Badge tone="info">Confirm the table&apos;s columns</Badge>}
         {item.reason === "BLANK_INVOICEABLE" && <Badge tone="info">Table with no prices</Badge>}
@@ -354,9 +347,6 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   const both = item.options.length > 0 && !!item.input;
   // "prospective only" takes the amendment's own date too, typed from the amendment
   const dated = choice === TYPED || choice === PROSPECTIVE;
-  // a spot check typed differently: typed again, blind, and from then on every answer stands (`retyped`, through "can't
-  // tell" or a send-back)
-  const again = item.reason === SAMPLE && (item.retyped || item.outcome === "differs") && item.outcome !== "matched" && item.outcome !== "chosen";
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -411,15 +401,6 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   return (
     <form onSubmit={submit} className="flex flex-col gap-6" aria-labelledby={`q-${item.id}`}>
       <Heading item={item} index={props.index} total={props.total} />
-      {again && (
-        <div role="alert" className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-body text-ink-2">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
-          <p>
-            <span className="font-medium">Look at the page again and type it once more.</span> What you typed isn&apos;t what the check found. We don&apos;t show what it found, so
-            it can&apos;t steer you, and what you type now is kept.
-          </p>
-        </div>
-      )}
 
       {item.options.length > 0 ? (
         <fieldset className="flex flex-col gap-2.5">

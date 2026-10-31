@@ -1,4 +1,4 @@
-import { type AlertPage, type AuditPage, type DiffEntry, type MasterSearch, type RulebookVersionDto, SAMPLE, type StudyDetailDto, type StudyPage } from "@dct/shared";
+import { type AlertPage, type AuditPage, type DiffEntry, type MasterSearch, type RulebookVersionDto, type StudyDetailDto, type StudyPage } from "@dct/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
@@ -34,19 +34,6 @@ const NET_DAYS = "/payment/netDays/value"; // read 45, no quote
 const UNGROUNDED = ["/overhead/pct/value", NET_DAYS, "/deadlines/0/value"];
 /** What every read of the fake work order asks a person to pick blind (ADR-001 §6), in the order it asks. */
 const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value", "/siteFees/0/trigger", "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/rounding/value"];
-/** The blind sample of confirmed values with the draw pinned (helpers NO_SHUFFLE): a family at a time, in evidence order. */
-const SAMPLED = [
-  "/budgetGrids/0/procedures/0/cells/V1",
-  "/budgetGrids/0/visits/0/totalCents",
-  "/budgetGrids/0/statedOverheadPct",
-  "/invoiceables/0/amountCents",
-  "/budgetGrids/0/procedures/0/cells/V2",
-  "/budgetGrids/0/visits/0/procedureSubtotalCents",
-  "/budgetGrids/1/statedOverheadPct",
-  "/invoiceables/0/amountWithOverheadCents",
-  "/budgetGrids/0/procedures/0/unitCents",
-  "/budgetGrids/0/visits/0/nonProcedureCents",
-];
 
 async function draft(seed = "s") {
   const { studyId, doc } = await newStudy(app, seed);
@@ -71,17 +58,15 @@ describe("reading checks every number against the PDF's own text", () => {
       ["MISSING_REFERENCED_DOC", "contract_problem", false],
       ["GRID_CONFLICT", "contract_problem", true],
       ...INTERPRETED.map(() => ["INTERPRETATION", "interpretation", true]),
-      ...SAMPLED.map(() => [SAMPLE, "confirm_value", true]),
     ]); // the second read's disagreement is not evidence, so it asks nothing
     expect(v.review.filter((i) => i.kind === "interpretation").map((i) => i.path)).toEqual(INTERPRETED);
-    expect(v.review.filter((i) => i.reason === SAMPLE).map((i) => i.path)).toEqual(SAMPLED);
     expect(v.review.find((i) => i.reason === "GRID_CONFLICT")).toMatchObject({ path: null, options: [{ id: "g1", label: "Exhibit A" }, { id: "g2", label: "Exhibit A (revised)" }] });
     // which number governs, and a note for the sponsor query (ADR-001 §6)
     expect(v.review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")!.options).toEqual([
       { id: "printed", label: "The visit total as printed", note: "What should we ask the sponsor?" },
       { id: "sum", label: "Its subtotal, overhead and non-procedure amounts added up", note: "What should we ask the sponsor?" },
     ]);
-    expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 + INTERPRETED.length + SAMPLED.length });
+    expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 + INTERPRETED.length });
     expect((await get<StudyDetailDto>(`/studies/${studyId}`)).documents[0]!.text).toBe("text");
   });
 
@@ -99,7 +84,7 @@ describe("reading checks every number against the PDF's own text", () => {
     const reasons = v.review.map((i) => i.reason);
     // every number it didn't prove but the screen-fail cap's limit, which waits for its kind to be picked (its question would name it)
     expect(v.review.filter((i) => i.reason === "SCAN_VALUE").map((i) => i.path)).toEqual(v.evidence.filter((e) => e.status === "ungrounded").map((e) => e.path).filter((p) => p !== "/screenFail/cap/n"));
-    expect(reasons).toContain(SAMPLE); // the proved values are in the blind sample's pool
+    expect(reasons).not.toContain("SAMPLE"); // no blind sample (ADR-003)
     expect(v.review.filter((i) => i.reason === "SCAN_PAGE").map((i) => [i.kind, i.blocking, i.where[0]!.page, i.options.map((o) => o.id)])).toEqual([
       ["unaccounted", true, 1, ["none", "bill_by_hand"]],
       ["unaccounted", true, 2, ["none", "bill_by_hand"]],
@@ -117,9 +102,8 @@ describe("blind entry", () => {
     const v = JSON.parse(raw) as RulebookVersionDto;
     for (const p of [G2_TOTAL, ...UNGROUNDED]) expect(at(v.rulebook, p), p).toBeNull();
     expect(at(v.rulebook, "/budgetGrids/0/visits/0/overheadCents")).toBe(213000); // no open question: sent as is
-    // a sampled value the PDF confirmed is withheld while it's typed blind, its printed text too
-    expect(at(v.rulebook, SAMPLED[1]!)).toBeNull();
-    expect(v.evidence.find((e) => e.path === SAMPLED[1])).toMatchObject({ status: "confirmed", printed: null });
+    // a value the PDF confirmed and nobody asks about is sent as is
+    expect(at(v.rulebook, "/budgetGrids/0/visits/0/totalCents")).not.toBeNull();
     expect(v.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "conflict", printed: null });
     expect(v.anomalies).toEqual([]);
     expect(v.review.every((i) => i.compare === null && i.answer === null)).toBe(true);
@@ -323,7 +307,7 @@ describe("answering", () => {
     const { studyId } = await draft();
     const path = "/study/effectiveDate/value";
     expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === path)).toMatchObject({ status: "confirmed", printed: "August 22, 2025" });
-    // "This looks wrong" on it asks it blind (the blind sample, which never shows the check's value, didn't draw it)
+    // "This looks wrong" on it asks it blind
     expect((await post(`/studies/${studyId}/versions/1/report`, { path, note: "check the date", by: "Ben" })).statusCode).toBe(200);
     const id = (await version(studyId)).review.find((i) => i.reason === "reported" && i.path === path)!.id;
     expect((await version(studyId)).review.find((i) => i.id === id)!.input).toBe("date");
@@ -354,7 +338,7 @@ describe("answering", () => {
     const approve = (by: string) => signOff(app, studyId, 1, { by });
     const blocked = await approve("Morgan");
     expect(blocked.statusCode).toBe(409);
-    expect(blocked.json().message).toBe(`${8 + INTERPRETED.length + SAMPLED.length} questions still need an answer before this can be approved.`);
+    expect(blocked.json().message).toBe(`${8 + INTERPRETED.length} questions still need an answer before this can be approved.`);
     // A "can't tell" holds approval up, a blocking one and one that's not needed to approve alike, and both count as
     // needing you: the contract isn't waiting for approval while one is open.
     await settleAll(built, studyId, 1, "Sam");
@@ -475,7 +459,7 @@ describe("typing in by hand", () => {
     return studyId;
   }
 
-  it("types a contract in by hand, then someone else re-types a blind sample", async () => {
+  it("types a contract in by hand; the typist can't approve it", async () => {
     const studyId = await failed();
     const start = await post(`/studies/${studyId}/versions/by-hand`, { by: "Avery" });
     expect(start.statusCode).toBe(201);
@@ -504,34 +488,30 @@ describe("typing in by hand", () => {
     expect(v.editors).toEqual(["Avery"]);
     expect((await signOff(app, studyId, 1, { by: "Ben" })).json().message).toMatch(/^Typing isn't marked done yet/);
 
-    // 3 typed values → all 3 are re-typed. The visit total nobody typed holds the blank form's 0, and the form's choices
+    // Nothing typed is re-typed (ADR-003). The visit total nobody typed holds the blank form's 0, and the form's choices
     // nobody made their defaults (how the visit is paid, the row's kind and overhead, the terms "not stated"): asked as missing.
     v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
-    expect(v.review.map((i) => i.reason).sort()).toEqual([...Array(8).fill("REQUIRED_MISSING"), "spot_check", "spot_check", "spot_check"]);
+    expect(v.review.map((i) => i.reason).sort()).toEqual(Array(8).fill("REQUIRED_MISSING"));
     expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ reason: "REQUIRED_MISSING", blocking: true, input: "money" });
     expect(v.review.every((i) => i.blocking && i.answer === null)).toBe(true);
     expect(v.review.every((i) => i.path && at(v.rulebook, i.path) === null)).toBe(true); // blind
     expect((await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).statusCode).toBe(409);
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: NET_DAYS, value: 30, note: "x", by: "Avery" })).json().message).toBe("Typing is marked done. Use “This looks wrong” to change a value.");
-    const days = v.review.find((i) => i.path === NET_DAYS)!;
-    expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(days.id)}`, { value: 45, by: "Avery" })).json().message).toBe("Avery typed these values, so someone else has to re-type them.");
-    expect(await answer(studyId, days.id, { value: 40 })).toMatchObject({ outcome: "differs", compare: { typed: 40, read: 45, printed: null } });
-    expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(days.id)}`, { value: 45, by: "Sam" })).statusCode).toBe(400); // nothing in the PDF's text decides it
-    expect(await answer(studyId, days.id, { value: 45, note: "page 4, §4.2" })).toMatchObject({ outcome: "chosen", answer: { noPdfText: true } });
-    // the missing total is typed by the typist (anyone may: it's not a re-type); nobody can approve $0 that wasn't typed
+    expect(v.review.some((i) => i.path === NET_DAYS)).toBe(false);
+    // the missing total is typed by the typist; nobody can approve $0 that wasn't typed
     expect(await answer(studyId, "missing:/budgetGrids/0/visits/0/totalCents", { value: 18500, by: "Avery" })).toMatchObject({ outcome: "chosen" });
     expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ status: "attested" });
     // the form's defaults nobody picked are picked now, by the typist: decisions, not re-types
     const held = await storedVersion(built, studyId, 1);
     for (const i of held.review.filter((x) => x.reason === "REQUIRED_MISSING" && x.outcome === null)) await answer(studyId, i.id, { optionId: String(at(held.rulebook, i.path!)), by: "Avery" });
     await settleAll(built, studyId, 1, "Sam");
-    // Re-typing as typed isn't editing: with maker-checker on, the re-typer may approve and the typist may not.
+    // With maker-checker on, the typist may not approve; someone who only answered nothing may.
     await patch("/settings", { makerChecker: true, by: "Morgan" });
     expect((await signOff(app, studyId, 1, { by: "Avery" })).statusCode).toBe(409);
-    expect((await signOff(app, studyId, 1, { by: "Sam" })).statusCode).toBe(200);
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
   });
 
-  it("re-types at most 10 hand-typed values", async () => {
+  it("re-types nothing however many values were typed", async () => {
     const studyId = await failed();
     await post(`/studies/${studyId}/versions/by-hand`, { by: "Avery" });
     const type = async (path: string, value: unknown) => (await patch(`/studies/${studyId}/versions/1/values`, { path, value, note: "x", by: "Avery" })).json<RulebookVersionDto>();
@@ -543,7 +523,7 @@ describe("typing in by hand", () => {
     }
     const v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
     expect(v.evidence).toHaveLength(12);
-    expect(v.review.filter((i) => i.reason === "spot_check")).toHaveLength(10);
+    expect(v.review.filter((i) => i.reason === "spot_check")).toHaveLength(0);
   });
 
   it("refuses typing on a draft that isn't typed by hand, and a blank start while one is in progress", async () => {

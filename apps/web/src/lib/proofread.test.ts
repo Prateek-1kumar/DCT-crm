@@ -26,11 +26,10 @@ describe("proofread units", () => {
     expect(order.indexOf("totals")).toBeGreaterThan(order.lastIndexOf("terms"));
     expect(order.indexOf("rows")).toBeGreaterThan(order.lastIndexOf("totals"));
 
-    // Every confirmed value with a place on a page is in exactly one unit; values with an open question are not, the
-    // random sample's either (confirmed, but withheld while they're re-typed blind), nor a cap's figures while its kind is
+    // Every confirmed value with a place on a page is in exactly one unit; values with an open question are not, nor a
+    // cap's figures while its kind is asked
     const open = new Set(withheldPaths(v));
     expect(open.has("/screenFail/cap/ratio")).toBe(true);
-    expect(v.review.some((i) => i.reason === "SAMPLE" && v.evidence.some((e) => e.path === i.path && e.status === "confirmed"))).toBe(true);
     const confirmed = v.evidence.filter((e) => (e.status === "confirmed" || e.status === "confirmed_by_math") && e.where[0] && !open.has(e.path)).map((e) => e.path);
     expect(units.flatMap((u) => u.cells.map((c) => c.path)).sort()).toEqual([...confirmed].sort());
 

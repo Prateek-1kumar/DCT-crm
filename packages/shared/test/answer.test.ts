@@ -7,11 +7,9 @@ import {
   diffRulebooks,
   followUps,
   isoDate,
-  pickRetype,
   proofreadMarks,
   type ReviewItem,
   type Rulebook,
-  SAMPLE,
   signOffRefusal,
   type ValueEvidence,
 } from "../src";
@@ -57,7 +55,7 @@ const ev = (path: string, status: ValueEvidence["status"], printed: string | nul
 function draft(item: (rb: Rulebook) => ReviewItem, printed: string | null = null, extra: Partial<AnswerDraft> = {}): AnswerDraft {
   const rb = rulebook();
   const i = item(rb);
-  return { version: 1, byHand: false, rulebook: rb, review: [i], evidence: i.path ? [ev(i.path, i.reason === SAMPLE ? "confirmed" : "conflict", printed)] : [], editors: [], ...extra };
+  return { version: 1, byHand: false, rulebook: rb, review: [i], evidence: i.path ? [ev(i.path, "conflict", printed)] : [], editors: [], ...extra };
 }
 const reported = (path: string, reason = "reported") => (rb: Rulebook) => askAbout(rb, [], path, "q", reason);
 const answer = (d: AnswerDraft, body: Record<string, unknown>) => answerQuestion(d, "q", { by: "Sam", ...body }, { isoDate, now: "2026-10-29T09:00:00.000Z" });
@@ -81,7 +79,6 @@ describe("answerQuestion", () => {
     ["nobody named is refused", () => draft(reported(NET)), [{ value: 45, by: "" }], { status: 400, message: "Say who is answering." }],
     ["a yes/no pick other than the value held differs", () => draft(reported(`${GRID}/visits/0/autopay`)), [{ optionId: "false" }], "differs"],
     ["…and the second pick needs a note saying where the page prints it", () => draft(reported(`${GRID}/visits/0/autopay`)), [{ optionId: "false" }, { optionId: "false" }], { status: 400, message: "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note." }],
-    ["a hand-typed value isn't re-typed by its typist", () => draft(reported(NET, "spot_check"), null, { byHand: true, editors: ["Sam"] }), [{ value: 45, by: " sam " }], { status: 409, message: "sam changed a value on this contract, so someone else has to re-type the rest." }],
   ];
   it.each(cases)("%s", (_, start, bodies, expected) => expect(outcomeOf(answers(start(), ...bodies))).toEqual(expected));
 
@@ -97,7 +94,7 @@ describe("answerQuestion", () => {
     const d = draft(reported(NET), "30");
     const r = answer(d, { value: 30, note: " page 4 " });
     expect([d.rulebook.payment.netDays.value, d.evidence[0]!.status, d.editors]).toEqual([30, "attested", ["Sam"]]);
-    expect(r).toMatchObject({ outcome: "matched", log: { by: "Sam", action: "review.answered", detail: { version: 1, itemId: "q", outcome: "matched", note: "page 4", path: NET, before: 45, after: 30, items: [] } }, incident: undefined });
+    expect(r).toMatchObject({ outcome: "matched", log: { by: "Sam", action: "review.answered", detail: { version: 1, itemId: "q", outcome: "matched", note: "page 4", path: NET, before: 45, after: 30, items: [] } } });
     expect(answer(d, { value: 30 })).toMatchObject({ log: { action: "review.changed" } }); // a different note: answered again
   });
 
@@ -115,16 +112,6 @@ describe("answerQuestion", () => {
     expect(d.rulebook.unclassified).toEqual([]);
   });
 
-  it("a random spot check kept different after looking again has missed: an incident, counted, and it stays missed", () => {
-    const cell = `${GRID}/procedures/0/cells/V1`;
-    const d = draft((rb) => askAbout(rb, [], cell, "q", SAMPLE), "100.00");
-    d.evidence.push(ev(`${GRID}/procedures/0/unitCents`, "confirmed"));
-    const r = answers(d, { value: 10100 }, { value: 10100, note: "The page prints $101" });
-    expect(r).toMatchObject({ outcome: "chosen", missed: true, incident: { count: 1, detail: { itemId: "q", path: cell, values: "budget grid prices", "to check": 1 } } });
-    expect(d.editors).toEqual(["Sam"]); // the re-typer changed a value: an editor
-    expect(answer(d, { value: 10000, by: "Ben" })).toMatchObject({ missed: false, incident: undefined });
-    expect(d.review[0]!.missed).toBe(true);
-  });
 });
 
 describe("followUps", () => {
@@ -147,7 +134,7 @@ describe("signOffRefusal", () => {
     ["approves a draft as seen, every question settled, every number backed, by someone else", ready, as, null],
     ["not an approved version", { ...ready, status: "signed" }, as, "Version 2 is signed and immutable; changes need a new version (amendment)"],
     ["not one changed since it was opened", ready, { ...as, asOf: "t0" }, "This contract changed since you opened it. Check it again."],
-    ["not typing still being done", { ...ready, byHand: true, review: [] }, as, "Typing isn't marked done yet, so nobody has re-typed the values."],
+    ["not typing still being done", { ...ready, byHand: true, review: [] }, as, "Typing isn't marked done yet. Mark it done when every value is typed."],
     ["not with a question left can't tell", { ...ready, review: [{ ...settledItem, outcome: "cant_tell" as const }] }, as, "1 question still needs an answer before this can be approved."],
     ["not with a number nobody backs", { ...ready, evidence: [ev("/x", "ungrounded"), ev("/y", "conflict")] }, as, "2 numbers aren't confirmed by the PDF, the contract's own totals or a person yet."],
     ["a number the contract's own totals confirm counts as backed", { ...ready, evidence: [ev("/x", "confirmed_by_math"), ev("/y", "attested")] }, as, null],
@@ -156,17 +143,6 @@ describe("signOffRefusal", () => {
   ])("%s", (_, v, opts, expected) => expect(signOffRefusal(v, opts)).toBe(expected));
 });
 
-describe("pickRetype", () => {
-  it("draws from every kind of typed value, at most 10, as the read's sample is drawn", () => {
-    const rb = rulebook();
-    const typed = ["/payment/netDays/value", `${GRID}/visits/0/autopay`, "/payment/requiredReferences/value", "/overhead/appliesTo/value", "/study/sponsor/value"];
-    const evidence = [...typed.map((p) => ev(p, "attested")), ev("/payment/netDaysFrom/value", "attested"), ev(`${GRID}/visits/0/totalCents`, "confirmed")];
-    const pinned = () => 1 - 2 ** -32; // no shuffling: in evidence order
-    expect(pickRetype(rb, evidence, pinned)).toEqual({ typed, sample: typed }); // an empty value and a read's value aren't re-typed
-    expect(pickRetype(rb, evidence, pinned, 2).sample).toEqual(typed.slice(0, 2));
-    expect(new Set(pickRetype(rb, evidence).sample)).toEqual(new Set(typed));
-  });
-});
 
 describe("diffRulebooks", () => {
   it("matches array items by identity and escapes keys in the path", () => {

@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
 import { type Browser, expect, type Page, test } from "@playwright/test";
 import type { RulebookVersionDto } from "../packages/shared/src/api";
-import { askAbout, SAMPLE } from "../packages/shared/src/questions";
 
 /**
  * Today's journey, against the real API (EXTRACTION_FAKE=1 fakes only the AI) and a production build of the web in real
- * mode: add a contract → reading → answering (a mismatch, an interpretation picked blind, the random sample) →
- * proofreading → approval → live → search and ⌘K → export → amendment → "This looks wrong" → a spot check that misses →
+ * mode: add a contract → reading → answering (a mismatch, an interpretation picked blind) →
+ * proofreading → approval → live → search and ⌘K → export → amendment → "This looks wrong" →
  * send back → alerts. The PDFs are synthetic, printed by the browser: a text PDF whose
  * numbers match the fake reading, so most of them are confirmed against the PDF's own text, as with a DocuSign copy.
  */
@@ -105,7 +104,7 @@ const ANSWERS: [RegExp, { type: string } | { pick: RegExp; note?: string }][] = 
   [/How does the contract say amounts are rounded/, { pick: /^Use printed amounts$/ }],
   // the screen-fail cap's limit, asked once its kind is known
   [/Screen fail › Cap › Limit/, { type: "7" }],
-  // the blind sample: whichever confirmed values it drew, typed as the page prints them
+  // values asked again, typed as the page prints them
   [/Blood draw › (?:V1|V2|Unit price)/, { type: "55.00" }],
   [/Screening › Procedure subtotal/, { type: "3,801.00" }],
   [/Screening › Overhead/, { type: "2,130.00" }],
@@ -241,18 +240,7 @@ test("add a contract → answer → proofread → approve → live → search �
     studyUrl = new URL(page.url()).pathname.replace(/\/reading$/, "");
   });
 
-  await test.step("ANSWERS can answer whatever the blind sample draws", async () => {
-    // The sample is drawn at random each run, from every value the PDF check confirmed: one that ANSWERS doesn't cover
-    // would fail only the runs that draw it. So every value it could draw is checked, on every run, by the question the
-    // API would ask about it (askAbout, as the API words it; checked against the questions this run did draw).
-    const v1: RulebookVersionDto = await (await request.get(`/api/v1${studyUrl}/versions/1`)).json();
-    const sampleQuestion = (path: string) => askAbout(v1.rulebook!, v1.evidence, path, `sample:${path}`, SAMPLE).question;
-    const drawn = v1.review.filter((i) => i.reason === SAMPLE);
-    expect(drawn.length).toBeGreaterThan(0);
-    for (const i of drawn) expect(sampleQuestion(i.path!)).toBe(i.question);
-    const confirmed = v1.evidence.filter((e) => e.status === "confirmed").map((e) => e.path);
-    expect(confirmed.length).toBeGreaterThanOrEqual(drawn.length);
-    expect(confirmed.map(sampleQuestion).filter((q) => !ANSWERS.some(([re]) => re.test(q)))).toEqual([]);
+  await test.step("start answering", async () => {
     await page.getByRole("link", { name: "Start answering" }).click();
     await page.waitForURL(/\/review/);
   });
@@ -327,8 +315,8 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.keyboard.press("ArrowRight");
     await expect(tabs.getByRole("tab", { name: "Budget grid" })).toHaveAttribute("aria-selected", "true");
     await expect(tabs.getByRole("tab", { name: "Budget grid" })).toBeFocused();
-    // The tab opens on the grid billing uses, the revised Exhibit A picked when answering. The blind sample is random, so
-    // the cell's evidence is whatever it is now: matched to the PDF, or typed by a person if the sample drew it.
+    // The tab opens on the grid billing uses, the revised Exhibit A picked when answering. The cell's evidence is whatever
+    // it is now: matched to the PDF, or typed by a person.
     const v1: { evidence: { path: string; status: string }[] } = await (await request.get(`/api/v1${studyUrl}/versions/1`)).json();
     const path = "/budgetGrids/1/procedures/0/cells/V1";
     const evidence = v1.evidence.find((e) => e.path === path)!.status === "confirmed" ? "Matches the PDF." : "Confirmed by a person.";
@@ -419,8 +407,7 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.getByRole("combobox", { name: /^Version/ }).selectOption("2");
     // On the draft, a value still waiting for its blind answer shows as such, not as missing.
     await expect(page.getByRole("button", { name: /^Payment Needs you/ })).toBeVisible();
-    // A number of the billed grid that nothing asks yet: the blind sample is random, and a value it drew is asked
-    // already, so it can't be reported.
+    // A number of the billed grid that nothing asks yet: a value asked already can't be reported.
     const v2: { review: { path: string | null; outcome: string | null }[] } = await (await request.get(`/api/v1${studyUrl}/versions/2`)).json();
     const asked = new Set(v2.review.flatMap((i) => (i.path && i.outcome === null ? [i.path] : [])));
     const free = ["procedures/0/cells/V1", "procedures/0/cells/V2", "procedures/0/unitCents", "visits/0/totalCents", "visits/1/procedureSubtotalCents", "visits/0/overheadCents"].map((p) => `/budgetGrids/1/${p}`).find((p) => !asked.has(p))!;
@@ -434,23 +421,10 @@ test("add a contract → answer → proofread → approve → live → search �
   });
 
   let sentBack = "";
-  await test.step("answer version 2 (a random spot check misses), then the approver sends one answer back", async () => {
+  await test.step("answer version 2, then the approver sends one answer back", async () => {
     await page.goto(`${studyUrl}/review`);
-    let missed = false;
-    await answerAll(page, async (q, id) => {
+    await answerAll(page, async (q) => {
       if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
-      if (!missed && id.startsWith("sample:")) {
-        // The sample misses: a value the PDF check confirmed, typed otherwise, and typed otherwise again, blind: nothing
-        // of what the check found is shown between the two.
-        await page.getByLabel("What the contract says").fill("1");
-        await send(page, "Save and next");
-        await expect(page.getByText(/^Look at the page again and type it once more\./)).toBeVisible();
-        await expect(page.getByRole("region", { name: "Question" }).getByRole("radio")).toHaveCount(0);
-        await page.getByLabel("What the contract says").fill("1");
-        await send(page, "Save and next");
-        missed = true;
-        return;
-      }
       if (/printed for "Total"/.test(q)) {
         // The value reported above, typed blind.
         await page.getByLabel("What the contract says").fill("15,943.00");
@@ -460,11 +434,7 @@ test("add a contract → answer → proofread → approve → live → search �
       await page.getByRole("button", { name: "Can't tell" }).click();
       await send(page, "Leave it for the approver");
     });
-    expect(missed).toBe(true);
     await page.goto(`${studyUrl}/approve`);
-    // approval says plainly what the miss leaves to check
-    await expect(page.getByRole("alert").filter({ hasText: "A random spot check found a wrong number" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Proofread them" })).toBeVisible();
     const answered = page.getByRole("checkbox", { name: /Send back: Within how many days must an invoice be paid/ });
     sentBack = (await answered.getAttribute("aria-label"))!.replace(/^Send back: /, "");
     await answered.check();
@@ -502,8 +472,8 @@ test("add a contract → answer → proofread → approve → live → search �
     const { items } = await (await request.get(`/api/v1/audit?studyId=${id}&limit=100`)).json();
     const actions: string[] = items.map((e: { action: string }) => e.action);
     expect(actions[0]).toBe("review.sent_back");
-    for (const a of ["study.created", "study.confirmed", "extraction.completed", "review.answered", "values.proofread", "version.signed", "version.exported", "number.reported", "sample.missed"]) expect(actions).toContain(a);
-    expect(actions.filter((a) => a === "sample.missed")).toHaveLength(1); // the incident, once
+    for (const a of ["study.created", "study.confirmed", "extraction.completed", "review.answered", "values.proofread", "version.signed", "version.exported", "number.reported"]) expect(actions).toContain(a);
+    expect(actions).not.toContain("sample.missed");
     expect(actions.filter((a) => a === "version.signed")).toHaveLength(1);
     await page.goto(`/audit?studyId=${id}`);
     await expect(page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();

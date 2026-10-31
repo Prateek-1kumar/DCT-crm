@@ -26,7 +26,7 @@ The only UI: Next.js 16 (App Router, `cacheComponents` with partial prerendering
 | `src/lib/acting-as.ts` · `notify.ts` | The picked name sent as `by` (no login); desktop notifications |
 | `src/components/ui.tsx` | Primitives: `Button` (variants and sizes), `Badge`, `Stepper`, `Dialog` and `Sheet` (native `<dialog>`), `errorText`, `ErrorNote`, `LoadError`, `PageTitle` |
 | `src/components/` | `Workspace` and `RulebookView` (the master and its drawer), `Rechecked` (live values the newest draft asks again), `PageViewer` and `SpotView` (contract pages and close-ups), `GridTable`, `Sidebar`, `Alerts`, `CommandPalette` (⌘K), `UploadDocs`, `ByHandForm` (a failed save marked on its own field; each visit's "paid automatically", each row's kind of line and "overhead added"; a yes/no or list nobody picked shows "Choose…", and is asked when typing is marked done) |
-| `src/app/studies/[id]/review/page.tsx` | Needs you. A spot check of the read that differed asks to type it once more, never showing what it's compared with; "Prospective only" opens a box for the amendment's own date |
+| `src/app/studies/[id]/review/page.tsx` | Needs you. "Prospective only" opens a box for the amendment's own date |
 | `next.config.ts` | CSP and security headers, the `/api` rewrite to `API_URL`, the sample flag, `distDir` for the e2e build |
 | `src/instrumentation-client.ts` | zod `jitless`, so the CSP needs no `eval` |
 

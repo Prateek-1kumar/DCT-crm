@@ -9,7 +9,7 @@ import { Person } from "./evidence";
 
 /** Raised when a contract moves into a step. questions_ready: into Needs you (reading finished, or a question sent it back
  * from approval) · ready_for_approval: nothing left to answer · sent_back: an approver reopened answers · couldnt_read: reading failed ·
- * sample_missed: a random spot check found a number the PDF check had confirmed wrong (an incident, ADR-001 §6). */
+ * sample_missed: no longer raised (the blind sample went, ADR-003); kept so alerts raised before it still read. */
 export const AlertKind = z.enum(["questions_ready", "ready_for_approval", "sent_back", "couldnt_read", "sample_missed"]);
 export type AlertKind = z.infer<typeof AlertKind>;
 

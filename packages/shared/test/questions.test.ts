@@ -3,16 +3,12 @@ import {
   blindDetail,
   calendarDay,
   dateField,
-  familyOf,
   interpretations,
   blindEvidence,
   mask,
-  pickSample,
   type ReviewItem,
   type Rulebook,
   RulebookVersionDto,
-  sampleMisses,
-  sampleMissWords,
   type ValueEvidence,
   ValueEvidence as ValueEvidenceSchema,
   withheldPaths,
@@ -108,13 +104,12 @@ describe("interpretations the clause states outright (ADR-002 §4)", () => {
   const paths = (rb: Rulebook, opts: Parameters<typeof interpretations>[1]) => interpretations(rb, opts).map((i) => i.path);
   const sure = (status: ValueEvidence["status"]) => [{ path: "/invoiceables/0/cap/n", status }];
 
-  it("an amount limit whose figure is confirmed from its quote isn't asked; its figure isn't withheld and joins the sample", () => {
+  it("an amount limit whose figure is confirmed from its quote isn't asked; its figure isn't withheld", () => {
     const rb = quoted();
     expect(paths(rb, { amendment: false })).toContain("/invoiceables/0/cap/kind"); // no evidence: asked, as before
     for (const status of ["confirmed", "confirmed_by_math"] as const) expect(paths(rb, { amendment: false, evidence: sure(status) })).not.toContain("/invoiceables/0/cap/kind");
     const review = interpretations(rb, { amendment: false, evidence: sure("confirmed") });
     expect(withheldPaths({ status: "draft", review, evidence: [] })).not.toEqual(expect.arrayContaining(["/invoiceables/0/cap/n"]));
-    expect(pickSample([{ path: "/invoiceables/0/cap/n", status: "confirmed", where: [], printed: null, note: null }], new Set())).toEqual(["/invoiceables/0/cap/n"]);
   });
 
   it("is still asked when the figure isn't confirmed, the read cites no quote, the term is ambiguous, or the kind needs more than a figure", () => {
@@ -194,46 +189,5 @@ describe("withheld while asked", () => {
   });
 });
 
+
 const ev = (path: string, status: ValueEvidence["status"] = "confirmed"): ValueEvidence => ({ path, status, where: [], printed: null, note: null });
-const cells = (n: number) => Array.from({ length: n }, (_, i) => ev(`/budgetGrids/0/procedures/${i}/cells/V1`));
-
-describe("the blind sample", () => {
-  const families = [...cells(500), ev("/budgetGrids/0/visits/0/totalCents"), ev("/budgetGrids/0/visits/1/totalCents"), ev("/siteFees/0/amountCents"), ev("/invoiceables/0/amountCents"), ev("/payment/netDays/value"), ev("/overhead/pct/value"), ev("/siteFees/0/dueDays")];
-
-  it("10 confirmed values, spread over the kinds of value instead of all grid cells", () => {
-    for (let k = 0; k < 20; k++) {
-      const picked = pickSample(families, new Set());
-      expect(new Set(picked).size).toBe(10);
-      const by = picked.map(familyOf);
-      for (const f of ["cells", "totals", "fees", "rules"] as const) expect(by.filter((x) => x === f).length, f).toBeGreaterThanOrEqual(2);
-    }
-  });
-
-  it("random (cryptographic): draws differ; all of them when there are fewer; never a value asked already or not confirmed", () => {
-    const draws = new Set(Array.from({ length: 10 }, () => pickSample(cells(500), new Set()).join()));
-    expect(draws.size).toBeGreaterThan(1);
-    const few = [ev("/payment/netDays/value"), ev("/siteFees/0/amountCents"), ev("/overhead/pct/value", "conflict"), ev("/holdback/pct", "attested")];
-    expect(pickSample(few, new Set(["/siteFees/0/amountCents"])).sort()).toEqual(["/payment/netDays/value"]);
-    expect(pickSample(few, new Set(), () => 0.5, 10)).toHaveLength(2);
-  });
-
-  it("a value the contract's own totals confirm is drawn like a PDF-confirmed one", () => {
-    const few = [ev("/payment/netDays/value", "confirmed_by_math"), ev("/siteFees/0/amountCents", "confirmed")];
-    expect(pickSample(few, new Set(), () => 0.5, 10).sort()).toEqual(["/payment/netDays/value", "/siteFees/0/amountCents"]);
-  });
-
-  it("a miss makes a value the contract's own totals confirm proofread too", () => {
-    const missed: ReviewItem = { id: "sample:x", kind: "confirm_value", reason: "SAMPLE", path: "/siteFees/0/amountCents", question: "", input: "money", options: [], where: [], blocking: true, answer: null, outcome: "chosen", missed: true } as unknown as ReviewItem;
-    const [m] = sampleMisses({ review: [missed], evidence: [ev("/siteFees/0/amountCents", "attested"), ev("/siteFees/1/amountCents", "confirmed_by_math")] });
-    expect(m!.left).toEqual(["/siteFees/1/amountCents"]);
-  });
-
-  it("a miss holds approval until every value of its kind is proofread or typed by a person", () => {
-    const missed: ReviewItem = { id: "sample:x", kind: "confirm_value", reason: "SAMPLE", path: "/siteFees/0/amountCents", question: "", input: "money", options: [], where: [], blocking: true, answer: null, outcome: "chosen", compare: null, sentBack: null, missed: true };
-    const evidence = [ev("/siteFees/0/amountCents", "attested"), ev("/siteFees/1/amountCents"), ev("/invoiceables/0/amountWithOverheadCents"), ev("/payment/netDays/value")];
-    const [m] = sampleMisses({ review: [missed], evidence, proofread: [{ path: "/siteFees/1/amountCents", by: "Sam", at: "" }] });
-    expect(m).toEqual({ family: "fees", label: "fee and invoiceable amounts", total: 3, left: ["/invoiceables/0/amountWithOverheadCents"] });
-    expect(sampleMissWords(m!)).toBe("A random spot check found a wrong number among the fee and invoiceable amounts, so each of them has to be proofread before approval: 1 of 3 still to check.");
-    expect(sampleMisses({ review: [{ ...missed, missed: undefined }], evidence })).toEqual([]);
-  });
-});

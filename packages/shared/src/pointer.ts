@@ -47,3 +47,6 @@ export const at = (root: unknown, path: string): unknown => {
     return undefined;
   }
 };
+
+/** One value, not an item or a section: what can be typed, reported or asked about. */
+export const leaf = (v: unknown) => v === null || typeof v !== "object" || (Array.isArray(v) && v.every((x) => x === null || typeof x !== "object"));

@@ -77,9 +77,6 @@ describe("H7: blind entry has no side doors", () => {
     await answer(studyId, problem.id, { optionId: "printed", note: "Query the total" });
     // the typed total doesn't add up in its own grid either: asked on the typed numbers (recheck), and settled
     await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
-    // the blind sample's values in its grid, re-typed
-    const stored = await storedVersion(built, studyId, 1);
-    for (const i of stored.review.filter((x) => x.reason === "SAMPLE" && x.path!.startsWith("/budgetGrids/0/"))) await answer(studyId, i.id, { value: at(stored.rulebook, i.path!) });
     expect((await version(studyId)).review.find((i) => i.id === problem.id)!.question).toMatch(/848900/); // nothing in its grid withheld now
 
     // "This looks wrong" on two values: one the earlier answer holds, one in the problem's grid.
@@ -161,23 +158,6 @@ describe("M5/M6: request sizes and shapes", () => {
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/procedures", value: [row, row], note: "x", by: "Avery" })).statusCode).toBe(200);
     const [last] = (await get(`/audit?studyId=${studyId}`)).json<AuditPage>().items;
     expect(last).toMatchObject({ action: "value.typed", by: "Avery", detail: { path: "/budgetGrids/0/procedures", items: 2 } });
-  });
-});
-
-describe("item 3: a blind re-type checks yes/no and fixed-list values too", () => {
-  it("samples them, and a different pick differs instead of overwriting", async () => {
-    const { studyId } = await newStudy(app, "pick", { scan: true });
-    fakeControls.failNext = 1;
-    await extract(app, studyId);
-    await post(`/studies/${studyId}/versions/by-hand`, { by: "Avery" });
-    const type = (p: string, value: unknown) => patch(`/studies/${studyId}/versions/1/values`, { path: p, value, note: "x", by: "Avery" });
-    const AUTOPAY = "/budgetGrids/0/visits/0/autopay";
-    const PAID = "/payment/visitPayment/value";
-    for (const [p, value] of [[AUTOPAY, false], [PAID, "invoice"], ["/payment/netDays/value", 45]] as const) expect((await type(p, value)).statusCode).toBe(200);
-    const v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).json<RulebookVersionDto>();
-    expect(v.review.filter((i) => i.reason === "spot_check").map((i) => i.path).sort()).toEqual([AUTOPAY, "/payment/netDays/value", PAID].sort());
-    expect(await answer(studyId, `spot:${AUTOPAY}`, { optionId: "true" })).toMatchObject({ outcome: "differs", compare: { typed: true, read: false } });
-    expect(await answer(studyId, `spot:${PAID}`, { optionId: "invoice" })).toMatchObject({ outcome: "matched" });
   });
 });
 

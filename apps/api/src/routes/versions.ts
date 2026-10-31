@@ -36,7 +36,7 @@ import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
-import { answer, askAbout, at, empty, hiddenPaths, leaf, sampling } from "../review.js";
+import { answer, askAbout, at, empty, hiddenPaths, leaf } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
 const versionNo = (v: unknown) => {
@@ -158,9 +158,8 @@ export const versionRoutes =
     );
 
     /**
-     * Typing is done (typingDone, @dct/shared, as the sample server): someone else re-types up to 10 randomly chosen
-     * typed values (all of them if fewer), blind. The contract's checks run on what was typed, as after a read, and
-     * everything nobody typed or picked (a placeholder of the blank form) is asked as a missing value.
+     * Typing is done (typingDone, @dct/shared, as the sample server): the contract's checks run on what was typed, as
+     * after a read, and everything nobody typed or picked (a placeholder of the blank form) is asked as a missing value.
      */
     app.post<P>("/studies/:id/versions/:v/by-hand/done", async (req, reply) => {
       const body = ByHandBody.safeParse(req.body);
@@ -168,7 +167,7 @@ export const versionRoutes =
       const port = await getExtraction();
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
-        const done = typingDone(row, { random: sampling.random, checks: (rb) => port.runContractChecks(rb) });
+        const done = typingDone(row, { checks: (rb) => port.runContractChecks(rb) });
         if ("refusal" in done) throw new HttpError(done.refusal.status, done.refusal.message);
         const [updated] = await tx.update(rulebookVersions).set({ review: done.review, anomalies: done.anomalies, updatedAt: touched(row.updatedAt) }).where(eq(rulebookVersions.id, row.id)).returning();
         await refreshStudyStatus(tx, row.studyId, body.data.by);
@@ -200,11 +199,6 @@ export const versionRoutes =
         await refreshStudyStatus(tx, row.studyId, by);
         await audit(tx, by, row.studyId, action, detail);
         for (const r of reopened) await audit(tx, by, row.studyId, r.action, r.detail);
-        // a sample miss, an incident: in the log and told to everyone
-        if (answered.incident) {
-          await audit(tx, by, row.studyId, "sample.missed", answered.incident.detail);
-          await raiseAlert(tx, { kind: "sample_missed", studyId: row.studyId, version: row.version, by, count: answered.incident.count });
-        }
         return versionDto(updated!);
       });
     });

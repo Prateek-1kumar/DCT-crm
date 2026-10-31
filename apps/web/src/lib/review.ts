@@ -19,10 +19,6 @@ export const KIND_LABEL: Record<ReviewItem["kind"], string> = {
 /** Why a question is here, in one line, without giving away the tool's reading. */
 export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<ReviewItem, "options">>): string {
   switch (i.reason) {
-    case "spot_check":
-      return "A random spot check. We pick a few numbers at random and ask a person to type them; it proves the checks are working.";
-    case "SAMPLE":
-      return "A random spot check. This number was already checked (against the PDF or the contract's own totals), but we pick a few at random for a person to type: it's how we prove the checks miss nothing. Find it on the page by the row and column the question names.";
     case "INTERPRETATION":
       return "How the contract words this decides how it's billed. Read the spot and pick what it means; we don't show our reading, so it can't steer you.";
     case "AMBIGUOUS_TERM":

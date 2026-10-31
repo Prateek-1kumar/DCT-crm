@@ -74,7 +74,6 @@ import {
   makeRulebook,
   meridianSpecs,
   mockChecks,
-  mockSampling,
   newContractSpecs,
   northwindSpecs,
   PEOPLE,
@@ -551,7 +550,7 @@ async function sha256Hex(file: File): Promise<string> {
 /**
  * POST .../review/:itemId, by the API's own rules (answerQuestion, @dct/shared): checked, written and logged the same,
  * then followed up the same: a grid's held-back totals asked on the typed numbers (the sample server's own checks), a
- * cap's limit once its kind is known. A sample miss is logged as an incident and alerted.
+ * cap's limit once its kind is known.
  */
 function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: unknown, at = now()): Res {
   if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; only a draft takes answers.`);
@@ -570,10 +569,6 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   st.updatedAt = at;
   log(d, r.log.by, st.id, r.log.action, r.log.detail, at);
   for (const x of reopened) log(d, r.log.by, st.id, x.action, x.detail, at);
-  if (r.incident) {
-    log(d, r.log.by, st.id, "sample.missed", r.incident.detail, at);
-    raiseAlert(d, { kind: "sample_missed", studyId: st.id, version: ver.version, by: r.log.by, count: r.incident.count, note: null, at });
-  }
   return ok(view(ver));
 }
 
@@ -776,19 +771,18 @@ function typeValue(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res
 }
 
 /**
- * POST .../by-hand/done, by the API's own rules (typingDone, @dct/shared): someone else re-types up to 10 typed values
- * drawn at random, blind; the checks (the sample server's own) run on what was typed; and everything nobody typed or
- * picked is asked as missing. Each question keeps its right answer on the "server side": a re-typed value's own.
+ * POST .../by-hand/done, by the API's own rules (typingDone, @dct/shared): the checks (the sample server's own) run on
+ * what was typed, and everything nobody typed or picked is asked as missing.
  */
 function finishByHand(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
   const parsed = ByHandBody.safeParse(raw);
   if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.byHand));
   const rb = ver.rulebook && upgradeRulebook(ver.rulebook);
-  const done = typingDone({ ...ver, rulebook: rb }, { random: mockSampling.random, checks: mockChecks });
+  const done = typingDone({ ...ver, rulebook: rb }, { checks: mockChecks });
   if ("refusal" in done) return err(done.refusal.status, done.refusal.message);
   ver.review = done.review;
   ver.anomalies = done.anomalies;
-  for (const i of done.review) d.secrets[`${ver.studyId}/${ver.version}/${i.id}`] = { truth: i.reason === "spot_check" && i.path ? getAt(rb, i.path) : undefined, lines: [] };
+  for (const i of done.review) d.secrets[`${ver.studyId}/${ver.version}/${i.id}`] = { truth: undefined, lines: [] };
   ver.updatedAt = touched(ver.updatedAt);
   st.updatedAt = now();
   log(d, parsed.data.by, st.id, "byhand.done", done.detail);

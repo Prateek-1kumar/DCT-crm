@@ -1,4 +1,4 @@
-import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type ReviewItem, type RulebookVersionDto, SAMPLE, settled, type StudyPage } from "@dct/shared";
+import { type AlertPage, type AuditPage, billedGrids, type DocumentDto, type ReviewItem, type RulebookVersionDto, settled, type StudyPage } from "@dct/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PDFDocument, StandardFonts } from "pdf-lib";
@@ -46,11 +46,6 @@ const setRulebook = async (studyId: string, change: (rb: NonNullable<RulebookVer
 const setStored = async (studyId: string, change: (row: { review: ReviewItem[]; anomalies: RulebookVersionDto["anomalies"] }) => object, v = 1) => {
   const row = await storedVersion(built, studyId, v);
   await built.ctx.db.update(rulebookVersions).set(change({ review: structuredClone(row.review), anomalies: structuredClone(row.anomalies) })).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.version, v)));
-};
-/** Re-types the blind sample's values in `grid` as the master holds them, so nothing in it is open any more. */
-const retypeSample = async (studyId: string, grid: string) => {
-  const row = await storedVersion(built, studyId, 1);
-  for (const i of row.review.filter((x) => x.reason === SAMPLE && x.path!.startsWith(grid) && !settled(x))) await answer(studyId, i.id, { value: at(row.rulebook, i.path!) });
 };
 
 const G1_V2 = "/budgetGrids/0/visits/1"; // prints 8,489.00, its parts add up to 8,488.00 (VISIT_TOTAL_MISMATCH)
@@ -132,7 +127,6 @@ describe("4. a total settled by 'the sum' whose part is corrected later", () => 
   it("is asked again, withheld until it is, and holds approval", async () => {
     const { studyId } = await newStudy(app, "stale");
     await extract(app, studyId);
-    await retypeSample(studyId, "/budgetGrids/0/");
     await answer(studyId, ARITH, { optionId: "sum", note: "Ask the sponsor which total" });
     expect((await post(`/studies/${studyId}/versions/1/report`, { path: `${G1_V2}/overheadCents`, note: "Overhead looks off", by: "Ben" })).statusCode).toBe(200);
     const reported = (await storedVersion(built, studyId, 1)).review.find((i) => i.reason === "reported")!.id;
@@ -141,22 +135,6 @@ describe("4. a total settled by 'the sum' whose part is corrected later", () => 
     const row = await storedVersion(built, studyId, 1);
     expect(row.review.find((i) => i.id === ARITH)).toMatchObject({ outcome: null, answer: null, asPrinted: 848900 });
     expect(at((await version(studyId)).rulebook, `${G1_V2}/totalCents`)).toBeNull();
-  });
-});
-
-describe("5. the blind sample shows nothing of the PDF check", () => {
-  it("its page, not the bound spot; a differing answer typed again blind; a second miss logged with no note asked", async () => {
-    const { studyId } = await newStudy(app, "sample");
-    await extract(app, studyId);
-    const id = "sample:/budgetGrids/0/procedures/0/cells/V1";
-    const row = await storedVersion(built, studyId, 1);
-    const ev = row.evidence.find((e) => e.path === "/budgetGrids/0/procedures/0/cells/V1")!;
-    expect(ev.where[0]!.box).not.toBeNull();
-    expect((await version(studyId)).review.find((i) => i.id === id)!.where).toEqual([{ ...ev.where[0]!, box: null }]);
-    expect(await answer(studyId, id, { value: 1 })).toMatchObject({ outcome: "differs", compare: null });
-    expect(JSON.stringify(await version(studyId))).not.toMatch(/"read":5500/);
-    expect(await answer(studyId, id, { value: 1 })).toMatchObject({ outcome: "chosen", missed: true });
-    expect((await get<AuditPage>(`/audit?studyId=${studyId}`)).items.filter((e) => e.action === "sample.missed")).toHaveLength(1);
   });
 });
 
@@ -262,7 +240,6 @@ describe("14. a typo after typing by hand is marked done", () => {
     const early = await post(`/studies/${studyId}/versions/1/report`, { path: "/payment/netDays/value", note: "typo", by: "Asha" });
     expect(early.json()).toMatchObject({ statusCode: 409, message: "Typing isn't marked done yet: change the value in the form instead." });
     await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" });
-    await answer(studyId, "spot:/payment/netDays/value", { value: 54, by: "Ben" });
     const key = randomUUID();
     const first = await post(`/studies/${studyId}/versions/1/report`, { path: "/payment/netDays/value", note: "I typed 54; it's 45", by: "Asha" }, key);
     expect(first.statusCode, first.body).toBe(200);
@@ -280,7 +257,6 @@ describe("14. a typo after typing by hand is marked done", () => {
     await post(`/studies/${studyId}/versions/by-hand`, { by: "Asha" });
     await patch(`/studies/${studyId}/versions/1/values`, { path: "/payment/netDays/value", value: 54, note: "x", by: "Asha" });
     await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" });
-    await answer(studyId, "spot:/payment/netDays/value", { value: 54, by: "Ben" });
     const before = await storedVersion(built, studyId, 1);
     await built.ctx.db.execute(
       sql.raw(`CREATE OR REPLACE FUNCTION test_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'number.reported' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`),
@@ -380,34 +356,6 @@ describe("C1. two grids for one arm that priced the same at the read", () => {
   });
 });
 
-describe("H1. the blind sample's final answer", () => {
-  it("can't be reset by “can't tell” or a send-back: the next wrong answer is a miss, each logged", async () => {
-    const { studyId } = await newStudy(app, "retyped");
-    await extract(app, studyId);
-    const first = "sample:/budgetGrids/0/procedures/0/cells/V1";
-    expect(await answer(studyId, first, { value: 1 })).toMatchObject({ outcome: "differs" });
-    expect(await answer(studyId, first, { cantTell: true })).toMatchObject({ outcome: "cant_tell", retyped: true });
-    expect(await answer(studyId, first, { value: 2 })).toMatchObject({ outcome: "chosen", missed: true });
-    const second = "sample:/budgetGrids/0/visits/0/totalCents";
-    await answer(studyId, second, { value: 1 });
-    expect((await post(`/studies/${studyId}/versions/1/send-back`, { itemIds: [second], note: "look again", by: "Ben" })).statusCode).toBe(200);
-    expect(await answer(studyId, second, { value: 2 })).toMatchObject({ outcome: "chosen", missed: true });
-    expect((await get<AuditPage>(`/audit?studyId=${studyId}`)).items.filter((e) => e.action === "sample.missed")).toHaveLength(2);
-  });
-});
-
-describe("M1. a sampled value's spot on the page", () => {
-  it("is its page only while it's withheld, as its question shows it", async () => {
-    const { studyId } = await newStudy(app, "spot");
-    await extract(app, studyId);
-    const v = await version(studyId);
-    const sampled = v.review.filter((i) => i.reason === SAMPLE).map((i) => i.path!);
-    expect(sampled.length).toBeGreaterThan(0);
-    for (const p of sampled) expect(v.evidence.find((e) => e.path === p)!.where.map((w) => w.box)).toEqual([null]);
-    expect((await storedVersion(built, studyId, 1)).evidence.find((e) => e.path === sampled[0])!.where[0]!.box).not.toBeNull();
-  });
-});
-
 describe("M2. 'prospective only' while the start date is asked", () => {
   it("withholds the amendment's own date, what a typed date is checked against", async () => {
     const { studyId } = await liveStudy(built, "dated");
@@ -420,29 +368,6 @@ describe("M2. 'prospective only' while the start date is asked", () => {
     const q = v.review.find((i) => i.path === "/appliesFrom/value")!;
     await answer(studyId, q.id, { optionId: "prospective", value: "2026-01-01" }, 2);
     expect((await version(studyId, 2)).rulebook!.documents.map((d) => d.date)).toContain("2026-03-15");
-  });
-});
-
-describe("M3. the log while a typed amount is re-typed blind", () => {
-  it("blanks it in the same fee's typed name", async () => {
-    const { studyId } = await newStudy(app, "fee-name", { scan: true });
-    fakeControls.failNext = 1;
-    await extract(app, studyId);
-    await post(`/studies/${studyId}/versions/by-hand`, { by: "Asha" });
-    const type = async (path: string, value: unknown) => expect((await patch(`/studies/${studyId}/versions/1/values`, { path, value, note: "x", by: "Asha" })).statusCode).toBe(200);
-    await type("/siteFees", [{ code: null, name: "", amountCents: null, trigger: "one_time", dueDays: null, prov: MANUAL }]);
-    // ten typed values for the pinned draw to re-type, the fee's amount among them; its name typed last, not drawn
-    for (const [path, value] of [
-      ["/siteFees/0/amountCents", 25000], ["/payment/netDays/value", 30], ["/budgetGrids/0/visits/0/name", "Screening"], ["/budgetGrids/0/visits/0/totalCents", 5500],
-      ["/budgetGrids/0/procedures/0/name", "Blood draw"], ["/budgetGrids/0/procedures/0/cells/V1", 5500], ["/budgetGrids/0/procedures/0/unitCents", 5500],
-      ["/budgetGrids/0/visits/0/autopay", true], ["/budgetGrids/0/procedures/0/overheadApplied", false], ["/budgetGrids/0/procedures/0/category", "procedure"],
-      ["/siteFees/0/name", "Archiving fee $250"],
-    ] as const)
-      await type(path, value);
-    await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" });
-    expect((await open(studyId)).map((i) => i.id)).toContain("spot:/siteFees/0/amountCents");
-    const entry = (await get<AuditPage>(`/audit?studyId=${studyId}&limit=100`)).items.find((e) => e.action === "value.typed" && e.detail.path === "/siteFees/0/name")!;
-    expect(entry.detail).toMatchObject({ value: "Site fee › Archiving fee ••• › Name", after: "Archiving fee •••" });
   });
 });
 

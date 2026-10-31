@@ -22,14 +22,12 @@ import {
   type PageBox,
   parseCents,
   parsePercent,
-  pickSample,
   provOf,
   rejectBlank,
   rejectTable,
   type ReviewItem,
   type Rulebook,
   type RulebookVersionDto,
-  SAMPLE,
   TABLE_CHECK,
   tableQuestions,
   type ValueEvidence,
@@ -182,8 +180,8 @@ export type Skipped = { path: string; before: unknown; after: unknown; by?: stri
 export type Carried = { from: number; live: Rulebook; skipped: Skipped[] };
 
 /**
- * Test seam: the randomness the blind sample is drawn with. Cryptographic, so nobody can foresee which values are
- * re-typed; tests pin it to see which ones are.
+ * Test seam: the randomness a table check's columns are drawn with. Cryptographic, so nobody can foresee which columns
+ * are asked; tests pin it to see which ones are.
  */
 export const sampling: { random: () => number } = { random: cryptoRandom };
 
@@ -246,7 +244,7 @@ export function reviewDraft(
   });
   const asked = new Set(values.flatMap((i) => (i.path ? [i.path] : [])));
   const checked = evidence.filter((e) => textPages.has(key(e.where[0])));
-  // a clause that states its figure outright, confirmed from the page, isn't asked: it joins the blind sample (interpretations, ADR-002 §4)
+  // a clause that states its figure outright, confirmed from the page, isn't asked (interpretations, ADR-002 §4)
   const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence });
   const asking = new Set(interp.map((i) => i.path!));
   const review = [
@@ -265,10 +263,6 @@ export function reviewDraft(
   for (const c of bound.blankChecks) if (c.after && !review.some((i) => i.table?.id === c.after)) rejectBlank({ review, evidence }, c.id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
   const lost = opts.carried ? uncarried(rb, evidence, opts.carried, new Set(review.flatMap((i) => (i.path ? [i.path] : []))), asking) : { items: [], warnings: [], skipped: [] };
   review.push(...lost.items);
-  // Drawn once, here, and kept as questions: a reload or a repeat never draws again. Never a value with a question (nor
-  // one held back with it): it's typed blind already.
-  const taken = new Set(review.flatMap((i) => (i.path ? [i.path, ...alsoWithheld(i.path)] : [])));
-  review.push(...pickSample(evidence, taken, sampling.random).map((p) => askAbout(rb, evidence, p, `sample:${p}`, SAMPLE)));
   return {
     evidence,
     review,

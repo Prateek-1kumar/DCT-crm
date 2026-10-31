@@ -161,7 +161,7 @@ describe("2–3. the governing grid is chosen per arm, and an amendment's new gr
 });
 
 describe("4. maker-checker", () => {
-  it("a re-typer whose answer changes a value is an editor, so they can't approve alone", async () => {
+  it("the typist and whoever answers are editors, so neither can approve", async () => {
     const { studyId } = await newStudy(app, "hand", { scan: true });
     fakeControls.failNext = 1;
     await extract(app, studyId);
@@ -171,19 +171,10 @@ describe("4. maker-checker", () => {
       expect((await patch(`/studies/${studyId}/versions/1/values`, { path: p, value, note: "x", by: "Asha" })).statusCode).toBe(200);
     expect((await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" })).statusCode).toBe(200);
     await patch("/settings", { makerChecker: true, by: "Morgan" });
-    // Bob re-types the cell as $99.00: it differs, and he keeps his own value
-    expect(await answer(studyId, `spot:${CELL}`, { value: 9900, by: "Bob" })).toMatchObject({ outcome: "differs" });
-    expect(await answer(studyId, `spot:${CELL}`, { value: 9900, note: "page 2, row 1", by: " Bob " })).toMatchObject({ outcome: "chosen" });
-    const stored = await storedVersion(built, studyId, 1);
-    expect([at(stored.rulebook, CELL), stored.editors]).toEqual([9900, ["Asha", "Bob"]]);
-    // having changed a value, he's no longer independent of what's on the contract: someone else re-types the rest
-    const next = stored.review.find((i) => i.outcome === null)!;
-    expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(next.id)}`, { value: 1, by: "Bob" })).json().message).toBe(
-      "Bob changed a value on this contract, so someone else has to re-type the rest.",
-    );
+    expect((await storedVersion(built, studyId, 1)).editors).toEqual(["Asha"]);
+    // Carol picks what nobody typed (how the visit is paid, the row's kind…): decisions, so she's an editor too
     await settleAll(built, studyId, 1, "Carol");
-    expect((await signOff(app, studyId, 1, { by: "bob" })).json().message).toBe("Maker-checker is on: bob answered questions on this contract, so someone else has to approve it.");
-    // Carol also picked what nobody typed (how the visit is paid, the row's kind…): decisions, so she's an editor too
+    expect((await signOff(app, studyId, 1, { by: "asha" })).json().message).toBe("Maker-checker is on: asha answered questions on this contract, so someone else has to approve it.");
     expect((await signOff(app, studyId, 1, { by: "Carol" })).statusCode).toBe(409);
     expect((await signOff(app, studyId, 1, { by: "Dana" })).statusCode).toBe(200);
   });
@@ -313,7 +304,7 @@ describe("7. an amendment being read, or one that couldn't be read, is never “
 });
 
 describe("8. a contract typed by hand is checked, and nothing nobody typed is approved", () => {
-  it("marking typing done runs the checks on what was typed; a total that doesn't add up is asked once its numbers are re-typed", async () => {
+  it("marking typing done runs the checks on what was typed; a total that doesn't add up is asked once what it waits for is answered", async () => {
     const { studyId } = await newStudy(app, "hand", { scan: true });
     fakeControls.failNext = 1;
     await extract(app, studyId);
@@ -323,9 +314,9 @@ describe("8. a contract typed by hand is checked, and nothing nobody typed is ap
     for (const [p, value] of [[`${v0}/procedureSubtotalCents`, 10000], [`${v0}/overheadCents`, 4000], [`${v0}/totalCents`, 15000]] as const)
       expect((await patch(`/studies/${studyId}/versions/1/values`, { path: p, value, note: "x", by: "Asha" })).statusCode).toBe(200);
     const done = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" })).json<RulebookVersionDto>();
-    // the re-typed numbers hold the check back (one flag per root cause); it was found, and is asked after. What nobody
-    // typed or picked is asked too: the row's kind holds the check back with them (it decides what the subtotal sums)
-    expect(done.review.map((i) => i.reason)).toEqual([...Array(3).fill("spot_check"), ...Array(7).fill("REQUIRED_MISSING")]);
+    // what nobody typed or picked is asked, and holds the check back: the row's kind decides what the subtotal sums. It was
+    // found, and is asked after
+    expect(done.review.map((i) => i.reason)).toEqual(Array(7).fill("REQUIRED_MISSING"));
     expect(done.review.filter((i) => i.reason === "REQUIRED_MISSING").map((i) => i.path).sort()).toEqual([
       "/budgetGrids/0/procedures/0/category", "/budgetGrids/0/procedures/0/overheadApplied", `${v0}/autopay`, "/overhead/appliesTo/value", "/payment/frequency/value", "/payment/visitPayment/value", "/rounding/value",
     ]);

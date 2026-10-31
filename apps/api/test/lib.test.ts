@@ -133,7 +133,7 @@ describe("scan pages", () => {
       ...["totalCents", "procedureSubtotalCents", "nonProcedureCents", "overheadCents"].map((f) => `/budgetGrids/0/visits/0/${f}`),
     ]);
     expect(pdfCheck).toBeNull();
-    expect(review.filter((i) => i.reason !== "SAMPLE").map((i) => `${i.reason} ${i.path ?? i.where[0]!.page}`)).toEqual([
+    expect(review.map((i) => `${i.reason} ${i.path ?? i.where[0]!.page}`)).toEqual([
       "SCAN_VALUE /budgetGrids/0/procedures/0/cells/V2",
       "SCAN_VALUE /budgetGrids/0/procedures/2/cells/V1",
       "SCAN_VALUE /budgetGrids/0/procedures/2/unitCents",
@@ -143,8 +143,6 @@ describe("scan pages", () => {
       ...["/overhead/appliesTo/value", "/payment/visitPayment/value", "/siteFees/0/trigger", "/rounding/value"].map((p) => `INTERPRETATION ${p}`),
       "SCAN_PAGE 1",
     ]);
-    // fewer than 10 values confirmed (here by the totals): every one of them re-typed blind
-    expect(review.filter((i) => i.reason === "SAMPLE").map((i) => i.path).sort()).toEqual(evidence.filter((e) => e.status === "confirmed").map((e) => e.path).sort());
   });
 });
 
