@@ -351,7 +351,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
       if (!filled.length) throw new Error(`version ${version} is no longer being read`);
       await refreshStudyStatus(tx, studyId);
       if (carriedDetail) await audit(tx, "system", studyId, CARRIED, carriedDetail);
-      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.warnings?.length ? { warnings: out.warnings.map((w) => w.text) } : {}), ...(checked.excluded.length ? { excluded: checked.excluded } : {}), ...(checked.solver && checked.sweep ? { solver: solverCounts(checked.solver), sweep: checked.sweep } : {}) });
+      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.gridsFromText ? { gridsFromText: out.gridsFromText } : {}), ...(out.warnings?.length ? { warnings: out.warnings.map((w) => w.text) } : {}), ...(checked.excluded.length ? { excluded: checked.excluded } : {}), ...(checked.solver && checked.sweep ? { solver: solverCounts(checked.solver), sweep: checked.sweep } : {}) });
       await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null, errorDetail: null });
     });
   } catch (err) {

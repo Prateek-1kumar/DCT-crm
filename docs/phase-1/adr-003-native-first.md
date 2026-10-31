@@ -1,6 +1,6 @@
 # ADR-003: Native first, show our reading, ask only what the contract can't settle
 
-**Status:** Accepted by the owner (Prateek), 2026-11-01. Built in the stages of §4: **C1, C2, C3 and P1 built** (2026-11-01; C3 removed the row bands, and leaves the token map to P4, where the vision grid read it belongs to goes); the rest not yet, and until a stage lands the code enforces what it enforces today. **Supersedes:** ADR-001 §6's blind sample and blind entry (I6's "picked blind"), and ADR-002 §4's floor "the blind sample of 10 stays".
+**Status:** Accepted by the owner (Prateek), 2026-11-01. Built in the stages of §4: **C1, C2, C3, P1 and P2's grid reader built** (2026-11-01; P2's native gate on the signed COPD: 68/68 rows, 593/593 cells, 16/16 visit totals, the per-patient total, all 117 identities closing, 727/727 grid values confirmed by the binder, 0 grid questions, 369/369 planted money errors caught; the spreadsheet check is still to do; C3 removed the row bands, and leaves the token map to P4, where the vision grid read it belongs to goes); the rest not yet, and until a stage lands the code enforces what it enforces today. **Supersedes:** ADR-001 §6's blind sample and blind entry (I6's "picked blind"), and ADR-002 §4's floor "the blind sample of 10 stays".
 
 ## 1. What we measured (2026-11-01, no AI spend)
 
@@ -37,7 +37,7 @@
 | C2 | Show our reading: remove withholding; each question shows our reading and recommendation; accept or correct | same |
 | C3 | Remove questions with one possible answer (they become notices), and the off-by-default experiments superseded by §3 (row bands, token map) | same |
 | P1 ✅ | Intake: detect printed copies and ask for the signed original; leave out long manuals with no amounts (a lab manual); say what a spreadsheet or Word file is and what to upload. Reading the budget spreadsheet moves to P2, where it's checked against the signed PDF: accepting a file the app then ignores would mislead | same, plus a printed copy is detected on all four test contracts (done 2026-11-01, offline: all four flagged; the client's signed work order taken as native text; both lab manuals, 348 and 204 pages with no amounts, left out) |
-| P2 | Grid reader by code on native PDFs; unit-counting quantity identity; the budget spreadsheet accepted beside the signed PDF and checked against it cell by cell | COPD native: every grid cell confirmed with 0 questions about grid values, offline |
+| P2 (grids ✅; spreadsheet to do) | Grid reader by code on native PDFs; unit-counting quantity identity; the budget spreadsheet accepted beside the signed PDF and checked against it cell by cell | COPD native: every grid cell confirmed with 0 questions about grid values, offline |
 | P3 | The same reader on OCR words for scans; the OCR returns the ruled lines it already finds | on new scanned test contracts (the four old ones were deleted, see below): 0 wrong confirmed, every planted error caught (column shifts included), questions per contract down |
 | P4 | Retire what P2–P3 make dead: held tables and their column picks, blank-cell picks, the vision grid read | same |
 

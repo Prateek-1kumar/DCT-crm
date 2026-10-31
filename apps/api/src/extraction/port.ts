@@ -21,6 +21,8 @@ export type ExtractionOutput = {
   /** Where the grid read says each value was printed (a token of the page's text or OCR), and the amounts it called no fee: claims `bindEvidence` and the sweep check against the page (ADR-002 PR 3). */
   anchors?: Anchor[];
   nonFee?: NonFee[];
+  /** How many budget grids were read by code from the PDF's own text, their arithmetic closed (ADR-003 P2). */
+  gridsFromText?: number;
 };
 
 export type ExtractionNote = {

@@ -18,7 +18,8 @@ export type SourceRef = z.infer<typeof SourceRef>;
 export const Provenance = z.object({
   source: SourceRef.nullable(),
   confidence: z.number().min(0).max(1),
-  method: z.enum(["ai", "manual", "derived"]),
+  /** text: read by code from the PDF's own text, no model (ADR-003 P2). */
+  method: z.enum(["ai", "manual", "derived", "text"]),
   /** Result of the second, independent AI read. */
   crossCheck: z.enum(["agree", "disagree", "not_checked"]),
   /** Term depends on a document we don't have (e.g. missing master agreement). */

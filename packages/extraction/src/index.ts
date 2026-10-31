@@ -13,3 +13,4 @@ export { gateSweep, type SweepCtx, type SweepReport } from "./sweep";
 /** PNG of one page (1-based), for the page viewer. Rejects bad page numbers; DPI and pixel size are capped (RENDER_LIMITS). */
 export const renderPage = (pdfPath: string, page: number, dpi = 150): Promise<Buffer> => renderPng(pdfPath, page, { dpi });
 export { solveGrids, type SolverMode, type SolverOptions, type SolverReport, type IdentityKind } from "./solver";
+export { readTextGrids, type TextGrid } from "./gridtext";

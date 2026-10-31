@@ -1,4 +1,4 @@
-import { type DocumentKind, isExcludedPage, Rulebook } from "@dct/shared";
+import { type BudgetGrid, type DocumentKind, isExcludedPage, Rulebook } from "@dct/shared";
 import type { ZodType } from "zod";
 import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
@@ -7,6 +7,7 @@ import { type AiGrid, AiGrids, AiGridsAnchored, AiIdentify, AiPages, type AiTerm
 import type { Anchor, PrintedRow } from "./binder";
 import { dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout, uprightFrame } from "./render";
 import { amounts, type TextPage, bankRects, KEYWORDS, readTextLayer } from "./textlayer";
+import { readTextGrids, type TextGrid } from "./gridtext";
 import { dropUnknownTokens, parseTokenId, tokensFor } from "./tokens";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
@@ -28,6 +29,8 @@ export type ExtractionOutput = {
   nonFee?: NonFee[];
   /** What the grid read says each row prints as its quantity and its own total (grid and procedure are indexes into the rulebook); for `bindEvidence` to check against the scan. Only rows that gave one. */
   printedRows?: PrintedRow[];
+  /** ADR-003 P2: how many budget grids were read by code from the PDF's own text (their arithmetic closed), not by a model. */
+  gridsFromText?: number;
 };
 
 /**
@@ -293,6 +296,18 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   }
   // Tile layout is computed and charged to the budgets before any pixmap is allocated.
   const gridImages: Image[][] = [];
+  // ADR-003 P2: a native PDF's grids read by code from its own text. One whose arithmetic closes (gridtext.ts) replaces the
+  // model's read of its pages, and no image of them is sent; a grid page it doesn't cover whole keeps the model's read,
+  // and a text grid reaching into such a page is dropped, so no grid is read twice.
+  const keyOf = (x: { source: { documentId: string; page: number } | null }) => `${x.source!.documentId}#${x.source!.page}`;
+  const pagesOf = (t: TextGrid) => new Set([t.grid.prov, ...t.grid.visits.map((v) => v.prov), ...t.grid.procedures.map((q) => q.prov), ...t.grid.perPatientTotals.map((q) => q.prov)].map(keyOf));
+  let textGrids = layers.flatMap((l) => (l[0] ? readTextGrids(l, l[0].documentId) : [])).filter((t) => !t.failed.length);
+  const covered = new Set(textGrids.flatMap((t) => [...pagesOf(t)]));
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const keys = groups[i]!.map((p) => `${p.documentId}#${p.page}`);
+    if (keys.every((k) => covered.has(k))) groups.splice(i, 1);
+    else textGrids = textGrids.filter((t) => !keys.some((k) => pagesOf(t).has(k)));
+  }
   for (const g of groups) {
     const imgs: Image[] = [];
     for (const p of g) {
@@ -374,7 +389,7 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
       return res;
     });
     const [terms, grids] = await Promise.all([termsP, gridsP]);
-    return assemble(terms, grids.flatMap((r) => r.grids), documents, grids.flatMap((r) => r.nonFee ?? []));
+    return assemble(terms, grids.flatMap((r) => r.grids), documents, grids.flatMap((r) => r.nonFee ?? []), textGrids.map((t) => t.grid));
   };
 
   const [primary, cross] = await Promise.all([
@@ -418,11 +433,12 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
     warnings,
     ...(CONFIG.tokenMap ? { anchors: primary.anchors, nonFee: primary.nonFee } : {}),
     ...(primary.printedRows.length ? { printedRows: primary.printedRows } : {}),
+    gridsFromText: textGrids.length,
   };
 }
 
 /** Merge one provider's term + grid reads into a Rulebook that passes Rulebook.parse. */
-function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDoc[], marked: NonNullable<AiGridsAnchored["nonFee"]> = []): { rulebook: Rulebook; notes: ExtractionNote[]; anchors: Anchor[]; printedRows: PrintedRow[]; nonFee: NonFee[] } {
+function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDoc[], marked: NonNullable<AiGridsAnchored["nonFee"]> = [], fromText: BudgetGrid[] = []): { rulebook: Rulebook; notes: ExtractionNote[]; anchors: Anchor[]; printedRows: PrintedRow[]; nonFee: NonFee[] } {
   const { notes, ...t } = terms;
   const documents = docs.map((d) => {
     const m = t.documents.find((x) => x.id === d.id);
@@ -432,11 +448,15 @@ function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDo
     schemaVersion: 1,
     ...t,
     documents,
-    budgetGrids: grids.map(({ visitTokens: _v, ...g }, i) => ({
-      ...g,
-      id: `g${i + 1}`,
-      procedures: g.procedures.map(({ printedQty: _q, printedRowTotalCents: _t, ...p }) => ({ ...p, cells: Object.fromEntries(p.cells.map((c) => [c.visit, c.value])) })),
-    })),
+    budgetGrids: [
+      ...grids.map(({ visitTokens: _v, ...g }, i) => ({
+        ...g,
+        id: `g${i + 1}`,
+        procedures: g.procedures.map(({ printedQty: _q, printedRowTotalCents: _t, ...p }) => ({ ...p, cells: Object.fromEntries(p.cells.map((c) => [c.visit, c.value])) })),
+      })),
+      // read by code from the PDF's own text (ADR-003 P2): after the model's grids, so their indexes (anchors, printedRows) hold
+      ...fromText.map((g, i) => ({ ...g, id: `t${i + 1}` })),
+    ],
     governingGridId: null,
   };
   const ids = new Set(docs.map((d) => d.id));
@@ -488,7 +508,8 @@ function sanitize(v: unknown, ids: Set<string>, onlyId: string | null): void {
     else sanitize(x, ids, onlyId);
   }
   if ("method" in o && "crossCheck" in o && "confidence" in o) {
-    o.method = "ai";
+    // a model's provenance never carries a method (model-schema.ts sets "ai"): "text" is the code read's own (gridtext.ts)
+    o.method = o.method === "text" ? "text" : "ai";
     o.crossCheck = "not_checked";
     const src = o.source as { documentId: string; quote?: string } | null;
     if (src && !ids.has(src.documentId)) {

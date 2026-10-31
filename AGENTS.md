@@ -61,6 +61,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks f
 |---|---|---|
 | API (vitest, real Postgres, `fastify.inject`, fake AI; the `migrations` suite runs `db:check`) | `pnpm --filter @dct/api test` | Postgres; database `dct_finance_test` (`TEST_DATABASE_URL` overrides it; global setup and `testApp` refuse a database whose name doesn't end in `_test`) |
 | Shared, extraction, web units | `pnpm --filter @dct/shared test`, `pnpm --filter @dct/extraction test`, `pnpm --filter web test` | the local OCR for extraction (`pnpm run setup`); the AI is mocked |
+| The native gate (ADR-003 P2): grids read by code, grid questions (must be 0), planted money errors caught (must be all) | `pnpm --filter @dct/extraction native` | `data/` (the signed native contract and its answer key); no AI |
 | Everything above | `pnpm test` | Postgres |
 | Browser journey (Playwright, production builds, fake AI). Before answering, a step fails if its answers don't cover every value the random sample could draw | `pnpm e2e` | Postgres, Google Chrome, ports 3301 / 4301 free |
 | Types | `pnpm -r typecheck` | — |

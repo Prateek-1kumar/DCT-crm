@@ -16,6 +16,7 @@
     "test": "vitest run",
     "eval": "tsx scripts/eval.ts",
     "score": "tsx scripts/eval.ts --score-only",
+    "native": "tsx scripts/native-eval.ts",
     "probe": "tsx scripts/probe.ts"
   },
   "dependencies": {
