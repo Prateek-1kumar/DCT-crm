@@ -22,7 +22,7 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
     case "spot_check":
       return "A random spot check. We pick a few numbers at random and ask a person to type them; it proves the checks are working.";
     case "SAMPLE":
-      return "A random spot check. This number already matched the PDF, but we pick a few at random for a person to type: it's how we prove the checks miss nothing. Find it on the page by the row and column the question names.";
+      return "A random spot check. This number was already checked (against the PDF or the contract's own totals), but we pick a few at random for a person to type: it's how we prove the checks miss nothing. Find it on the page by the row and column the question names.";
     case "INTERPRETATION":
       return "How the contract words this decides how it's billed. Read the spot and pick what it means; we don't show our reading, so it can't steer you.";
     case "AMBIGUOUS_TERM":
@@ -162,7 +162,7 @@ export const stageLabel = (s: StageState) =>
 
 export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
   if (!pdfCheck)
-    return "This PDF is a scan: numbers its own totals confirm are checked automatically, and the rest come to you to confirm.";
+    return "This PDF is a scan, and none of its numbers could be checked against what's printed, so they come to you to confirm.";
   const n = new Intl.NumberFormat("en-US");
   return `${n.format(pdfCheck.matched)} of ${n.format(pdfCheck.values)} numbers match the contract PDF`;
 }

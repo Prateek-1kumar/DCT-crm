@@ -191,7 +191,7 @@ export function DocList({ docs, onChange, onRemove }: { docs: DocumentDto[]; onC
             {scan && (
               <p className="flex items-start gap-2.5 border-t border-line bg-sunken px-4 py-3 text-small text-ink-2">
                 <Info className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={2} />
-                <span>A scanned PDF: numbers its own totals confirm are checked automatically, and the rest come to you to confirm.</span>
+                <span>A scanned PDF: we read it on this computer and check every number against what&apos;s printed; any we can&apos;t confirm come to you.</span>
               </p>
             )}
           </li>

@@ -1,5 +1,6 @@
 /**
  * pnpm --filter @dct/api ocr-eval    the scan gate (ADR-001 addendum 2026-10-29), no AI calls
+ * OCR_EVAL_SET=heldout pnpm --filter @dct/api ocr-eval    the same on the unseen contracts in data/heldout
  *
  * Binds the saved reads of the 4 scanned contracts (data/extractions) to our own OCR of their pages and scores the
  * result against the answer keys (data/golden):
@@ -9,9 +10,12 @@
  *   rows' contents exchanged (rowSwap), a whole block of rows with held cells placed one row down (rowShift), and the two cost
  *   columns read the wrong way round (costColumnSwap: an item's price before overhead and with it exchanged, a unit price read
  *   from the column with overhead), and a visit's overhead, subtotal, non-procedure amount or total taken from the visit next
- *   door (summaryRowShift); each must
+ *   door (summaryRowShift), and every money value 100x or 1/100 (decimalShift, the missing-point candidate rule); each must
  *   come out unconfirmed (a value that bills the same amount as before isn't an error).
  *   The gate: all caught. A copy the page itself prints in that visit's cell is the read's miss, counted apart.
+ * - ADR-002 PR 2: reviewDraft runs the arithmetic referee and the sweep gate, in the mode OCR_EVAL_SOLVER=guide|strict (default
+ *   strict, as the app); `confirmed_by_math` counts as confirmed in every gate, and per contract it prints the values upgraded by math (by their
+ *   earlier status), the sweep spans dropped by reason, and the identities checked / passed / failed (`pr2`).
  * - questions per contract, today (no OCR) and with OCR, by reason.
  * - held values (every check passed, a person still confirms their table's columns): counted as confirmed in every gate above,
  *   since the worst case is that the person confirms the mapping. Also reported: table checks, the share confirmed with
@@ -22,16 +26,25 @@
  * beside each PDF after the first run. Repo root = DCT_ROOT, else three levels above this file. Prints counts only;
  * never contract text or amounts.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bindEvidence, norm, readTextLayer, reviewFromEvidence, runContractChecks, sameName, sharesWord } from "@dct/extraction";
+import { bindEvidence, gateSweep, norm, readTextLayer, reviewFromEvidence, runContractChecks, sameName, sharesWord, solveGrids, type SolverMode } from "@dct/extraction";
 import { Rulebook, type ValueEvidence } from "@dct/shared";
-import { reviewDraft } from "../src/review.js";
+import { reviewDraft, solve } from "../src/review.js";
 
 const root = process.env.DCT_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const CONTRACTS = { copd: "COPD", hcwc: "HCWC", mcallen: "McAllen", shah: "Shah" } as const;
-const port = { bindEvidence, reviewFromEvidence };
+const port = { bindEvidence, reviewFromEvidence, solveGrids, gateSweep };
+// The solver's mode, as EXTRACTION_SOLVER sets it in the app (ADR-002 PR 2): every number below is what a read would do in that mode.
+const mode: SolverMode = process.env.OCR_EVAL_SOLVER === "guide" ? "guide" : "strict";
+// OCR_EVAL_ROUNDING=1: the solver's rounding-aware addition (off in the app until the senior engineer approves it)
+const rounding = process.env.OCR_EVAL_ROUNDING === "1";
+// What reviewDraft makes of a binding: the binder's evidence, then the solver (its upgrades that cite no page undone, as in the app).
+const piped = (m: Rulebook, pg: Parameters<typeof bindEvidence>[1]) => {
+  const b = bindEvidence(m, pg);
+  return solve(solveGrids, m, b.evidence, mode, b.rows, rounding, new Set(pg.filter((p) => p.source === "ocr").map((p) => `${p.documentId}#${p.page}`))).evidence;
+};
 
 const keys = (path: string) => path.split("/").slice(1).map((k) => k.replace(/~1/g, "/").replace(/~0/g, "~"));
 const ptr = (k: string) => k.replace(/~/g, "~0").replace(/\//g, "~1");
@@ -146,30 +159,38 @@ function oneDigit(rb: Rulebook, p: string, v: number | string, look: boolean): n
 
 // A held value (every check passed, a person still has to confirm its table's columns) counts as confirmed here: the worst
 // case is that the person confirms the mapping, so a planted error it lets through is a failure of the gate.
-const sure = (e: ValueEvidence) => e.status === "confirmed" || !!e.held;
+// `confirmed_by_math` counts as confirmed too: a planted error the arithmetic now confirms is a failure to report.
+const sure = (e: ValueEvidence) => e.status === "confirmed" || e.status === "confirmed_by_math" || !!e.held;
 const confirmedIn = (ev: ValueEvidence[]) => new Set(ev.filter(sure).map((e) => e.path));
 
-const files = readdirSync(join(root, "data/contracts")).filter((f) => f.endsWith(".pdf"));
+// OCR_EVAL_SET=heldout: the unseen contracts in data/heldout (<name>.pdf, its read in extractions/<name>.json), text PDFs
+// too; scored against a key only where data/golden has one, so "wrong confirmed" there covers keyed contracts only.
+const heldout = process.env.OCR_EVAL_SET === "heldout";
+const setDir = join(root, heldout ? "data/heldout" : "data/contracts");
+const readsDir = heldout ? join(setDir, "extractions") : join(root, "data/extractions");
+const set_ = heldout ? Object.fromEntries(readdirSync(readsDir).filter((f) => f.endsWith(".json")).map((f) => [f.slice(0, -5), f.slice(0, -5)])) : CONTRACTS;
+const files = readdirSync(setDir).filter((f) => f.endsWith(".pdf"));
 const report: Record<string, unknown> = {};
 const seconds: number[] = [];
-for (const [name, label] of Object.entries(CONTRACTS)) {
-  const read = JSON.parse(readFileSync(join(root, "data/extractions", `${name}.json`), "utf8")) as { rulebook: unknown };
+for (const [name, label] of Object.entries(set_)) {
+  const read = JSON.parse(readFileSync(join(readsDir, `${name}.json`), "utf8")) as { rulebook: unknown };
   const rb = Rulebook.parse(read.rulebook);
-  const golden = JSON.parse(readFileSync(join(root, "data/golden", `${name}.json`), "utf8")) as Golden;
+  const goldenFile = join(root, "data/golden", `${name}.json`);
+  const golden = heldout && !existsSync(goldenFile) ? null : (JSON.parse(readFileSync(goldenFile, "utf8")) as Golden);
   const docId = rb.documents[0]!.id;
-  const pdf = join(root, "data/contracts", files.find((f) => f.includes(label))!);
+  const pdf = join(setDir, files.find((f) => f.includes(label))!);
   const docs = [{ id: docId, filename: "contract.pdf" }];
   const scan = await readTextLayer(pdf, docId);
   const t0 = Date.now();
   const pages = await readTextLayer(pdf, docId, { ocr: true });
   const ocred = pages.filter((p) => p.source === "ocr").length;
-  if (!ocred) throw new Error("The OCR didn't run: install it with pnpm run setup (packages/extraction/ocr/setup.sh)");
-  seconds.push((Date.now() - t0) / 1000 / ocred);
+  if (!ocred && pages.some((p) => p.source === "image_only")) throw new Error("The OCR didn't run: install it with pnpm run setup (packages/extraction/ocr/setup.sh)");
+  if (ocred) seconds.push((Date.now() - t0) / 1000 / ocred);
   const anomalies = runContractChecks(rb);
-  const today = reviewDraft(port, rb, anomalies, scan, docs);
-  const withOcr = reviewDraft(port, rb, anomalies, pages, docs);
+  const today = reviewDraft(port, rb, anomalies, scan, docs, { solver: mode, rounding });
+  const withOcr = reviewDraft(port, rb, anomalies, pages, docs, { solver: mode, rounding });
 
-  const key = keyed(rb, golden);
+  const key = golden ? keyed(rb, golden) : new Map<string, number | string>();
   const final = new Map(withOcr.evidence.map((e) => [e.path, sure(e) ? "confirmed" : e.status]));
   let wrongConfirmed = 0;
   let aiWrong = 0;
@@ -182,9 +203,9 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
 
   // planted errors, bound against the OCR alone (the totals can't confirm a changed value: they no longer add up)
   const base = bindEvidence(rb, pages);
-  const confirmed = confirmedIn(base.evidence);
+  const confirmed = confirmedIn(piped(rb, pages));
   const heldPaths = new Set(base.evidence.filter((e) => e.held).map((e) => e.path));
-  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift" | "costColumnSwap" | "summaryRowShift", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0], costColumnSwap: [0, 0], summaryRowShift: [0, 0] };
+  const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift" | "costColumnSwap" | "summaryRowShift" | "decimalShift", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0], costColumnSwap: [0, 0], summaryRowShift: [0, 0], decimalShift: [0, 0] };
   for (const kind of ["digit", "lookalike"] as const)
     for (let round = 0; round < 3; round++) {
       const m = structuredClone(rb);
@@ -195,10 +216,32 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
         const w = oneDigit(rb, p, v, kind === "lookalike");
         if (w !== null && w !== v) (set(m, p, w), changed.push(p));
       }
-      const after = confirmedIn(bindEvidence(m, pages).evidence);
+      const after = confirmedIn(piped(m, pages));
       planted[kind][0] += changed.length;
       planted[kind][1] += changed.filter((p) => !after.has(p)).length;
     }
+  // the decimal point lost or gained: every confirmed money value times 100, and (where it stays whole cents) divided by 100. The
+  // missing-point candidate rule reads "4500" as 45.00, so a value read 100x too large can match its own token. A leak is listed by
+  // the shape of what the page prints there (digits as 9, never an amount) and the status it came out with.
+  const leakShapes: string[] = [];
+  // Two rounds a direction, every other value each time: every value is tried once, and its neighbours stay as read. (Changing
+  // every value at once scales the whole table by 100, which any sum agrees with and no reader would produce.)
+  for (const [dir, half] of [["up", 0], ["up", 1], ["down", 0], ["down", 1]] as const) {
+    const m = structuredClone(rb);
+    const changed: string[] = [];
+    let n = 0;
+    for (const p of confirmed) {
+      const v = get(rb, p);
+      if (typeof v !== "number" || !isCents(rb, p) || v === 0 || (dir === "down" && v % 100 !== 0) || n++ % 2 !== half) continue;
+      set(m, p, dir === "up" ? v * 100 : v / 100);
+      changed.push(p);
+    }
+    const out = piped(m, pages);
+    const afterIds = confirmedIn(out);
+    planted.decimalShift[0] += changed.length;
+    planted.decimalShift[1] += changed.filter((p) => !afterIds.has(p)).length;
+    for (const e of out) if (changed.includes(e.path) && sure(e)) leakShapes.push(`${dir} ${e.status}${e.held ? " held" : ""} printed ${e.printed === null ? "nothing" : e.printed.replace(/\d/g, "9")}`);
+  }
   // a whole row read one visit to the left: each cell takes its right-hand neighbour's value; one that comes out the same changes nothing
   const shifted = structuredClone(rb);
   const moved: string[] = [];
@@ -215,7 +258,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
       });
     });
   });
-  const afterShift = confirmedIn(bindEvidence(shifted, pages).evidence);
+  const afterShift = confirmedIn(piped(shifted, pages));
   planted.columnShift = [moved.length, moved.filter((p) => !afterShift.has(p)).length];
   // "Mapping off by one" (reported, not a gate): a held table's columns assigned to the visit next door, either way. Every
   // cell of a row with a held cell moves one visit over (what a wrong mapping would make the master say), and the held
@@ -239,7 +282,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
           });
         });
       });
-      const after = confirmedIn(bindEvidence(m, pages).evidence);
+      const after = confirmedIn(piped(m, pages));
       return [d < 0 ? "visitBefore" : "visitAfter", `${moved.filter((p) => after.has(p)).length}/${moved.length}`];
     }),
   );
@@ -268,7 +311,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   const meaning = (m: Rulebook, path: string) => (get(m, path) === "invoiceable" ? (get(m, path.replace(/\/cells\/.*$/, "/unitCents")) ?? null) : get(m, path));
   const rowsTried = (m: Rulebook, planned: string[]) => {
     const changed = planned.filter((x) => meaning(m, x) !== meaning(rb, x));
-    const after = confirmedIn(bindEvidence(m, pages).evidence);
+    const after = confirmedIn(piped(m, pages));
     return { tried: changed.length, caught: changed.filter((x) => !after.has(x)).length, still: changed.filter((x) => after.has(x)) };
   };
   const swapped = structuredClone(rb);
@@ -330,7 +373,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
       costPaths.push(`/budgetGrids/${gi}/procedures/${pi}/unitCents`);
     });
   });
-  const afterCosts = confirmedIn(bindEvidence(swappedCosts, pages).evidence);
+  const afterCosts = confirmedIn(piped(swappedCosts, pages));
   const costsTried = costPaths.filter((x) => confirmed.has(x));
   planted.costColumnSwap = [costsTried.length, costsTried.filter((x) => !afterCosts.has(x)).length];
   // A visit's overhead, subtotal, non-procedure amount or total taken from the visit next door (the summary row read one column
@@ -352,7 +395,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
       }
     });
   });
-  const afterSums = confirmedIn(bindEvidence(shiftedSums, pages).evidence);
+  const afterSums = confirmedIn(piped(shiftedSums, pages));
   planted.summaryRowShift = [sumPaths.length, sumPaths.filter((x) => !afterSums.has(x)).length];
   // a price put at the visit next door, where the row prints nothing: billing a procedure at a visit that doesn't have it
   const misplaced = structuredClone(rb);
@@ -372,18 +415,30 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
   });
   // Confirmed only where the page prints that very price in that visit's cell (the binder confirms nothing else): there
   // the read left a visit out. Counted apart, as the read's misses, not as errors the check let through.
-  const afterPlace = bindEvidence(misplaced, pages).evidence.filter((e) => sure(e) && placed.includes(e.path));
-  planted.wrongVisit = [placed.length - afterPlace.length, placed.length - afterPlace.length];
+  const placedBind = bindEvidence(misplaced, pages);
+  const boundPlace = placedBind.evidence;
+  const afterPlace = boundPlace.filter((e) => sure(e) && placed.includes(e.path));
+  // what the arithmetic then confirms among the rest is an error let through
+  const byMathPlace = solve(solveGrids, misplaced, boundPlace, mode, placedBind.rows).evidence.filter((e) => e.status === "confirmed_by_math" && placed.includes(e.path));
+  planted.wrongVisit = [placed.length - afterPlace.length, placed.length - afterPlace.length - byMathPlace.length];
   const readMissed = { price: afterPlace.filter((e) => typeof get(misplaced, e.path) === "number").length, invoiceable: afterPlace.filter((e) => get(misplaced, e.path) === "invoiceable").length };
 
   const status = (ev: ValueEvidence[]) => tally(ev.map((e) => e.status));
-  const nConfirmed = withOcr.evidence.filter((e) => e.status === "confirmed").length;
+  const nConfirmed = withOcr.evidence.filter((e) => e.status === "confirmed" || e.status === "confirmed_by_math").length;
+  // Upgraded by math, by the status each value had before; and the sweep and solver tallies, counts only (ADR-002 PR 2).
+  const pr2 = (r: typeof withOcr) => ({
+    mode,
+    upgradedByMath: r.solver ? { total: r.solver.upgraded.total, from: { ungrounded: r.solver.upgraded.ungrounded, conflict: r.solver.upgraded.conflict }, noPage: r.solver.noPage, heldWouldPass: r.solver.heldWouldPass } : null,
+    sweepDropped: r.sweep ? { consumed: r.sweep.consumed, insurance: r.sweep.insurance, explained: r.sweep.explained, explainedBy: r.sweep.explainedBy, noCue: r.sweep.noCue, kept: r.sweep.kept } : null,
+    identities: r.solver?.identities ?? null,
+  });
   const nHeld = withOcr.evidence.filter((e) => e.held).length;
   const pct = (n: number) => `${((100 * n) / withOcr.evidence.length).toFixed(1)}%`;
   report[label] = {
     values: withOcr.evidence.length,
     pages: { ocr: ocred, unclear: withOcr.review.filter((i) => i.reason === "SCAN_PAGE").length, regions: withOcr.review.filter((i) => i.reason === "SCAN_REGION").length },
     today: { status: status(today.evidence), questions: today.review.length },
+    pr2: { today: pr2(today), withOcr: pr2(withOcr) },
     withOcr: { status: status(withOcr.evidence), held: withOcr.evidence.filter((e) => e.held).length, questions: withOcr.review.length, byReason: tally(withOcr.review.map((i) => i.reason)) },
     tableChecks: base.tableChecks.length,
     autoConfirmed: { values: withOcr.evidence.length, confirmed: nConfirmed, withHeld: nConfirmed + nHeld, share: pct(nConfirmed), shareWithHeld: pct(nConfirmed + nHeld) },
@@ -392,6 +447,7 @@ for (const [name, label] of Object.entries(CONTRACTS)) {
     // the paths of any wrong confirmation (indices only, no text), so it can be found
     key: { keyed: key.size, aiWrong, wrongConfirmed, ...(wrongAt.length ? { wrongAt } : {}) },
     planted: Object.fromEntries(Object.entries(planted).map(([k, [tried, caught]]) => [k, `${caught}/${tried}`])),
+    decimalShiftLeaks: tally(leakShapes),
     readMissedAVisitThePagePrints: readMissed,
   };
 }

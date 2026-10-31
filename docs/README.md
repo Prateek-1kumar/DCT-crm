@@ -19,6 +19,7 @@ Each package also has an `AGENTS.md`: [apps/api](../apps/api/AGENTS.md), [apps/w
 | ADR | Decision | Status |
 |---|---|---|
 | [ADR-001](phase-1/adr-001-extraction-evidence.md) | Contract extraction requires evidence for every value: a value is unconfirmed until the PDF's own text or a person confirms it; approval is gated on invariants I1–I6 | **Proposed** (2026-10-28), and largely built. See below |
+| [ADR-002](phase-1/adr-002-pipeline-redesign.md) | A new extraction pipeline: OCR first with its tokens given to the model, the document's own arithmetic as a third evidence status (`confirmed_by_math`), non-financial pages excluded, a zone-gated sweep, row bands. Supersedes parts of ADR-001 in stages; the floors (blind sample, interpretations) are open | **Accepted** by the owner (2026-10-31); **not built yet**: the code still enforces ADR-001 until each PR lands |
 
 **ADR-001, what is built** (checked in code on 2026-10-29; details and the product choices made while building are in its "Implementation notes"): the text layer, the binder and the evidence ledger (steps 1–2); the coverage sweep and the bill-by-hand (`unclassified`) list (part of step 3); the $20 runaway cap (part of step 4); the API's gate (step 5); the review lists of §6: interpretations picked blind, the bill-by-hand list and the 10-value blind sample with its miss gate (most of step 6); scan mode (part of step 7); the test that only `packages/extraction` imports a model SDK (§9).
 

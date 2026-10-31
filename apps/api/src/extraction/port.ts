@@ -1,4 +1,4 @@
-import type { bindEvidence, pageCount, ReadWarning, readTextLayer, reviewFromEvidence } from "@dct/extraction";
+import type { bindEvidence, gateSweep, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
@@ -10,12 +10,14 @@ type StudyGuess = { sponsor: string | null; protocol: string | null; siteName: s
 export type ExtractionOutput = {
   rulebook: Rulebook;
   crossRead: Rulebook | null;
-  pages: { documentId: string; page: number; kind: "terms" | "budget_grid" | "invoiceables" | "signatures" | "boilerplate"; readable: boolean; printed?: number[] }[];
+  pages: { documentId: string; page: number; kind: PageInfo["kind"]; readable: boolean; printed?: number[] }[];
   cost: { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number }[];
   /** Ambiguity / retroactive notes the rulebook schema can't hold; stored on the version and passed back to the checks. */
   notes?: ExtractionNote[];
   /** What made the reading weaker than usual (a skipped or failed re-read, a failed cross-read), by kind; worded in jobs.ts. */
   warnings?: ReadWarning[];
+  /** What the grid read says each row prints as its quantity and its own total; `bindEvidence` checks it against the scan (ADR-002). Absent when no row gave one. */
+  printedRows?: PrintedRow[];
 };
 
 export type ExtractionNote = {
@@ -39,10 +41,13 @@ export interface ExtractionPort {
   readTextLayer: typeof readTextLayer;
   bindEvidence: typeof bindEvidence;
   reviewFromEvidence: typeof reviewFromEvidence;
+  /** ADR-002 PR 2: the document's own arithmetic as a referee (`confirmed_by_math`), and the zone gate on the leftover-money sweep. Pure, no AI. */
+  solveGrids: typeof solveGrids;
+  gateSweep: typeof gateSweep;
 }
 
 /** The parts of the port with no AI in them: fake mode uses the real ones. */
-export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "bindEvidence" | "reviewFromEvidence";
+export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "bindEvidence" | "reviewFromEvidence" | "solveGrids" | "gateSweep";
 
 let cached: Promise<ExtractionPort> | undefined;
 
@@ -54,8 +59,8 @@ export function getExtraction(): Promise<ExtractionPort> {
 
 /** Fake mode fakes only the AI: page images and the PDF's text come from the real PDF, so the viewer and the checks are real. */
 async function loadFake(): Promise<ExtractionPort> {
-  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
-  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence };
+  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence, solveGrids, gateSweep }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
+  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence, solveGrids, gateSweep };
 }
 
 async function loadReal(): Promise<ExtractionPort> {

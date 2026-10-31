@@ -5,6 +5,7 @@ import {
   dateField,
   familyOf,
   interpretations,
+  blindEvidence,
   mask,
   pickSample,
   type ReviewItem,
@@ -13,6 +14,7 @@ import {
   sampleMisses,
   sampleMissWords,
   type ValueEvidence,
+  ValueEvidence as ValueEvidenceSchema,
   withheldPaths,
 } from "../src";
 
@@ -97,6 +99,60 @@ describe("interpretations", () => {
   });
 });
 
+describe("interpretations the clause states outright (ADR-002 §4)", () => {
+  const quoted = () => {
+    const rb = rulebook();
+    rb.invoiceables[0]!.prov = prov("billed up to $777.00 in total");
+    return rb;
+  };
+  const paths = (rb: Rulebook, opts: Parameters<typeof interpretations>[1]) => interpretations(rb, opts).map((i) => i.path);
+  const sure = (status: ValueEvidence["status"]) => [{ path: "/invoiceables/0/cap/n", status }];
+
+  it("an amount limit whose figure is confirmed from its quote isn't asked; its figure isn't withheld and joins the sample", () => {
+    const rb = quoted();
+    expect(paths(rb, { amendment: false })).toContain("/invoiceables/0/cap/kind"); // no evidence: asked, as before
+    for (const status of ["confirmed", "confirmed_by_math"] as const) expect(paths(rb, { amendment: false, evidence: sure(status) })).not.toContain("/invoiceables/0/cap/kind");
+    const review = interpretations(rb, { amendment: false, evidence: sure("confirmed") });
+    expect(withheldPaths({ status: "draft", review, evidence: [] })).not.toEqual(expect.arrayContaining(["/invoiceables/0/cap/n"]));
+    expect(pickSample([{ path: "/invoiceables/0/cap/n", status: "confirmed", where: [], printed: null, note: null }], new Set())).toEqual(["/invoiceables/0/cap/n"]);
+  });
+
+  it("is still asked when the figure isn't confirmed, the read cites no quote, the term is ambiguous, or the kind needs more than a figure", () => {
+    const rb = quoted();
+    for (const status of ["attested", "conflict", "ungrounded"] as const) expect(paths(rb, { amendment: false, evidence: sure(status) })).toContain("/invoiceables/0/cap/kind");
+    const noQuote = rulebook();
+    expect(paths(noQuote, { amendment: false, evidence: sure("confirmed") })).toContain("/invoiceables/0/cap/kind");
+    const unclear = [{ code: "AMBIGUOUS_TERM" as const, path: "/invoiceables/0/cap/kind", message: "Ambiguous", refs: [] }];
+    expect(paths(rb, { amendment: false, evidence: sure("confirmed"), anomalies: unclear })).toContain("/invoiceables/0/cap/kind");
+    // a count (or blocks) reads as a bare number, which a ratio also is: never told by its figure
+    rb.invoiceables[0]!.cap = cap("count", 3);
+    expect(paths(rb, { amendment: false, evidence: sure("confirmed") })).toContain("/invoiceables/0/cap/kind");
+    // and the kinds with no deciding figure are asked whatever is confirmed
+    const everything = ["/overhead/pct/value", "/payment/netDays/value", "/siteFees/0/dueDays", "/siteFees/0/amountCents", "/screenFail/cap/n"].map((path) => ({ path, status: "confirmed" as const }));
+    expect(paths(rulebook(), { amendment: false, evidence: everything })).toEqual(paths(rulebook(), { amendment: false }));
+  });
+
+  it("a ratio limit is told by its confirmed ratio", () => {
+    const rb = quoted();
+    rb.invoiceables[0]!.cap = { kind: "ratio_to_randomized", n: null, ratio: 0.5 };
+    expect(paths(rb, { amendment: false, evidence: [{ path: "/invoiceables/0/cap/ratio", status: "confirmed" }] })).not.toContain("/invoiceables/0/cap/kind");
+    expect(paths(rb, { amendment: false, evidence: sure("confirmed") })).toContain("/invoiceables/0/cap/kind");
+  });
+
+  it("a start date printed in its quote and confirmed isn't asked; one missing, unconfirmed or retroactive is", () => {
+    const rb = rulebook();
+    rb.documents.push({ id: "d2", kind: "amendment", title: "Amendment 1", date: "2026-03-01" });
+    rb.appliesFrom = s("2026-03-01", "effective March 1, 2026");
+    const date = (status: ValueEvidence["status"]) => ({ amendment: true, evidence: [{ path: "/appliesFrom/value", status }] });
+    expect(paths(rb, date("confirmed"))).not.toContain("/appliesFrom/value");
+    expect(paths(rb, date("conflict"))).toContain("/appliesFrom/value");
+    const retro = [{ code: "RETROACTIVE_NO_DATE" as const, path: "/appliesFrom/value", message: "x", refs: [] }];
+    expect(paths(rb, { ...date("confirmed"), anomalies: retro })).toContain("/appliesFrom/value");
+    rb.appliesFrom = s(null);
+    expect(interpretations(rb, date("confirmed")).find((i) => i.path === "/appliesFrom/value")).toMatchObject({ reason: "RETROACTIVE_NO_DATE" });
+  });
+});
+
 describe("a typed date", () => {
   it("in a date field, is a day of the calendar written YYYY-MM-DD (an answer and typing by hand check it alike)", () => {
     expect(["/study/effectiveDate/value", "/appliesFrom/value", "/documents/0/date", "/referencedDocuments/2/date"].every(dateField)).toBe(true);
@@ -118,6 +174,17 @@ describe("withheld while asked", () => {
     expect(JSON.stringify(shown)).not.toMatch(/auto_edc|agreement_execution|77700/);
     const dto = { version: 1, status: "draft", createdAt: "", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s", rulebook: shown, anomalies: [], editors: [], cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [], updatedAt: "", warnings: [] };
     expect(RulebookVersionDto.safeParse(dto).success).toBe(true);
+  });
+
+  it("a value the contract's own totals confirm stays masked while its path is withheld, and the status parses either way", () => {
+    const rb = rulebook();
+    const evidence = [{ ...ev("/siteFees/0/amountCents", "confirmed_by_math"), printed: "1,234.00", where: [{ documentId: "d1", page: 3, box: [0.1, 0.1, 0.2, 0.02] as [number, number, number, number] }] }];
+    const hidden = ["/siteFees/0/amountCents"];
+    const shown = blindEvidence(evidence, hidden);
+    expect(shown[0]).toMatchObject({ path: "/siteFees/0/amountCents", status: "confirmed_by_math", printed: null });
+    expect(mask(rb, hidden, { evidence, review: [] }).siteFees[0]!.amountCents).toBeNull();
+    for (const status of ["confirmed", "confirmed_by_math", "attested", "conflict", "ungrounded"] as const) expect(ValueEvidenceSchema.safeParse(ev("/x", status)).success, status).toBe(true);
+    expect(ValueEvidenceSchema.safeParse(ev("/x", "confirmed_by_hand" as never)).success).toBe(false);
   });
 
   it("the log withholds a skipped correction while it's asked again where its item moved (`askedAt`)", () => {
@@ -148,6 +215,17 @@ describe("the blind sample", () => {
     const few = [ev("/payment/netDays/value"), ev("/siteFees/0/amountCents"), ev("/overhead/pct/value", "conflict"), ev("/holdback/pct", "attested")];
     expect(pickSample(few, new Set(["/siteFees/0/amountCents"])).sort()).toEqual(["/payment/netDays/value"]);
     expect(pickSample(few, new Set(), () => 0.5, 10)).toHaveLength(2);
+  });
+
+  it("a value the contract's own totals confirm is drawn like a PDF-confirmed one", () => {
+    const few = [ev("/payment/netDays/value", "confirmed_by_math"), ev("/siteFees/0/amountCents", "confirmed")];
+    expect(pickSample(few, new Set(), () => 0.5, 10).sort()).toEqual(["/payment/netDays/value", "/siteFees/0/amountCents"]);
+  });
+
+  it("a miss makes a value the contract's own totals confirm proofread too", () => {
+    const missed: ReviewItem = { id: "sample:x", kind: "confirm_value", reason: "SAMPLE", path: "/siteFees/0/amountCents", question: "", input: "money", options: [], where: [], blocking: true, answer: null, outcome: "chosen", missed: true } as unknown as ReviewItem;
+    const [m] = sampleMisses({ review: [missed], evidence: [ev("/siteFees/0/amountCents", "attested"), ev("/siteFees/1/amountCents", "confirmed_by_math")] });
+    expect(m!.left).toEqual(["/siteFees/1/amountCents"]);
   });
 
   it("a miss holds approval until every value of its kind is proofread or typed by a person", () => {

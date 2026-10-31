@@ -5,7 +5,14 @@ import { expandProv, modelSchema } from "./model-schema";
 
 /** Every model call goes through here: provider + model from config, timeouts, retries, usage/cost. */
 
-export type Image = { label: string; png: Buffer };
+/** A word the text pass found in an image: an id, its text and its box [x0, y0, x1, y1] in that image's pixels (tokens.ts). */
+export type Token = { id: string; text: string; box: [number, number, number, number] };
+
+/** `tokens` (EXTRACTION_TOKEN_MAP): the map sent beside the image; absent, the request is the same as before it existed. */
+export type Image = { label: string; png: Buffer; tokens?: Token[] };
+
+/** The map as the model reads it: one JSON list of [id, text, x0, y0, x1, y1], compact, with a line saying what it is. */
+export const tokenText = (tokens: Token[]) => `TOKEN MAP for the image above ([id, text, x0, y0, x1, y1] in its pixels): ${JSON.stringify(tokens.map((t) => [t.id, t.text, ...t.box]))}`;
 
 export type LlmRequest<T> = {
   name: string;
@@ -84,14 +91,16 @@ export function anthropicClient(opts: { apiKey: string; model?: string }): LlmCl
     async call<T>(req: LlmRequest<T>) {
       // Plain JSON-schema format (not the auto-parsing one) so a bad parse doesn't lose the usage numbers.
       const format = { type: "json_schema" as const, schema: modelSchema(req.schema) };
-      const content: Anthropic.Beta.BetaContentBlockParam[] = req.images.flatMap((img, i) => [
-        { type: "text" as const, text: img.label },
-        {
-          type: "image" as const,
-          source: { type: "base64" as const, media_type: "image/png" as const, data: img.png.toString("base64") },
-          ...(req.cacheImages && i === req.images.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
-        },
-      ]);
+      const content: Anthropic.Beta.BetaContentBlockParam[] = req.images.flatMap((img, i) => {
+        // the cache breakpoint is the last block of the last image (its token map, when it has one), so the map is cached too
+        const cache = req.cacheImages && i === req.images.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {};
+        const map = img.tokens?.length ? [{ type: "text" as const, text: tokenText(img.tokens), ...cache }] : [];
+        return [
+          { type: "text" as const, text: img.label },
+          { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: img.png.toString("base64") }, ...(map.length ? {} : cache) },
+          ...map,
+        ];
+      });
       content.push({ type: "text", text: req.prompt });
       return withParseRetry(req.name, req.schema, async () => {
         const msg = await client.beta.messages
@@ -144,6 +153,7 @@ export function openaiClient(opts: { apiKey: string; model: string; pricePerMTok
       const content: OpenAI.Responses.ResponseInputContent[] = req.images.flatMap((img) => [
         { type: "input_text" as const, text: img.label },
         { type: "input_image" as const, detail: "high" as const, image_url: `data:image/png;base64,${img.png.toString("base64")}` },
+        ...(img.tokens?.length ? [{ type: "input_text" as const, text: tokenText(img.tokens) }] : []),
       ]);
       content.push({ type: "input_text", text: req.prompt });
       return withParseRetry(req.name, req.schema, async () => {

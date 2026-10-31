@@ -1,4 +1,4 @@
-import type { Span, TextPage } from "@dct/extraction";
+import type { PrintedRow, RowBand, SolverMode, SolverReport, Span, SweepReport, TextPage } from "@dct/extraction";
 import {
   alsoWithheld,
   blankQuestions,
@@ -8,6 +8,7 @@ import {
   askedAsInterpretation,
   at,
   blindLabel,
+  checkedByMachine,
   type ContractAnomaly,
   cryptoRandom,
   ENUM_LABELS,
@@ -115,24 +116,26 @@ const clear = (p: TextPage) => p.words.length > 0 && p.words.filter((w) => (w.co
  * read clearly is swept like text: only the areas it couldn't read (`unread`) are asked, each at its spot. Hidden text is
  * shown to a person.
  */
-function pageItems(pages: TextPage[], docs: { id: string; filename: string }[]): ReviewItem[] {
+function pageItems(pages: TextPage[], docs: { id: string; filename: string }[], excluded: ReadonlySet<string>): ReviewItem[] {
   const name = (id: string) => `“${docs.find((d) => d.id === id)?.filename ?? "the contract"}”`;
   return pages.flatMap((p): ReviewItem[] => {
     const base = { ...BLANK, path: null, blocking: true, input: null, where: [box(p.documentId, p.page)] };
-    if (p.source === "ocr" && clear(p))
+    // an excluded page isn't searched for money terms, scan or not; text no reader can see is still shown to a person
+    const off = excluded.has(`${p.documentId}#${p.page}`);
+    if (!off && p.source === "ocr" && clear(p))
       return (p.unread ?? []).map((where, i) => ({
         ...base, where: [where], id: `region:${p.documentId}:${p.page}:${i}`, kind: "unaccounted", reason: "SCAN_REGION",
         question: `Part of page ${p.page} of ${name(p.documentId)} couldn't be read (it's marked). Does it have any money terms that the invoicing master doesn't hold?`,
         options: PAGE_OPTIONS,
       }));
-    if (p.source !== "text")
+    if (!off && p.source !== "text")
       return [{
         ...base, id: `page:${p.documentId}:${p.page}`, kind: "unaccounted", reason: "SCAN_PAGE",
         question: `Page ${p.page} of ${name(p.documentId)} is a scan, so it can't be searched for money terms. Does it have any that the invoicing master doesn't hold?`,
         options: PAGE_OPTIONS,
       }];
     const out: ReviewItem[] = [];
-    if (p.largePicture)
+    if (p.largePicture && !off)
       out.push({
         ...base, id: `picture:${p.documentId}:${p.page}`, kind: "unaccounted", reason: "PICTURE_PAGE",
         question: `Page ${p.page} of ${name(p.documentId)} has a picture that may contain prices, and a picture can't be searched for money terms. Does it have any that the invoicing master doesn't hold?`,
@@ -192,33 +195,50 @@ const capWaits = (path: string, asking: ReadonlySet<string>) => /\/cap\/(?:n|rat
  * questions for a person: values not confirmed, money terms the master doesn't hold (with their words, to list them to
  * bill by hand), contract problems, the interpretations picked blind, pages nothing can search, corrections an
  * amendment's read couldn't carry over, and the blind re-type of up to 10 confirmed values (ADR-001 §6). `amendment`:
- * the read includes an amendment. Returns what to say on the draft (`warnings`) and the skipped corrections with where
- * each is asked now (`skipped`, for the log).
+ * the read includes an amendment. `excluded`: pages the read classed as an e-signature record or notice or a reference list
+ * (ADR-002): they're not swept, so their leftover money terms and scan questions are dropped here, and `excluded` in the
+ * result says how many spans each had (counts only, never amounts). Returns what to say on the draft (`warnings`) and the
+ * skipped corrections with where each is asked now (`skipped`, for the log).
  */
 export function reviewDraft(
-  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence">,
+  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence"> & Partial<Pick<ExtractionPort, "solveGrids" | "gateSweep">>,
   rb: Rulebook,
   anomalies: ContractAnomaly[],
   pages: TextPage[],
   docs: { id: string; filename: string }[],
-  opts: { amendment?: boolean; carried?: Carried | null } = {},
-): Checked & { warnings: string[]; skipped: (Skipped & { askedAt?: string })[] } {
+  opts: { amendment?: boolean; carried?: Carried | null; excluded?: { documentId: string; page: number }[]; solver?: SolverMode; rounding?: boolean; printedRows?: PrintedRow[] } = {},
+): Checked & {
+  warnings: string[];
+  skipped: (Skipped & { askedAt?: string })[];
+  excluded: { documentId: string; page: number; spans: number }[];
+  /** Counts and JSON pointers only, never text. Absent when the port has no solver or sweep gate (older tests). */
+  solver?: Solved;
+  sweep?: SweepReport;
+} {
   const key = (w: { documentId: string; page: number } | undefined) => (w ? `${w.documentId}#${w.page}` : "");
   const textPages = new Set(pages.filter((p) => p.source === "text").map(key));
   const scanPages = new Set(pages.filter((p) => p.source !== "text").map(key));
-  const bound = port.bindEvidence(rb, pages);
+  const bound = port.bindEvidence(rb, pages, opts.printedRows);
+  const off = new Set((opts.excluded ?? []).map(key));
   const totals = byTotals(rb);
   // A cited page that doesn't exist is neither: its values stay ungrounded and are asked.
   const onScan = (e: ValueEvidence) => scanPages.has(key(e.where[0]));
   // (a held value the totals confirm is confirmed outright: it no longer waits for its table's check)
-  const evidence = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && totals(e.path) ? { path: e.path, where: e.where, printed: e.printed, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
+  const scanned = bound.evidence.map((e): ValueEvidence => (onScan(e) && e.status === "ungrounded" && totals(e.path) ? { path: e.path, where: e.where, printed: e.printed, status: "confirmed", note: "Checked by the contract's own totals (scanned page)" } : e));
+  // ADR-002 PR 2, after the old scan rule so "upgraded" counts only what the contract's arithmetic adds to it
+  // the table rows the binder lined up (with what each page prints as its total) are the solver's row identity and the sweep's row bands
+  const solved = solve(port.solveGrids, rb, scanned, opts.solver ?? "guide", bound.rows, opts.rounding, new Set(pages.filter((p) => p.source === "ocr").map((p) => `${p.documentId}#${p.page}`)));
+  const evidence = solved.evidence;
+  // the leftover-money sweep, zone-gated on the solved evidence (a math-confirmed cell is bound like a printed one); dropped spans are counted, never silent
+  const gated = port.gateSweep ? port.gateSweep(bound.unaccounted.filter((s) => !off.has(key(s.where))), { evidence, pages, rb, rows: bound.rows, vouched: solved.report?.vouched }) : null;
+  const swept = gated ? gated.kept : bound.unaccounted.filter((s) => !off.has(key(s.where)));
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
-  const spans = new Map(bound.unaccounted.map((s) => [whereKey(s.where), s]));
+  const spans = new Map(swept.map((s) => [whereKey(s.where), s]));
   // each table check is asked below as two blind picks; the binder's placeholder question for it is dropped
   // a cell the read calls "invoiceable" where the table prints nothing has no question of its own: its table's is asked once for all of them
   const blank = new Set(evidence.flatMap((e) => (e.blank ? [e.path] : [])));
-  const values = port.reviewFromEvidence(evidence, bound.unaccounted, rb, bound.tableChecks).filter((i) => i.reason !== TABLE_CHECK && !(i.path && blank.has(i.path))).map((i): ReviewItem => {
+  const values = port.reviewFromEvidence(evidence, swept, rb, bound.tableChecks).filter((i) => i.reason !== TABLE_CHECK && !(i.path && blank.has(i.path))).map((i): ReviewItem => {
     if (i.path && scan.has(i.path)) return { ...i, reason: "SCAN_VALUE" };
     if (i.reason !== "UNACCOUNTED_TERM") return i;
     const term = termOf(i.where.flatMap((w) => spans.get(whereKey(w)) ?? []));
@@ -226,14 +246,15 @@ export function reviewDraft(
   });
   const asked = new Set(values.flatMap((i) => (i.path ? [i.path] : [])));
   const checked = evidence.filter((e) => textPages.has(key(e.where[0])));
-  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies });
+  // a clause that states its figure outright, confirmed from the page, isn't asked: it joins the blind sample (interpretations, ADR-002 §4)
+  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence });
   const asking = new Set(interp.map((i) => i.path!));
   const review = [
     // a value asked as an interpretation is asked once, there (the start date: typed, or "prospective only")
     ...values.filter((i) => !(i.path && (asking.has(i.path) || capWaits(i.path, asking)))),
     ...fromAnomalies(anomalies.filter((a) => !askedAsInterpretation(a, asking)), rb, asked),
     ...interp,
-    ...pageItems(pages, docs),
+    ...pageItems(pages, docs, off),
     ...tableQuestions(rb, evidence, bound.tableChecks, sampling.random),
     ...blankQuestions(evidence, bound.blankChecks),
   ];
@@ -254,7 +275,42 @@ export function reviewDraft(
     pdfCheck: checked.length ? { values: checked.length, matched: checked.filter((e) => e.status === "confirmed").length } : null,
     warnings: lost.warnings,
     skipped: lost.skipped,
+    excluded: (opts.excluded ?? []).map((p) => ({ ...p, spans: bound.unaccounted.filter((s) => key(s.where) === key(p)).length })),
+    ...(solved.report ? { solver: solved.report } : {}),
+    ...(gated ? { sweep: gated.report } : {}),
   };
+}
+
+/** What `reviewDraft` says of the solver: the referee's own tallies plus the upgrades the wiring refused. Pointers and counts only. */
+export type Solved = SolverReport & {
+  /** Entries the solver proved but that cite no page: left as they were (the proofread lane lists values by page, so a math-confirmed one without a page could hold a sample miss's sign-off with nothing to proofread). */
+  noPage: number;
+};
+
+/** The solver's numbers as the audit log holds them: counts only (the failing identities' pointers stay on the result). */
+export const solverCounts = (r: Solved) => ({ mode: r.mode, identities: r.identities, upgraded: r.upgraded, heldWouldPass: r.heldWouldPass, noPage: r.noPage });
+
+/**
+ * Runs the solver and keeps only the upgrades the review can use. A value with no `where` page stays what it was.
+ * Notes say why a value is confirmed, so the accountant doesn't see an old "can't be told" beside a green check.
+ */
+export function solve(solveGrids: ExtractionPort["solveGrids"] | undefined, rb: Rulebook, evidence: ValueEvidence[], mode: SolverMode, rows?: readonly RowBand[], rounding?: boolean, scanPages?: ReadonlySet<string>): { evidence: ValueEvidence[]; report: Solved | null } {
+  if (!solveGrids) return { evidence, report: null };
+  const r = solveGrids(rb, evidence, { mode, rows, rounding, scanPages });
+  let noPage = 0;
+  const kept = r.evidence.map((e, i): ValueEvidence => {
+    if (e.status !== "confirmed_by_math" || evidence[i]!.status === "confirmed_by_math") return e;
+    if (e.where.length) return { ...e, note: "The contract's own rows, columns and totals add up to it" };
+    noPage++;
+    return evidence[i]!;
+  });
+  // the solver's tally counted every upgrade; those the wiring undid are not upgrades
+  const upgraded = { total: 0, ungrounded: 0, conflict: 0 };
+  kept.forEach((e, i) => {
+    const was = evidence[i]!.status;
+    if (e.status === "confirmed_by_math" && (was === "ungrounded" || was === "conflict")) (upgraded.total++, upgraded[was]++);
+  });
+  return { evidence: kept, report: { ...r.report, upgraded, noPage } };
 }
 
 /** A value billing reads: a number, yes/no, a fixed-list value, a date or a cell, or what the holdback is taken from. */
@@ -315,7 +371,8 @@ function uncarried(rb: Rulebook, evidence: ValueEvidence[], c: Carried, asked: S
         const e = evidence.find((x) => x.path === now);
         const note = `A correction from version ${c.from} wasn't carried over`;
         if (!e) evidence.push({ path: now, status: "ungrounded", where: [], printed: null, note });
-        else if (e.status === "confirmed") Object.assign(e, { status: "ungrounded", note });
+        // either kind of machine confirmation stops counting: the correction says the read's value was wrong
+        else if (checkedByMachine(e.status)) Object.assign(e, { status: "ungrounded", note });
       } else if (!asked.has(now))
         items.push({
           ...askAbout(rb, evidence, now, `carried:${now}`, "CORRECTION_NOT_CARRIED"),

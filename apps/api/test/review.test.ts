@@ -85,17 +85,21 @@ describe("reading checks every number against the PDF's own text", () => {
     expect((await get<StudyDetailDto>(`/studies/${studyId}`)).documents[0]!.text).toBe("text");
   });
 
-  it("a scan: nothing is checked against text, so every number is typed and every page attested", async () => {
+  it("a scan: nothing is checked against text, so every number the contract's own sums don't prove is typed and every page attested", async () => {
     const { studyId, doc } = await newStudy(app, "scan", { scan: true });
     expect(doc.text).toBe("scan");
     await extract(app, studyId);
     const v = await version(studyId);
     expect(v.pdfCheck).toBeNull();
-    expect(v.evidence.every((e) => e.status === "ungrounded")).toBe(true); // this grid's totals don't add up to the cent
+    // ADR-002 PR 2: the solver proves a grid value (strict, the default: a cell needs a row and a column) or an invoiceable's price and price with overhead that take part in an identity that balances; a rule, cap, date, site fee or deadline is never proved by arithmetic
+    const math = v.evidence.filter((e) => e.status === "confirmed_by_math");
+    expect(math.length).toBeGreaterThan(0);
+    expect(math.every((e) => /^\/budgetGrids\/|^\/invoiceables\/\d+\/amount(WithOverhead)?Cents$/.test(e.path))).toBe(true);
+    expect(v.evidence.filter((e) => e.status !== "confirmed_by_math").every((e) => e.status === "ungrounded")).toBe(true);
     const reasons = v.review.map((i) => i.reason);
-    // every number but the screen-fail cap's limit, which waits for its kind to be picked (its question would name it)
-    expect(v.review.filter((i) => i.reason === "SCAN_VALUE").map((i) => i.path)).toEqual(v.evidence.map((e) => e.path).filter((p) => p !== "/screenFail/cap/n"));
-    expect(reasons).not.toContain(SAMPLE); // nothing was confirmed, so there's nothing to sample
+    // every number it didn't prove but the screen-fail cap's limit, which waits for its kind to be picked (its question would name it)
+    expect(v.review.filter((i) => i.reason === "SCAN_VALUE").map((i) => i.path)).toEqual(v.evidence.filter((e) => e.status === "ungrounded").map((e) => e.path).filter((p) => p !== "/screenFail/cap/n"));
+    expect(reasons).toContain(SAMPLE); // the proved values are in the blind sample's pool
     expect(v.review.filter((i) => i.reason === "SCAN_PAGE").map((i) => [i.kind, i.blocking, i.where[0]!.page, i.options.map((o) => o.id)])).toEqual([
       ["unaccounted", true, 1, ["none", "bill_by_hand"]],
       ["unaccounted", true, 2, ["none", "bill_by_hand"]],

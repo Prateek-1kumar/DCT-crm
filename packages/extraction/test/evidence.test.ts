@@ -267,7 +267,8 @@ describe("bindEvidence", () => {
       }
     }
     expect(tried).toBeGreaterThan(500);
-  });
+    // 30 s: 3.5 s alone, but over vitest's 5 s default when the suites run together
+  }, 30_000);
 
   it("a wrong page reference is re-pointed when label and amount sit on one line of exactly one other page", () => {
     const rb = rulebook();

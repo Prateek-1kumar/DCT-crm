@@ -1,6 +1,6 @@
 # ADR-001: Contract extraction requires evidence for every value
 
-**Status:** Proposed, 2026-10-28. **Decides:** Prateek.
+**Status:** Proposed, 2026-10-28. **Decides:** Prateek. **Partly superseded by [ADR-002](adr-002-pipeline-redesign.md)** (2026-10-31): §3 I2 and I5, §4 "never give the reader the text layer", the §6 floors (open) and the tiling of §5. Enforced as written until the PR named in ADR-002 §2 lands.
 **Replaces:** in `docs/phase-1/extraction.md`, the 2026-10-26 cost decision (the $1 cap, the Haiku cross-read, no re-reads once the cap is reached), and the Phase 1 decision that "OpenAI independently re-reads all amounts and rules".
 
 **Inputs:** the code at `79da624`, the saved runs in `data/extractions/`, the signed COPD original, the user's answers of 2026-10-28, and two research passes (sources at the end). Every number in §1 was measured in this review; none was taken from the brief.
@@ -115,7 +115,6 @@ Spans that hold bank or payment instructions are excluded and masked (§9).
 **When the PDF has text, which source leads?**
 - The **text layer** leads on characters.
 - The **vision read** leads on structure (which number is which field) and checks the text layer: a page whose rendering differs from its text raises a flag.
-- **Don't give the reader the text layer.** Claude's PDF input adds it automatically [7], so keep sending page images. Two channels that can't see each other mean something when they agree.
 - Trade-off: the model will misread digits it could have copied, which means more `VALUE_CONFLICT` flags. If the held-out run goes over the flag budget, give the model the text and rely on position checks alone.
 
 **Plan for scans:** ask for the original, use scan mode (§3), and revisit OCR if scans exceed about 1 in 10.
@@ -341,6 +340,8 @@ Added after the decision, which is unchanged above. What the code on `feature/co
 | 8–9 | Not started. |
 
 **Measured on the four saved reads** (COPD / HCWC / McAllen / Shah): 16 / 23 / 13 / 12 interpretations. HCWC is over the 10–20 of §6 because it has 17 site fees, each with its trigger asked. The blind sample is 10 on each.
+
+**Superseded in part (ADR-002 §4):** interpretations are asked only for genuine ambiguity or silence; a cap's kind told by a confirmed dollar or ratio figure, and a confirmed start date, are not asked and join the sample's pool. The counts above are from before that.
 
 **Interpretations, as built** (`interpretations` in `packages/shared/src/questions.ts`): overhead scope, how visits are paid, each site fee's trigger, each cap's kind where there's a cap (and its limit or ratio after it, when unconfirmed, when the kind changed, or when the kind needs a figure the master lacks), the screen-fail basis, cap kind and how screen failures are paid (`screenFail.paidVia`, added to the §6 list: paid automatically where they should be invoiced means they're never billed), the holdback's scope, rounding, and the start date. These billing fields are **not** asked blind. The code doesn't record why, so each is for the owner to confirm:
 

@@ -73,6 +73,16 @@ describe("a job run twice writes once", () => {
     expect(await job(data.jobId)).toMatchObject({ state: "succeeded" });
   });
 
+  it("identify fills a kind nobody chose (every upload starts as \"other\") and keeps one somebody did", async () => {
+    const [left, chosen] = (await upload(idle.app, [{ name: "Amendment 2.pdf", data: await makeTextPdf("left") }, { name: "Amendment 3.pdf", data: await makeTextPdf("chosen") }])).json<DocumentDto[]>();
+    expect(left!.kind).toBe("other");
+    await idle.app.inject({ method: "PATCH", url: `/api/v1/documents/${chosen!.id}`, payload: { kind: "budget", by: "Asha" } });
+    const data = (await idle.app.inject({ method: "POST", url: "/api/v1/studies", payload: { documentIds: [left!.id, chosen!.id] } })).json<{ studyId: string; jobId: string }>();
+    await runIdentify(idle.ctx, data);
+    const kinds = await idle.ctx.db.execute<{ id: string; kind: string }>(sql`SELECT id, kind FROM documents WHERE id IN (${left!.id}, ${chosen!.id})`);
+    expect(Object.fromEntries(kinds.rows.map((r) => [r.id, r.kind]))).toEqual({ [left!.id]: "amendment", [chosen!.id]: "budget" });
+  });
+
   it("only one read of a version can be live, by the database's own rule", async () => {
     const { studyId, version } = await queued();
     expect(await cause(idle.ctx.db.execute(sql`INSERT INTO jobs (id, kind, study_id, version) VALUES (gen_random_uuid(), 'extract', ${studyId}, ${version})`))).toMatch(/jobs_one_live_read_idx/);

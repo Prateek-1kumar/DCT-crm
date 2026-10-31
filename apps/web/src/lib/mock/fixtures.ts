@@ -437,7 +437,9 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
     ...(opts.retroactive ? [{ code: "RETROACTIVE_NO_DATE" as const, path: "/appliesFrom/value", message: "Amendment says it is retroactive but gives no start date", refs: [] }] : []),
   ];
   const have = new Set(given.flatMap((x) => (x.path ? [x.path] : [])));
-  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies }).filter((i) => !have.has(i.path!));
+  // as the real read: a clause that states its figure outright, confirmed (a number nothing asks and no scan leaves unchecked), isn't asked (ADR-002 §4)
+  const stated = numberPaths(rb).filter((path) => !have.has(path) && !(opts.scan && !path.startsWith("/budgetGrids/"))).map((path) => ({ path, status: "confirmed" as const }));
+  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence: stated }).filter((i) => !have.has(i.path!));
   const asking = new Set(interp.map((i) => i.path!));
   const asked = [...given.filter((x) => !capWaits(x.path, asking)), ...interp.map((i) => asPrinted(rb, i))];
   // `table`: the first grid's prices wait for one confirmation of its columns, as a scanned table whose headers don't match does
@@ -471,6 +473,9 @@ export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean
       ...(heldPath(path) ? { held: HELD } : {}),
     };
   });
+  // one visit total the contract's own sums prove, so the screens show that status too
+  const proved = evidence.find((e) => e.status === "confirmed" && /^\/budgetGrids\/0\/visits\/\d+\/totalCents$/.test(e.path));
+  if (proved && !opts.scan) Object.assign(proved, { status: "confirmed_by_math", printed: null, note: "The visit's procedures, overhead and extras add up to it" });
   // each visit's column is the box around its prices on the page
   const grid = rb.budgetGrids[0];
   const columns = !opts.table || !grid ? [] : grid.visits.map((v) => {

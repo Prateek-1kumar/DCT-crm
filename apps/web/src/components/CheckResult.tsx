@@ -60,7 +60,7 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
       {!pdf && (
         <p className="flex items-start gap-2.5 rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">
           <Info className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={2} />
-          This PDF is a scan: numbers its own totals confirm are checked automatically, and the rest come to you to confirm.
+          This PDF is a scan, and none of its numbers could be checked against what&apos;s printed, so they come to you to confirm.
         </p>
       )}
 

@@ -11,8 +11,7 @@ import type { TextPage, Word } from "./textlayer";
 /**
  * Our own local OCR of pages that have no text (ADR-001 addendum 2026-10-29): PaddleOCR in a Python process with no
  * network (ocr/worker.py), its words put in the space readTextLayer uses, so the binder checks a scan's numbers by
- * position exactly as it checks a born-digital PDF's. The OCR text is a second reading, never given to the AI reader:
- * two channels that can't see each other mean something when they agree. It is contract text: cached next to the PDF
+ * position exactly as it checks a born-digital PDF's. The OCR text is contract text: cached next to the PDF
  * it came from, never logged. Anything going wrong leaves the page as a scan (its values asked), never half-read.
  */
 

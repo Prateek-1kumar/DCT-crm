@@ -149,7 +149,8 @@ describe("signOffRefusal", () => {
     ["not one changed since it was opened", ready, { ...as, asOf: "t0" }, "This contract changed since you opened it. Check it again."],
     ["not typing still being done", { ...ready, byHand: true, review: [] }, as, "Typing isn't marked done yet, so nobody has re-typed the values."],
     ["not with a question left can't tell", { ...ready, review: [{ ...settledItem, outcome: "cant_tell" as const }] }, as, "1 question still needs an answer before this can be approved."],
-    ["not with a number nobody backs", { ...ready, evidence: [ev("/x", "ungrounded"), ev("/y", "conflict")] }, as, "2 numbers aren't confirmed by the PDF or a person yet."],
+    ["not with a number nobody backs", { ...ready, evidence: [ev("/x", "ungrounded"), ev("/y", "conflict")] }, as, "2 numbers aren't confirmed by the PDF, the contract's own totals or a person yet."],
+    ["a number the contract's own totals confirm counts as backed", { ...ready, evidence: [ev("/x", "confirmed_by_math"), ev("/y", "attested")] }, as, null],
     ["not by whoever answered, however the name is typed", ready, { ...as, by: "asha" }, "Maker-checker is on: asha answered questions on this contract, so someone else has to approve it."],
     ["by them when maker-checker is off", ready, { ...as, by: "Asha", makerChecker: false }, null],
   ])("%s", (_, v, opts, expected) => expect(signOffRefusal(v, opts)).toBe(expected));

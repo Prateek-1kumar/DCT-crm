@@ -1,4 +1,4 @@
-import { settled, withheldPaths, type PageBox, type ProofreadMark, type RulebookVersionDto } from "@dct/shared";
+import { checkedByMachine, settled, withheldPaths, type PageBox, type ProofreadMark, type RulebookVersionDto } from "@dct/shared";
 import { api, ApiError } from "./api";
 import { isMoneyPath, labelFor } from "./format";
 import { getAt } from "./pointer";
@@ -7,7 +7,7 @@ type Box = NonNullable<PageBox["box"]>;
 type ProofCell = { path: string; label: string; value: unknown; box: Box | null };
 export type ProofSection = "terms" | "totals" | "rows";
 /** One thing to proofread: a budget-grid row, a row of visit totals, or a single fee or term. */
-export type ProofUnit = { id: string; section: ProofSection; title: string; sub: string; doc: string; page: number; cells: ProofCell[]; money: number };
+export type ProofUnit = { id: string; section: ProofSection; title: string; sub: string; doc: string; page: number; cells: ProofCell[]; money: number; byMath?: boolean };
 
 export const SECTION_LABEL: Record<ProofSection, string> = { terms: "Fees and terms", totals: "Visit totals", rows: "Budget grid rows" };
 
@@ -21,7 +21,7 @@ const VISIT_ROWS: Record<string, string> = {
 const isMoney = (path: string) => isMoneyPath(path) || path.includes("/cells/");
 
 /**
- * Everything the PDF check confirmed, grouped for proofreading and ordered biggest money first: fees and terms (those
+ * Everything the PDF check or the contract's own totals confirmed (`byMath`: some of it by the totals), grouped for proofreading and ordered biggest money first: fees and terms (those
  * that aren't amounts, like holdback % or payment days, first: they apply to everything), then visit totals, then grid
  * rows by row total. A row printed across two pages is two units, one per page. Not a value that's withheld for a blind
  * answer (the random sample re-types confirmed values): it has nothing to show, and it's checked there.
@@ -33,7 +33,7 @@ export function proofUnits(v: Pick<RulebookVersionDto, "rulebook" | "evidence" |
   const units = new Map<string, ProofUnit>();
   for (const e of v.evidence) {
     const w = e.where[0];
-    if (e.status !== "confirmed" || !w || hidden.has(e.path)) continue;
+    if (!checkedByMachine(e.status) || !w || hidden.has(e.path)) continue;
     const value = getAt(rb, e.path);
     const at = `${w.documentId}:${w.page}`;
     let key: string;
@@ -57,6 +57,7 @@ export function proofUnits(v: Pick<RulebookVersionDto, "rulebook" | "evidence" |
     }
     const u = units.get(key) ?? { ...base, cells: [], money: 0 };
     u.cells.push({ path: e.path, label, value, box: w.box });
+    if (e.status === "confirmed_by_math") u.byMath = true;
     if (typeof value === "number" && isMoney(e.path)) u.money += value;
     units.set(key, u);
   }

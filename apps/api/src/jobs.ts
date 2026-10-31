@@ -1,4 +1,4 @@
-import { Rulebook, upgradeRulebook } from "@dct/shared";
+import { excludedPagesWords, isExcludedPage, Rulebook, upgradeRulebook } from "@dct/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { FastifyBaseLogger } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -9,7 +9,7 @@ import { documents, jobs, rulebookVersions, studies, studyDocuments } from "./db
 import { appliesFromOf, audit, CARRIED, carryCorrections, carryGrid, correctionsOf, lockStudy, refreshStudyStatus } from "./domain.js";
 import { type ExtractionOutput, getExtraction, type InputDoc } from "./extraction/port.js";
 import { deleteExpiredKeys } from "./lib/idempotency.js";
-import { reviewDraft } from "./review.js";
+import { reviewDraft, solverCounts } from "./review.js";
 
 type IdentifyData = { jobId: string; studyId: string };
 type ExtractData = { jobId: string; studyId: string; version: number };
@@ -104,6 +104,12 @@ function plainWarning(w: ReadWarning): string | null {
       return "The second, independent reading failed, so nothing compared the first reading against it.";
     case "over_limit":
       return "This reading cost more than the usual limit. Tell the team.";
+    case "pages_excluded":
+      return excludedPagesWords(w.pages);
+    case "exclusion_overridden":
+      return `Every page that could be read as contract terms, items or a budget was labelled a signature record, a notice, a reference list or a blank sheet, so those pages were read after all: ${w.pages.map((p) => `page ${p.page} of “${p.filename}”`).join(", ")}. Check the reading with extra care.`;
+    case "bands_fallback":
+      return `A budget table on ${w.pages.map((p) => `page ${p.page} of “${p.filename}”`).join(", ")} couldn't be split into row groups with its column headings on each, so it was read in square pieces instead (the page's own text gave no clear rows or headings, or its print was too small for the new way). Check its numbers with extra care.`;
     case "cross_read_off":
     case "fake":
       return null;
@@ -205,7 +211,10 @@ async function studyInputDocs(db: Tx, studyId: string): Promise<InputDoc[]> {
     .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
     .where(eq(studyDocuments.studyId, studyId))
     .orderBy(studyDocuments.addedAt, documents.filename);
-  return rows.map((r) => ({ ...r, kind: r.kind as InputDoc["kind"] }));
+  // "other" is every upload's starting kind, so it counts as not chosen: the read's own guess fills it (an amendment left
+  // on "other" would skip the amendment questions). ponytail: a person who picks "other" on purpose gets the guess too;
+  // a nullable column would tell the two apart.
+  return rows.map((r) => ({ ...r, kind: r.kind === "other" ? null : (r.kind as InputDoc["kind"]) }));
 }
 
 export async function runIdentify({ db, log }: JobCtx, { jobId, studyId }: IdentifyData) {
@@ -299,6 +308,9 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
     const checked = reviewDraft(port, rulebook, anomalies, textByDoc.flat(), docs, {
       amendment: !!live || docs.some((d) => d.kind === "amendment"),
       carried: carried && live ? { from: live.version, live: carried.liveRb, skipped: carried.skipped } : null,
+      excluded: out.pages.filter(isExcludedPage),
+      solver: config.extractionSolver,
+      printedRows: out.printedRows,
     });
     const { evidence, review, pdfCheck } = checked;
     // each skipped correction with where it's asked again, so the log withholds it while that question is open
@@ -339,7 +351,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
       if (!filled.length) throw new Error(`version ${version} is no longer being read`);
       await refreshStudyStatus(tx, studyId);
       if (carriedDetail) await audit(tx, "system", studyId, CARRIED, carriedDetail);
-      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.warnings?.length ? { warnings: out.warnings.map((w) => w.text) } : {}) });
+      await audit(tx, "system", studyId, "extraction.completed", { version, anomalies: anomalies.length, questions: review.length, pdfCheck, costUsd: sum("usd"), ...(out.warnings?.length ? { warnings: out.warnings.map((w) => w.text) } : {}), ...(checked.excluded.length ? { excluded: checked.excluded } : {}), ...(checked.solver && checked.sweep ? { solver: solverCounts(checked.solver), sweep: checked.sweep } : {}) });
       await setJob(tx, jobId, { state: "succeeded", progress: 100, step: "done", error: null, errorDetail: null });
     });
   } catch (err) {

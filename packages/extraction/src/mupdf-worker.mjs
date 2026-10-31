@@ -259,6 +259,38 @@ const ops = {
         pix.destroy();
       }
     }),
+  /**
+   * A band: a w × h pixmap built from `segs` ([x0, y0, y1, top]: the upright-pixel rows y0..y1 from x0 on, drawn from row
+   * `top` down). Each is drawn through its own clip, so what one draws never spills into the next.
+   */
+  renderBand: (path, page, m, w, h, segs, gray, mask) =>
+    withPage(path, page, (p) => {
+      const pix = new mupdf.Pixmap(gray ? mupdf.ColorSpace.DeviceGray : mupdf.ColorSpace.DeviceRGB, [0, 0, w, h], false);
+      try {
+        pix.clear(255);
+        const dev = new mupdf.DrawDevice(mupdf.Matrix.identity, pix);
+        for (const [x0, y0, y1, top] of segs) {
+          const box = new mupdf.Path();
+          box.rect(0, top, w, top + (y1 - y0));
+          dev.clipPath(box, false, mupdf.Matrix.identity);
+          box.destroy();
+          const mm = [m[0], m[1], m[2], m[3], m[4] - x0, m[5] + top - y0];
+          p.run(dev, mm);
+          if (mask.length) {
+            const shape = new mupdf.Path();
+            for (const [mx0, my0, mx1, my1] of mask) shape.rect(mx0, my0, mx1, my1);
+            dev.fillPath(shape, false, mm, mupdf.ColorSpace.DeviceGray, [0], 1);
+            shape.destroy();
+          }
+          dev.popClip();
+        }
+        dev.close();
+        dev.destroy();
+        return pix.asPNG().slice();
+      } finally {
+        pix.destroy();
+      }
+    }),
 };
 
 parentPort.on("message", ({ op, args }) => {

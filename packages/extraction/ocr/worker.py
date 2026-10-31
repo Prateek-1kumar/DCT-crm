@@ -50,6 +50,20 @@ def engine(models: Path, files: dict):
         "Rec.ocr_version": v5, "Rec.model_type": mobile, "Rec.model_path": p("rec"),
         "Cls.model_path": p("cls"),
         "Global.log_level": "critical",
+        # No downscaling of the page. The engine's default shrinks anything over 2000 px on its long side, so a 300 DPI
+        # page (3300 px) is read at about 180 DPI; on a condensed-type price table that made the recogniser drop the
+        # last character of 44 of 250 amounts ("$38.00" read "$38.0", "$144.00" "$14.0"; their confidence stayed
+        # about 0.92, so confidence can't flag them). Not clipped boxes: the ink ends inside the box. At the page's own
+        # size 3 of them remain. Not monotonic: 2400 gave 88 and 2800 gave 48, so do not "split the difference".
+        # Cost, measured on 95 scanned pages: about 1 GB more memory at its peak (3.2 GB, was 2.6) and more time
+        # per page. 4200 = a legal page at 300 DPI; a bigger page is shrunk as before.
+        "Global.max_side_len": 4200,
+        # The text-line angle classifier is off. Its job is to turn upside-down lines, and ocr.ts already turns a whole
+        # page when it is sideways. On our pages it only did harm: on 95 scanned pages it flipped short numbers
+        # upside down ("930.00" read "00006", "39.00" "006E"; 12 of them on one contract) and lost about 750
+        # words of one contract's ordinary text (744 at conf >= 0.8 came back once it was off; most likely read flipped, so under the engine's 0.5 floor). With it
+        # off, no complete amount changed against the same settings with it on, and no flipped-looking token remained.
+        "Global.use_cls": False,
     })
 
 
@@ -60,8 +74,10 @@ def read(img) -> list:
         parts = r.word_results[li] if r.word_results else None
         for t, s, b in (parts if parts else [(txt, score, box)]):
             xs, ys = [float(q[0]) for q in b], [float(q[1]) for q in b]
-            if str(t).strip():
-                words.append({"text": str(t), "conf": float(s), "bbox": [min(xs), min(ys), max(xs), max(ys)], "line": li})
+            # a table rule at the edge of a cell reads as "|" ("$100.00|"): not part of the amount. A lone "|" stays a word
+            text = str(t).strip("|").strip() or str(t)
+            if text.strip():
+                words.append({"text": text, "conf": float(s), "bbox": [min(xs), min(ys), max(xs), max(ys)], "line": li})
     return words
 
 

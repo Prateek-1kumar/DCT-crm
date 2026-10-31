@@ -229,6 +229,30 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
   });
 });
 
+describe("a clause that states its figure outright isn't asked (ADR-002 §4)", () => {
+  // the binder is stubbed: it says what it confirmed, so this shows what reviewDraft does with that
+  const stated = (status: "confirmed" | "conflict") => {
+    const rb = manualRulebook({ sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0], []);
+    const prov = { source: { documentId: "d1", page: 1, quote: "billed up to $777.00 in total" }, confidence: 0.9, method: "ai" as const, crossCheck: "not_checked" as const };
+    rb.invoiceables = [{ code: null, name: "Mileage", amountCents: 67, amountWithOverheadCents: null, basis: "per_mile", frequency: "per mile", cap: { kind: "amount", n: 77700, ratio: null }, requiresPreApproval: false, requiredDocs: [], prov }];
+    const evidence = [{ path: "/invoiceables/0/cap/n", status, where: [{ documentId: "d1", page: 1, box: null }], printed: "$777.00", note: null }];
+    const port = { bindEvidence: () => ({ evidence, unaccounted: [], tableChecks: [], blankChecks: [] }), reviewFromEvidence: () => [] } as unknown as Parameters<typeof reviewDraft>[0];
+    return reviewDraft(port, rb, [], [], []).review;
+  };
+
+  it("the amount limit's kind is not a question when its figure is confirmed from its quote, and its figure is drawn into the blind sample", () => {
+    const review = stated("confirmed");
+    expect(review.some((i) => i.path === "/invoiceables/0/cap/kind")).toBe(false);
+    expect(review.filter((i) => i.reason === SAMPLE).map((i) => i.path)).toEqual(["/invoiceables/0/cap/n"]);
+  });
+
+  it("is asked, with its figure withheld, when the figure isn't confirmed", () => {
+    const review = stated("conflict");
+    expect(review.find((i) => i.path === "/invoiceables/0/cap/kind")).toMatchObject({ reason: "INTERPRETATION", blocking: true });
+    expect(review.some((i) => i.reason === SAMPLE)).toBe(false);
+  });
+});
+
 describe("the blind sample of confirmed values (ADR-001 §6)", () => {
   const CELL = "/budgetGrids/0/procedures/0/cells/V1"; // sampled with the draw pinned; the page prints 55.00
 

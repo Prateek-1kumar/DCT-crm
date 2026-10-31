@@ -173,7 +173,7 @@ export const fakeExtraction: Omit<ExtractionPort, NoAi> = {
   async identifyDocuments(docs) {
     fakeControls.calls.identify++;
     return {
-      documentKinds: Object.fromEntries(docs.map((d, i) => [d.id, kindFromName(d.filename, i)])),
+      documentKinds: Object.fromEntries(docs.map((d, i) => [d.id, d.kind ?? kindFromName(d.filename, i)])), // a kind someone chose stays, as in the real read
       studyGuess: { sponsor: "Synthetic Pharma", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test" },
     };
   },

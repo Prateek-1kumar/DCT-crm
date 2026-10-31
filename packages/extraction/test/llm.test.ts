@@ -65,6 +65,22 @@ describe("model replies (the only way model output gets in)", () => {
     expect(sent.every((r) => !("parse" in r.params.output_config!.format))).toBe(true);
   });
 
+  it("send an image's token map as text right after it, and cache through it; an image without one is sent as before", async () => {
+    type Block = { type: string; text?: string; cache_control?: object };
+    const llm = anthropicClient({ apiKey: "test" });
+    const png = Buffer.from("x");
+    replies.push({ text: '{"n": 1}' }, { text: '{"n": 1}' });
+    await llm.call({ name: "terms", system: "", prompt: "p", images: [{ label: "a", png }, { label: "b", png, tokens: [{ id: "0.1.2", text: "$5.00", box: [1, 2, 3, 4] }] }], schema: Schema, cacheImages: true });
+    await llm.call({ name: "terms", system: "", prompt: "p", images: [{ label: "a", png }, { label: "b", png }], schema: Schema, cacheImages: true });
+    const [withMap, without] = sent.map((r) => (r.params as unknown as { messages: { content: Block[] }[] }).messages[0]!.content);
+    expect(withMap!.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text", "text"]);
+    expect(withMap![4]!.text).toContain('[["0.1.2","$5.00",1,2,3,4]]');
+    expect(withMap![4]!.cache_control).toBeDefined();
+    expect(withMap![3]!.cache_control).toBeUndefined();
+    expect(without!.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text"]);
+    expect(without![3]!.cache_control).toBeDefined();
+  });
+
   it("hand the read's abort signal to each request, so one in flight is cancelled", async () => {
     const stop = new AbortController();
     replies.push({ text: '{"n": 1}' });

@@ -1,12 +1,23 @@
 import { RulebookVersionDto, withheldPaths } from "@dct/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockRequest, mockReset } from "./mock/server";
+import { EVIDENCE } from "../components/review-context";
 import { proofUnits, reportWrong, unitStatus } from "./proofread";
 
 const version = async () => RulebookVersionDto.parse((await mockRequest("GET", "/studies/st-northwind/versions/1", undefined)).json);
 
 describe("proofread units", () => {
   beforeEach(() => mockReset());
+
+  it("proofreads a value the contract's own totals confirm, and says so in plain words", async () => {
+    const v = await version();
+    const [math] = v.evidence.filter((e) => e.status === "confirmed_by_math");
+    expect(math).toBeDefined();
+    const unit = proofUnits(v).find((u) => u.cells.some((c) => c.path === math!.path));
+    expect(unit?.byMath).toBe(true);
+    expect(EVIDENCE.confirmed_by_math.label).toBe("Confirmed by the contract's own totals");
+    expect(EVIDENCE.confirmed_by_math.label).not.toBe(EVIDENCE.confirmed.label);
+  });
 
   it("groups confirmed values into terms, visit totals and grid rows, biggest money first", async () => {
     const v = await version();
@@ -20,7 +31,7 @@ describe("proofread units", () => {
     const open = new Set(withheldPaths(v));
     expect(open.has("/screenFail/cap/ratio")).toBe(true);
     expect(v.review.some((i) => i.reason === "SAMPLE" && v.evidence.some((e) => e.path === i.path && e.status === "confirmed"))).toBe(true);
-    const confirmed = v.evidence.filter((e) => e.status === "confirmed" && e.where[0] && !open.has(e.path)).map((e) => e.path);
+    const confirmed = v.evidence.filter((e) => (e.status === "confirmed" || e.status === "confirmed_by_math") && e.where[0] && !open.has(e.path)).map((e) => e.path);
     expect(units.flatMap((u) => u.cells.map((c) => c.path)).sort()).toEqual([...confirmed].sort());
 
     const rows = units.filter((u) => u.section === "rows");

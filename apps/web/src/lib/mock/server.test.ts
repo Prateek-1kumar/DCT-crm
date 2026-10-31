@@ -114,7 +114,9 @@ describe("mock API", () => {
     expect(nw.review).toHaveLength(25);
     expect(nw.review.filter((i) => i.reason === SAMPLE)).toHaveLength(10);
     expect(nw.review.filter((i) => i.kind === "interpretation").map((i) => i.reason)).toEqual(["AMBIGUOUS_TERM", ...Array(10).fill("INTERPRETATION")]);
-    expect(nw.pdfCheck!.matched).toBe(nw.pdfCheck!.values - 1);
+    // one value the contract's own totals confirm (not the PDF's text) is in the fixture, as the one the PDF disagreed with
+    expect(nw.pdfCheck!.matched).toBe(nw.pdfCheck!.values - 2);
+    expect(nw.evidence.filter((e) => e.status === "confirmed_by_math")).toHaveLength(1);
     expect(RulebookVersionDto.parse(await get("/studies/st-cobalt/versions/1")).pdfCheck).toBeNull();
     const ha = RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"));
     expect(ha.review.every((i) => i.outcome !== null)).toBe(true);
@@ -560,7 +562,7 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
     const request = await reloadWith((s) => void (versionIn(s, "st-northwind", 1).evidence.find((e) => e.status === "confirmed" || e.status === "attested")!.status = "ungrounded"));
     const asOf = RulebookVersionDto.parse((await request("GET", "/studies/st-northwind/versions/1", undefined)).json).updatedAt;
     const res = await request("POST", "/studies/st-northwind/versions/1/sign-off", { by: "Morgan Lee", asOf });
-    expect([res.status, (res.json as { message: string }).message]).toEqual([409, "1 number isn't confirmed by the PDF or a person yet."]);
+    expect([res.status, (res.json as { message: string }).message]).toEqual([409, "1 number isn't confirmed by the PDF, the contract's own totals or a person yet."]);
   }, 30_000);
 
   it("asks a total that doesn't add up once its grid's typed numbers are re-typed (recheck)", async () => {

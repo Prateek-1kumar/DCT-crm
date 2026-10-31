@@ -1,6 +1,6 @@
 "use client";
 
-import { sampleMisses, sampleMissWords, settled, withheldPaths, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { checkedByMachine, sampleMisses, sampleMissWords, settled, withheldPaths, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
 import Link from "next/link";
@@ -211,7 +211,7 @@ function StepHead({ n, title, sub }: { n: number; title: string; sub: ReactNode 
 function Summary({ version, terms }: { version: RulebookVersionDto; terms: KeyTerm[] }) {
   const rb = version.rulebook!;
   const ev = (s: string) => version.evidence.filter((e) => e.status === s).length;
-  const checked = version.evidence.filter((e) => e.status === "confirmed").length;
+  const checked = version.evidence.filter((e) => checkedByMachine(e.status)).length;
   const proofed = (version.proofread ?? []).length;
   const people = [...new Set(version.review.flatMap((i) => (i.answer ? [i.answer.by] : [])))];
   const handBilled = rb.unclassified.length;
@@ -219,6 +219,7 @@ function Summary({ version, terms }: { version: RulebookVersionDto; terms: KeyTe
   const perPatient = terms.find((t) => t.id.startsWith("patient-"));
   const rows: [string, ReactNode][] = [
     ...(version.pdfCheck ? ([["Matched the PDF", <span key="m" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-ok" />{ev("confirmed").toLocaleString("en-US")}</span>]] as [string, ReactNode][]) : []),
+    ...(ev("confirmed_by_math") ? ([["Confirmed by the contract's own totals", <span key="t" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-ok" />{ev("confirmed_by_math").toLocaleString("en-US")}</span>]] as [string, ReactNode][]) : []),
     ["Confirmed by people", <span key="c" className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-info" />{ev("attested")}</span>],
     ...(unprinted ? ([["Not in the PDF text", <span key="u" className="text-warn">{unprinted}</span>]] as [string, ReactNode][]) : []),
     ["Proofread", `${proofed.toLocaleString("en-US")} of ${checked.toLocaleString("en-US")}`],
@@ -508,7 +509,7 @@ function Sign(p: {
   const diff = useDiff(study.id, live && live < version.version ? version.version : null, live);
   const want = by ? initials(by) : "";
   const signed = !!want && typed.trim().toUpperCase() === want;
-  const checked = version.evidence.filter((e) => e.status === "confirmed").length;
+  const checked = version.evidence.filter((e) => checkedByMachine(e.status)).length;
   const proofed = (version.proofread ?? []).length;
   const handBilled = version.rulebook!.unclassified;
   const qc = useQueryClient();

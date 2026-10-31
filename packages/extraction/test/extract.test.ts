@@ -5,12 +5,12 @@ import { Rulebook } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runContractChecks } from "../src/checks";
-import { type Clients, CONFIG, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc } from "../src/extract";
+import { type Clients, CONFIG, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc, isNonContent } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { CostEntry, LlmClient, LlmRequest } from "../src/llm";
-import type { AiGrid, AiTerms } from "../src/prompts";
+import { AiPages, type AiGrid, type AiTerms } from "../src/prompts";
 import { pageCount, renderTiles } from "../src/render";
-import { readTextLayer } from "../src/textlayer";
+import { readTextLayer, type TextPage, type Word } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
 /** 3-page synthetic PDF: portrait text-ish page, a landscape "grid" page, a blank page. */
@@ -117,6 +117,30 @@ describe("extractWith (mocked AI)", () => {
 
     const codes = runContractChecks(out.rulebook, { crossRead: out.crossRead, pages: out.pages, notes: out.notes }).map((a) => a.code);
     expect(codes).toEqual(expect.arrayContaining(["AI_DISAGREEMENT", "UNREADABLE_PAGE", "AMBIGUOUS_TERM"]));
+  });
+
+  it("takes the quantity and row total the grid read says a row prints out of the rulebook, as printedRows for the binder", async () => {
+    const rb = makeRulebook();
+    const base = mockClient("anthropic", rb);
+    const primary: LlmClient = {
+      ...base,
+      async call<T>(req: LlmRequest<T>): Promise<T> {
+        const out = await base.call(req);
+        if (req.name === "grid") {
+          const p = (out as unknown as { grids: { procedures: Record<string, unknown>[] }[] }).grids[0]!.procedures;
+          Object.assign(p[0]!, { printedQty: 2, printedRowTotalCents: 60000 });
+          Object.assign(p[1]!, { printedQty: null });
+        }
+        return out;
+      },
+    };
+    const out = await extractWith({ documents: docs }, { primary, cross: null });
+    expect(out.printedRows).toEqual([{ grid: 0, procedure: 0, qty: 2, totalCents: 60000 }]);
+    // never in the rulebook
+    expect(JSON.stringify(out.rulebook)).not.toMatch(/printedQty|printedRowTotalCents/);
+    expect(Rulebook.parse(out.rulebook)).toBeTruthy();
+    // a read that gives none has none
+    expect((await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: null })).printedRows).toBeUndefined();
   });
 
   it("skips the cross-read without an OpenAI client, and survives a cross-read failure", async () => {
@@ -240,7 +264,9 @@ describe("EXTRACTION_FAKE=1", () => {
     expect(Rulebook.parse(out.rulebook).documents.map((d) => d.id)).toEqual(["a", "b"]);
     expect(JSON.stringify(out)).not.toMatch(/doc-1|doc-2/);
     const codes = new Set(runContractChecks(out.rulebook, { crossRead: out.crossRead, pages: out.pages, notes: out.notes }).map((a) => a.code));
-    for (const c of ["GRID_CONFLICT", "MISSING_REFERENCED_DOC", "DUPLICATE_ITEM", "AI_DISAGREEMENT", "REQUIRED_MISSING", "UNREADABLE_PAGE", "AMBIGUOUS_TERM"]) expect(codes).toContain(c);
+    for (const c of ["GRID_CONFLICT", "MISSING_REFERENCED_DOC", "AI_DISAGREEMENT", "REQUIRED_MISSING", "UNREADABLE_PAGE", "AMBIGUOUS_TERM"]) expect(codes).toContain(c);
+    // the fake read's grid row and invoiceable share a name: a scheduled-visit price and a separate one, not a duplicate (ADR-002)
+    expect(codes).not.toContain("DUPLICATE_ITEM");
   });
 });
 
@@ -290,5 +316,186 @@ describe("gridMismatches (triggers a max-effort re-read)", () => {
     expect(gridMismatches([misreadTotal])).toBe(1);
     const misreadCell = grid([visit("V1", 50000, 20000, 10000, 80000)], [proc("procedure", [["V1", 58000]]), proc("non_procedure", [["V1", 10000]])]);
     expect(gridMismatches([misreadCell])).toBe(1);
+  });
+});
+
+/** A synthetic PDF of text pages (each long enough to count as a real text layer). */
+function textPdf(pages: string[]): string {
+  const doc = new mupdf.PDFDocument();
+  const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+  const filler = "This page continues the agreement between the parties as set out above in full detail and without change.";
+  for (const first of pages) {
+    const lines = [first, filler, filler, filler];
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, lines.map((t, i) => `BT /F1 9 Tf 40 ${732 - 20 * i} Td (${t}) Tj ET\n`).join("")));
+  }
+  const path = join(mkdtempSync(join(tmpdir(), "dct-extract-")), "text.pdf");
+  writeFileSync(path, doc.saveToBuffer("").asUint8Array());
+  return path;
+}
+
+type Classed = { page: number; kind: string; readable?: boolean; gridGroup?: string | null }[];
+/** A mock whose classifier returns the given pages. */
+function classifying(pages: Classed, seen: Seen[]): LlmClient {
+  const c = mockClient("anthropic", makeRulebook(), seen);
+  const call = c.call.bind(c);
+  c.call = (req) => (req.name === "classify" ? Promise.resolve(req.schema.parse({ pages: pages.map((p) => ({ readable: true, rotation: 0, gridGroup: null, ...p })) }) as never) : call(req));
+  return c;
+}
+
+describe("pages that aren't read (e-signature records and notices, reference lists)", () => {
+  const input = (path: string): InputDoc[] => [{ id: "d1", filename: "text.pdf", path, kind: null }];
+  const saved = { maxUsd: CONFIG.maxUsd };
+  beforeEach(() => Object.assign(CONFIG, { maxUsd: 100 }));
+  afterEach(() => Object.assign(CONFIG, saved));
+
+  it("sends them to neither the terms read nor a grid read, and lists them in a warning", async () => {
+    const path = textPdf(["Payment terms of the agreement.", "Certificate of completion, signers and timestamps.", "Notice about electronic records, consent and paper copies.", "Appendix: a list of product codes."]);
+    const seen: Seen[] = [];
+    const out = await extractWith(
+      { documents: input(path) },
+      { primary: classifying([{ page: 1, kind: "terms" }, { page: 2, kind: "esign_certificate" }, { page: 3, kind: "esign_disclosure" }, { page: 4, kind: "reference_appendix" }], seen), cross: null },
+    );
+    expect(seen.find((s) => s.name === "terms")!.labels).toEqual(["documentId d1, page 1"]);
+    expect(out.pages.map((p) => p.kind)).toEqual(["terms", "esign_certificate", "esign_disclosure", "reference_appendix"]);
+    const w = out.warnings.find((x) => x.kind === "pages_excluded")!;
+    expect(w.kind === "pages_excluded" && w.pages.map((p) => [p.filename, p.page, p.kind, p.money])).toEqual([
+      ["text.pdf", 2, "esign_certificate", false],
+      ["text.pdf", 3, "esign_disclosure", false],
+      ["text.pdf", 4, "reference_appendix", false],
+    ]);
+  });
+
+  it("trusts the label of a page with a dollar amount, and the warning marks it", async () => {
+    const path = textPdf(["Payment terms of the agreement.", "Certificate of completion. Start-up fee $1,500.00 per site."]);
+    const seen: Seen[] = [];
+    const out = await extractWith({ documents: input(path) }, { primary: classifying([{ page: 1, kind: "terms" }, { page: 2, kind: "esign_certificate" }], seen), cross: null });
+    // the classifier's label rules (ADR-002): the page isn't read, but nobody can miss that it prints an amount
+    expect(seen.find((s) => s.name === "terms")!.labels).toEqual(["documentId d1, page 1"]);
+    const w = out.warnings.find((x) => x.kind === "pages_excluded")!;
+    expect(w.kind === "pages_excluded" && w.pages).toEqual([{ documentId: "d1", filename: "text.pdf", page: 2, kind: "esign_certificate", money: true }]);
+  });
+
+  it("reads everything when every page would be excluded (a read of nothing loses the contract)", async () => {
+    const path = textPdf(["Certificate of completion.", "Notice about electronic records."]);
+    const seen: Seen[] = [];
+    const out = await extractWith({ documents: input(path) }, { primary: classifying([{ page: 1, kind: "esign_certificate" }, { page: 2, kind: "esign_disclosure" }], seen), cross: null });
+    expect(seen.find((s) => s.name === "terms")!.labels).toEqual(["documentId d1, page 1", "documentId d1, page 2"]);
+    expect(out.pages.map((p) => p.kind)).toEqual(["terms", "terms"]);
+    expect(out.warnings.some((x) => x.kind === "pages_excluded")).toBe(false);
+  });
+
+  it("splits budget grids by the arm or cohort key the classifier gives, ignoring case and spacing", async () => {
+    const path = textPdf(["Budget one.", "Budget two.", "Budget three.", "Budget four."]);
+    const seen: Seen[] = [];
+    await extractWith(
+      { documents: input(path) },
+      { primary: classifying([{ page: 1, kind: "budget_grid", gridGroup: "Arm De Novo" }, { page: 2, kind: "budget_grid", gridGroup: "arm  de novo" }, { page: 3, kind: "budget_grid", gridGroup: "Arm: Rollover" }, { page: 4, kind: "budget_grid", gridGroup: "Arm: Rollover" }], seen), cross: null },
+    );
+    const grids = seen.filter((s) => s.name === "grid").map((s) => [...new Set(s.labels.map((l) => /page (\d)/.exec(l)![1]))].join(","));
+    expect(grids.sort()).toEqual(["1,2", "3,4"]);
+  });
+
+  it("says a scan's excluded pages could not be checked for amounts (money null), where a text page says true or false", async () => {
+    const seen: Seen[] = [];
+    const out = await extractWith({ documents: docs }, { primary: classifying([{ page: 1, kind: "terms" }, { page: 2, kind: "esign_certificate" }, { page: 3, kind: "terms" }], seen), cross: null });
+    const w = out.warnings.find((x) => x.kind === "pages_excluded")!;
+    expect(w.kind === "pages_excluded" && w.pages.map((p) => p.money)).toEqual([null]); // the synthetic pages have no text and SCAN_OCR=0: nothing could read them
+    expect(w.text).toContain("could not be checked for amounts");
+    const text = textPdf(["Payment terms.", "Certificate of completion."]);
+    const out2 = await extractWith({ documents: input(text) }, { primary: classifying([{ page: 1, kind: "terms" }, { page: 2, kind: "esign_certificate" }], seen), cross: null });
+    const w2 = out2.warnings.find((x) => x.kind === "pages_excluded")!;
+    expect(w2.kind === "pages_excluded" && w2.pages.map((p) => p.money)).toEqual([false]);
+  });
+
+  it("reads the excluded kinds as terms when no page of a read kind is left (a signature page alone doesn't carry a contract), and says so", async () => {
+    const path = textPdf(["Signature page.", "Certificate of completion.", "Notice about electronic records.", "Appendix: product codes."]);
+    const seen: Seen[] = [];
+    const out = await extractWith(
+      { documents: input(path) },
+      { primary: classifying([{ page: 1, kind: "signatures" }, { page: 2, kind: "esign_certificate" }, { page: 3, kind: "esign_disclosure" }, { page: 4, kind: "reference_appendix" }], seen), cross: null },
+    );
+    expect(out.pages.map((p) => p.kind)).toEqual(["signatures", "terms", "terms", "terms"]);
+    expect(seen.find((s) => s.name === "terms")!.labels).toEqual(["documentId d1, page 2", "documentId d1, page 3", "documentId d1, page 4"]);
+    expect(out.warnings.some((x) => x.kind === "pages_excluded")).toBe(false);
+    const w = out.warnings.find((x) => x.kind === "exclusion_overridden")!;
+    expect(w.kind === "exclusion_overridden" && w.pages.map((p) => [p.page, p.kind])).toEqual([[2, "esign_certificate"], [3, "esign_disclosure"], [4, "reference_appendix"]]);
+  });
+
+  it("keeps a budget_grid page's own kind when that fallback fires (an unreadable one doesn't count as left to read)", async () => {
+    const path = textPdf(["Budget.", "Certificate of completion."]);
+    const out = await extractWith({ documents: input(path) }, { primary: classifying([{ page: 1, kind: "budget_grid", readable: false, gridGroup: "Arm A" }, { page: 2, kind: "esign_certificate" }], []), cross: null });
+    expect(out.pages.map((p) => p.kind)).toEqual(["budget_grid", "terms"]);
+    expect(out.warnings.some((x) => x.kind === "exclusion_overridden")).toBe(true);
+  });
+
+  it("keeps symbols in the arm key: '>=18' and '<18', 'Arm A' and 'Arm A+' are different grids; case and spacing aren't", async () => {
+    const path = textPdf(["One.", "Two.", "Three.", "Four.", "Five.", "Six."]);
+    const seen: Seen[] = [];
+    await extractWith(
+      { documents: input(path) },
+      {
+        primary: classifying([
+          { page: 1, kind: "budget_grid", gridGroup: "Part A (>=18)" }, { page: 2, kind: "budget_grid", gridGroup: "Part A (<18)" },
+          { page: 3, kind: "budget_grid", gridGroup: "Arm A" }, { page: 4, kind: "budget_grid", gridGroup: "Arm A+" },
+          { page: 5, kind: "budget_grid", gridGroup: "arm a" }, { page: 6, kind: "budget_grid", gridGroup: "Arm  A" },
+        ], seen),
+        cross: null,
+      },
+    );
+    const grids = seen.filter((s) => s.name === "grid").map((s) => [...new Set(s.labels.map((l) => /page (\d)/.exec(l)![1]))].join(","));
+    expect(grids.sort()).toEqual(["1", "2", "3", "4", "5,6"]);
+  });
+
+  it("still accepts the kinds stored before the exclusion kinds, including boilerplate", () => {
+    for (const kind of ["terms", "budget_grid", "invoiceables", "signatures", "boilerplate"]) expect(AiPages.parse({ pages: [{ page: 1, kind, readable: true, rotation: 0, gridGroup: null }] }).pages[0]!.kind).toBe(kind);
+  });
+});
+
+describe("a page with nothing to read (a blank separator or cover sheet), told from its own words", () => {
+  const word = (text: string, y: number, conf?: number): Word => ({ text, rect: [72, y, 120, y + 10], dir: 0, block: 0, line: 0, hidden: false, ...(conf !== undefined ? { conf } : {}) });
+  const page = (words: Word[], over: Partial<TextPage> = {}): TextPage => ({ documentId: "d1", page: 1, width: 612, height: 792, source: "text", words, hidden: 0, largePicture: false, ...over });
+  const few = ["Study", "binder", "section", "divider"].map((t, i) => word(t, 300 + 12 * i));
+
+  it("is non-content: fewer than ten words outside the header and footer, no digit, no table or picture; a page number in the footer doesn't count", () => {
+    expect(isNonContent(page([]))).toBe(true);
+    expect(isNonContent(page(few))).toBe(true);
+    expect(isNonContent(page([...few, word("Page 7", 760), word("Confidential 2026", 20)]))).toBe(true);
+    expect(isNonContent(page(few.map((w) => ({ ...w })), { source: "ocr" }))).toBe(true); // our own OCR's words, all read with confidence
+    expect(isNonContent(page(few.map((w) => ({ ...w, conf: 0.95 })), { source: "ocr" }))).toBe(true);
+  });
+
+  it("is read when unsure: ten words, a digit, a money word or sign, a table, a picture, hidden text, unread ink, a scan without our OCR, unsure OCR words", () => {
+    const ten = Array.from({ length: 10 }, (_, i) => word(`word${i === 0 ? "" : "x".repeat(i)}`, 100 + 12 * i));
+    expect(isNonContent(page(ten))).toBe(false);
+    expect(isNonContent(page([...few, word("Schedule 2", 400)]))).toBe(false);
+    expect(isNonContent(page([...few, word("No", 400), word("holdback", 412), word("applies", 424)]))).toBe(false); // a term the sweep must see
+    expect(isNonContent(page([...few, word("Fee", 400)]))).toBe(false);
+    expect(isNonContent(page([...few, word("$", 400)]))).toBe(false);
+    expect(isNonContent(page([...few, word("5%", 760)]))).toBe(false); // not even in the footer
+    expect(isNonContent(page(few, { grids: [{ box: [0, 0, 10, 10], xs: [0, 10], ys: [0, 10] }] }))).toBe(false);
+    expect(isNonContent(page(few, { largePicture: true }))).toBe(false);
+    expect(isNonContent(page(few, { hidden: 2 }))).toBe(false);
+    expect(isNonContent(page(few, { drawn: true }))).toBe(false);
+    expect(isNonContent(page(few, { source: "ocr", unread: [{ documentId: "d1", page: 1, box: [0.1, 0.1, 0.1, 0.1] }] }))).toBe(false);
+    expect(isNonContent(page(few.map((w) => ({ ...w, conf: 0.5 })), { source: "ocr" }))).toBe(false);
+    for (const source of ["image_only", "ocr_layer"] as const) expect(isNonContent(page([], { source }))).toBe(false);
+    expect(isNonContent(undefined)).toBe(false);
+  });
+
+  it("a blank page in a PDF is excluded like the other kinds, never sent to a model, and listed in the warning", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const filler = "This page continues the agreement between the parties as set out above in full detail and without change.";
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, ["Payment terms of the agreement.", filler, filler, filler].map((t, i) => `BT /F1 9 Tf 40 ${732 - 20 * i} Td (${t}) Tj ET\n`).join("")));
+    // a page with under 200 characters reads as a scan (textPage), which only our OCR's words can vouch for: these are few words, long
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, [400, 380].map((y) => `BT /F1 9 Tf 40 ${y} Td (${Array(4).fill("abcdefghijklmnopqrstuvwxyz").join(" ")}) Tj ET\n`).join("")));
+    const path = join(mkdtempSync(join(tmpdir(), "dct-extract-")), "sparse.pdf");
+    writeFileSync(path, doc.saveToBuffer("").asUint8Array());
+    const seen: Seen[] = [];
+    const out = await extractWith({ documents: [{ id: "d1", filename: "sparse.pdf", path, kind: null }] }, { primary: classifying([{ page: 1, kind: "terms" }, { page: 2, kind: "terms" }], seen), cross: null });
+    expect(seen.find((x) => x.name === "terms")!.labels).toEqual(["documentId d1, page 1"]);
+    expect(out.pages.map((p) => p.kind)).toEqual(["terms", "non_content"]);
+    const w = out.warnings.find((x) => x.kind === "pages_excluded")!;
+    expect(w.kind === "pages_excluded" && w.pages.map((p) => [p.page, p.kind, p.money])).toEqual([[2, "non_content", false]]);
   });
 });

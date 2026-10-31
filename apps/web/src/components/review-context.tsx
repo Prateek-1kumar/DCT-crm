@@ -34,6 +34,7 @@ export function useRulebook(): RulebookCtx {
 
 export const EVIDENCE: Record<ValueEvidence["status"], { label: string; cls: string }> = {
   confirmed: { label: "Matches the PDF", cls: "bg-ok" },
+  confirmed_by_math: { label: "Confirmed by the contract's own totals", cls: "bg-ok" },
   attested: { label: "Confirmed by a person", cls: "bg-info" },
   conflict: { label: "Needs you", cls: "bg-warn" },
   ungrounded: { label: "Needs you", cls: "bg-warn" },
@@ -71,7 +72,7 @@ export function Val({ path, children }: { path: string; children: ReactNode }) {
 export function DotLegend() {
   return (
     <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-      {(["confirmed", "attested", "conflict"] as const).map((s) => (
+      {(["confirmed", "confirmed_by_math", "attested", "conflict"] as const).map((s) => (
         <span key={s} className="inline-flex items-center gap-1.5">
           <Dot status={s} /> {EVIDENCE[s].label}
         </span>

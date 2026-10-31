@@ -257,6 +257,7 @@ function ApproveCard({ study, draft }: { study: StudyDetailDto; draft: RulebookV
           <p className="text-title font-semibold tracking-tight">Ready for approval</p>
           <p className="num text-small text-muted">
             {draft.pdfCheck ? `${ev("confirmed").toLocaleString("en-US")} matched the PDF · ` : ""}
+            {ev("confirmed_by_math") ? `${ev("confirmed_by_math").toLocaleString("en-US")} confirmed by the contract's own totals · ` : ""}
             {ev("attested")} confirmed by people{cant ? ` · ${cant} couldn't tell` : ""}
           </p>
         </div>
@@ -486,7 +487,7 @@ function Overview({ study, version, draft, rechecks }: { study: StudyDetailDto; 
           <div>
             <h3 className="text-body font-semibold tracking-tight">How the numbers were checked</h3>
             <p className="num mt-1 text-small text-muted">
-              {count("confirmed").toLocaleString("en-US")} of {numbers.toLocaleString("en-US")} match the PDF · {count("attested")} confirmed by a person
+              {count("confirmed").toLocaleString("en-US")} of {numbers.toLocaleString("en-US")} match the PDF · {count("confirmed_by_math") > 0 && `${count("confirmed_by_math").toLocaleString("en-US")} confirmed by the contract's own totals · `}{count("attested")} confirmed by a person
               {count("conflict") + count("ungrounded") > 0 && ` · ${count("conflict") + count("ungrounded")} still need you`}
               {` · ${proofread} proofread by someone`}
             </p>

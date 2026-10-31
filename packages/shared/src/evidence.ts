@@ -18,8 +18,8 @@ export type PageBox = z.infer<typeof PageBox>;
 export const ValueEvidence = z.object({
   /** JSON pointer into the rulebook, e.g. "/budgetGrids/0/procedures/3/cells/V2". */
   path: z.string(),
-  /** confirmed: the PDF text at that spot says the same · attested: a person typed or chose it · conflict: the PDF text says otherwise · ungrounded: not found on the page. */
-  status: z.enum(["confirmed", "attested", "conflict", "ungrounded"]),
+  /** confirmed: the PDF text at that spot says the same · confirmed_by_math: the contract's own arithmetic (row, column, overhead and visit-total sums) proves it, whatever the text says at that spot · attested: a person typed or chose it · conflict: the PDF text says otherwise · ungrounded: not found on the page. */
+  status: z.enum(["confirmed", "confirmed_by_math", "attested", "conflict", "ungrounded"]),
   where: z.array(PageBox),
   /** Text printed at that spot, e.g. "4,295.00"; null when nothing was found. */
   printed: z.string().nullable(),
@@ -37,6 +37,9 @@ export const ValueEvidence = z.object({
   blank: z.string().optional(),
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
+
+/** Backed by the PDF's text or the contract's own sums, not a person: what the blind sample draws and a sample miss makes proofread. */
+export const checkedByMachine = (status: ValueEvidence["status"]) => status === "confirmed" || status === "confirmed_by_math";
 
 /** Cells the read calls "invoiceable" in a table that prints them blank: one blind question per table (reason BLANK_INVOICEABLE, its id = `id`). */
 export type BlankCheck = {
@@ -68,6 +71,55 @@ export type TableCheck = {
  */
 export const ReviewKind = z.enum(["confirm_value", "unaccounted", "contract_problem", "interpretation", "unclassified"]);
 export type ReviewKind = z.infer<typeof ReviewKind>;
+
+/**
+ * Page kinds (the classifier's, kept with a version's pages) that are neither read by the model nor swept for money terms
+ * (ADR-002): an e-signature record, an e-signature legal notice, a reference list with no payment terms, a blank separator or
+ * cover sheet ("non_content": also found without the classifier, from the page's own words, see extract.ts). Versions stored
+ * before them hold only the older kinds ("boilerplate" included), which are read and swept as before.
+ */
+export const EXCLUDED_PAGE_KINDS = ["esign_certificate", "esign_disclosure", "reference_appendix", "non_content"] as const;
+export const isExcludedPage = (p: { kind: string }) => (EXCLUDED_PAGE_KINDS as readonly string[]).includes(p.kind);
+
+const WHAT_EXCLUDED: Record<(typeof EXCLUDED_PAGE_KINDS)[number], string> = {
+  esign_certificate: "an e-signature record",
+  esign_disclosure: "an e-signature legal notice",
+  reference_appendix: "a reference list with no payment terms",
+  non_content: "a blank separator or cover sheet with no numbers",
+};
+
+/** "13", "13–14", "3, 13–14": consecutive page numbers run together. */
+function pageRuns(pages: number[]): string {
+  const runs: string[] = [];
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  for (let i = 0; i < sorted.length; ) {
+    let j = i;
+    while (sorted[j + 1] === sorted[j]! + 1) j++;
+    runs.push(j > i ? `${sorted[i]}–${sorted[j]}` : `${sorted[i]}`);
+    i = j + 1;
+  }
+  return runs.join(", ");
+}
+
+/**
+ * What a draft says about the pages that weren't read: which, why, and where to look (the page viewer in Documents). A page
+ * that prints a dollar amount is named, because the classifier can be wrong and an amount there is in no part of the master;
+ * so is one whose amounts couldn't be checked (`money: null`: a scan with no text reading), which is said not to be clear.
+ */
+export function excludedPagesWords(pages: { filename: string; page: number; kind: string; money?: boolean | null }[]): string {
+  const parts = [...new Set(pages.map((p) => p.filename))].flatMap((filename) =>
+    (Object.keys(WHAT_EXCLUDED) as (keyof typeof WHAT_EXCLUDED)[]).flatMap((kind) => {
+      const these = pages.filter((p) => p.filename === filename && p.kind === kind);
+      return these.length ? [`page${these.length === 1 ? "" : "s"} ${pageRuns(these.map((p) => p.page))} of “${filename}” (${WHAT_EXCLUDED[kind]})`] : [];
+    }),
+  );
+  const where = (these: typeof pages) => [...new Set(these.map((p) => p.filename))].map((f) => `page${these.filter((p) => p.filename === f).length === 1 ? "" : "s"} ${pageRuns(these.filter((p) => p.filename === f).map((p) => p.page))} of “${f}”`).join("; ");
+  const [money, unknown] = [pages.filter((p) => p.money), pages.filter((p) => p.money === null)];
+  const check =
+    (money.length ? ` ${money.length === 1 ? "One of them prints" : "Some of them print"} a dollar amount: ${where(money)}. Look at ${money.length === 1 ? "it" : "them"} first.` : "") +
+    (unknown.length ? ` The amounts on ${where(unknown)} could not be checked, so look at ${unknown.length === 1 ? "it" : "them"} first and add any fee by hand.` : "");
+  return `These pages weren't read or searched for money terms, because they look like an e-signature record, an e-signature notice, a reference list or a blank separator or cover sheet: ${parts.join("; ")}.${check} Open them in Documents to make sure. A fee or payment on one of them is not in the invoicing master, so add it yourself.`;
+}
 
 /** Who did something: the name picked in "Who's working today?". Edge spaces are dropped, so one person is one name. */
 export const Person = z.string().trim().min(1);

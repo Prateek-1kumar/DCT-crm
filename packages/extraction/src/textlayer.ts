@@ -112,7 +112,7 @@ export function visualLines(words: Word[]): Word[][] {
  * The sweep's keywords, ADR-001 §3. Prefixes on purpose: "pay" covers payment, payable. "cap" only as "cap of / capped at":
  * a medication list's "cap" (capsule) otherwise makes every dose line a money sentence.
  */
-const KEYWORDS = {
+export const KEYWORDS = {
   money: /\b(?:pay|paid|invoic|fees?\b|cost|reimburs|overhead|indirect|f\s?&\s?a\b|holdback|withh|retain|refund|offset|interest|late\b|cap(?:ped)?\s(?:of|at|on)\b|not to exceed|escalat|increas|stipend|screen[\s-]?fail|terminat|budget|compensat)/i,
   /** A sentence with one of these is money-relevant even without a number: the sweep behind "no holdback", "no cap"... */
   absence: /\b(?:holdback|withh|retain|interest|late\b|escalat|increas|inflation|not to exceed|maximum|cap(?:ped)?\s(?:of|at|on)\b|screen[\s-]?fail|terminat)/i,

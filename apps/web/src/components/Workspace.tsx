@@ -147,6 +147,13 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
             <span>
               <span className="font-medium">{EVIDENCE[ev.status].label}.</span>{" "}
               {ev.status === "confirmed" && ev.printed && <span className="text-muted">The page prints “{ev.printed}” here.</span>}
+              {ev.status === "confirmed_by_math" && (
+                <span className="text-muted">
+                  The contract&apos;s own rows, columns and totals add up to it.
+                  {/* a sum that balances can still sit beside a printed number that differs: say so, so nobody reads it as the page agreeing */}
+                  {ev.printed ? ` The page prints “${ev.printed}” here, which may be a misreading of the scan.` : " The page's text wasn't used."}
+                </span>
+              )}
               {ev.status === "attested" && <span className="text-muted">A person typed or chose it from the contract.</span>}
               {ev.status === "conflict" && <span className="text-muted">The page prints {ev.printed ? `“${ev.printed}”` : "something else"} here.</span>}
               {ev.status === "ungrounded" && <span className="text-muted">It couldn&apos;t be found on the page.</span>}

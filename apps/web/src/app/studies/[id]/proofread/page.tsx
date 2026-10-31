@@ -349,8 +349,10 @@ function Panel(p: {
         <p className="flex items-start gap-2 text-small text-muted">
           <Info className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
           {row
-            ? `These ${u.cells.length} numbers already matched the PDF's own text. Compare our row with the PDF's row above it.`
-            : "This number already matched the PDF's own text. Compare ours with the close-up."}
+            ? `These ${u.cells.length} numbers ${u.byMath ? "were already confirmed by the contract's own totals or the PDF's own text" : "already matched the PDF's own text"}. Compare our row with the PDF's row above it.`
+            : u.byMath
+              ? "This number was already confirmed by the contract's own totals. Compare ours with the close-up."
+              : "This number already matched the PDF's own text. Compare ours with the close-up."}
         </p>
       </div>
 

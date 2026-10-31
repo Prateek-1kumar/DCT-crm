@@ -264,7 +264,7 @@ describe("5. every question holds approval; a Review question clears by a choice
     const set = (evidence: typeof row.evidence) => built.ctx.db.update(rulebookVersions).set({ evidence }).where(eq(rulebookVersions.id, row.id));
     await set(row.evidence.map((e) => (e.path === FEE ? { ...e, status: "ungrounded" as const } : e)));
     expect((await version(studyId)).review.every((i) => i.outcome !== null && i.outcome !== "differs" && i.outcome !== "cant_tell")).toBe(true);
-    expect((await signOff(app, studyId, 1, { by: "Ben" })).json()).toMatchObject({ statusCode: 409, message: "1 number isn't confirmed by the PDF or a person yet." });
+    expect((await signOff(app, studyId, 1, { by: "Ben" })).json()).toMatchObject({ statusCode: 409, message: "1 number isn't confirmed by the PDF, the contract's own totals or a person yet." });
     await set(row.evidence);
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
   });

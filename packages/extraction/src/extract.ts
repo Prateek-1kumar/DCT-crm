@@ -1,11 +1,14 @@
-import { type DocumentKind, Rulebook } from "@dct/shared";
+import { type DocumentKind, isExcludedPage, Rulebook } from "@dct/shared";
 import type { ZodType } from "zod";
 import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
-import { clientsFromEnv, type CostEntry, type Image, type LlmClient, type LlmRequest, priceOf } from "./llm";
-import { type AiGrid, AiGrids, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
-import { dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout } from "./render";
-import { bankRects, readTextLayer } from "./textlayer";
+import { clientsFromEnv, type CostEntry, type Image, type LlmClient, type LlmRequest, priceOf, tokenText } from "./llm";
+import { planBands } from "./bands";
+import { type AiGrid, AiGrids, AiGridsAnchored, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
+import type { PrintedRow } from "./binder";
+import { bandPixels, dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderBands, renderPng, renderTiles, type Rotation, tileLayout, uprightFrame } from "./render";
+import { amounts, type TextPage, bankRects, KEYWORDS, readTextLayer } from "./textlayer";
+import { dropUnknownTokens, tokensFor } from "./tokens";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
@@ -20,6 +23,10 @@ export type ExtractionOutput = {
   notes: ExtractionNote[];
   /** Extra: non-fatal problems, e.g. cross-read failed. */
   warnings: ReadWarning[];
+  /** EXTRACTION_TOKEN_MAP on: the tokens the primary grid read named. Absent when the switch is off. */
+  anchors?: TokenAnchor[];
+  /** What the grid read says each row prints as its quantity and its own total (grid and procedure are indexes into the rulebook); for `bindEvidence` to check against the scan. Only rows that gave one. */
+  printedRows?: PrintedRow[];
 };
 
 /**
@@ -33,7 +40,21 @@ export type ReadWarning = { text: string } & (
   | { kind: "cross_read_off" } // off by choice: CROSS_READ=off, or no key
   | { kind: "over_limit" } // the read cost more than CONFIG.maxUsd
   | { kind: "fake" } // EXTRACTION_FAKE=1
+  // pages classed as an e-signature record or notice or a reference list: not read, not swept. `money`: the page prints a dollar
+  // amount (the classifier can be wrong): from its own text, or our OCR's reading of a scan; null when neither could be checked
+  | { kind: "pages_excluded"; pages: { documentId: string; filename: string; page: number; kind: string; money: boolean | null }[] }
+  // every page was labelled an e-signature record, notice or reference list (or a cover/signature page was all that else remained), so these were read as terms anyway
+  | { kind: "exclusion_overridden"; pages: { documentId: string; filename: string; page: number; kind: string }[] }
+  // EXTRACTION_BANDS: grid pages that couldn't be cut into row bands and went out as square tiles. `why`: "rows" (no rows or no
+  // heading found above them), "size" (too wide, too small a type or too tall a heading to read in a band)
+  | { kind: "bands_fallback"; pages: { documentId: string; filename: string; page: number; why: "rows" | "size" }[] }
 );
+
+/**
+ * Where a value of the grid read was printed, as the token id the model gave (EXTRACTION_TOKEN_MAP), kept for a later binder
+ * step. A claim only: it confirms nothing, and every id here is in the map the model had with that call.
+ */
+export type TokenAnchor = { grid: string; field: "cell" | "procedureSubtotal" | "overhead" | "nonProcedure" | "total"; visit: string; /** index in the grid's procedures; null for a visit's own sum */ procedure: number | null; tokenId: string };
 
 type ReadInput = { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void; signal?: AbortSignal };
 
@@ -66,9 +87,33 @@ export const CONFIG = {
   maxPagesPerDoc: 100,
   /** Across all documents of one study; checked before any rendering or AI call. */
   maxPagesTotal: 200,
-  maxTilesPerExtraction: 60,
-  /** Every image sent to a model in one extraction (classification + terms + grid overviews + tiles), or in one identify call. */
+  /** Tiles or bands: a 45-page text PDF with 20 grid pages is 120 at six a page. The cost cap (`maxUsd`) is what bounds the spend. */
+  maxTilesPerExtraction: 120,
+  /** Every image sent to a model in one extraction (classification + terms + grid overviews + tiles or bands), or in one identify call. */
   maxImagesPerExtraction: 300,
+  /** ADR-002 PR 3, both off until the owner has measured them on real contracts (docs/phase-1/adr-002-pipeline-redesign.md). */
+  /** Grid pages cut into row bands with the table's header on top of each, instead of square tiles (`bands.ts`). */
+  bands: process.env.EXTRACTION_BANDS === "1",
+  /** Most rows in a band; bands are cut evenly under it. */
+  bandRows: 12,
+  /**
+   * Widest a band, in pixels: 3500, one DPI-equivalent of an 11-inch landscape sheet at 300 DPI (the senior's range was 3300 to
+   * 3600). A chosen number, not measured. Claude shrinks an image past `bandViewPx` on its long edge, so a wider band is
+   * a sharper render shrunk by the provider, not more pixels per point in what the model reads: see `bandMinWordPx`.
+   */
+  bandMaxPx: 3500,
+  /** The long edge Claude reads an image at; a larger one is downsized server-side. */
+  bandViewPx: 2576,
+  /** Most body rows' pixels in a band, before the stitched header (the senior's 400 to 600; the bands are cut evenly under it where the rows allow). */
+  bandBodyPx: 600,
+  /**
+   * A page whose words would be under this many pixels tall as the model sees the band (after the provider's own downsizing
+   * past `bandViewPx`) keeps its tiles. The old figure, 14 px at a 2400 px band where nothing was shrunk, kept as it is: a
+   * chosen number, not measured. Tune it on a live run.
+   */
+  bandMinWordPx: 14,
+  /** The text/OCR pass's tokens go to the model beside each image, and the grid read names the token of each value. */
+  tokenMap: process.env.EXTRACTION_TOKEN_MAP === "1",
   /** DPI clamp, pixel budget and tiles-per-page (shared with renderPage). */
   render: RENDER_LIMITS,
 };
@@ -105,6 +150,29 @@ function envClients(): Clients {
   return { primary, fast, cross };
 }
 
+/**
+ * A page with nothing to read (ADR-002 §1.3: a blank separator, a cover sheet), told from the page's own words and never sent
+ * to a model. Every one of these holds, and when unsure the page is read: the words are the PDF's own text or our OCR's (never a
+ * scanner's text layer, and no OCR run is made for this); fewer than ten words outside the top and bottom 8% of the page
+ * (header and footer); no digit among them and no "$" or "%" or money word anywhere on the page (a short "No holdback applies"
+ * is a term the sweep must see); no table, no large picture, no hidden text, no vector drawing, no ink our OCR couldn't read; on
+ * a scan, every word read with confidence (a page of specks gives low-confidence junk, and is read).
+ */
+export const NON_CONTENT_WORDS = 10;
+const HEADER_FOOTER = 0.08;
+export function isNonContent(p: TextPage | undefined): boolean {
+  if (!p || (p.source !== "text" && p.source !== "ocr")) return false;
+  if (p.largePicture || p.drawn || p.hidden || p.grids?.length || p.unread?.length || !(p.height > 0)) return false;
+  const seen = p.words.filter((w) => !w.hidden && w.text.trim());
+  if (p.source === "ocr" && seen.some((w) => (w.conf ?? 1) < 0.8)) return false;
+  if (seen.some((w) => /[$%]/.test(w.text)) || KEYWORDS.money.test(seen.map((w) => w.text).join(" "))) return false;
+  const body = seen.filter((w) => {
+    const y = (w.rect[1] + w.rect[3]) / 2 / p.height;
+    return y >= HEADER_FOOTER && y <= 1 - HEADER_FOOTER;
+  });
+  return body.length < NON_CONTENT_WORDS && !body.some((w) => /\d/.test(w.text));
+}
+
 const label = (documentId: string, page: number, extra = "") => `documentId ${documentId}, page ${page}${extra ? `, ${extra}` : ""}`;
 
 /**
@@ -112,9 +180,10 @@ const label = (documentId: string, page: number, extra = "") => `documentId ${do
  * `ocr`: scans too, from our OCR's words (the read; identifying documents sees a few first pages and stays fast).
  */
 type Masks = Map<string, PageRect[]>;
+const layersOf = (documents: InputDoc[], ocr: boolean) => Promise.all(documents.map((d) => readTextLayer(d.path, d.id, { ocr })));
+const masksOf = (layers: TextPage[][]): Masks => new Map(layers.flat().map((p) => [`${p.documentId}#${p.page}`, bankRects(p)]));
 async function bankMasks(documents: InputDoc[], ocr = false): Promise<Masks> {
-  const pages = (await Promise.all(documents.map((d) => readTextLayer(d.path, d.id, { ocr })))).flat();
-  return new Map(pages.map((p) => [`${p.documentId}#${p.page}`, bankRects(p)]));
+  return masksOf(await layersOf(documents, ocr));
 }
 
 async function pageImage(doc: InputDoc, page: number, maxPx: number, masks: Masks, rotate: Rotation = 0, capDpi = CONFIG.pageMaxDpi): Promise<Image> {
@@ -193,7 +262,11 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   const images = budget(CONFIG.maxImagesPerExtraction, "page images");
   const tiles = budget(CONFIG.maxTilesPerExtraction, "grid image tiles");
   images.take(counts.reduce((a, b) => a + b, 0));
-  const masks = await bankMasks(documents, true);
+  // One read of every page's words: the bank masks, the band geometry and the token map all come from it.
+  const layers = await layersOf(documents, true);
+  const masks = masksOf(layers);
+  const textOf = new Map(layers.flat().map((p) => [`${p.documentId}#${p.page}`, p]));
+  const clean = (t: string) => scrub(t) === t; // a word that looks like bank details is no token
 
   // 1. Classify every page (low-res, upright or not).
   progress(2, "Rendering pages");
@@ -210,41 +283,90 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
       });
     })
   ).flat();
+  // A blank separator or cover sheet is told from the page's own words (isNonContent), whatever the classifier said of it.
+  for (const p of pages) if (!isExcludedPage(p) && isNonContent(textOf.get(`${p.documentId}#${p.page}`))) p.kind = "non_content";
   progress(15, `Classified ${pages.length} pages`);
 
   // 2. Render what each read needs, once, shared by both providers.
   const docOf = new Map(documents.map((d) => [d.id, d]));
-  const readable = pages.filter((p) => p.readable);
+  // A label is trusted (ADR-002), but not when no page of a kind that is READ is left (terms, invoiceables, budget_grid): a cover
+  // or signature page alone doesn't carry a contract, and a read of no pages would lose it. Then the pages of the three exclusion
+  // kinds are read as terms (a budget_grid page keeps its own kind), and a warning says so.
+  const reads = (p: ClassifiedPage) => p.readable && (p.kind === "terms" || p.kind === "invoiceables" || p.kind === "budget_grid");
+  const excluded = pages.some(reads) ? pages.filter(isExcludedPage) : [];
+  const overridden = (excluded.length ? [] : pages.filter(isExcludedPage)).map((p) => ({ p, was: p.kind }));
+  for (const { p } of overridden) p.kind = "terms";
+  const readable = pages.filter((p) => p.readable && !excluded.includes(p));
   // Grid pages go to the terms reader too: a page often holds a budget table AND contract clauses
   // (Shah p.3: budget summary + overhead, holdback, net-45 and overpayment clauses).
   let termPages = readable.filter((p) => p.kind === "terms" || p.kind === "invoiceables" || p.kind === "budget_grid");
   if (!termPages.length) termPages = readable;
   images.take(termPages.length);
+  // The token map never goes with a terms page (ADR-002 PR 3, the senior's rule): every value that isn't a grid price stays
+  // read by the model and checked by the PDF's text with neither seeing the other.
   const termImages = await Promise.all(termPages.map((p) => pageImage(docOf.get(p.documentId)!, p.page, CONFIG.termsMaxPx, masks, p.rotation)));
 
   const groups: ClassifiedPage[][] = [];
   for (const p of readable.filter((x) => x.kind === "budget_grid")) {
     const last = groups.at(-1)?.at(-1);
-    const continues = last && last.documentId === p.documentId && last.page === p.page - 1 && last.gridGroup !== null && last.gridGroup === p.gridGroup;
+    // the key is the arm or cohort the table prices, so a different one starts a new group; case and spacing don't. Symbols do:
+    // "Part A (>=18)" and "Part A (<18)", or "Arm A" and "Arm A+", are different arms.
+    const key = (g: string | null) => g?.toLowerCase().replace(/\s+/g, " ").trim();
+    const continues = last && last.documentId === p.documentId && last.page === p.page - 1 && !!key(last.gridGroup) && key(last.gridGroup) === key(p.gridGroup);
     if (continues) groups.at(-1)!.push(p);
     else groups.push([p]);
   }
-  // Tile layout is computed and charged to the budgets before any pixmap is allocated.
+  // Tile or band layout is computed and charged to the budgets before any pixmap is allocated.
   const gridImages: Image[][] = [];
+  const fellBack: Extract<ReadWarning, { kind: "bands_fallback" }>["pages"] = [];
   for (const g of groups) {
     const imgs: Image[] = [];
     for (const p of g) {
       const doc = docOf.get(p.documentId)!;
-      const opts = { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true, mask: masks.get(`${doc.id}#${p.page}`) };
+      const di = documents.indexOf(doc);
+      const mask = masks.get(`${doc.id}#${p.page}`);
+      const text = textOf.get(`${doc.id}#${p.page}`)!;
+      const tokensIn = (to: (r: PageRect) => PageRect, s: number, segs: Parameters<typeof tokensFor>[6]) => (CONFIG.tokenMap ? { tokens: tokensFor(text, di, to, s, mask ?? [], clean, segs) } : {});
+      // Row bands, when the page's own words give a header and rows to cut between (bands.ts); else today's tiles, said in a warning.
+      if (CONFIG.bands) {
+        const frame = await uprightFrame(doc.path, p.page, p.rotation);
+        const plan = planBands(text.words, frame.to, frame, { rows: CONFIG.bandRows, bodyPx: CONFIG.bandBodyPx, dpi: CONFIG.gridDpi, maxPx: CONFIG.bandMaxPx, viewPx: CONFIG.bandViewPx, maxPixels: 3_600_000, minWordPx: CONFIG.bandMinWordPx });
+        if (typeof plan !== "string") {
+          const n = plan.bands.length;
+          tiles.take(n);
+          images.take(n + (n > 1 ? 1 : 0));
+          const pngs = await renderBands(doc.path, p.page, { plan, rotate: p.rotation, gray: true, mask });
+          if (n > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, masks, p.rotation)), label: label(doc.id, p.page, "overview") });
+          const px = bandPixels(plan);
+          const headerH = px.header[1] - px.header[0];
+          pngs.forEach((png, i) => {
+            const [y0, y1] = px.bands[i]!;
+            imgs.push({
+              label: label(doc.id, p.page, n > 1 ? `band ${i + 1}/${n}` : ""),
+              png,
+              ...tokensIn(frame.to, plan.dpi / 72, [
+                { from: [px.x[0], px.header[0], px.x[1], px.header[1]], at: [0, 0] },
+                { from: [px.x[0], y0, px.x[1], y1], at: [0, headerH] },
+              ]),
+            });
+          });
+          continue;
+        }
+        fellBack.push({ documentId: doc.id, filename: doc.filename, page: p.page, why: plan });
+      }
+      const opts = { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true, mask };
       const layout = await tileLayout(doc.path, p.page, opts);
       tiles.take(layout.count);
       images.take(layout.count + (layout.count > 1 ? 1 : 0));
       const pageTiles = await renderTiles(doc.path, p.page, { ...opts, maxTiles: layout.count });
       if (pageTiles.length > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, masks, p.rotation)), label: label(doc.id, p.page, "overview") });
-      for (const t of pageTiles) imgs.push({ label: label(doc.id, p.page, pageTiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png });
+      const frame = CONFIG.tokenMap ? await uprightFrame(doc.path, p.page, p.rotation) : null;
+      for (const t of pageTiles)
+        imgs.push({ label: label(doc.id, p.page, pageTiles.length > 1 ? `tile row ${t.row + 1}/${t.rows} column ${t.col + 1}/${t.cols}` : ""), png: t.png, ...(frame ? tokensIn(frame.to, layout.dpi / 72, [{ from: t.box, at: [0, 0] }]) : {}) });
     }
     gridImages.push(imgs);
   }
+  if (fellBack.length) warnings.push({ kind: "bands_fallback", pages: fellBack, text: `${fellBack.length} grid page(s) couldn't be cut into row bands and were read in square tiles.` });
   progress(25, `Reading ${termPages.length} term pages and ${groups.length} budget grid(s)`);
 
   // Optional steps (grid re-reads) only run while the running total plus their estimate stays under the cap.
@@ -266,16 +388,22 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
       .then((t): AiTerms => (tick(`Read contract terms (${who})`), t));
     const gridsP = pool(isPrimary || crossGrids ? groups : [], CONFIG.concurrency, async (g) => {
       const i = groups.indexOf(g);
-      const readGrid = (effort: "medium" | "high") =>
-        llm.call({
+      // the ids this call's images carry: the only ones the model may name (anything else is dropped, never trusted)
+      const known = new Set(gridImages[i]!.flatMap((x) => x.tokens?.map((t) => t.id) ?? []));
+      const gridSchema: ZodType<AiGridsAnchored> = CONFIG.tokenMap ? AiGridsAnchored : AiGrids;
+      const readGrid = async (effort: "medium" | "high") => {
+        const out = await llm.call({
           name: effort === "high" ? "grid-reread" : "grid",
           system: SYSTEM,
-          prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile"))),
+          prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile")), { bands: gridImages[i]!.some((x) => x.label.includes("band")), tokens: CONFIG.tokenMap }),
           images: gridImages[i]!,
-          schema: AiGrids,
+          schema: gridSchema,
           effort,
           maxTokens: CONFIG.maxOutputTokens.grid,
         });
+        if (CONFIG.tokenMap) dropUnknownTokens(out.grids, known);
+        return out;
+      };
       let res = await readGrid("medium");
       // Numbers that don't add up are usually a misread digit: re-read that grid once at max effort
       // (primary only) and keep whichever read adds up better. Costs extra only on those pages.
@@ -319,6 +447,20 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   if (cross) markCrossCheck(primary.rulebook, cross.rulebook);
   // 5. Digital PDFs: keep the amounts printed in each page's own text, for TEXT_LAYER_MISMATCH. Free, no AI.
   const printed = await Promise.all(pages.map((p) => pageText(docOf.get(p.documentId)!.path, p.page).then(printedAmounts)));
+  // Said on the draft, so nobody takes a skipped page for a read one. A page whose own text prints an amount is marked.
+  if (excluded.length) {
+    // true/false from the page's own text, else from our OCR's reading of the scan (read once above); null when no OCR is here
+    const printsMoney = (p: ClassifiedPage): boolean | null => {
+      const own = printed[pages.indexOf(p)];
+      if (own) return own.length > 0;
+      const ocr = textOf.get(`${p.documentId}#${p.page}`);
+      return ocr?.source === "ocr" ? amounts(ocr.words.filter((w) => !w.hidden)).length > 0 : null;
+    };
+    const words = excluded.map((p) => ({ documentId: p.documentId, filename: docOf.get(p.documentId)!.filename, page: p.page, kind: p.kind, money: printsMoney(p) }));
+    const [yes, unknown] = [words.filter((w) => w.money), words.filter((w) => w.money === null)];
+    warnings.push({ kind: "pages_excluded", pages: words, text: `${words.length} page(s) classed as an e-signature record, an e-signature notice, a reference list or a blank separator or cover sheet were not read or swept${yes.length ? `; ${yes.length} of them print an amount` : ""}${unknown.length ? `; ${unknown.length} could not be checked for amounts` : ""}.` });
+  }
+  if (overridden.length) warnings.push({ kind: "exclusion_overridden", pages: overridden.map(({ p, was }) => ({ documentId: p.documentId, filename: docOf.get(p.documentId)!.filename, page: p.page, kind: was })), text: `${overridden.length} page(s) labelled as an e-signature record, notice, reference list or blank sheet were read as contract text, because no page of terms, items or budget was left to read.` });
   progress(100, "Extraction complete");
 
   return {
@@ -328,11 +470,13 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
     cost: [clients.primary.cost(), ...(clients.fast ? [clients.fast.cost()] : []), ...(clients.cross ? [clients.cross.cost()] : [])],
     notes: primary.notes,
     warnings,
+    ...(CONFIG.tokenMap ? { anchors: primary.anchors } : {}),
+    ...(primary.printedRows.length ? { printedRows: primary.printedRows } : {}),
   };
 }
 
 /** Merge one provider's term + grid reads into a Rulebook that passes Rulebook.parse. */
-function assemble(terms: AiTerms, grids: AiGrid[], docs: InputDoc[]): { rulebook: Rulebook; notes: ExtractionNote[] } {
+function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDoc[]): { rulebook: Rulebook; notes: ExtractionNote[]; anchors: TokenAnchor[]; printedRows: PrintedRow[] } {
   const { notes, ...t } = terms;
   const documents = docs.map((d) => {
     const m = t.documents.find((x) => x.id === d.id);
@@ -342,17 +486,23 @@ function assemble(terms: AiTerms, grids: AiGrid[], docs: InputDoc[]): { rulebook
     schemaVersion: 1,
     ...t,
     documents,
-    budgetGrids: grids.map((g, i) => ({
+    budgetGrids: grids.map(({ visitTokens: _v, ...g }, i) => ({
       ...g,
       id: `g${i + 1}`,
-      procedures: g.procedures.map((p) => ({ ...p, cells: Object.fromEntries(p.cells.map((c) => [c.visit, c.value])) })),
+      procedures: g.procedures.map(({ printedQty: _q, printedRowTotalCents: _t, ...p }) => ({ ...p, cells: Object.fromEntries(p.cells.map((c) => [c.visit, c.value])) })),
     })),
     governingGridId: null,
   };
   const ids = new Set(docs.map((d) => d.id));
   sanitize(raw, ids, docs.length === 1 ? docs[0]!.id : null);
   const cleanNotes = notes.map((n) => ({ ...n, source: n.source && ids.has(n.source.documentId) ? n.source : null }));
-  return { rulebook: Rulebook.parse(raw), notes: cleanNotes };
+  // what the model said each value was read from (already limited to the ids it was given); the rulebook itself doesn't hold them
+  const anchors = grids.flatMap((g, i): TokenAnchor[] => [
+    ...g.procedures.flatMap((p, pi) => p.cells.flatMap((c) => (c.source_token_id ? [{ grid: `g${i + 1}`, field: "cell" as const, visit: c.visit, procedure: pi, tokenId: c.source_token_id }] : []))),
+    ...(g.visitTokens ?? []).map((t) => ({ grid: `g${i + 1}`, field: t.field, visit: t.visit, procedure: null, tokenId: t.source_token_id })),
+  ]);
+  const printedRows = grids.flatMap((g, grid) => g.procedures.flatMap((p, procedure): PrintedRow[] => (p.printedQty != null || p.printedRowTotalCents != null ? [{ grid, procedure, qty: p.printedQty ?? null, totalCents: p.printedRowTotalCents ?? null }] : [])));
+  return { rulebook: Rulebook.parse(raw), notes: cleanNotes, anchors, printedRows };
 }
 
 const BANKISH = /\b(routing|aba|swift|iban|bic|account\s*(no|number|#)|acct|bank)\b/i;
@@ -422,7 +572,7 @@ export function gridMismatches(grids: AiGrid[]): number {
 }
 
 /** Claude image tokens ≈ width × height / 750 (read from the PNG header). */
-function imageTokens(png: Buffer): number {
+function imageTokensOf(png: Buffer): number {
   return Math.ceil((png.readUInt32BE(16) * png.readUInt32BE(20)) / 750);
 }
 
@@ -431,12 +581,14 @@ function imageTokens(png: Buffer): number {
  * Output allowances are generous on purpose: the check refuses up front rather than overspend.
  */
 function estimateUsd(clients: Clients, termImages: Image[], gridImages: Image[][]) {
+  // a token map is text the model reads too: about 3 characters a token (digits and punctuation tokenize poorly)
+  const imageTokens = (i: Image) => imageTokensOf(i.png) + (i.tokens?.length ? Math.ceil(tokenText(i.tokens).length / 3) : 0);
   const price = (c: LlmClient | null | undefined) => (c && c.provider === "anthropic" ? priceOf(c.model) : null);
   const p = price(clients.primary) ?? priceOf("claude-sonnet-5-5");
-  const termsTok = termImages.reduce((n, i) => n + imageTokens(i.png), 0) + 3000;
+  const termsTok = termImages.reduce((n, i) => n + imageTokens(i), 0) + 3000;
   // one cache write + two cache reads, ~6K output tokens per terms call
   const terms = (pr: { in: number; out: number; cacheWrite: number; cacheRead: number }) => (termsTok * (pr.cacheWrite + 2 * pr.cacheRead) + 3 * 6000 * pr.out) / 1e6;
-  const perGrid = gridImages.map((imgs) => ((imgs.reduce((n, i) => n + imageTokens(i.png), 0) + 2000) * p.in + 15000 * p.out) / 1e6);
+  const perGrid = gridImages.map((imgs) => ((imgs.reduce((n, i) => n + imageTokens(i), 0) + 2000) * p.in + 15000 * p.out) / 1e6);
   const cp = price(clients.cross);
   const cross = clients.cross ? (cp ? terms(cp) : terms({ in: 5, out: 30, cacheWrite: 5, cacheRead: 5 })) : 0;
   const required = terms(p) + perGrid.reduce((a, b) => a + b, 0) + cross;

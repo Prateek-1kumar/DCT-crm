@@ -169,6 +169,31 @@ describe("pages our OCR read", () => {
   });
 });
 
+describe("excluded pages (ADR-002)", () => {
+  const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
+  const word = (text: string, i: number, line: number) => ({ text, rect: [40 + i * 60, 100 + line * 14, 90 + i * 60, 110 + line * 14] as [number, number, number, number], dir: 0 as const, block: 0, line, hidden: false });
+  const fee = (page: number): TextPage => ({ documentId: "d", page, width: 612, height: 792, source: "text", words: ["Copy", "fee", "of", "$250.00", "applies"].map((t, i) => word(t, i, 0)), hidden: 0, largePicture: false });
+  const scan = (page: number): TextPage => ({ documentId: "d", page, width: 612, height: 792, source: "image_only", words: [], hidden: 0, largePicture: false });
+  const run = (pages: TextPage[], excluded?: { documentId: string; page: number }[]) => reviewDraft({ bindEvidence, reviewFromEvidence }, manualRulebook(s, []), [], pages, [{ id: "d", filename: "c.pdf" }], { excluded });
+  const onPage = (r: ReturnType<typeof run>, page: number) => r.review.filter((i) => i.kind === "unaccounted" && i.where.some((w) => w.page === page));
+
+  it("drops a page's leftover money terms and scan question, and records how many spans it dropped", () => {
+    const pages = [fee(1), fee(2), scan(3), scan(4)];
+    const all = run(pages);
+    expect([1, 2, 3, 4].map((p) => onPage(all, p).length > 0)).toEqual([true, true, true, true]); // swept as before when nothing is excluded
+    expect(all.excluded).toEqual([]);
+    const some = run(pages, [{ documentId: "d", page: 2 }, { documentId: "d", page: 3 }]);
+    expect([1, 2, 3, 4].map((p) => onPage(some, p).length > 0)).toEqual([true, false, false, true]);
+    expect(some.excluded).toEqual([{ documentId: "d", page: 2, spans: 1 }, { documentId: "d", page: 3, spans: 0 }]);
+  });
+
+  it("still shows text no reader can see on an excluded page", () => {
+    const { review } = run([{ ...scan(1), hidden: 2 }], [{ documentId: "d", page: 1 }]);
+    expect(review.map((i) => i.reason)).toContain("HIDDEN_TEXT");
+    expect(review.map((i) => i.reason)).not.toContain("SCAN_PAGE");
+  });
+});
+
 describe("picked answers", () => {
   it("an interpretation is picked from the field's own list and written; a yes/no question writes a boolean", () => {
     const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
