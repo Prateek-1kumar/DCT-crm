@@ -53,6 +53,8 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
       return "This page is a scan, so it can't be searched for money terms. Only a person can say what's on it.";
     case "SCAN_REGION":
       return "Something on this scan couldn't be read (a stamp, handwriting, or blurred print), so only a person can say what it is.";
+    case "UNREADABLE_PAGE":
+      return "This page couldn't be read, so it can't be searched for money terms. Only a person can say what's on it.";
     case "PICTURE_PAGE":
       return "Part of this page is a picture, and a picture can't be searched for money terms. Only a person can say what's in it.";
     case "UNACCOUNTED_TERM":

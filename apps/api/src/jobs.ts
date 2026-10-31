@@ -108,8 +108,6 @@ function plainWarning(w: ReadWarning): string | null {
       return excludedPagesWords(w.pages);
     case "exclusion_overridden":
       return `Every page that could be read as contract terms, items or a budget was labelled a signature record, a notice, a reference list or a blank sheet, so those pages were read after all: ${w.pages.map((p) => `page ${p.page} of “${p.filename}”`).join(", ")}. Check the reading with extra care.`;
-    case "bands_fallback":
-      return `A budget table on ${w.pages.map((p) => `page ${p.page} of “${p.filename}”`).join(", ")} couldn't be split into row groups with its column headings on each, so it was read in square pieces instead (the page's own text gave no clear rows or headings, or its print was too small for the new way). Check its numbers with extra care.`;
     case "cross_read_off":
     case "fake":
       return null;

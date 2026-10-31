@@ -163,10 +163,11 @@ describe("excluded pages (ADR-002)", () => {
     expect(some.excluded).toEqual([{ documentId: "d", page: 2, spans: 1 }, { documentId: "d", page: 3, spans: 0 }]);
   });
 
-  it("still shows text no reader can see on an excluded page", () => {
-    const { review } = run([{ ...scan(1), hidden: 2 }], [{ documentId: "d", page: 1 }]);
-    expect(review.map((i) => i.reason)).toContain("HIDDEN_TEXT");
+  it("still says there's text no reader can see on an excluded page: a warning, not a question (ADR-003 C3)", () => {
+    const { review, warnings } = run([{ ...scan(1), hidden: 2 }], [{ documentId: "d", page: 1 }]);
+    expect(review.map((i) => i.reason)).not.toContain("HIDDEN_TEXT");
     expect(review.map((i) => i.reason)).not.toContain("SCAN_PAGE");
+    expect(warnings).toEqual([expect.stringMatching(/^Page 1 of .* has 2 words no reader can see/)]);
   });
 });
 

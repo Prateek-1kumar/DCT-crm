@@ -18,6 +18,7 @@ import {
   labelFor,
   leaf,
   openItems,
+  PAGE_OPTIONS,
   type PageBox,
   parseCents,
   parsePercent,
@@ -89,10 +90,6 @@ function byTotals(rb: Rulebook) {
 }
 
 /** A page nothing can search (a scan, a picture) has no words to list, so the person says what's on it. */
-const PAGE_OPTIONS = [
-  { id: "none", label: "No, nothing the invoicing master doesn't hold" },
-  { id: "bill_by_hand", label: "Yes: list this page to bill by hand", note: "What on this page is billed by hand? Name each term and its amount." },
-];
 
 /** Our OCR read under this share of a page's words with confidence: the page is unclear, so a person attests all of it. */
 const CLEAR_PAGE = 0.7;
@@ -102,7 +99,7 @@ const clear = (p: TextPage) => p.words.length > 0 && p.words.filter((w) => (w.co
  * Scan pages can't be swept for money terms, so a person attests each one (ADR-001 §3, I5), and so does a text page with a
  * picture big enough to hold prices (a budget pasted in as an image: `largePicture`, from the text layer). A scan our OCR
  * read clearly is swept like text: only the areas it couldn't read (`unread`) are asked, each at its spot. Hidden text is
- * shown to a person.
+ * never evidence, so it asks nothing: it's said in the version's warnings (hiddenWarnings).
  */
 function pageItems(pages: TextPage[], docs: { id: string; filename: string }[], excluded: ReadonlySet<string>): ReviewItem[] {
   const name = (id: string) => `“${docs.find((d) => d.id === id)?.filename ?? "the contract"}”`;
@@ -129,15 +126,15 @@ function pageItems(pages: TextPage[], docs: { id: string; filename: string }[], 
         question: `Page ${p.page} of ${name(p.documentId)} has a picture that may contain prices, and a picture can't be searched for money terms. Does it have any that the invoicing master doesn't hold?`,
         options: PAGE_OPTIONS,
       });
-    if (p.hidden)
-      out.push({
-        ...base, id: `hidden:${p.documentId}:${p.page}`, kind: "contract_problem", reason: "HIDDEN_TEXT",
-        question: `Page ${p.page} of ${name(p.documentId)} has ${p.hidden} ${p.hidden === 1 ? "word" : "words"} no reader can see (white, tiny or invisible text). They're never used as evidence. Do they change any money terms?`,
-        options: [{ id: "nothing", label: "No, they change nothing" }],
-      });
     return out;
   });
 }
+
+/** Text no reader can see, page by page, in plain words: never evidence, so a warning beside the questions, not one of them. */
+const hiddenWarnings = (pages: TextPage[], docs: { id: string; filename: string }[]) =>
+  pages.flatMap((p) =>
+    p.hidden ? [`Page ${p.page} of “${docs.find((d) => d.id === p.documentId)?.filename ?? "the contract"}” has ${p.hidden} ${p.hidden === 1 ? "word" : "words"} no reader can see (white, tiny or invisible text). They're never used as evidence; check they don't change the money.`] : [],
+  );
 
 const whereKey = (w: PageBox) => JSON.stringify([w.documentId, w.page, w.box]);
 
@@ -257,7 +254,7 @@ export function reviewDraft(
     evidence,
     review,
     pdfCheck: checked.length ? { values: checked.length, matched: checked.filter((e) => e.status === "confirmed").length } : null,
-    warnings: lost.warnings,
+    warnings: [...lost.warnings, ...hiddenWarnings(pages, docs)],
     skipped: lost.skipped,
     excluded: (opts.excluded ?? []).map((p) => ({ ...p, spans: bound.unaccounted.filter((s) => key(s.where) === key(p)).length })),
     ...(solved.report ? { solver: solved.report } : {}),

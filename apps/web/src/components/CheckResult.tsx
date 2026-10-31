@@ -1,5 +1,6 @@
 "use client";
 
+import { Notices } from "./Notices";
 import type { RulebookVersionDto } from "@dct/shared";
 import { AlertTriangle, ArrowRight, CheckCircle2, Info, MessageCircleQuestion, ShieldCheck } from "lucide-react";
 import Link from "next/link";
@@ -46,16 +47,7 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
         <Stat icon={<MessageCircleQuestion className="size-5" strokeWidth={1.75} />} tone="warn" value={open} label={open === 1 ? "thing needs you" : "things need you"} sub={open ? `About ${minutesFor(open)} min, one at a time` : "Nothing to answer"} />
       </div>
 
-      {draft.warnings.length > 0 && (
-        <div className="flex items-start gap-2.5 rounded-tile bg-warn-soft/70 px-4 py-3 text-small text-ink-2">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
-          <ul className="flex flex-col gap-1">
-            {draft.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <Notices version={draft} />
 
       {!pdf && (
         <p className="flex items-start gap-2.5 rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">

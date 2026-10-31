@@ -18,7 +18,29 @@ const gridOf = (path: string | null) => /^\/budgetGrids\/\d+\//.exec(path ?? "")
 // The cross-read, its text-layer page check and self-reported confidence are not evidence (ADR-001 §4, §6): the binder replaces them.
 const SUPERSEDED = new Set<ContractAnomaly["code"]>(["TEXT_LAYER_MISMATCH", "AI_DISAGREEMENT", "LOW_CONFIDENCE"]);
 export const ARITHMETIC = new Set<string>(["VISIT_TOTAL_MISMATCH", "PER_PATIENT_TOTAL_MISMATCH"]);
-const AS_PRINTED = [{ id: "as_printed", label: "Yes, go ahead as printed" }];
+/** A page with money terms nothing can search: none the master doesn't hold, or listed to bill by hand (I5). */
+export const PAGE_OPTIONS = [
+  { id: "none", label: "No, nothing the invoicing master doesn't hold" },
+  { id: "bill_by_hand", label: "Yes: list this page to bill by hand", note: "What on this page is billed by hand? Name each term and its amount." },
+];
+
+/**
+ * A contract problem whose answer would change nothing in the master (ADR-003 C3): a grid header naming another
+ * investigator or site, and wording flagged as unclear where no field holds the reading. Shown as a notice, beside the
+ * questions and at approval, never asked: a question with one possible answer ("Go ahead as printed? Yes") checks nothing.
+ */
+export const isNotice = (a: Pick<ContractAnomaly, "code" | "path">, rb: Rulebook) => {
+  if (a.code === "HEADER_MISMATCH") return true;
+  if (a.code !== "AMBIGUOUS_TERM") return false;
+  const value = a.path ? at(rb, a.path) : undefined;
+  return value === undefined || !leaf(value);
+};
+
+export type Notice = { id: string; message: string; where: PageBox[] };
+
+/** The notices of a version's checks (isNotice), in plain words, each with the pages it's about. */
+export const notices = (anomalies: ContractAnomaly[], rb: Rulebook | null): Notice[] =>
+  !rb ? [] : anomalies.filter((a) => isNotice(a, rb)).map((a) => ({ id: a.id, message: sentence(a.message), where: a.refs.map((r) => box(r.documentId, r.page)) }));
 /** The contract itself is wrong here, so the site asks the sponsor: the note is that query. */
 const SPONSOR = "What should we ask the sponsor?";
 const ASK_SPONSOR = { id: "ask_sponsor", label: "Ask the sponsor; until they answer, bill it as printed", note: SPONSOR };
@@ -81,7 +103,7 @@ const ARITHMETIC_WORDS = (path: string) =>
 export function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked: Set<string>): ReviewItem[] {
   const chosen = governingGrids(rb);
   return anomalies.flatMap((a): ReviewItem[] => {
-    if (SUPERSEDED.has(a.code) || heldBack(a, asked)) return [];
+    if (SUPERSEDED.has(a.code) || isNotice(a, rb) || heldBack(a, asked)) return [];
     const base = {
       ...BLANK,
       id: `anomaly:${a.id}`,
@@ -117,11 +139,13 @@ export function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked:
       return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} Which governs?`, options: [{ id: "amounts", label: "The printed amounts: the label is wrong" }, ASK_SPONSOR] }];
     if (a.code === "MISSING_REFERENCED_DOC")
       return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} How should we go on?`, options: [{ id: "later", label: "Go ahead; I'll upload it later" }, { id: "not_needed", label: "It doesn't affect billing", note: "Why doesn't it affect billing?" }] }];
+    // a page nothing could read can hold a billable term: said page by page, as a scanned page is (I5), never "go ahead"
+    if (a.code === "UNREADABLE_PAGE" && a.refs[0])
+      return [{ ...base, kind: "unaccounted", path: null, question: `Page ${a.refs[0].page} couldn't be read, so it can't be searched for money terms. Does it have any that the invoicing master doesn't hold?`, options: PAGE_OPTIONS }];
     if (a.code === "DUPLICATE_ITEM")
       return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} How should it be billed?`, options: [{ id: "both", label: "They're different items: bill both" }, { ...ASK_SPONSOR, label: "Ask the sponsor whether it's billed twice" }] }];
-    const kind = a.code === "AMBIGUOUS_TERM" ? "interpretation" : "contract_problem";
-    if (!base.blocking) return [{ ...base, kind, question: `${sentence(a.message)} How should we go on?`, options: REVIEW_REASONS }];
-    return [{ ...base, kind, question: `${sentence(a.message)} Go ahead with the contract as printed?`, options: AS_PRINTED }];
+    // anything else: how to go on, with a reason (never a single "yes")
+    return [{ ...base, kind: "contract_problem", question: `${sentence(a.message)} How should we go on?`, options: REVIEW_REASONS }];
   });
 }
 

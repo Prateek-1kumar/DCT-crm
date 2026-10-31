@@ -7,6 +7,8 @@ import {
   type ContractAnomaly,
   diffRulebooks,
   followUps,
+  fromAnomalies,
+  notices,
   isoDate,
   proofreadMarks,
   type ReviewItem,
@@ -203,5 +205,41 @@ describe("suggest (ADR-003): what we suggest is shown, and taking it settles the
     const d = draft(reported(NET), "45");
     answer(d, { value: 45 });
     expect(suggest(d.review[0]!, d)).toBeNull();
+  });
+});
+
+describe("no question with one possible answer (ADR-003 C3)", () => {
+  const anomaly = (code: ContractAnomaly["code"], path: string | null, message: string, severity: ContractAnomaly["severity"] = "blocker"): ContractAnomaly =>
+    ({ id: `${code}:${path ?? ""}`, code, severity, message, path, refs: [{ documentId: "d1", page: 7 }], detail: {}, resolution: null });
+  const found = [
+    anomaly("HEADER_MISMATCH", `${GRID}/header/investigator`, 'Exhibit A: grid header names PI "Dr. B", contract PI is "Dr. A"'),
+    anomaly("AMBIGUOUS_TERM", "/siteFees", "Ambiguous: site cost amounts may or may not include overhead", "warning"),
+    anomaly("UNREADABLE_PAGE", null, "Page 7 of document d1 could not be read; enter its values manually if it has any"),
+  ];
+
+  it("a header that names someone else, and unclear wording nothing holds, are notices, never asked", () => {
+    const rb = rulebook();
+    const asked = fromAnomalies(found, rb, new Set());
+    expect(asked.map((i) => i.reason)).toEqual(["UNREADABLE_PAGE"]);
+    expect(notices(found, rb)).toEqual([
+      { id: found[0]!.id, message: 'Exhibit A: grid header names PI "Dr. B", contract PI is "Dr. A".', where: [{ documentId: "d1", page: 7, box: null }] },
+      { id: found[1]!.id, message: "Ambiguous: site cost amounts may or may not include overhead.", where: [{ documentId: "d1", page: 7, box: null }] },
+    ]);
+    // unclear wording a field holds is still that field's question
+    expect(fromAnomalies([anomaly("AMBIGUOUS_TERM", "/payment/netDays/value", "Ambiguous: net days")], rb, new Set()).map((i) => i.reason)).toEqual(["AMBIGUOUS_TERM"]);
+  });
+
+  it("every question a check asks offers more than one answer", () => {
+    const rb = rulebook();
+    const codes: ContractAnomaly["code"][] = ["HEADER_MISMATCH", "AMBIGUOUS_TERM", "UNREADABLE_PAGE", "REQUIRED_MISSING", "DUPLICATE_ITEM", "MISSING_REFERENCED_DOC", "OVERHEAD_LABEL_MISMATCH"];
+    for (const i of fromAnomalies(codes.map((c) => anomaly(c, null, `${c} found`)), rb, new Set())) expect(i.input !== null || i.options.length > 1, i.reason).toBe(true);
+  });
+
+  it("an unreadable page is asked like a scanned one: a billable term on it is listed to bill by hand", () => {
+    const rb = rulebook();
+    const [page] = fromAnomalies([found[2]!], rb, new Set());
+    expect(page).toMatchObject({ kind: "unaccounted", question: "Page 7 couldn't be read, so it can't be searched for money terms. Does it have any that the invoicing master doesn't hold?" });
+    const d: AnswerDraft = { version: 1, byHand: false, rulebook: rb, review: [{ ...page!, id: "q" }], evidence: [], editors: [] };
+    expect(answer(d, { optionId: "bill_by_hand", note: "Courier, $95 per pickup" })).toMatchObject({ outcome: "chosen", listed: { added: "Page 7 of “Work order”" } });
   });
 });

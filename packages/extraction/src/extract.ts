@@ -3,10 +3,9 @@ import type { ZodType } from "zod";
 import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient, type LlmRequest, priceOf, tokenText } from "./llm";
-import { planBands } from "./bands";
 import { type AiGrid, AiGrids, AiGridsAnchored, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
 import type { Anchor, PrintedRow } from "./binder";
-import { bandPixels, dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderBands, renderPng, renderTiles, type Rotation, tileLayout, uprightFrame } from "./render";
+import { dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderPng, renderTiles, type Rotation, tileLayout, uprightFrame } from "./render";
 import { amounts, type TextPage, bankRects, KEYWORDS, readTextLayer } from "./textlayer";
 import { dropUnknownTokens, parseTokenId, tokensFor } from "./tokens";
 
@@ -47,9 +46,6 @@ export type ReadWarning = { text: string } & (
   | { kind: "pages_excluded"; pages: { documentId: string; filename: string; page: number; kind: string; money: boolean | null }[] }
   // every page was labelled an e-signature record, notice or reference list (or a cover/signature page was all that else remained), so these were read as terms anyway
   | { kind: "exclusion_overridden"; pages: { documentId: string; filename: string; page: number; kind: string }[] }
-  // EXTRACTION_BANDS: grid pages that couldn't be cut into row bands and went out as square tiles. `why`: "rows" (no rows or no
-  // heading found above them), "size" (too wide, too small a type or too tall a heading to read in a band)
-  | { kind: "bands_fallback"; pages: { documentId: string; filename: string; page: number; why: "rows" | "size" }[] }
 );
 
 /** An amount the model said is no fee: the token's page and word, and why. */
@@ -86,31 +82,11 @@ export const CONFIG = {
   maxPagesPerDoc: 100,
   /** Across all documents of one study; checked before any rendering or AI call. */
   maxPagesTotal: 200,
-  /** Tiles or bands: a 45-page text PDF with 20 grid pages is 120 at six a page. The cost cap (`maxUsd`) is what bounds the spend. */
+  /** Tiles: a 45-page text PDF with 20 grid pages is 120 at six a page. The cost cap (`maxUsd`) is what bounds the spend. */
   maxTilesPerExtraction: 120,
-  /** Every image sent to a model in one extraction (classification + terms + grid overviews + tiles or bands), or in one identify call. */
+  /** Every image sent to a model in one extraction (classification + terms + grid overviews + tiles), or in one identify call. */
   maxImagesPerExtraction: 300,
   /** ADR-002 PR 3, both off until the owner has measured them on real contracts (docs/phase-1/adr-002-pipeline-redesign.md). */
-  /** Grid pages cut into row bands with the table's header on top of each, instead of square tiles (`bands.ts`). */
-  bands: process.env.EXTRACTION_BANDS === "1",
-  /** Most rows in a band; bands are cut evenly under it. */
-  bandRows: 12,
-  /**
-   * Widest a band, in pixels: 3500, one DPI-equivalent of an 11-inch landscape sheet at 300 DPI (the senior's range was 3300 to
-   * 3600). A chosen number, not measured. Claude shrinks an image past `bandViewPx` on its long edge, so a wider band is
-   * a sharper render shrunk by the provider, not more pixels per point in what the model reads: see `bandMinWordPx`.
-   */
-  bandMaxPx: 3500,
-  /** The long edge Claude reads an image at; a larger one is downsized server-side. */
-  bandViewPx: 2576,
-  /** Most body rows' pixels in a band, before the stitched header (the senior's 400 to 600; the bands are cut evenly under it where the rows allow). */
-  bandBodyPx: 600,
-  /**
-   * A page whose words would be under this many pixels tall as the model sees the band (after the provider's own downsizing
-   * past `bandViewPx`) keeps its tiles. The old figure, 14 px at a 2400 px band where nothing was shrunk, kept as it is: a
-   * chosen number, not measured. Tune it on a live run.
-   */
-  bandMinWordPx: 14,
   /** The text/OCR pass's tokens go to the model beside each image, and the grid read names the token of each value. */
   tokenMap: process.env.EXTRACTION_TOKEN_MAP === "1",
   /** DPI clamp, pixel budget and tiles-per-page (shared with renderPage). */
@@ -261,7 +237,7 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   const images = budget(CONFIG.maxImagesPerExtraction, "page images");
   const tiles = budget(CONFIG.maxTilesPerExtraction, "grid image tiles");
   images.take(counts.reduce((a, b) => a + b, 0));
-  // One read of every page's words: the bank masks, the band geometry and the token map all come from it.
+  // One read of every page's words: the bank masks and the token map come from it.
   const layers = await layersOf(documents, true);
   const masks = masksOf(layers);
   const textOf = new Map(layers.flat().map((p) => [`${p.documentId}#${p.page}`, p]));
@@ -315,9 +291,8 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
     if (continues) groups.at(-1)!.push(p);
     else groups.push([p]);
   }
-  // Tile or band layout is computed and charged to the budgets before any pixmap is allocated.
+  // Tile layout is computed and charged to the budgets before any pixmap is allocated.
   const gridImages: Image[][] = [];
-  const fellBack: Extract<ReadWarning, { kind: "bands_fallback" }>["pages"] = [];
   for (const g of groups) {
     const imgs: Image[] = [];
     for (const p of g) {
@@ -326,33 +301,6 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
       const mask = masks.get(`${doc.id}#${p.page}`);
       const text = textOf.get(`${doc.id}#${p.page}`)!;
       const tokensIn = (to: (r: PageRect) => PageRect, s: number, segs: Parameters<typeof tokensFor>[6]) => (CONFIG.tokenMap ? { tokens: tokensFor(text, di, to, s, mask ?? [], clean, segs) } : {});
-      // Row bands, when the page's own words give a header and rows to cut between (bands.ts); else today's tiles, said in a warning.
-      if (CONFIG.bands) {
-        const frame = await uprightFrame(doc.path, p.page, p.rotation);
-        const plan = planBands(text.words, frame.to, frame, { rows: CONFIG.bandRows, bodyPx: CONFIG.bandBodyPx, dpi: CONFIG.gridDpi, maxPx: CONFIG.bandMaxPx, viewPx: CONFIG.bandViewPx, maxPixels: 3_600_000, minWordPx: CONFIG.bandMinWordPx });
-        if (typeof plan !== "string") {
-          const n = plan.bands.length;
-          tiles.take(n);
-          images.take(n + (n > 1 ? 1 : 0));
-          const pngs = await renderBands(doc.path, p.page, { plan, rotate: p.rotation, gray: true, mask });
-          if (n > 1) imgs.push({ ...(await pageImage(doc, p.page, CONFIG.gridOverviewMaxPx, masks, p.rotation)), label: label(doc.id, p.page, "overview") });
-          const px = bandPixels(plan);
-          const headerH = px.header[1] - px.header[0];
-          pngs.forEach((png, i) => {
-            const [y0, y1] = px.bands[i]!;
-            imgs.push({
-              label: label(doc.id, p.page, n > 1 ? `band ${i + 1}/${n}` : ""),
-              png,
-              ...tokensIn(frame.to, plan.dpi / 72, [
-                { from: [px.x[0], px.header[0], px.x[1], px.header[1]], at: [0, 0] },
-                { from: [px.x[0], y0, px.x[1], y1], at: [0, headerH] },
-              ]),
-            });
-          });
-          continue;
-        }
-        fellBack.push({ documentId: doc.id, filename: doc.filename, page: p.page, why: plan });
-      }
       const opts = { dpi: CONFIG.gridDpi, rotate: p.rotation, maxPx: CONFIG.tileMaxPx, gray: true, mask };
       const layout = await tileLayout(doc.path, p.page, opts);
       tiles.take(layout.count);
@@ -365,7 +313,6 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
     }
     gridImages.push(imgs);
   }
-  if (fellBack.length) warnings.push({ kind: "bands_fallback", pages: fellBack, text: `${fellBack.length} grid page(s) couldn't be cut into row bands and were read in square tiles.` });
   progress(25, `Reading ${termPages.length} term pages and ${groups.length} budget grid(s)`);
 
   // Optional steps (grid re-reads) only run while the running total plus their estimate stays under the cap.
@@ -394,7 +341,7 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
         const out = await llm.call({
           name: effort === "high" ? "grid-reread" : "grid",
           system: SYSTEM,
-          prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile")), { bands: gridImages[i]!.some((x) => x.label.includes("band")), tokens: CONFIG.tokenMap }),
+          prompt: gridPrompt(g[0]!.documentId, g.map((p) => p.page), gridImages[i]!.some((x) => x.label.includes("tile")), { tokens: CONFIG.tokenMap }),
           images: gridImages[i]!,
           schema: gridSchema,
           effort,

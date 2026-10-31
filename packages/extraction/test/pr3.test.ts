@@ -4,15 +4,14 @@ import { join } from "node:path";
 import { Rulebook } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { planBands } from "../src/bands";
 import { CONFIG, ExtractionLimitError, extractWith, type InputDoc } from "../src/extract";
 import { type Image, type LlmClient, type LlmRequest, tokenText } from "../src/llm";
 import { AiGrids, AiGridsAnchored, type AiGrid, type AiTerms, gridPrompt, termsPrompt } from "../src/prompts";
-import { bandPixels, renderBands, renderPng, uprightFrame } from "../src/render";
+import { renderPng, uprightFrame } from "../src/render";
 import { readTextLayer } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
-// ADR-002 PR 3 (EXTRACTION_BANDS, EXTRACTION_TOKEN_MAP): synthetic PDFs, mocked clients, no AI.
+// ADR-002 PR 3 (EXTRACTION_TOKEN_MAP; the row bands were removed, ADR-003 C3): synthetic PDFs, mocked clients, no AI.
 
 const ROWS = 30;
 const BANK = "Payee bank ABA routing 021000021, account 123456789.";
@@ -46,110 +45,6 @@ const pixels = (png: Buffer) => {
 };
 const rowsOf = (p: ReturnType<typeof pixels>, y0: number, y1: number) => Buffer.from(p.px.subarray(y0 * p.stride, y1 * p.stride));
 
-describe("row bands: geometry", () => {
-  const path = tablePdf();
-  it("cuts between lines: every row is in exactly one band, none is cut, and the header is above the first amount", async () => {
-    const [page] = await readTextLayer(path, "d1");
-    const frame = await uprightFrame(path, 1, 0);
-    const plan = planBands(page!.words, frame.to, frame, opts);
-    if (typeof plan === "string") throw new Error(plan);
-    expect(plan.bands.length).toBeGreaterThan(1);
-    expect(plan.bands.length).toBeGreaterThanOrEqual(Math.ceil(ROWS / 12)); // at most 12 rows a band (and at most bodyPx tall, below)
-    const words = page!.words.map((w) => ({ t: w.text, r: frame.to(w.rect) }));
-    // the header holds the title and the heading line, not a row
-    const inHeader = words.filter((w) => w.r[3] <= plan.header[1]).map((w) => w.t);
-    expect(inHeader).toEqual(expect.arrayContaining(["Study", "V1", "Procedure"]));
-    expect(inHeader).not.toContain("Item");
-    // bands follow the header and each other with no gap and no overlap
-    expect(plan.bands[0]![0]).toBe(plan.header[1]);
-    for (let i = 1; i < plan.bands.length; i++) expect(plan.bands[i]![0]).toBe(plan.bands[i - 1]![1]);
-    // each row's words sit inside one band, and no word is cut by an edge
-    for (let r = 1; r <= ROWS; r++) {
-      const label = words.filter((w) => w.t === String(r))[0]!;
-      const inBands = plan.bands.filter(([a, b]) => label.r[1] >= a && label.r[3] <= b);
-      expect(inBands).toHaveLength(1);
-    }
-    for (const w of words.filter((x) => x.r[1] >= plan.header[1]))
-      for (const [a, b] of plan.bands) {
-        expect(a > w.r[1] && a < w.r[3]).toBe(false);
-        expect(b > w.r[1] && b < w.r[3]).toBe(false);
-      }
-  });
-
-  it("composes the header into every band: the top strip is the same pixels in each, and the rest is the page's own rows", async () => {
-    const [page] = await readTextLayer(path, "d1");
-    const frame = await uprightFrame(path, 1, 0);
-    const plan = planBands(page!.words, frame.to, frame, opts);
-    if (typeof plan === "string") throw new Error(plan);
-    const px = bandPixels(plan);
-    const hh = px.header[1] - px.header[0];
-    const pngs = await renderBands(path, 1, { plan, rotate: 0, gray: true });
-    expect(pngs).toHaveLength(plan.bands.length);
-    const header = pixels(await renderPng(path, 1, { dpi: plan.dpi, gray: true, clip: [px.x[0], px.header[0], px.x[1], px.header[1]] }));
-    const tops = pngs.map((png) => pixels(png));
-    for (const [i, t] of tops.entries()) {
-      expect(t.w).toBe(px.x[1] - px.x[0]);
-      expect(rowsOf(t, 0, hh).equals(rowsOf(header, 0, hh))).toBe(true); // identical in every band, and the page's own heading
-      const [y0, y1] = px.bands[i]!;
-      expect(t.h).toBe(hh + y1 - y0);
-      const body = pixels(await renderPng(path, 1, { dpi: plan.dpi, gray: true, clip: [px.x[0], y0, px.x[1], y1] }));
-      expect(rowsOf(t, hh, t.h).equals(rowsOf(body, 0, body.h))).toBe(true); // the rows are drawn as the page draws them
-    }
-    expect(rowsOf(tops[0]!, hh, hh + 40).equals(rowsOf(tops[1]!, hh, hh + 40))).toBe(false); // bands differ below it
-  });
-
-  it("paints bank details black in a band as in any other image", async () => {
-    const [page] = await readTextLayer(path, "d1");
-    const frame = await uprightFrame(path, 1, 0);
-    const plan = planBands(page!.words, frame.to, frame, opts);
-    if (typeof plan === "string") throw new Error(plan);
-    const account = page!.words.find((w) => w.text === "123456789.")!;
-    const mask = [account.rect];
-    const last = pixels((await renderBands(path, 1, { plan, rotate: 0, gray: true, mask })).at(-1)!);
-    const [x0, y0, x1, y1] = frame.to(account.rect).map((v) => (v * plan.dpi) / 72);
-    const px = bandPixels(plan);
-    const top = px.header[1] - px.header[0] + (y0! - px.bands.at(-1)![0]);
-    for (let y = Math.ceil(top) + 1; y < top + (y1! - y0!) - 1; y++) for (let x = Math.ceil(x0! - px.x[0]) + 1; x < x1! - px.x[0] - 1; x++) expect(last.px[y * last.stride + x]).toBeLessThan(10);
-  });
-
-  it("cuts bands of at most bodyPx of rows where the rows allow, and a band is as wide as the table up to maxPx, one DPI throughout", async () => {
-    const [page] = await readTextLayer(path, "d1");
-    const frame = await uprightFrame(path, 1, 0);
-    const plan = planBands(page!.words, frame.to, frame, opts);
-    if (typeof plan === "string") throw new Error(plan);
-    expect((plan.x[1] - plan.x[0]) * (plan.dpi / 72)).toBeLessThanOrEqual(3500 + plan.dpi / 72);
-    for (const [a, b] of plan.bands) expect(((b - a) * plan.dpi) / 72).toBeLessThanOrEqual(600);
-    // a smaller budget cuts more, thinner bands; one no band can meet (under a row) falls back to the pixel budget alone
-    const thin = planBands(page!.words, frame.to, frame, { ...opts, bodyPx: 300 });
-    if (typeof thin === "string") throw new Error(thin);
-    expect(thin.bands.length).toBeGreaterThan(plan.bands.length);
-    const tall = planBands(page!.words, frame.to, frame, { ...opts, bodyPx: 1 });
-    expect(typeof tall).toBe("object");
-  });
-
-  it("counts a word's height as the model sees it: a band wider than viewPx is shrunk by the provider, so the same print needs a bigger render", async () => {
-    const [page] = await readTextLayer(path, "d1");
-    const frame = await uprightFrame(path, 1, 0);
-    const plan = planBands(page!.words, frame.to, frame, opts);
-    if (typeof plan === "string") throw new Error(plan);
-    const wordPx = (plan.dpi / 72) * 9; // the table is set in 9 pt
-    const widthPx = ((plan.x[1] - plan.x[0]) * plan.dpi) / 72;
-    const seen = Math.min(1, 2576 / widthPx);
-    expect(planBands(page!.words, frame.to, frame, { ...opts, minWordPx: Math.floor(wordPx * seen * 0.8) })).toMatchObject({ dpi: plan.dpi });
-    expect(planBands(page!.words, frame.to, frame, { ...opts, minWordPx: Math.ceil(wordPx * seen * 1.5) })).toBe("size");
-  });
-
-  it("says why a page can't be banded: no words, no header above the first amount, or print too small for the width", async () => {
-    const frame = { width: 612, height: 792 };
-    expect(planBands([], (r) => r, frame, opts)).toBe("rows");
-    const [page] = await readTextLayer(path, "d1");
-    const f = await uprightFrame(path, 1, 0);
-    const noHeader = page!.words.filter((w) => !/^(Study|budget|worksheet|Procedure|V\d)$/.test(w.text));
-    expect(planBands(noHeader, f.to, f, opts)).toBe("rows");
-    expect(planBands(page!.words, f.to, f, { ...opts, minWordPx: 400 })).toBe("size");
-  });
-});
-
 // ---------------------------------------------------------------- the read
 
 type Call = { name: string; prompt: string; images: Image[]; schema: unknown };
@@ -181,14 +76,13 @@ function mock(rb: Rulebook, calls: Call[], grid?: (req: LlmRequest<unknown>) => 
 }
 
 const input = (path: string): InputDoc[] => [{ id: "d1", filename: "table.pdf", path, kind: null }];
-const saved = { maxUsd: CONFIG.maxUsd, bands: CONFIG.bands, tokenMap: CONFIG.tokenMap, tiles: CONFIG.maxTilesPerExtraction, images: CONFIG.maxImagesPerExtraction };
+const saved = { maxUsd: CONFIG.maxUsd, tokenMap: CONFIG.tokenMap, tiles: CONFIG.maxTilesPerExtraction, images: CONFIG.maxImagesPerExtraction };
 beforeEach(() => Object.assign(CONFIG, { maxUsd: 100 }));
-afterEach(() => Object.assign(CONFIG, { maxUsd: saved.maxUsd, bands: saved.bands, tokenMap: saved.tokenMap, maxTilesPerExtraction: saved.tiles, maxImagesPerExtraction: saved.images }));
+afterEach(() => Object.assign(CONFIG, { maxUsd: saved.maxUsd, tokenMap: saved.tokenMap, maxTilesPerExtraction: saved.tiles, maxImagesPerExtraction: saved.images }));
 const readOf = async (path: string, calls: Call[], grid?: Parameters<typeof mock>[2]) => extractWith({ documents: input(path) }, { primary: mock(makeRulebook(), calls, grid), cross: null });
 
 describe("the switches are off by default, and then nothing changes", () => {
   it("defaults off, with the tile limit at 120", () => {
-    expect(saved.bands).toBe(false);
     expect(saved.tokenMap).toBe(false);
     expect(saved.tiles).toBe(120);
   });
@@ -213,53 +107,6 @@ describe("the switches are off by default, and then nothing changes", () => {
     const map = tokenText([{ id: "0.1.2", text: "$1.00", box: [50, 2, 80, 14] }, { id: "0.1.3", text: "Visit", box: [10, 3, 40, 15] }, { id: "0.1.4", text: "V2", box: [90, 2, 100, 14] }, { id: "0.1.5", text: "$12.50", box: [50, 40, 80, 52] }]);
     expect(map).toContain('[[2,15,["0.1.3","Visit",10,40],["0.1.2","$#.##",50,80],["0.1.4","V#",90,100]],[40,52,["0.1.5","$##.##",50,80]]]');
     expect(map).not.toMatch(/1\.00|12\.50/);
-  });
-});
-
-describe("row bands in a read (EXTRACTION_BANDS=1)", () => {
-  it("sends the page as bands, with the header on each, and a prompt that says so", async () => {
-    CONFIG.bands = true;
-    const calls: Call[] = [];
-    const out = await readOf(tablePdf(), calls);
-    const grid = calls.find((c) => c.name === "grid")!;
-    const labels = grid.images.map((i) => i.label);
-    expect(labels[0]).toBe("documentId d1, page 1, overview");
-    const bands = labels.filter((l) => l.includes("band"));
-    expect(bands.length).toBeGreaterThan(1);
-    expect(labels.some((l) => l.includes("tile"))).toBe(false);
-    expect(grid.prompt).toContain("row bands");
-    expect(grid.prompt).not.toContain("tiles");
-    expect(out.warnings.some((w) => w.kind === "bands_fallback")).toBe(false);
-    // the header is the same pixels on top of every band
-    const tops = grid.images.slice(1).map((i) => pixels(i.png));
-    const strip = (t: (typeof tops)[number]) => rowsOf(t, 0, 20);
-    for (const t of tops) expect(strip(t).equals(strip(tops[0]!))).toBe(true);
-  });
-
-  it("charges bands to the tile and image budgets before rendering anything, with the overview", async () => {
-    CONFIG.bands = true;
-    const calls: Call[] = [];
-    await readOf(tablePdf(), calls);
-    const n = calls.find((c) => c.name === "grid")!.images.filter((i) => i.label.includes("band")).length;
-    CONFIG.maxTilesPerExtraction = n - 1;
-    const none: Call[] = [];
-    await expect(readOf(tablePdf(), none)).rejects.toThrow(new RegExp(`more than ${n - 1} grid image tiles`));
-    expect(none.map((c) => c.name)).toEqual(["classify"]); // nothing was read after the cap tripped
-    CONFIG.maxTilesPerExtraction = saved.tiles;
-    CONFIG.maxImagesPerExtraction = 1 + 1 + n; // classification, the terms page; the overview is the one over
-    await expect(readOf(tablePdf(), [])).rejects.toThrow(ExtractionLimitError);
-  });
-
-  it("falls back to tiles for a page with no words, and says so in a warning", async () => {
-    CONFIG.bands = true;
-    const calls: Call[] = [];
-    const out = await readOf(blankPdf(1, [1500, 1500]), calls);
-    const grid = calls.find((c) => c.name === "grid")!;
-    expect(grid.images.some((i) => i.label.includes("tile"))).toBe(true);
-    expect(grid.images.some((i) => i.label.includes("band"))).toBe(false);
-    const w = out.warnings.find((x) => x.kind === "bands_fallback")!;
-    expect(w.kind === "bands_fallback" && w.pages).toEqual([{ documentId: "d1", filename: "table.pdf", page: 1, why: "rows" }]);
-    expect(JSON.stringify(w)).not.toMatch(/Item|V1/);
   });
 });
 
@@ -330,29 +177,8 @@ describe("token map (EXTRACTION_TOKEN_MAP=1)", () => {
     expect(JSON.stringify(out.rulebook)).not.toMatch(/source_token_id|visitTokens/);
   });
 
-  it("puts a band's header tokens on every band and each row's tokens on one band only", async () => {
-    CONFIG.tokenMap = true;
-    CONFIG.bands = true;
-    const calls: Call[] = [];
-    await readOf(tablePdf(), calls);
-    const bands = calls.find((c) => c.name === "grid")!.images.filter((i) => i.label.includes("band"));
-    const idOf = (i: Image, text: string) => i.tokens!.filter((t) => t.text === text).map((t) => t.id);
-    const v1 = bands.map((b) => idOf(b, "V1"));
-    expect(v1.every((x) => x.length === 1 && x[0] === v1[0]![0])).toBe(true); // same id, in each band's header strip
-    for (const t of bands.flatMap((b) => b.tokens!.filter((x) => x.text === "V1"))) expect(t.box[1]).toBeLessThan(150);
-    const row = bands.flatMap((b) => idOf(b, "Item")); // one "Item" word per row: rows + one header-free copy of each
-    expect(new Set(row).size).toBe(ROWS);
-    expect(row).toHaveLength(ROWS);
-    // every token's box is inside its image
-    for (const b of bands) {
-      const [w, h] = [b.png.readUInt32BE(16), b.png.readUInt32BE(20)];
-      for (const t of b.tokens!) expect(t.box[0] >= -2 && t.box[1] >= -2 && t.box[2] <= w + 2 && t.box[3] <= h + 2).toBe(true);
-    }
-  });
-
   it("never puts token text in a warning", async () => {
     CONFIG.tokenMap = true;
-    CONFIG.bands = true;
     const calls: Call[] = [];
     const out = await readOf(tablePdf(), calls);
     const words = new Set(ids(calls, "grid").map((t) => t.text).filter((t) => /\d/.test(t)));

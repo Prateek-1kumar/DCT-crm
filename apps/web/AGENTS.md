@@ -46,6 +46,7 @@ The only UI: Next.js 16 (App Router, `cacheComponents` with partial prerendering
 - Plain English everywhere, for accountants. Show errors only through `errorText()`; never a raw error, a status code or a stack.
 - Every API call goes through `src/lib/api.ts`. One user action is one write with one key: never retry a write with a new key.
 - Every write carries `by`, the name picked in "Who's working today?" (`src/lib/acting-as.ts`; no login yet). Where an action needs a name and none is picked, show `NeedsPerson` (`src/components/Sidebar.tsx`) next to it, as the other screens do.
+- `components/Notices.tsx` ("Worth knowing") lists the reading's warnings and the checks' notices (`notices` from `@dct/shared`: what would only be a one-answer question) beside the questions, after a read and at approval.
 - Questions show our reading and what we suggest (`suggest` from `@dct/shared`, ADR-003); a suggested pick is marked "Our reading", never pre-picked. A value with an open question is shown with a "needs you" mark (`openPaths`).
 - Approval sends `asOf: version.updatedAt`, the version as shown; the approve page refetches it, and the API refuses (409) if it changed since.
 - Money is integer cents: use `src/lib/money.ts` to format and parse, `formatValue` in `src/lib/format.ts` to display. No float math on amounts.

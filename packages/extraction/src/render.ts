@@ -229,21 +229,7 @@ export async function renderTiles(pdfPath: string, page: number, opts: TileOptio
   return tiles;
 }
 
-// ---------- row bands ----------
-
-/**
- * Where one grid page is cut into row bands (bands.ts decides; all in points of the page turned upright, the frame the model's
- * image has): the table's width `x`, the `header` strip (title and column headings) that goes on top of every band, and the
- * `bands`, which follow each other from the header's bottom edge with no gap and no overlap. `dpi` is one for the page.
- */
-export type BandPlan = { dpi: number; x: [number, number]; header: [number, number]; bands: [number, number][] };
-
-/** The plan in whole output pixels. A shared edge is rounded once, so neighbouring bands never overlap or leave a line out. */
-export function bandPixels(plan: BandPlan) {
-  const s = plan.dpi / 72;
-  const r = (v: number) => Math.round(v * s);
-  return { x: [r(plan.x[0]), r(plan.x[1])] as [number, number], header: [r(plan.header[0]), r(plan.header[1])] as [number, number], bands: plan.bands.map(([a, b]): [number, number] => [r(a), r(b)]) };
-}
+// ---------- the upright frame ----------
 
 /** A page's frame once turned upright, in points: `to` carries a rect of the text layer (page points) into it. */
 export async function uprightFrame(pdfPath: string, page: number, rotate: Rotation = 0) {
@@ -253,26 +239,6 @@ export async function uprightFrame(pdfPath: string, page: number, rotate: Rotati
     return [Math.min(...p.map((q) => q[0])), Math.min(...p.map((q) => q[1])), Math.max(...p.map((q) => q[0])), Math.max(...p.map((q) => q[1]))];
   };
   return { to, width, height };
-}
-
-/**
- * One image per band: the header strip drawn on top, then the band's rows, composed by mupdf itself (the page is drawn twice
- * into one pixmap, each time through a clip), so the header is the same pixels in every band. Bank areas (`mask`) are painted
- * black in both parts. The size is checked before any pixmap is allocated.
- */
-export async function renderBands(pdfPath: string, page: number, opts: { plan: BandPlan; rotate?: Rotation; gray?: boolean; mask?: PageRect[] }): Promise<Buffer[]> {
-  const { m } = transform(await bounds(pdfPath, page), safeDpi(opts.plan.dpi), opts.rotate ?? 0);
-  const px = bandPixels(opts.plan);
-  const w = px.x[1] - px.x[0];
-  const hh = px.header[1] - px.header[0];
-  const out: Buffer[] = [];
-  for (const [y0, y1] of px.bands) {
-    const h = hh + y1 - y0;
-    if (w <= 0 || h <= hh || w * h > RENDER_LIMITS.maxPixels) throw new RangeError(`A ${w}x${h} band is empty or over the ${RENDER_LIMITS.maxPixels}-pixel limit.`);
-    const segs = [[px.x[0], px.header[0], px.header[1], 0], [px.x[0], y0, y1, hh]];
-    out.push(Buffer.from(await call<Uint8Array>("renderBand", pdfPath, page, m, w, h, segs, !!opts.gray, opts.mask ?? [])));
-  }
-  return out;
 }
 
 /** Largest DPI (capped) at which the page fits within maxPx on its long edge. */

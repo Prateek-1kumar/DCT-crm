@@ -2,7 +2,7 @@
 
 import { checkedByMachine, settled, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -12,6 +12,7 @@ import { SpotView, DEFAULT_ZOOM } from "@/components/SpotView";
 import { Badge, Button, btnCls, cx, Dialog, ErrorNote, fieldCls, inputCls, LoadError, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
+import { Notices } from "@/components/Notices";
 import { keyTerms, type KeyTerm } from "@/lib/approve";
 import { relativeTime } from "@/lib/format";
 import { keys, useDiff, useInvalidateStudy, useSettings, useStudy, useVersion } from "@/lib/queries";
@@ -216,16 +217,7 @@ function Summary({ version, terms }: { version: RulebookVersionDto; terms: KeyTe
         ))}
       </dl>
       {people.length > 0 && <p className="mt-3 text-small text-faint">Answered by {people.join(", ")}</p>}
-      {version.warnings.length > 0 && (
-        <div className="mt-4 flex items-start gap-2 rounded-tile bg-warn-soft p-3 text-small text-ink-2">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
-          <ul className="flex flex-col gap-1">
-            {version.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <Notices version={version} className="mt-4" />
     </div>
   );
 }

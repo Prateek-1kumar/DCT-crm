@@ -138,20 +138,13 @@ The images are every page with contract terms, invoiceables, site costs or budge
 - notes: add {kind:"retroactive_no_date"} when the amendment says it applies retroactively but gives no start date. Add {kind:"ambiguous"} for each money term whose wording is genuinely unclear (e.g. whether overhead applies to stipends, whether site-cost amounts already include overhead, an invoiceable with no amount), with path = JSON pointer of the affected value (e.g. "/overhead/appliesTo") and the source.`;
 
 const TILES = "Each page is given as an overview image followed by overlapping high-resolution tiles (row/column of the tile is in its label). Read the numbers from the tiles; use the overview only to see the layout. Overlapping areas appear in two tiles: count them once.";
-const BANDS = "Each page is given as an overview image followed by row bands in table order (the band's place is in its label). Every band starts with the table's title and column headings, repeated, and then holds its own rows: read each row's cells against the headings at the top of the same image. Each row is in one band only: count it once. Use the overview only to see the layout.";
 
 /** Said once to the reader of a grid image that comes with a token map (never a terms page); the grid read also asks for each value's token. */
 const TOKEN_HELP = "Next to each image you may get a TOKEN MAP: the words a text pass found in it, one entry per printed line of the image from top to bottom, as [y0, y1, [id, text, x0, x1], ...] with the words left to right and the boxes in the image's own pixels. A number is shown as its shape, every digit a \"#\" (\"$###.##\"): read every figure from the image itself, never from the map. The map only tells you where each word is, so you can point at it: a cell is the word on its row's line at its column's x position.";
 const TOKEN_ANCHOR = " For every cell give the id of the token it is printed in as source_token_id, and for every visit subtotal, overhead, non-procedure amount and total printed in the grid give it in visitTokens (visit code, field, id), using only ids from the map next to the image you read it in. source_token_id is null only when no token holds the value; never make an id up. A token of the map that holds an amount and is none of your cells or sums, and that you are sure is not a fee (a code, a page number, a footnote or summary that repeats a price you already read, an insurance or liability limit), goes in nonFee with its id and why; leave out anything you are unsure of.";
 
-export const gridPrompt = (documentId: string, pages: number[], tiles: boolean, how: { bands?: boolean; tokens?: boolean } = {}) => `Budget grid on documentId ${documentId}, page(s) ${pages.join(", ")}. ${
-  how.bands && tiles
-    ? `Pages come in one of two ways, as each image's label says. Labels with "band": ${BANDS} Labels with "tile": ${TILES}`
-    : how.bands
-      ? BANDS
-      : tiles
-        ? TILES
-        : "Each page is given as one image."
+export const gridPrompt = (documentId: string, pages: number[], tiles: boolean, how: { tokens?: boolean } = {}) => `Budget grid on documentId ${documentId}, page(s) ${pages.join(", ")}. ${
+  tiles ? TILES : "Each page is given as one image."
 }${how.tokens ? ` ${TOKEN_HELP}${TOKEN_ANCHOR}` : ""}
 Transcribe every grid on these pages (a page may hold one grid, or a grid may continue across pages). For each grid:
 - label (its title), arm (e.g. "Arm A De Novo"; null if the study has one arm), statedOverheadPct exactly as labelled on the grid (even if the numbers compute differently), header.investigator and header.siteName as printed on this grid page (null if not printed).

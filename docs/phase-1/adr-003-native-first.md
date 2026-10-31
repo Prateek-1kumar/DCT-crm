@@ -1,6 +1,6 @@
 # ADR-003: Native first, show our reading, ask only what the contract can't settle
 
-**Status:** Accepted by the owner (Prateek), 2026-11-01. Built in the stages of §4: **C1 and C2 built** (2026-11-01); the rest not yet, and until a stage lands the code enforces what it enforces today. **Supersedes:** ADR-001 §6's blind sample and blind entry (I6's "picked blind"), and ADR-002 §4's floor "the blind sample of 10 stays".
+**Status:** Accepted by the owner (Prateek), 2026-11-01. Built in the stages of §4: **C1, C2 and C3 built** (2026-11-01; C3 removed the row bands, and leaves the token map to P4, where the vision grid read it belongs to goes); the rest not yet, and until a stage lands the code enforces what it enforces today. **Supersedes:** ADR-001 §6's blind sample and blind entry (I6's "picked blind"), and ADR-002 §4's floor "the blind sample of 10 stays".
 
 ## 1. What we measured (2026-11-01, no AI spend)
 

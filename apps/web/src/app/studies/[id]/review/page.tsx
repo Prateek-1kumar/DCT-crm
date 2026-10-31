@@ -7,6 +7,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useRef, useState, type FormEvent } from "react";
+import { Notices } from "@/components/Notices";
 import { NeedsPerson } from "@/components/Sidebar";
 import { DEFAULT_ZOOM, SpotView, spotQuery } from "@/components/SpotView";
 import { Badge, Button, btnCls, cx, ErrorNote, fieldCls, inputBase, inputCls, LoadError, ProgressBar, Sheet, Spinner } from "@/components/ui";
@@ -174,6 +175,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
           })}
         </div>
       ))}
+      <Notices version={version} />
     </nav>
   );
 
