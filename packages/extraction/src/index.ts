@@ -14,3 +14,4 @@ export { gateSweep, type SweepCtx, type SweepReport } from "./sweep";
 export const renderPage = (pdfPath: string, page: number, dpi = 150): Promise<Buffer> => renderPng(pdfPath, page, { dpi });
 export { solveGrids, type SolverMode, type SolverOptions, type SolverReport, type IdentityKind } from "./solver";
 export { readTextGrids, type TextGrid } from "./gridtext";
+export { besideOnLine } from "./textlayer";

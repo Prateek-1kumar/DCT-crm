@@ -186,7 +186,7 @@ const capWaits = (path: string, asking: ReadonlySet<string>) => /\/cap\/(?:n|rat
  * skipped corrections with where each is asked now (`skipped`, for the log).
  */
 export function reviewDraft(
-  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence"> & Partial<Pick<ExtractionPort, "solveGrids" | "gateSweep">>,
+  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence"> & Partial<Pick<ExtractionPort, "solveGrids" | "gateSweep" | "besideOnLine">>,
   rb: Rulebook,
   anomalies: ContractAnomaly[],
   pages: TextPage[],
@@ -232,7 +232,15 @@ export function reviewDraft(
   const asked = new Set(values.flatMap((i) => (i.path ? [i.path] : [])));
   const checked = evidence.filter((e) => textPages.has(key(e.where[0])));
   // a clause that states its figure outright, confirmed from the page, isn't asked (interpretations, ADR-002 §4)
-  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence });
+  // each site fee's frequency as its row prints it beside its confirmed amount: a trigger it names outright isn't asked (ADR-003)
+  const printed = new Map(
+    rb.siteFees.flatMap((_, i) => {
+      const at = evidence.find((e) => e.path === `/siteFees/${i}/amountCents` && e.status === "confirmed")?.where[0];
+      const words = at && port.besideOnLine?.(pages, at);
+      return words ? [[`/siteFees/${i}/trigger`, words] as const] : [];
+    }),
+  );
+  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence, printed });
   const asking = new Set(interp.map((i) => i.path!));
   const review = [
     // a value asked as an interpretation is asked once, there (the start date: typed, or "prospective only")

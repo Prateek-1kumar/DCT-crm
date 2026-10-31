@@ -46,7 +46,8 @@ describe("interpretations (ADR-001 §6)", () => {
     const pay = v.review.find((i) => i.id === "interpret:/payment/visitPayment/value")!;
     expect(pay).toMatchObject({ kind: "interpretation", reason: "INTERPRETATION", blocking: true, input: null, answer: null, outcome: null });
     expect(pay.options.map((o) => o.id)).toEqual(["auto_edc", "invoice", "mixed", "unspecified"]);
-    expect(v.review.find((i) => i.id === "interpret:/siteFees/0/trigger")).toMatchObject({ question: "When is the site fee “Administrative fee” billed? The contract says: “due within 45 days of study initiation”" });
+    // the fee's trigger is printed beside its confirmed amount ("…of study initiation"): not asked (ADR-003)
+    expect(v.review.some((i) => i.id === "interpret:/siteFees/0/trigger")).toBe(false);
     // the read's values are shown while they're asked (ADR-003)
     expect(at(v.rulebook, "/payment/visitPayment/value")).toBe("auto_edc");
     // the cap's kind is asked, so its limit (cents or a count, by the kind) waits for it, and isn't asked on its own

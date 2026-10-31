@@ -1,4 +1,4 @@
-import type { Anchor, bindEvidence, gateSweep, NonFee, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
+import type { Anchor, besideOnLine, bindEvidence, gateSweep, NonFee, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
@@ -44,6 +44,8 @@ export interface ExtractionPort {
   pageCount: typeof pageCount;
   /** The evidence pipeline (ADR-001): the PDF's own text, each value bound to its spot, the questions for a person. No AI. */
   readTextLayer: typeof readTextLayer;
+  /** The words a page prints beside a spot on its row (a fee's frequency beside its amount), for the interpretations. */
+  besideOnLine: typeof besideOnLine;
   bindEvidence: typeof bindEvidence;
   reviewFromEvidence: typeof reviewFromEvidence;
   /** ADR-002 PR 2: the document's own arithmetic as a referee (`confirmed_by_math`), and the zone gate on the leftover-money sweep. Pure, no AI. */
@@ -52,7 +54,7 @@ export interface ExtractionPort {
 }
 
 /** The parts of the port with no AI in them: fake mode uses the real ones. */
-export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "bindEvidence" | "reviewFromEvidence" | "solveGrids" | "gateSweep";
+export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "besideOnLine" | "bindEvidence" | "reviewFromEvidence" | "solveGrids" | "gateSweep";
 
 let cached: Promise<ExtractionPort> | undefined;
 
@@ -64,8 +66,8 @@ export function getExtraction(): Promise<ExtractionPort> {
 
 /** Fake mode fakes only the AI: page images and the PDF's text come from the real PDF, so the viewer and the checks are real. */
 async function loadFake(): Promise<ExtractionPort> {
-  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence, solveGrids, gateSweep }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
-  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, bindEvidence, reviewFromEvidence, solveGrids, gateSweep };
+  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, besideOnLine, bindEvidence, reviewFromEvidence, solveGrids, gateSweep }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
+  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, besideOnLine, bindEvidence, reviewFromEvidence, solveGrids, gateSweep };
 }
 
 async function loadReal(): Promise<ExtractionPort> {

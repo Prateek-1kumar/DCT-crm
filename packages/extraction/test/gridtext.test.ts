@@ -8,7 +8,7 @@ import { CONFIG, extractWith } from "../src/extract";
 import { readTextGrids } from "../src/gridtext";
 import type { LlmClient, LlmRequest } from "../src/llm";
 import type { AiTerms } from "../src/prompts";
-import { readTextLayer } from "../src/textlayer";
+import { besideOnLine, readTextLayer } from "../src/textlayer";
 import { makeRulebook } from "./helpers";
 
 // ADR-003 P2: budget grids read by code from a PDF's own text. A synthetic budget, printed with mupdf: no real contract.
@@ -112,5 +112,22 @@ describe("in a read (extractWith)", () => {
     } finally {
       CONFIG.maxUsd = saved;
     }
+  });
+});
+
+describe("besideOnLine", () => {
+  it("is the words printed right of a spot on its own row, never another row's", async () => {
+    const doc = new mupdf.PDFDocument();
+    const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+    const at = (x: number, y: number, t: string) => `BT /F1 9 Tf ${x} ${y} Td (${t}) Tj ET\n`;
+    const c = at(40, 700, "Site costs and how often each is paid, as agreed by the parties for this study.") + at(40, 680, "Pharmacy set-up") + at(300, 680, "$2,221") + at(380, 680, "one-time payment") + at(40, 664, "Pharmacy fixed costs") + at(300, 664, "$1,637") + at(380, 664, "per year") + at(40, 600, "Payment is made within forty five days of an accepted invoice for each of the costs listed above.");
+    doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, c));
+    const path = join(mkdtempSync(join(tmpdir(), "dct-beside-")), "fees.pdf");
+    writeFileSync(path, doc.saveToBuffer("").asUint8Array());
+    const pages = await readTextLayer(path, "d");
+    const amount = pages[0]!.words.find((w) => w.text === "$2,221")!;
+    const box: [number, number, number, number] = [amount.rect[0] / 612, amount.rect[1] / 792, (amount.rect[2] - amount.rect[0]) / 612, (amount.rect[3] - amount.rect[1]) / 792];
+    expect(besideOnLine(pages, { documentId: "d", page: 1, box })).toBe("one-time payment");
+    expect(besideOnLine(pages, { documentId: "d", page: 1, box: null })).toBeNull();
   });
 });

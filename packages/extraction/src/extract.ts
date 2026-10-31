@@ -410,12 +410,12 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   const printed = await Promise.all(pages.map((p) => pageText(docOf.get(p.documentId)!.path, p.page).then(printedAmounts)));
   // Said on the draft, so nobody takes a skipped page for a read one. A page whose own text prints an amount is marked.
   if (excluded.length) {
-    // true/false from the page's own text, else from our OCR's reading of the scan (read once above); null when no OCR is here
+    // an amount printed like money (a currency mark, a thousands comma, two decimals), from the page's own text or our OCR
+    // of the scan (read once above), never any number: a reference table of percentages and codes prints none. null when
+    // the page has neither (a scan with no OCR here)
     const printsMoney = (p: ClassifiedPage): boolean | null => {
-      const own = printed[pages.indexOf(p)];
-      if (own) return own.length > 0;
-      const ocr = textOf.get(`${p.documentId}#${p.page}`);
-      return ocr?.source === "ocr" ? amounts(ocr.words.filter((w) => !w.hidden)).length > 0 : null;
+      const t = textOf.get(`${p.documentId}#${p.page}`);
+      return t?.source === "text" || t?.source === "ocr" ? amounts(t.words.filter((w) => !w.hidden)).length > 0 : null;
     };
     const words = excluded.map((p) => ({ documentId: p.documentId, filename: docOf.get(p.documentId)!.filename, page: p.page, kind: p.kind, money: printsMoney(p) }));
     const [yes, unknown] = [words.filter((w) => w.money), words.filter((w) => w.money === null)];

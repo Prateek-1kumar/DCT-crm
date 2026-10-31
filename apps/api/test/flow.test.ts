@@ -70,12 +70,12 @@ describe("extraction", () => {
     expect(ver.status).toBe("draft");
     expect(ver.rulebook?.study.sponsor.value).toBe("Synthetic Pharma");
     expect(ver.cost).toEqual({ usd: expect.closeTo(0.07, 6), inputTokens: 1800, outputTokens: 350 });
-    // 8 for what didn't check out, 7 interpretations picked blind (no blind sample: ADR-003)
-    expect(ver.review).toHaveLength(15);
+    // 8 for what didn't check out, 6 interpretations (the fee's trigger is printed beside it) (no blind sample: ADR-003)
+    expect(ver.review).toHaveLength(14);
     expect((await storedVersion(built, studyId, 1)).anomalies.map((a) => a.code).sort()).toEqual(["AI_DISAGREEMENT", "GRID_CONFLICT", "MISSING_REFERENCED_DOC", "VISIT_TOTAL_MISMATCH"]);
     const [summary] = (await get<StudyPage>("/api/v1/studies")).items;
-    expect(summary).toMatchObject({ status: "needs_review", needsYou: 15, liveVersion: null });
-    expect((await auditOf(studyId))[0]).toMatchObject({ action: "extraction.completed", detail: { questions: 15, pdfCheck: { values: 36, matched: 32 } } });
+    expect(summary).toMatchObject({ status: "needs_review", needsYou: 14, liveVersion: null });
+    expect((await auditOf(studyId))[0]).toMatchObject({ action: "extraction.completed", detail: { questions: 14, pdfCheck: { values: 36, matched: 32 } } });
     // a draft is under review: no second extraction on top of it
     expect((await post(`/api/v1/studies/${studyId}/extract`, {})).statusCode).toBe(409);
   });

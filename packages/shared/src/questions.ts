@@ -109,13 +109,23 @@ const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a
  * ways, any field with no deciding figure (overhead scope, how visits are paid, a fee's trigger, a count cap, the screen-fail
  * terms, rounding, the holdback's scope), and any read made without `evidence`.
  */
-export function interpretations(rb: Rulebook, opts: { amendment: boolean; anomalies?: Pick<ContractAnomaly, "code" | "path" | "message" | "refs">[]; evidence?: Pick<ValueEvidence, "path" | "status">[] }): ReviewItem[] {
+export function interpretations(
+  rb: Rulebook,
+  opts: { amendment: boolean; anomalies?: Pick<ContractAnomaly, "code" | "path" | "message" | "refs">[]; evidence?: Pick<ValueEvidence, "path" | "status">[]; printed?: ReadonlyMap<string, string> },
+): ReviewItem[] {
   const anomalies = opts.anomalies ?? [];
   const retroactive = anomalies.some((a) => a.code === "RETROACTIVE_NO_DATE");
   const sure = new Set((opts.evidence ?? []).filter((e) => checkedByMachine(e.status)).map((e) => e.path));
+  const unclear = (f: Field) => anomalies.some((a) => (a.code === "AMBIGUOUS_TERM" || a.code === "RETROACTIVE_NO_DATE") && about(a, f.path));
+  // a fee's trigger the page prints beside its confirmed amount, in words that name one trigger, the read's (ADR-003)
+  const fee = (f: Field) => /^\/siteFees\/(\d+)\/trigger$/.exec(f.path);
+  const printedTrigger = (f: Field) => {
+    const m = fee(f);
+    const words = opts.printed?.get(f.path);
+    return !!m && !!words && sure.has(`/siteFees/${m[1]}/amountCents`) && triggerOf(words) === rb.siteFees[Number(m[1])]?.trigger;
+  };
   const explicit = (f: Field) =>
-    !!f.stated && sure.has(f.stated) && !!f.prov?.source?.quote?.trim() && f.reason !== "RETROACTIVE_NO_DATE" &&
-    !anomalies.some((a) => (a.code === "AMBIGUOUS_TERM" || a.code === "RETROACTIVE_NO_DATE") && about(a, f.path));
+    !unclear(f) && f.reason !== "RETROACTIVE_NO_DATE" && ((!!f.stated && sure.has(f.stated) && !!f.prov?.source?.quote?.trim()) || printedTrigger(f));
   return fields(rb, opts.amendment || rb.documents.some((d) => d.kind === "amendment"), retroactive).filter((f) => !explicit(f)).map((f): ReviewItem => {
     const unclear = anomalies.find((a) => a.code === "AMBIGUOUS_TERM" && about(a, f.path));
     const refs = anomalies.filter((a) => a === unclear || (f.reason === "RETROACTIVE_NO_DATE" && a.code === "RETROACTIVE_NO_DATE")).flatMap((a) => a.refs);
@@ -134,6 +144,29 @@ export function interpretations(rb: Rulebook, opts: { amendment: boolean; anomal
       blocking: true,
     };
   });
+}
+
+type Trigger = Rulebook["siteFees"][number]["trigger"];
+
+/**
+ * The one trigger a fee's printed frequency names, by fixed, generic phrases ("one-time payment", "per year", "per sample",
+ * "at close-out"), or null when it names none or more than one ("paid per terms of the exhibit": per what?). Never a guess:
+ * a phrase that could mean two triggers leaves the question asked.
+ */
+export function triggerOf(words: string): Trigger | null {
+  const t = words.toLowerCase();
+  const hits = new Set<Trigger>();
+  if (/\bone[\s-]?time\b|\bonce\b/.test(t)) hits.add("one_time");
+  if (/\b(?:per|each|every)\s+(?:year|annum)\b|\bannual(?:ly)?\b|\byearly\b/.test(t)) hits.add("annual");
+  if (/\bclose[\s-]?out\b/.test(t)) hits.add("closeout");
+  if (/\b(?:study|site)\s+initiation\b/.test(t)) hits.add("study_initiation");
+  if (/\bexecution\b/.test(t)) hits.add("agreement_execution");
+  if (/\bregulatory\s+(?:package|documents?)\b/.test(t)) hits.add("regulatory_package");
+  if (/\bactual\s+cost|\bas\s+incurred\b|\bat\s+cost\b/.test(t)) hits.add("actual_cost");
+  // per event: "per <thing>" or "each <thing>", once nothing above names the event; "per terms" names none
+  if (/\b(?:per|each)\s+(?!terms?\b|the\b|year\b|annum\b)[a-z]+/.test(t)) hits.add("per_event");
+  if (hits.size > 1 && hits.has("per_event") && [...hits].some((h) => h !== "per_event" && h !== "one_time")) hits.delete("per_event");
+  return hits.size === 1 ? [...hits][0]! : null;
 }
 
 /** Whether a contract check is the interpretation question asked at `paths` (so it isn't asked twice). */

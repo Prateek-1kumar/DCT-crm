@@ -3,6 +3,7 @@ import {
   calendarDay,
   dateField,
   interpretations,
+  triggerOf,
   type ReviewItem,
   type Rulebook,
   RulebookVersionDto,
@@ -156,3 +157,27 @@ describe("a typed date", () => {
 
 
 const ev = (path: string, status: ValueEvidence["status"] = "confirmed"): ValueEvidence => ({ path, status, where: [], printed: null, note: null });
+
+describe("a fee's trigger the page prints beside its amount (ADR-003)", () => {
+  it("names one trigger from a fixed phrase, or none", () => {
+    expect(["one-time payment", "One time", "per year", "Annually", "per sample", "per ad campaign approved by sponsor", "at close-out", "at actual cost", "on study initiation"].map(triggerOf)).toEqual([
+      "one_time", "one_time", "annual", "annual", "per_event", "per_event", "closeout", "actual_cost", "study_initiation",
+    ]);
+    // vague, or two triggers at once: asked
+    expect(["paid per terms within the exhibit", "as agreed", "one-time payment, then per year"].map(triggerOf)).toEqual([null, null, null]);
+  });
+
+  it("isn't asked when the fee's amount is confirmed and its printed words name the read's trigger; asked otherwise", () => {
+    const rb = rulebook();
+    rb.siteFees[0]!.trigger = "one_time";
+    const at = "/siteFees/0/trigger";
+    const sure = [{ path: "/siteFees/0/amountCents", status: "confirmed" as const }];
+    const asked = (opts: Partial<Parameters<typeof interpretations>[1]>) => interpretations(rb, { amendment: false, ...opts }).map((i) => i.path).includes(at);
+    expect(asked({ evidence: sure, printed: new Map([[at, "one-time payment"]]) })).toBe(false);
+    expect(asked({ evidence: sure, printed: new Map([[at, "per year"]]) })).toBe(true); // the page says another trigger: a person decides
+    expect(asked({ evidence: sure, printed: new Map([[at, "paid per terms of the exhibit"]]) })).toBe(true); // names none
+    expect(asked({ evidence: [], printed: new Map([[at, "one-time payment"]]) })).toBe(true); // the amount isn't confirmed at that row
+    expect(asked({ evidence: sure })).toBe(true); // nothing printed beside it
+    expect(asked({ evidence: sure, printed: new Map([[at, "one-time payment"]]), anomalies: [{ code: "AMBIGUOUS_TERM", path: at, message: "unclear", refs: [] }] })).toBe(true);
+  });
+});

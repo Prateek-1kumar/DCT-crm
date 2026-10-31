@@ -33,7 +33,7 @@ const G2_TOTAL = "/budgetGrids/1/visits/1/totalCents"; // read 8,488.00, printed
 const NET_DAYS = "/payment/netDays/value"; // read 45, no quote
 const UNGROUNDED = ["/overhead/pct/value", NET_DAYS, "/deadlines/0/value"];
 /** What every read of the fake work order asks a person to pick blind (ADR-001 §6), in the order it asks. */
-const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value", "/siteFees/0/trigger", "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/rounding/value"];
+const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value", "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/rounding/value"];
 
 async function draft(seed = "s") {
   const { studyId, doc } = await newStudy(app, seed);

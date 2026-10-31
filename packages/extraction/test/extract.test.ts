@@ -375,6 +375,14 @@ describe("pages that aren't read (e-signature records and notices, reference lis
     expect(w.kind === "pages_excluded" && w.pages).toEqual([{ documentId: "d1", filename: "text.pdf", page: 2, kind: "esign_certificate", money: true }]);
   });
 
+  it("doesn't mark a reference page of percentages and codes as printing an amount: only money-like figures count", async () => {
+    const path = textPdf(["Payment terms of the agreement.", "Reference table. Code 99213 applies to 45% of subjects and code 36415 to 12.5% of visits, in 3 of 16 arms."]);
+    const out = await extractWith({ documents: input(path) }, { primary: classifying([{ page: 1, kind: "terms" }, { page: 2, kind: "reference_appendix" }], []), cross: null });
+    const w = out.warnings.find((x) => x.kind === "pages_excluded")!;
+    expect(w.kind === "pages_excluded" && w.pages.map((p) => p.money)).toEqual([false]);
+    expect(w.text).not.toMatch(/print an amount/);
+  });
+
   it("reads everything when every page would be excluded (a read of nothing loses the contract)", async () => {
     const path = textPdf(["Certificate of completion.", "Notice about electronic records."]);
     const seen: Seen[] = [];
