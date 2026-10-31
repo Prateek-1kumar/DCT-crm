@@ -1,10 +1,10 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Bell, BellRing, Check, FileWarning, Keyboard, RotateCcw, ScanText } from "lucide-react";
+import { ArrowLeft, Bell, BellRing, Check, Keyboard, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import { CheckResult } from "@/components/CheckResult";
 import { NeedsPerson } from "@/components/Sidebar";
 import { Button, cx, ErrorNote, PageTitle, pageCls, ProgressBar, Spinner, Stepper } from "@/components/ui";
@@ -27,14 +27,12 @@ const PHASES: [at: number, label: string, what: string][] = [
 ];
 const CHECKING_AT = 62;
 
-function Heading({ icon, tone, title, sub }: { icon: ReactNode; tone: string; title: string; sub: string }) {
+/** A plain heading with a thin rule down its side: the state's colour, no icon tile and no animated halo. */
+function Heading({ rule, title, sub }: { rule: string; title: string; sub: string }) {
   return (
-    <div className="flex items-start gap-4">
-      <span className={cx("relative grid size-12 shrink-0 place-items-center rounded-tile", tone)}>{icon}</span>
-      <div>
-        <h2 className="text-heading font-semibold tracking-tight">{title}</h2>
-        <p className="text-body text-muted">{sub}</p>
-      </div>
+    <div className={cx("border-l-[3px] pl-4", rule)}>
+      <h2 className="text-heading font-semibold tracking-tight">{title}</h2>
+      <p className="text-body text-muted">{sub}</p>
     </div>
   );
 }
@@ -127,8 +125,7 @@ export default function ReadingPage() {
           {state === "failed" ? (
             <div className="flex flex-col gap-6">
               <Heading
-                icon={<FileWarning className="size-6" strokeWidth={1.75} />}
-                tone="bg-danger-soft text-danger"
+                rule="border-danger"
                 title="We couldn't read this contract"
                 sub="Nothing was saved, so nothing is lost. Choose how to carry on."
               />
@@ -174,13 +171,7 @@ export default function ReadingPage() {
             job.data && (
               <div className="flex flex-col gap-7">
                 <Heading
-                  icon={
-                    <>
-                      <ScanText className="size-6" strokeWidth={1.75} />
-                      <span aria-hidden className="absolute inset-0 animate-ping rounded-tile ring-2 ring-brand/30 [animation-duration:2.2s] motion-reduce:hidden" />
-                    </>
-                  }
-                  tone="bg-brand-soft text-accent"
+                  rule="border-brand"
                   title={progress >= CHECKING_AT ? "Checking every number" : "Reading your contract"}
                   sub="This takes a few minutes. You can leave this page; it keeps going without you."
                 />
