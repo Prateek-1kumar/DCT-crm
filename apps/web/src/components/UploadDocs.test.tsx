@@ -58,7 +58,7 @@ describe("choosing files that aren't the contract (ADR-003 P1)", () => {
     const { container } = wrap(<Dropzone onUploaded={() => {}} />);
     const input = container.querySelector('input[type="file"]')!;
     fireEvent.change(input, { target: { files: [new File(["x"], "Ex A-1 Final.xlsx"), new File(["x"], "Cheat sheet.docx")] } });
-    expect(screen.getByText("Ex A-1 Final.xlsx is a spreadsheet. Upload the signed contract PDF: its budget is read from there. A budget spreadsheet can't be read yet.")).toBeTruthy();
+    expect(screen.getByText("Ex A-1 Final.xlsx is a spreadsheet. Upload the signed contract PDF here; once it's read, you can check its budget against this spreadsheet.")).toBeTruthy();
     expect(screen.getByText("Cheat sheet.docx is a Word document, not the signed contract. Upload the signed contract PDF (the DocuSign copy).")).toBeTruthy();
     expect(sent).not.toHaveBeenCalled();
   });

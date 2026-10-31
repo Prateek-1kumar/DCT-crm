@@ -1,5 +1,6 @@
 "use client";
 
+import { BudgetCheck } from "./BudgetCheck";
 import { Notices } from "./Notices";
 import type { RulebookVersionDto } from "@dct/shared";
 import { AlertTriangle, ArrowRight, CheckCircle2, Info, MessageCircleQuestion, ShieldCheck } from "lucide-react";
@@ -48,6 +49,7 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
       </div>
 
       <Notices version={draft} />
+      <BudgetCheck studyId={studyId} version={draft} />
 
       {!pdf && (
         <p className="flex items-start gap-2.5 rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">

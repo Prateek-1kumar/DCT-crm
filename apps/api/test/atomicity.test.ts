@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { config } from "../src/config.js";
 import { fakeControls } from "../src/extraction/fake.js";
 import { getExtraction } from "../src/extraction/port.js";
-import { type App, type Built, extract, liveStudy, makeTextPdf, multipart, newStudy, resetDb, settleAll, storedVersion, testApp, upload, waitJob } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makeBudgetXlsx, makeTextPdf, multipart, newStudy, resetDb, settleAll, storedVersion, testApp, upload, waitJob } from "./helpers.js";
 
 // A failure injected into the last insert of a write (a trigger that raises): nothing of the write is left behind. No
 // status change without its audit entry, no alert without its transition, no job without its row, no orphan file.
@@ -107,6 +107,18 @@ describe("a write that fails at its last insert leaves nothing half-saved", () =
     const term = (await storedVersion(built, studyId, 1)).review.find((i) => i.reason === "UNACCOUNTED_TERM")!.id;
     await noTrace(() => failInsert("audit_log", "action", "review.answered"), `/studies/${studyId}/versions/1/review/${encodeURIComponent(term)}`, { optionId: "bill_by_hand", by: "Sam" });
     expect((await storedVersion(built, studyId, 1)).rulebook!.unclassified).toHaveLength(1);
+  });
+
+  it("the budget spreadsheet check: no notice without its log entry", async () => {
+    const { studyId } = await newStudy(app, "budget");
+    await extract(app, studyId);
+    const before = await state();
+    await failInsert("audit_log", "action", "budget.checked");
+    const { payload, headers } = await multipart([{ name: "Ex A-1 Final.xlsx", data: await makeBudgetXlsx() }], { by: "Sam" });
+    const res = await app.inject({ method: "POST", url: `/api/v1/studies/${studyId}/versions/1/budget-check`, payload, headers: { ...headers, "idempotency-key": randomUUID() } });
+    expect(res.statusCode, res.body).toBe(500);
+    expect(await state()).toEqual(before);
+    expect((await storedVersion(built, studyId, 1)).warnings.some((w) => w.startsWith("The sponsor's budget spreadsheet"))).toBe(false);
   });
 
   it("'This looks wrong' on the live version: no correction draft, the study still live", async () => {

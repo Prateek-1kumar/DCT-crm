@@ -65,6 +65,7 @@ Probes, outside `/api/v1` (for whatever runs the server, not part of the API's c
 | POST | `/studies/:id/versions/:v/review/:itemId` | `AnswerReviewBody` | Answers one question, or changes an answer while a draft → `RulebookVersionDto` |
 | POST | `/studies/:id/versions/:v/report` | `ReportValueBody` | "This looks wrong": a question on a draft (one typed by hand once typing is done), or a correction draft from the live version → the draft |
 | POST | `/studies/:id/versions/:v/proofread` | `ProofreadBody` | "Looks right" marks; any version with a master except superseded → `RulebookVersionDto` |
+| POST | `/studies/:id/versions/:v/budget-check` | multipart: one `.xlsx` file, `by` | The sponsor's budget spreadsheet checked against the draft's grids (ADR-003 P2, `budgetCheck` in `@dct/shared` `budgetsheet.ts`; read by `readSheets`, `@dct/shared/xlsx`): unit prices, every visit cell, visit totals. A check, never a source: the result is one notice in the version's `warnings` (matches, or each difference with the contract's figure and the spreadsheet's; it replaces the last check's), audit `budget.checked` (file, sha256, sheet, counts), nothing in the master changed. 415 not an .xlsx, 422 unreadable or no sheet naming the grid's visits, 409 not a draft → `RulebookVersionDto` |
 | POST | `/studies/:id/versions/:v/send-back` | `SendBackBody` | The approver reopens answers with a note → `RulebookVersionDto` |
 | PATCH | `/studies/:id/versions/:v/values` | `CorrectValueBody` | Types one value; by-hand drafts only, until typing is done → `RulebookVersionDto` |
 | POST | `/studies/:id/versions/:v/by-hand/done` | `ByHandBody` | Typing done: the contract checks run, every value nobody typed or picked is asked, nothing re-typed (ADR-003) → `RulebookVersionDto` |
@@ -200,6 +201,7 @@ The questions, in order:
 | POST `…/review/:itemId` | an answer that settled, sent again by the same person: no-op (no log entry). One that came back "differs", sent again, **settles it** as chosen (with a note where one is needed); on a spot check of the read, the same differing value sent again is final, so it's **a miss** | replayed |
 | POST `…/report` | 409 (an open question already; on the live version, the correction draft is in progress) | replayed |
 | POST `…/proofread` | marks already there by the same person: no-op | replayed |
+| POST `…/budget-check` | the same result again (the notice unchanged): no-op, nothing logged | replayed (the fingerprint holds the file's sha256) |
 | POST `…/send-back` | 409 "Only answered questions can be sent back."; 409 for a table's columns (their answers are final) | replayed |
 | POST `…/sign-off` | 409 "signed and immutable" | replayed |
 | POST `/alerts/read` | no-op (`ON CONFLICT DO NOTHING`) | replayed |

@@ -78,6 +78,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "version.exported": "Exported",
   "master.exported": "Exported",
   "values.proofread": "Proofread",
+  "budget.checked": "Budget spreadsheet checked",
   "settings.updated": "Settings changed",
 };
 /** "review.sent_back" → "Answers sent back"; an action without a label reads as its words. */
@@ -86,10 +87,10 @@ export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a.replace(/[._]/g,
 /**
  * Why an upload isn't taken, in plain words (ADR-003 P1), for the API, the sample server and the upload screen alike: a
  * spreadsheet or a Word file says what to upload instead; anything else that isn't a PDF says so.
- * ponytail: a budget spreadsheet is refused until it's read (ADR-003 P2), so nobody thinks it was used.
+ * A budget spreadsheet isn't a contract document: it's checked against the read (`budgetCheck`, POST …/budget-check).
  */
 export const notAPdfWords = (name: string) =>
-  /\.(?:xlsx|xlsm|xls|csv)$/i.test(name) ? `${name} is a spreadsheet. Upload the signed contract PDF: its budget is read from there. A budget spreadsheet can't be read yet.`
+  /\.(?:xlsx|xlsm|xls|csv)$/i.test(name) ? `${name} is a spreadsheet. Upload the signed contract PDF here; once it's read, you can check its budget against this spreadsheet.`
   : /\.(?:docx?|rtf|odt)$/i.test(name) ? `${name} is a Word document, not the signed contract. Upload the signed contract PDF (the DocuSign copy).`
   : `${name} is not a PDF`;
 

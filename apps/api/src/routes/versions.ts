@@ -1,6 +1,9 @@
 import {
   appliesFromOf,
   BODY_WORDS,
+  BUDGET_CHECK,
+  budgetCheck,
+  budgetCheckWords,
   bodyProblem,
   ByHandBody,
   calendarDay,
@@ -11,6 +14,7 @@ import {
   type MasterSearch,
   noLimit,
   noLimitTyped,
+  noBudgetWords,
   ProofreadBody,
   proofreadMarks,
   ReportValueBody,
@@ -26,16 +30,17 @@ import {
   type ValueEvidence,
   versionDiff,
 } from "@dct/shared";
-import { buildWorkbook } from "@dct/shared/xlsx";
+import { buildWorkbook, readSheets } from "@dct/shared/xlsx";
 import { and, desc, eq } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { Ctx } from "../app.js";
 import { rulebookVersions, settings } from "../db/schema.js";
 import { audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, touched, versionDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
-import { write } from "../lib/idempotency.js";
+import { fingerprintOf, write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
 import { answer, askAbout, at, empty, leaf } from "../review.js";
 
@@ -264,6 +269,49 @@ export const versionRoutes =
         await audit(tx, by, row.studyId, "values.proofread", { version: row.version, values: paths.length });
         return versionDto(updated!);
       });
+    });
+
+    /**
+     * The sponsor's budget spreadsheet checked against the draft's grids (ADR-003 P2, `budgetCheck` in @dct/shared): a
+     * check, never a source. The result is one notice in the version's warnings ("Worth knowing"), replacing the last
+     * check's, and nothing in the master changes. The same result again writes and logs nothing.
+     */
+    app.post<P>("/studies/:id/versions/:v/budget-check", async (req, reply) => {
+      if (!req.isMultipart()) throw new HttpError(415, "Choose the budget spreadsheet (.xlsx) to check.");
+      let by = "";
+      let file: { name: string; buf: Buffer } | null = null;
+      for await (const part of req.parts()) {
+        if (part.type === "field") {
+          if (part.fieldname === "by" && typeof part.value === "string") by = part.value.trim();
+        } else if (!file) file = { name: (part.filename || "budget.xlsx").slice(0, 255), buf: await part.toBuffer() };
+        else await part.toBuffer();
+      }
+      if (!by) throw new HttpError(400, "Say who is checking.");
+      if (!file) throw new HttpError(400, "Choose the budget spreadsheet (.xlsx) to check.");
+      // an .xlsx is a zip; anything else (an old .xls, a PDF, a CSV) isn't read
+      if (file.buf.subarray(0, 4).toString("latin1") !== "PK\u0003\u0004") throw new HttpError(415, `${file.name} isn't an Excel spreadsheet (.xlsx).`);
+      const sheets = await readSheets(file.buf.buffer.slice(file.buf.byteOffset, file.buf.byteOffset + file.buf.byteLength) as ArrayBuffer).catch(() => null);
+      if (!sheets) throw new HttpError(422, `${file.name} couldn't be read as a spreadsheet. Save it again from Excel as .xlsx and try once more.`);
+      const sha256 = createHash("sha256").update(file.buf).digest("hex");
+      const { name } = file;
+      return write(
+        db,
+        req,
+        reply,
+        async (tx) => {
+          const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
+          if (row.status !== "draft" || !row.rulebook) throw new HttpError(409, `Version ${row.version} is ${row.status}; a spreadsheet is checked against a draft.`);
+          const check = budgetCheck(row.rulebook, sheets);
+          if (!check) throw new HttpError(422, noBudgetWords(name));
+          const warnings = [...row.warnings.filter((w) => !w.startsWith(BUDGET_CHECK)), budgetCheckWords(name, check)];
+          if (isDeepStrictEqual(warnings, row.warnings)) return versionDto(row);
+          const [updated] = await tx.update(rulebookVersions).set({ warnings, updatedAt: touched(row.updatedAt) }).where(eq(rulebookVersions.id, row.id)).returning();
+          await refreshStudyStatus(tx, row.studyId, by);
+          await audit(tx, by, row.studyId, "budget.checked", { version: row.version, file: name, sha256, sheet: check.sheet, compared: check.compared, differences: check.differences.length });
+          return versionDto(updated!);
+        },
+        { fingerprint: fingerprintOf(req, { by, file: [name, sha256] }) },
+      );
     });
 
     /** The approver reopens answered questions with a note; they're answered again, and the contract goes back to Needs you. */

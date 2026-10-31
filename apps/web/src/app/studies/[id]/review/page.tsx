@@ -7,6 +7,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useRef, useState, type FormEvent } from "react";
+import { BudgetCheck } from "@/components/BudgetCheck";
 import { Notices } from "@/components/Notices";
 import { NeedsPerson } from "@/components/Sidebar";
 import { DEFAULT_ZOOM, SpotView, spotQuery } from "@/components/SpotView";
@@ -176,6 +177,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
         </div>
       ))}
       <Notices version={version} />
+      <BudgetCheck studyId={study.id} version={version} />
     </nav>
   );
 

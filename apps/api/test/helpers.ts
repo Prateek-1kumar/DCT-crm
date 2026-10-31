@@ -192,3 +192,12 @@ export async function liveStudy(built: Built, seed = "live", opts?: { scan?: boo
   if (res.statusCode !== 200) throw new Error(res.body);
   return s;
 }
+
+/** A synthetic sponsor budget spreadsheet for the fake read's grids (V1, V2; the blood draw at $55): `v2Total` is the Week 0 total it prints. */
+export async function makeBudgetXlsx(v2Total = 8488): Promise<Buffer> {
+  const { default: ExcelJS } = await import("exceljs");
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("USA");
+  for (const r of [["Code", "Procedure", "Budget", "V1", "V2"], ["36415", "Blood draw", 55, 55, 55], [null, "Total Cost Per Visit", null, 7455, v2Total]]) ws.addRow(r);
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { maintain } from "../src/jobs.js";
-import { type App, type Built, makePdf, makeTextPdf, multipart, resetDb, settleAll, storedVersion, testApp, waitJob } from "./helpers.js";
+import { type App, type Built, makeBudgetXlsx, makePdf, makeTextPdf, multipart, resetDb, settleAll, storedVersion, testApp, waitJob } from "./helpers.js";
 
 // Every write route, sent twice with one Idempotency-Key: the second gets the first's response, byte for byte, and
 // changes nothing (rows, audit entries, alerts, jobs). Sent at once (a double click): one effect.
@@ -115,6 +115,15 @@ describe("every write, sent twice with one key, writes once", () => {
     const pay = `${v}/review/${encodeURIComponent("interpret:/payment/visitPayment/value")}`;
     await twice({ method: "POST", url: pay, payload: { optionId: "invoice", by: "Sam" } });
     await twice({ method: "POST", url: pay, payload: { optionId: "invoice", note: "§4.1 says invoiced", by: "Sam" } });
+  });
+
+  it("the budget spreadsheet check (ADR-003 P2): once, its notice and its log entry", async () => {
+    const [doc] = (await send(await uploadReq("budget"))).json<DocumentDto[]>();
+    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
+    await waitJob(app, jobId);
+    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
+    const { payload, headers } = await multipart([{ name: "Ex A-1 Final.xlsx", data: await makeBudgetXlsx() }], { by: "Sam" });
+    await twice({ method: "POST", url: `/studies/${studyId}/versions/1/budget-check`, payload, headers });
   });
 
   it("typing in by hand: start, type a value, done", async () => {

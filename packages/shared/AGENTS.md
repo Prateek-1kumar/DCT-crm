@@ -20,7 +20,8 @@ It ships TypeScript source; there is no build. The web compiles it (`transpilePa
 | `src/search.ts` | List, count and search queries and pages, `searchMaster()`, `searchVersion()`, `amountOf()` |
 | `src/alerts.ts` | Alert kinds, `AlertDto`, `AlertListQuery`, `ReadAlertsBody` |
 | `src/labels.ts` | `ENUM_LABELS` (plain words for enum values), `ACTION_LABELS` (what each audit action is called; the audit search matches these) |
-| `src/xlsx.ts` | `buildWorkbook()`, the Excel export (Summary, Budget grid, Fees & invoiceables, Payment terms, Bill by hand). A separate entry, `@dct/shared/xlsx`, so ExcelJS stays out of everything else |
+| `src/budgetsheet.ts` | The sponsor's budget spreadsheet checked against the grids read from the signed contract (ADR-003 P2): `budgetCheck` (pure; the sheet whose header row names a grid's visits; rows by code in order, else name; unit price, every visit cell, visit totals; a row on one side only is a difference; the grid the sheet agrees with most), `budgetCheckWords` (the notice), `noBudgetWords`, `BUDGET_CHECK` |
+| `src/xlsx.ts` | `readSheets()` (an .xlsx's cells as values, a formula's computed result), `buildWorkbook()`, the Excel export (Summary, Budget grid, Fees & invoiceables, Payment terms, Bill by hand). A separate entry, `@dct/shared/xlsx`, so ExcelJS stays out of everything else |
 | `src/index.ts` | Re-exports everything except `xlsx` (and of `pointer.ts`, only `at`) |
 
 ## Commands

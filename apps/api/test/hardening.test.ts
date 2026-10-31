@@ -164,7 +164,7 @@ describe("Lows", () => {
     const priced = await upload(app, [{ name: "Big.pdf", data: await textPdf(n, "The site is paid $55.00 for each blood draw.") }]);
     expect(priced.json().message).toMatch(/^Big\.pdf has \d+ pages; the limit is \d+ per document\. Split it/);
     const sheet = await upload(app, [{ name: "Ex A-1 Final.xlsx", data: Buffer.from("PK\u0003\u0004 not a pdf") }]);
-    expect([sheet.statusCode, sheet.json().message]).toEqual([415, "Ex A-1 Final.xlsx is a spreadsheet. Upload the signed contract PDF: its budget is read from there. A budget spreadsheet can't be read yet."]);
+    expect([sheet.statusCode, sheet.json().message]).toEqual([415, "Ex A-1 Final.xlsx is a spreadsheet. Upload the signed contract PDF here; once it's read, you can check its budget against this spreadsheet."]);
   });
 
   it("L6: a read is never retried by the queue (each try pays for AI calls) and may run two hours", async () => {

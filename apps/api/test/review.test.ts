@@ -2,7 +2,7 @@ import { type AlertPage, type AuditPage, type DiffEntry, type MasterSearch, type
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { fakeControls } from "../src/extraction/fake.js";
 import { at } from "../src/review.js";
-import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
+import { type App, type Built, extract, liveStudy, makeBudgetXlsx, makePdf, multipart, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 let app: App;
 let built: Built;
@@ -406,5 +406,40 @@ describe("typing in by hand", () => {
     expect(res.json().message).toBe("Values can only be typed on a contract being typed in by hand. Use “This looks wrong” instead.");
     expect((await post(`/studies/${studyId}/versions/by-hand`, { by: "Sam" })).json().message).toBe("Version 1 is already in progress.");
     expect((await post(`/studies/${studyId}/versions/by-hand`, {})).statusCode).toBe(400);
+  });
+});
+
+describe("the sponsor's budget spreadsheet, checked against the signed contract (ADR-003 P2)", () => {
+  const check = async (studyId: string, data: Buffer, name = "Ex A-1 Final.xlsx", v = 1) => {
+    const { payload, headers } = await multipart([{ name, data }], { by: "Sam" });
+    return app.inject({ method: "POST", url: `/api/v1/studies/${studyId}/versions/${v}/budget-check`, payload, headers });
+  };
+  const notice = (v: RulebookVersionDto) => v.warnings.filter((w) => w.startsWith("The sponsor's budget spreadsheet"));
+
+  it("a matching spreadsheet is said as a notice; one that differs says where; nothing in the master changes; the same again logs nothing", async () => {
+    const { studyId } = await draft();
+    const before = await storedVersion(built, studyId, 1);
+    const ok = await check(studyId, await makeBudgetXlsx());
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(notice(ok.json<RulebookVersionDto>())).toEqual(["The sponsor's budget spreadsheet “Ex A-1 Final.xlsx” matches the signed contract: 5 prices compared (unit prices, every visit, the visit totals)."]);
+    expect((await storedVersion(built, studyId, 1)).rulebook).toEqual(before.rulebook);
+    expect((await auditOf(studyId)).filter((e) => e.action === "budget.checked")).toEqual([expect.objectContaining({ by: "Sam", detail: expect.objectContaining({ version: 1, file: "Ex A-1 Final.xlsx", compared: 5, differences: 0 }) })]);
+    // the same file again changes nothing and logs nothing; a different one replaces the notice
+    expect((await check(studyId, await makeBudgetXlsx())).statusCode).toBe(200);
+    expect((await auditOf(studyId)).filter((e) => e.action === "budget.checked")).toHaveLength(1);
+    const differs = (await check(studyId, await makeBudgetXlsx(8500))).json<RulebookVersionDto>();
+    expect(notice(differs)).toEqual([expect.stringMatching(/differs from the signed contract in 1 place \(5 prices compared\)\. The signed contract is what's billed; ask the sponsor which is right: V2 visit total: contract \$8,489, spreadsheet \$8,500\.$/)]);
+  });
+
+  it("refuses what it can't check, in plain words", async () => {
+    const { studyId } = await draft();
+    expect((await check(studyId, Buffer.from("%PDF-1.7"), "contract.pdf")).json()).toMatchObject({ statusCode: 415, message: "contract.pdf isn't an Excel spreadsheet (.xlsx)." });
+    expect((await check(studyId, Buffer.from("PK\u0003\u0004 broken"))).json()).toMatchObject({ statusCode: 422, message: "Ex A-1 Final.xlsx couldn't be read as a spreadsheet. Save it again from Excel as .xlsx and try once more." });
+    const { default: ExcelJS } = await import("exceljs");
+    const wb = new ExcelJS.Workbook();
+    wb.addWorksheet("Other").addRow(["Code", "Budget", "Week 1", "Week 2"]);
+    expect((await check(studyId, Buffer.from(await wb.xlsx.writeBuffer()), "other.xlsx")).json()).toMatchObject({ statusCode: 422, message: "other.xlsx has no sheet with this contract's visits in a header row, so it can't be checked against it. Is it this contract's budget?" });
+    const { studyId: live } = await liveStudy(built, "budget-live");
+    expect((await check(live, await makeBudgetXlsx())).json()).toMatchObject({ statusCode: 409, message: "Version 1 is signed; a spreadsheet is checked against a draft." });
   });
 });

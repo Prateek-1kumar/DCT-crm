@@ -31,6 +31,10 @@ import {
   auditMatches,
   ReadAlertsBody,
   upgradeRulebook,
+  BUDGET_CHECK,
+  budgetCheck,
+  budgetCheckWords,
+  noBudgetWords,
   notAPdfWords,
   openPaths,
   type AlertDto,
@@ -619,6 +623,32 @@ function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = 
   return ok(view(ver));
 }
 
+/**
+ * POST .../budget-check, by the API's own rule (budgetCheck, @dct/shared): the sponsor's spreadsheet against the draft's
+ * grids, said as one notice in its warnings (replacing the last check's), nothing in the master changed; the same again
+ * changes nothing. ExcelJS is loaded only when a spreadsheet is checked.
+ */
+async function checkBudget(d: Db, st: Study, ver: RulebookVersionDto, fd: FormData): Promise<Res> {
+  const by = String(fd.get("by") ?? "").trim();
+  const file = fd.getAll("files[]")[0] as File | undefined;
+  if (!by) return err(400, "Say who is checking.");
+  if (!file) return err(400, "Choose the budget spreadsheet (.xlsx) to check.");
+  const data = await file.arrayBuffer();
+  if (new TextDecoder("latin1").decode(data.slice(0, 4)) !== "PK\u0003\u0004") return err(415, `${file.name} isn't an Excel spreadsheet (.xlsx).`);
+  const { readSheets } = await import("@dct/shared/xlsx");
+  const sheets = await readSheets(data).catch(() => null);
+  if (!sheets) return err(422, `${file.name} couldn't be read as a spreadsheet. Save it again from Excel as .xlsx and try once more.`);
+  if (ver.status !== "draft" || !ver.rulebook) return err(409, `Version ${ver.version} is ${ver.status}; a spreadsheet is checked against a draft.`);
+  const check = budgetCheck(upgradeRulebook(ver.rulebook), sheets);
+  if (!check) return err(422, noBudgetWords(file.name));
+  const warnings = [...ver.warnings.filter((w) => !w.startsWith(BUDGET_CHECK)), budgetCheckWords(file.name, check)];
+  if (JSON.stringify(warnings) === JSON.stringify(ver.warnings)) return ok(view(ver));
+  Object.assign(ver, { warnings, updatedAt: touched(ver.updatedAt) });
+  st.updatedAt = now();
+  log(d, by, st.id, "budget.checked", { version: ver.version, file: file.name, sheet: check.sheet, compared: check.compared, differences: check.differences.length });
+  return ok(view(ver));
+}
+
 /** POST .../proofread: values that looked right. Any version with a master, live ones too: the marks never change its numbers. */
 function proofread(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = now()): Res {
   const parsed = ProofreadBody.safeParse(raw);
@@ -993,6 +1023,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if ((r = /^\/review\/([^/]+)$/.exec(vrest)) && method === "POST") return answer(d, st, ver, decodeURIComponent(r[1]!), body);
   if (vrest === "/report" && method === "POST") return report(d, st, ver, body);
   if (vrest === "/proofread" && method === "POST") return proofread(d, st, ver, body);
+  if (vrest === "/budget-check" && method === "POST") return checkBudget(d, st, ver, body as FormData);
   if (vrest === "/send-back" && method === "POST") return sendBack(d, st, ver, body);
   if (vrest === "/values" && method === "PATCH") return typeValue(d, st, ver, body);
   if (vrest === "/by-hand/done" && method === "POST") return finishByHand(d, st, ver, body);

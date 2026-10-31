@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import type { Cell, Sheet } from "./budgetsheet";
 import { ENUM_LABELS } from "./labels";
 import { armKey, gridChoice, governingGrids, type Rulebook, upgradeRulebook } from "./rulebook";
 
@@ -186,4 +187,24 @@ export async function buildWorkbook(stored: Rulebook, meta: WorkbookMeta): Promi
   if (!rb.unclassified.length) u.addRow(["Nothing is billed by hand on this version."]);
 
   return new Uint8Array((await wb.xlsx.writeBuffer()) as ArrayBuffer);
+}
+
+/** Every sheet's cells as values: a formula's last computed result, rich text as its text, anything else as null. */
+export async function readSheets(data: ArrayBuffer): Promise<Sheet[]> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(data);
+  const value = (v: ExcelJS.CellValue): Cell => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === "number" || typeof v === "string") return v;
+    if (typeof v === "object" && "result" in v) return value(v.result as ExcelJS.CellValue);
+    if (typeof v === "object" && "richText" in v) return v.richText.map((t) => t.text).join("");
+    return null;
+  };
+  return wb.worksheets.map((ws) => {
+    const rows: Cell[][] = [];
+    ws.eachRow({ includeEmpty: true }, (r, n) => {
+      rows[n - 1] = Array.from({ length: r.cellCount }, (_, i) => value(r.getCell(i + 1).value));
+    });
+    return { name: ws.name, rows: Array.from(rows, (r) => r ?? []) };
+  });
 }

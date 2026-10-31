@@ -148,6 +148,13 @@ export const api = {
     for (const f of files) fd.append("files[]", f, f.name);
     return request<DocumentDto[]>("POST", "/uploads", fd);
   },
+  /** The sponsor's budget spreadsheet checked against a draft's grids (ADR-003 P2): the result is a notice in its warnings. */
+  budgetCheck: (id: string, v: number, file: File, by: string) => {
+    const fd = new FormData();
+    fd.append("by", by);
+    fd.append("files[]", file, file.name);
+    return request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/budget-check`, fd);
+  },
   createStudy: (documentIds: string[], by: string) => request<{ studyId: string; jobId: string }>("POST", "/studies", { documentIds, by }),
   confirmStudy: (id: string, body: { sponsor: string; protocol: string; siteName: string; investigator: string; by: string }) =>
     request<StudyDetailDto>("PATCH", `/studies/${q(id)}`, body),

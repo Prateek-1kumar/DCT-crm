@@ -501,3 +501,47 @@ describe("mock API idempotency keys", () => {
     expect((await mockRequest("POST", "/alerts/read", { by: "Sam Rivera" }, "k1")).status).toBe(422);
   });
 });
+
+describe("mock API: the budget spreadsheet check, as the API (ADR-003 P2)", () => {
+  beforeEach(() => mockReset());
+
+  /** A sponsor spreadsheet of a version's first grid as read: `edit` changes it before it's written. */
+  async function sheetOf(v: RulebookVersionDto, edit: (rows: (string | number | null)[][]) => void = () => {}) {
+    const { default: ExcelJS } = await import("exceljs");
+    const g = v.rulebook!.budgetGrids[0]!;
+    const usd = (c: unknown) => (typeof c === "number" ? c / 100 : null);
+    const rows: (string | number | null)[][] = [
+      ["Code", "Procedure", "Budget", ...g.visits.map((x) => x.code)],
+      ...g.procedures.map((p) => [p.code, p.name, usd(p.unitCents), ...g.visits.map((x) => usd(p.cells[x.code]))]),
+      [null, "Total per visit", null, ...g.visits.map((x) => usd(x.totalCents))],
+    ];
+    edit(rows);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Budget");
+    for (const r of rows) ws.addRow(r);
+    return new File([await wb.xlsx.writeBuffer()], "Ex A-1.xlsx");
+  }
+  const check = (study: string, file: File, v = 1) => {
+    const fd = new FormData();
+    fd.append("by", "Sam Rivera");
+    fd.append("files[]", file, file.name);
+    return post(`/studies/${study}/versions/${v}/budget-check`, fd);
+  };
+  const notice = (v: RulebookVersionDto) => v.warnings.filter((w) => w.startsWith("The sponsor's budget spreadsheet"));
+
+  it("a matching sheet is a notice, a different one replaces it with where it differs; the master never changes", async () => {
+    const v = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    const ok = RulebookVersionDto.parse((await check("st-northwind", await sheetOf(v))).json);
+    expect(notice(ok)).toEqual([expect.stringMatching(/^The sponsor's budget spreadsheet “Ex A-1\.xlsx” matches the signed contract: \d+ prices compared/)]);
+    expect(ok.rulebook).toEqual(v.rulebook);
+    const differs = RulebookVersionDto.parse((await check("st-northwind", await sheetOf(v, (rows) => void (rows[1]![2] = 1)))).json);
+    expect(notice(differs)).toEqual([expect.stringMatching(/differs from the signed contract in 1 place .*: unit price: contract \$[\d,.]+, spreadsheet \$1\.$/)]);
+    expect(AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items.filter((e) => e.action === "budget.checked")).toHaveLength(2);
+  });
+
+  it("refuses as the API does", async () => {
+    const v = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
+    expect((await check("st-northwind", new File(["%PDF-1.7"], "contract.pdf"))).json).toMatchObject({ statusCode: 415, message: "contract.pdf isn't an Excel spreadsheet (.xlsx)." });
+    expect((await check("st-meridian", await sheetOf(v))).json).toMatchObject({ statusCode: 409, message: "Version 1 is signed; a spreadsheet is checked against a draft." });
+  });
+});
