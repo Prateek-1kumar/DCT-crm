@@ -6,7 +6,7 @@ import { DOC_KIND_LABEL, ENUM_OPTIONS, formatDate, formatValue } from "@/lib/for
 import { formatCents } from "@/lib/money";
 import { findProv, getAt } from "@/lib/pointer";
 import { GridTable } from "./GridTable";
-import { isHit, useRulebook, Val } from "./review-context";
+import { isHit, NeedsYou, useRulebook, Val } from "./review-context";
 import { Badge, cx, onTabKeys } from "./ui";
 
 /** Which part of the invoicing master a contract page tab shows. */
@@ -163,7 +163,6 @@ export function RulebookView({ part }: { part: MasterPart }) {
       <ul className="flex flex-col gap-1.5 text-small">
         {rb.documents.map((d, i) => (
           <li key={d.id} className="flex flex-wrap items-center gap-2">
-            {/* an amendment's own date is withheld while the start date is typed blind (alsoWithheld) */}
             <Badge tone="accent">{DOC_KIND_LABEL[d.kind]}</Badge> {d.title} <span className="text-muted"><Val path={`/documents/${i}/date`}>{d.date ? formatDate(d.date) : ""}</Val></span>
           </li>
         ))}
@@ -272,12 +271,12 @@ function Sourced({ label, at }: { label: string; at: string }) {
   return <Row label={label} path={`${at}/value`} />;
 }
 
-/** A value made of others (a cap: kind, limit, ratio) is hidden while one of them is withheld for a blind answer. */
-const holds = (masked: Set<string>, path: string) => [...masked].some((p) => p.startsWith(`${path}/`));
+/** A value made of others (a cap: kind, limit, ratio) needs you while one of them is asked. */
+const holds = (asking: Set<string>, path: string) => [...asking].some((p) => p.startsWith(`${path}/`));
 
 /** One labelled value: click to see it in the contract. */
 function Row({ label, path, display }: { label: string; path: string; display?: string }) {
-  const { rulebook, show, focused, hits, masked } = useRulebook();
+  const { rulebook, show, focused, hits, asking } = useRulebook();
   const value = getAt(rulebook, path);
   const prov = findProv(rulebook, path);
   return (
@@ -296,13 +295,10 @@ function Row({ label, path, display }: { label: string; path: string; display?: 
           className={cx("-mx-1 rounded px-1 text-left text-small hover:bg-accent-soft", value === null && "text-faint italic")}
           title={prov?.source ? `Show page ${prov.source.page} of the contract` : "No page reference"}
         >
-          {holds(masked, path) ? (
-            <span className="text-warn">needs you</span>
-          ) : (
-            <Val path={path}>
-              <span className={typeof value === "number" ? "num" : ""}>{display ?? formatValue(path, value)}</span>
-            </Val>
-          )}
+          <Val path={path}>
+            <span className={typeof value === "number" ? "num" : ""}>{display ?? formatValue(path, value)}</span>
+            {holds(asking, path) && <NeedsYou />}
+          </Val>
         </button>
       </dd>
     </div>
@@ -312,7 +308,7 @@ function Row({ label, path, display }: { label: string; path: string; display?: 
 type Col = { key: string; label: string; num?: boolean; fmt?: (o: Record<string, unknown>) => string };
 
 function ItemTable({ at, cols }: { at: string; cols: Col[] }) {
-  const { rulebook, show, focused, hits, masked } = useRulebook();
+  const { rulebook, show, focused, hits, asking } = useRulebook();
   const items = (getAt(rulebook, at) as Record<string, unknown>[] | undefined) ?? [];
   if (!items.length) return <NotInContract />;
   return (
@@ -339,7 +335,7 @@ function ItemTable({ at, cols }: { at: string; cols: Col[] }) {
                   return (
                     <td key={c.key} className={cx("px-2 py-2 first:pl-5 last:pr-5", c.num && "num text-right")}>
                       <button type="button" data-path={path} className="-mx-1 rounded px-1 text-left hover:bg-accent-soft" onClick={() => show(path, prov, `${name} · ${c.label}`)}>
-                        {holds(masked, path) ? <span className="text-warn">needs you</span> : <Val path={path}>{c.fmt ? c.fmt(o) : formatValue(path, o[c.key])}</Val>}
+                        <Val path={path}>{c.fmt ? c.fmt(o) : formatValue(path, o[c.key])}{holds(asking, path) && <NeedsYou />}</Val>
                       </button>
                     </td>
                   );

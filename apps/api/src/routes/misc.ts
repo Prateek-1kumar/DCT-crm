@@ -1,4 +1,4 @@
-import { ACTION_LABELS, type AuditEntryDto, AuditListQuery, type AuditPage, auditMatches, blindDetail, PatchSettingsBody, type SettingsDto } from "@dct/shared";
+import { ACTION_LABELS, type AuditEntryDto, AuditListQuery, type AuditPage, auditMatches, PatchSettingsBody, type SettingsDto } from "@dct/shared";
 import { and, desc, eq, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { isDeepStrictEqual } from "node:util";
@@ -9,7 +9,6 @@ import { auditLog, rulebookVersions, settings, studies } from "../db/schema.js";
 import { audit } from "../domain.js";
 import { HttpError, like, parse, wordsOf } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
-import { hiddenPaths } from "../review.js";
 
 /** Keyset cursor: the last entry's id, base64url JSON (ids only grow, so newest first is id order). */
 const Cursor = z.tuple([z.number().int().positive()]);
@@ -37,8 +36,8 @@ export const miscRoutes =
   ({ db }: Ctx): FastifyPluginAsync =>
   async (app) => {
     /**
-     * One page of the log, newest first. `q` is matched in SQL; an entry is returned only if what's shown matches too, so
-     * a withheld value or a blanked number never finds one. Pages can then hold fewer than `limit` entries: at most
+     * One page of the log, newest first. `q` is matched in SQL; an entry is returned only if what's shown matches too (its
+     * action's label, say). Pages can then hold fewer than `limit` entries: at most
      * SCAN_ROUNDS batches are read per request, and the cursor goes on from the last entry read, so a `q` that only
      * blanked entries match can't keep one request reading the whole log.
      */
@@ -46,9 +45,6 @@ export const miscRoutes =
       const { studyId, q, cursor, limit } = parse(AuditListQuery, req.query);
       const words = wordsOf(q);
       const where = and(studyId ? eq(auditLog.studyId, studyId) : undefined, ...words.map(matchesWord));
-      // blind entry in the log (@dct/shared blindDetail): each open draft's withheld paths, questions and evidence
-      const drafts = new Map<string, Parameters<typeof blindDetail>[2]>();
-      const looked = new Set<string>();
       const items: AuditEntryDto[] = [];
       let after = cursor ? decodeCursor(cursor) : null;
       let more = false;
@@ -60,18 +56,8 @@ export const miscRoutes =
           .where(and(where, after !== null ? lt(auditLog.id, after) : undefined))
           .orderBy(desc(auditLog.id))
           .limit(limit + 1);
-        const unseen = [...new Set(rows.flatMap((r) => (r.e.studyId && !looked.has(r.e.studyId) ? [r.e.studyId] : [])))];
-        if (unseen.length) {
-          for (const s of unseen) looked.add(s);
-          const found = await db
-            .select({ studyId: rulebookVersions.studyId, version: rulebookVersions.version, status: rulebookVersions.status, review: rulebookVersions.review, evidence: rulebookVersions.evidence, rulebook: rulebookVersions.rulebook })
-            .from(rulebookVersions)
-            .where(and(eq(rulebookVersions.status, "draft"), inArray(rulebookVersions.studyId, unseen)));
-          for (const v of found) drafts.set(`${v.studyId}/${v.version}`, { hidden: new Set(hiddenPaths(v)), review: v.review, evidence: v.evidence });
-        }
         for (const { e, protocol, sponsor } of rows) {
-          const detail = blindDetail(e.action, e.detail, drafts.get(`${e.studyId}/${e.detail.version}`));
-          const entry: AuditEntryDto = { id: String(e.id), at: e.at.toISOString(), by: e.by, studyId: e.studyId, protocol, sponsor, action: e.action, detail };
+          const entry: AuditEntryDto = { id: String(e.id), at: e.at.toISOString(), by: e.by, studyId: e.studyId, protocol, sponsor, action: e.action, detail: e.detail };
           if (!words.length || auditMatches(entry, q!)) items.push(entry);
           if (items.length > limit) break;
         }

@@ -1,7 +1,6 @@
 import type { ContractAnomaly } from "./anomaly";
-import { leaf } from "./blind";
 import { openItems, type PageBox, type ReviewItem, settled } from "./evidence";
-import { at } from "./pointer";
+import { at, leaf } from "./pointer";
 import { askAbout } from "./questions";
 import { armKey, governingGrids, type Rulebook } from "./rulebook";
 

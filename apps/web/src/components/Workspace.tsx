@@ -1,6 +1,6 @@
 "use client";
 
-import { type PageBox, type RulebookVersionDto, type StudyDetailDto, withheldPaths } from "@dct/shared";
+import { openPaths, type PageBox, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -19,7 +19,7 @@ const isLeaf = (v: unknown) => v !== undefined && (v === null || typeof v !== "o
 
 /**
  * The invoicing master with the contract one click away: clicking a value opens a drawer with the spot on the page,
- * what backs the value, and "This looks wrong". Provides the RulebookContext (evidence, blind-entry masks, proofread
+ * what backs the value, and "This looks wrong". Provides the RulebookContext (evidence, values with open questions, proofread
  * marks, search hits) to everything inside. `focus`: a value to open (⌘K, a search hit); a new `n` opens it again.
  * `report`: a value can be reported (live versions and drafts).
  */
@@ -35,8 +35,8 @@ export function Workspace({ study, version, children, report, hits, focus }: {
   const [focused, setFocused] = useState<{ path: string; label: string; from: HTMLElement | null } | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const evidence = useMemo(() => new Map(version.evidence.map((e) => [e.path, e.status])), [version.evidence]);
-  // the paths the server withholds (with what an open answer decides, as a cap's limit or each visit's "paid automatically")
-  const masked = useMemo(() => new Set(withheldPaths(version)), [version]);
+  // values with an open question (with what its answer decides, as a cap's limit): shown, marked "needs you"
+  const asking = useMemo(() => new Set(openPaths(version)), [version]);
   const proofread = useMemo(() => new Map((version.proofread ?? []).map((m) => [m.path, m])), [version.proofread]);
   const noHits = useMemo(() => new Set<string>(), []);
 
@@ -59,7 +59,7 @@ export function Workspace({ study, version, children, report, hits, focus }: {
     rulebook: version.rulebook,
     focused: focused?.path ?? null,
     evidence,
-    masked,
+    asking,
     proofread,
     hits: hits ?? noHits,
     show: (path, _prov, label) => setFocused({ path, label, from: document.activeElement instanceof HTMLElement ? document.activeElement : null }),
@@ -98,17 +98,16 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   const [open, setOpen] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
   const rb = version.rulebook!;
-  // a value, or one it's made of (a cap's limit), withheld for a blind answer
-  const masked = withheldPaths(version).some((p) => p === path || p.startsWith(`${path}/`));
+  // a value, or one it's made of (a cap's limit), with an open question
+  const asked = openPaths(version).some((p) => p === path || p.startsWith(`${path}/`));
   const ev = version.evidence.find((e) => e.path === path);
   const prov = findProv(rb, path);
   const mark = version.proofread?.find((m) => m.path === path);
   const at: PageBox | null = ev?.where[0] ?? (prov?.source ? { documentId: prov.source.documentId, page: prov.source.page, box: null } : null);
-  // its page only while it's withheld: the spot the PDF check bound it to would show which number to type
-  const spot = at && masked ? { ...at, box: null } : at;
+  const spot = at;
   const value = getAt(rb, path);
   // typed by hand: reported once typing is marked done (before, the value is changed in the form)
-  const reportable = report && (version.status === "signed" || (version.status === "draft" && (!version.byHand || version.review.length > 0))) && isLeaf(value) && !masked;
+  const reportable = report && (version.status === "signed" || (version.status === "draft" && (!version.byHand || version.review.length > 0))) && isLeaf(value) && !asked;
 
   const self = useRef<HTMLElement>(null);
   useEffect(() => self.current?.focus({ preventScroll: true }), []);
@@ -128,7 +127,7 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
       <header className="flex items-start gap-3 border-b border-line px-5 pt-4 pb-3.5">
         <div className="min-w-0 flex-1">
           <p className="truncate text-small text-muted">{label}</p>
-          <p className="num truncate text-heading font-semibold tracking-tight">{masked ? <span className="text-warn">Needs you</span> : value === undefined ? "—" : formatValue(path, value)}</p>
+          <p className="num truncate text-heading font-semibold tracking-tight">{value === undefined ? "—" : formatValue(path, value)}</p>
         </div>
         <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={onClose}>
           <X className="size-4" strokeWidth={2} />
@@ -136,9 +135,8 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
       </header>
 
       <div className="flex flex-col gap-2 px-5 py-3 text-small">
-        {masked ? (
-          <p className="text-warn">Someone types what the contract says here before it&apos;s shown. Answer it in Needs you.</p>
-        ) : ev ? (
+        {asked && <p className="text-warn">There&apos;s an open question about this value. Answer it in Needs you.</p>}
+        {ev ? (
           <p className="flex items-start gap-2">
             {/* The words follow, so the dot's own label would only repeat them. */}
             <span aria-hidden className="mt-1.5">
@@ -168,8 +166,7 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
             <Check aria-hidden className="size-3.5" strokeWidth={3} /> Proofread by {mark.by} · {formatDate(mark.at)}
           </p>
         )}
-        {/* a rule's quote prints its number: never while the value is withheld */}
-        {!masked && prov?.source?.quote && <blockquote className="border-l-2 border-line-strong pl-3 text-muted italic">“{prov.source.quote}”</blockquote>}
+        {prov?.source?.quote && <blockquote className="border-l-2 border-line-strong pl-3 text-muted italic">“{prov.source.quote}”</blockquote>}
       </div>
 
       <div className="min-h-0 flex-1 px-3">
@@ -195,7 +192,7 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   );
 }
 
-/** Asks only for a note: the value itself is checked by someone typing what the contract says, blind. */
+/** Asks only for a note: the value itself is settled by its question in Needs you. */
 function ReportDialog({ open, onClose, onSent, study, version, path, label }: {
   open: boolean; onClose: () => void; onSent: (message: string | null) => void; study: StudyDetailDto; version: RulebookVersionDto; path: string; label: string;
 }) {
@@ -226,13 +223,13 @@ function ReportDialog({ open, onClose, onSent, study, version, path, label }: {
       >
         <p className="font-medium">{label}</p>
         <p className="text-small text-muted">
-          Someone will type what the contract says here without seeing the value we have, and it&apos;s settled before approval.
+          Someone checks what the contract says here, and it&apos;s settled before approval.
           {live && ` Version ${version.version} stays live until a corrected version ${version.version + 1} is approved.`}
         </p>
         <Field
           label="What looks wrong? (required)"
           htmlFor="rep-note"
-          hint="Any figures in your note are hidden from whoever answers, so they can't steer them. Say where on the page it looks wrong instead."
+          hint="Say what looks wrong and where on the page."
         >
           <textarea id="rep-note" rows={3} data-autofocus className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The visit total on page 2 doesn't match the rows above it." />
         </Field>

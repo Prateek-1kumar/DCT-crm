@@ -50,19 +50,17 @@ async function blanked() {
 }
 
 describe("the blank check, over the API", () => {
-  it("is one blind question; its cells are withheld (null, no printed text), the read's choice is in no response, and approval waits", async () => {
+  it("is one question; its cells wait with it (no printed text), and approval waits", async () => {
     const { studyId, cells } = await blanked();
     const raw = (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).body;
-    const v = RulebookVersionDto.parse(JSON.parse(raw)); // valid: null only where withheld
+    const v = RulebookVersionDto.parse(JSON.parse(raw));
     const q = v.review.filter((i) => i.reason === BLANK_INVOICEABLE);
     expect(q).toHaveLength(1);
     expect(q[0]).toMatchObject({ id: ID, path: null, blocking: true, outcome: null, input: null });
     expect(q[0]!.options.map((o) => o.id)).toEqual(["printed_only", "every_visit"]);
     for (const p of cells) {
-      expect(at(v.rulebook, p), p).toBeNull();
       expect(v.evidence.find((e) => e.path === p), p).toMatchObject({ printed: null, blank: ID });
     }
-    expect(raw).not.toContain('"invoiceable"');
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);
   });
 
@@ -101,7 +99,7 @@ describe("the blank check, over the API", () => {
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
   });
 
-  it("“can't tell” asks each cell blind instead, and refuses anything that isn't a listed pick", async () => {
+  it("“can't tell” asks each cell instead, and refuses anything that isn't a listed pick", async () => {
     const { studyId, cells } = await blanked();
     const before = await storedVersion(built, studyId, 1);
     for (const body of [{}, { value: "only where printed" }, { optionId: "nope" }, { optionId: "every_visit", note: "all of them" }, { optionId: "every_visit", value: 1 }])
@@ -118,7 +116,6 @@ describe("the blank check, over the API", () => {
     expect(await actions(studyId)).toContain("review.blank_rejected");
     // still withheld, now by their own questions
     const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
-    for (const p of cells) expect(at(v.rulebook, p)).toBeNull();
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);
   });
 
@@ -202,7 +199,7 @@ describe("a blank check on a table whose columns are held, over the API", () => 
     for (const p of cells) expect(at((await storedVersion(built, studyId, 1)).rulebook, p)).toBeUndefined();
   });
 
-  it.each(["a wrong pick", "can't tell"])("is rejected with the table (%s): its cells are asked blind, as the held prices are", async (how) => {
+  it.each(["a wrong pick", "can't tell"])("is rejected with the table (%s): its cells are asked one by one, as the held prices are", async (how) => {
     const { studyId, cells, rest, right } = await waiting();
     const [first] = Object.keys(right);
     const body = how === "a wrong pick"
@@ -216,7 +213,6 @@ describe("a blank check on a table whose columns are held, over the API", () => 
     expect(stored.evidence.some((e) => e.blank || e.held)).toBe(false);
     // every one is withheld by its own question; the master keeps what the read had
     const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
-    for (const p of cells) expect(at(v.rulebook, p), p).toBeNull();
     expect(at(stored.rulebook, cells[0]!)).toBe("invoiceable");
     expect(await actions(studyId)).toContain("review.table_rejected");
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);

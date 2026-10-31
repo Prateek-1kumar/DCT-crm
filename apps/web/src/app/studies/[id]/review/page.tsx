@@ -1,6 +1,6 @@
 "use client";
 
-import { PROSPECTIVE, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { PROSPECTIVE, type ReviewItem, type RulebookVersionDto, type StudyDetailDto, suggest, type Suggestion } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Flag, Info, ListChecks, PartyPopper, Undo2, X } from "lucide-react";
 import Image from "next/image";
@@ -245,6 +245,7 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                 <Question
                   key={`${current.id}:${changing ?? ""}:${current.outcome ?? ""}`}
                   item={current}
+                  suggestion={suggest(current, version)}
                   index={order.indexOf(current)}
                   total={order.length}
                   busy={answer.isPending}
@@ -284,9 +285,6 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
   );
 }
 
-/** The server blanks figures in a note while its value is being typed blind; say so, so "•••" isn't a mystery. */
-const hidden = (note: string) => note.includes("•••") && <span className="block text-faint">Figures are hidden until it&apos;s answered, so they can&apos;t steer you.</span>;
-
 function Heading({ item, index, total }: { item: ReviewItem; index?: number; total?: number }) {
   return (
     <div className="flex flex-col gap-3">
@@ -312,7 +310,7 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
         <p className="flex items-start gap-2.5 rounded-tile bg-warn-soft px-4 py-3 text-small text-ink-2">
           <Flag className="mt-0.5 size-4 shrink-0 text-warn" strokeWidth={2} />
           <span>
-            <span className="font-medium text-ink">Reported by {item.reported.by}:</span> “{item.reported.note}”{hidden(item.reported.note)}
+            <span className="font-medium text-ink">Reported by {item.reported.by}:</span> “{item.reported.note}”
           </span>
         </p>
       )}
@@ -320,7 +318,7 @@ function Heading({ item, index, total }: { item: ReviewItem; index?: number; tot
         <p className="flex items-start gap-2.5 rounded-tile bg-brand-soft px-4 py-3 text-small text-ink-2">
           <Undo2 className="mt-0.5 size-4 shrink-0 text-accent" strokeWidth={2} />
           <span>
-            <span className="font-medium text-ink">Sent back by {item.sentBack.by}:</span> “{item.sentBack.note}”{hidden(item.sentBack.note)}
+            <span className="font-medium text-ink">Sent back by {item.sentBack.by}:</span> “{item.sentBack.note}”
           </span>
         </p>
       )}
@@ -332,9 +330,12 @@ const CANT_REASONS = ["The print is too faint", "It's not on this page", "I'm no
 /** The radio that answers a question with options by typing instead (the start date: a date, or "prospective only"). */
 const TYPED = "__typed";
 
-function Question(props: { item: ReviewItem; index: number; total: number; onAnswer: (b: Body) => void; onCancel?: () => void; busy: boolean; canAnswer: boolean; error: unknown }) {
-  const { item, onAnswer, busy, canAnswer, error, onCancel } = props;
+function Question(props: {
+  item: ReviewItem; suggestion: Suggestion | null; index: number; total: number; onAnswer: (b: Body) => void; onCancel?: () => void; busy: boolean; canAnswer: boolean; error: unknown;
+}) {
+  const { item, suggestion, onAnswer, busy, canAnswer, error, onCancel } = props;
   const [raw, setRaw] = useState("");
+  // a pick we suggest is marked, never pre-picked: a person still picks it, so Enter alone confirms nothing
   const [choice, setChoice] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [cant, setCant] = useState(false);
@@ -401,6 +402,7 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
   return (
     <form onSubmit={submit} className="flex flex-col gap-6" aria-labelledby={`q-${item.id}`}>
       <Heading item={item} index={props.index} total={props.total} />
+      {suggestion && <Suggested item={item} suggestion={suggestion} busy={busy} canAnswer={canAnswer} onAnswer={onAnswer} />}
 
       {item.options.length > 0 ? (
         <fieldset className="flex flex-col gap-2.5">
@@ -410,8 +412,24 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
               key={o.id}
               className="flex cursor-pointer items-start gap-3 rounded-tile px-4 py-3.5 text-body ring-1 ring-line-strong transition-colors hover:bg-sunken has-checked:bg-brand-soft has-checked:ring-2 has-checked:ring-brand"
             >
-              <input type="radio" name={`opt-${item.id}`} value={o.id} checked={choice === o.id} onChange={() => (setChoice(o.id), setMsg(null))} autoFocus={i === 0} className="mt-1 accent-[var(--color-primary)]" />
-              {o.label}
+              {/* named by its option alone; "Our reading" describes it */}
+              <input
+                type="radio"
+                name={`opt-${item.id}`}
+                value={o.id}
+                checked={choice === o.id}
+                onChange={() => (setChoice(o.id), setMsg(null))}
+                autoFocus={suggestion?.optionId ? o.id === suggestion.optionId : i === 0}
+                aria-label={o.label}
+                aria-describedby={o.id === suggestion?.optionId ? `ours-${item.id}` : undefined}
+                className="mt-1 accent-[var(--color-primary)]"
+              />
+              <span className="flex-1">{o.label}</span>
+              {o.id === suggestion?.optionId && (
+                <span id={`ours-${item.id}`}>
+                  <Badge tone="accent">Our reading</Badge>
+                </span>
+              )}
             </label>
           ))}
           {both && (
@@ -441,10 +459,10 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
       ) : (
         <div className="flex flex-col gap-2">
           <label htmlFor={`a-${item.id}`} className="text-small font-medium text-ink-2">
-            What the contract says
+            {suggestion ? "Or type what the contract says" : "What the contract says"}
           </label>
           <AnswerInput id={`a-${item.id}`} input={item.input ?? "text"} value={raw} onChange={(v) => (setRaw(v), setMsg(null))} />
-          <p className="text-small text-faint">{item.input === "money" ? "Type the amount exactly as it's printed." : "Type it exactly as it's printed."} We don&apos;t show our reading, so it can&apos;t steer you.</p>
+          <p className="text-small text-faint">{item.input === "money" ? "Type the amount exactly as it's printed." : "Type it exactly as it's printed."}</p>
         </div>
       )}
 
@@ -467,6 +485,31 @@ function Question(props: { item: ReviewItem; index: number; total: number; onAns
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * What we found and what we suggest (suggest, @dct/shared), above the answer. A typed value is taken with one click,
+ * answered as typing it would be; a pick we suggest is marked "Our reading" below, for the person to pick.
+ */
+function Suggested({ item, suggestion, busy, canAnswer, onAnswer }: { item: ReviewItem; suggestion: Suggestion; busy: boolean; canAnswer: boolean; onAnswer: (b: Body) => void }) {
+  const picked = suggestion.optionId !== undefined;
+  const shown = picked ? (item.options.find((o) => o.id === suggestion.optionId)?.label ?? suggestion.optionId) : formatAnswer(item.input, suggestion.value);
+  return (
+    <div className="flex flex-col gap-3 rounded-tile bg-brand-soft/60 px-4 py-3.5 ring-1 ring-brand/25">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="eyebrow">Our suggestion</p>
+          <p className="num text-heading font-semibold tracking-tight">{shown}</p>
+        </div>
+        {!picked && (
+          <Button variant="primary" disabled={busy || !canAnswer} onClick={() => onAnswer({ value: suggestion.value })}>
+            <Check className="size-4" strokeWidth={2.25} /> Use {shown}
+          </Button>
+        )}
+      </div>
+      <p className="text-small text-ink-2">{suggestion.why} Check it against the spot on the page{picked ? ", then pick it below" : " before you use it"}.</p>
+    </div>
   );
 }
 

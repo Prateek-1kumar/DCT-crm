@@ -225,8 +225,6 @@ describe("amendment carries the live version's corrections", () => {
     expect(v2.editors).toEqual([]);
 
     const carried = async () => (await auditOf(studyId)).find((e) => e.action === "version.corrections_carried")!.detail;
-    // both paths have an open question on v2, so the log withholds their values for now
-    expect((await carried()).carried).toEqual([expect.not.objectContaining({ after: expect.anything() }), expect.not.objectContaining({ after: expect.anything() })]);
     await settleAll(built, studyId, 2);
     expect(await carried()).toMatchObject({
       version: 2,

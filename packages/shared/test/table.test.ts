@@ -4,15 +4,11 @@ import {
   answerQuestion,
   askAbout,
   at,
-  blindEvidence,
-  blindReview,
   followUps,
   isoDate,
-  mask,
   type ReviewItem,
   type Rulebook,
   searchVersion,
-  shownAppliesFrom,
   signOffRefusal,
   TABLE_CHECK,
   type TableCheck,
@@ -20,7 +16,7 @@ import {
   tableSendBackRefusal,
   type ValueEvidence,
   versionDiff,
-  withheldPaths,
+  openPaths,
 } from "../src";
 
 // A scanned table whose headers don't match the read's visit names is held for one blind confirmation of its columns
@@ -109,16 +105,6 @@ describe("the table check's questions", () => {
     expect(tableQuestions(rulebook(), held(), [{ ...check, columns: [] }], noShuffle)).toEqual([]);
   });
 
-  it("never send the visit the read gave the column: blindReview takes it out, whatever else is withheld", () => {
-    const d = fresh();
-    for (const hidden of [[], ["/budgetGrids/0/procedures/0/cells/V1"]]) {
-      const shown = blindReview(d.review, hidden, d.evidence);
-      for (const q of shown) expect(q, JSON.stringify(q)).not.toHaveProperty("table");
-      expect(JSON.stringify(shown)).not.toContain("expect");
-    }
-    // the stored questions keep it: the answer is compared with it on the server
-    expect(picks(d).every((q) => q.table)).toBe(true);
-  });
 });
 
 describe("answering a table check", () => {
@@ -196,57 +182,6 @@ describe("answering a table check", () => {
     const [a] = picks(d);
     answerIt(d, a!.id, a!.table!.expect, "Asha");
     expect(d.editors).toEqual(["Asha"]);
-  });
-});
-
-describe("blind entry while a table is held", () => {
-  const nowDraft = (d: AnswerDraft) => ({ ...d, status: "draft" });
-
-  it("every held price is withheld, masked in the master, and its evidence goes out without printed text at its page only", () => {
-    const d = fresh();
-    const ev = d.evidence.map((e) => ({ ...e, printed: "400.00", where: [{ documentId: "d1", page: 3, box: [0.2, 0.2, 0.1, 0.1] as [number, number, number, number] }] }));
-    const hidden = withheldPaths({ ...nowDraft(d), evidence: ev });
-    expect(hidden).toEqual(expect.arrayContaining(HELD));
-    // the price outside the table isn't held, so it shows
-    expect(hidden).not.toContain("/budgetGrids/0/procedures/0/cells/V3");
-    const shown = mask(d.rulebook, hidden, { evidence: ev, review: d.review });
-    for (const p of HELD) expect(at(shown, p)).toBeNull();
-    expect(at(shown, "/budgetGrids/0/procedures/0/cells/V3")).toBe(600);
-    for (const e of blindEvidence(ev, hidden).filter((x) => HELD.includes(x.path))) expect(e).toMatchObject({ printed: null, where: [{ box: null }] });
-    // and nothing else shows them: not the sign-off diff, nor a search for a held amount
-    const view = { ...nowDraft(d), evidence: ev, updatedAt: "x", appliesFrom: null };
-    expect(shownAppliesFrom(view)).toBeNull();
-    expect(searchVersion(view as never, "4.00").map((h) => h.path)).not.toContain("/budgetGrids/0/procedures/0");
-    const diff = versionDiff({ ...nowDraft(d), evidence: ev }, { ...nowDraft(d), rulebook: { ...d.rulebook, budgetGrids: [{ ...d.rulebook.budgetGrids[0]!, procedures: [{ ...d.rulebook.budgetGrids[0]!.procedures[0]!, cells: { V1: 1, V2: 2, V3: 600 } }, d.rulebook.budgetGrids[0]!.procedures[1]!] }] }, evidence: ev });
-    expect(Array.isArray(diff) ? diff.filter((e) => HELD.includes(e.path)) : null).toEqual([]);
-  });
-
-  it("a settled-right table shows its prices again; a rejected one keeps them blind, asked one by one", () => {
-    const right = fresh();
-    for (const q of picks(right)) answerIt(right, q.id, q.table!.expect);
-    expect(withheldPaths({ ...nowDraft(right) })).toEqual([]);
-
-    const d = fresh();
-    const [a] = picks(d);
-    answerIt(d, a!.id, ["V1", "V2", "V3"].find((v) => v !== a!.table!.expect)!);
-    // the questions are open, so the same paths stay withheld, and their questions carry no value
-    expect(withheldPaths(nowDraft(d))).toEqual(expect.arrayContaining(HELD));
-    for (const q of d.review.filter((i) => i.reason === "TABLE_REJECTED")) {
-      expect(q.question).toMatch(/^What amount is printed for /);
-      expect(q.question).not.toMatch(/\d{3}/);
-    }
-  });
-
-  it("the pick ids and their order say nothing about which visit a column is", () => {
-    const first = new Set<string>();
-    for (let seed = 1; seed <= 20; seed++) {
-      let x = seed; // a small seeded generator: different draws, repeatable
-      const qs = tableQuestions(rulebook(), held(), [check], () => (x = (x * 16807) % 2147483647) / 2147483647);
-      expect(qs.map((q) => q.id)).toEqual(["table:t1:0", "table:t1:1"]);
-      first.add(qs[0]!.table!.expect);
-    }
-    // under different draws the first pick is a different column
-    expect(first.size).toBeGreaterThan(1);
   });
 });
 

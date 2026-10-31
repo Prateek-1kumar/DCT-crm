@@ -1,4 +1,4 @@
-import type { RulebookVersionDto, StudyDetailDto } from "@dct/shared";
+import { type RulebookVersionDto, type StudyDetailDto, suggest } from "@dct/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +33,7 @@ function renderPage(id: string, item: string) {
 }
 
 beforeEach(() => {
-  mockSampling.random = () => 1 - 2 ** -32; // the sample pinned, as in server.test.ts
+  mockSampling.random = () => 1 - 2 ** -32; // a table check's columns pinned, as in server.test.ts
   mockReset();
   localStorage.setItem("dct.actingAs", "Taylor Brooks");
   // jsdom has no <dialog> methods and no layout (as SpotView.test.tsx)
@@ -86,6 +86,18 @@ describe("answering on the review page", () => {
     await waitFor(() => expect(sent).toHaveBeenLastCalledWith("st-northwind", 1, id, expect.objectContaining({ optionId: "auto_edc", note: "§4.1, first line" })), { timeout: 10_000 });
   }, 60_000);
 
+  it("a value question shows our suggestion and why; “Use” answers with it and settles it (ADR-003)", async () => {
+    const v = await get<RulebookVersionDto>("/studies/st-northwind/versions/1");
+    const q = v.review.find((i) => i.kind === "confirm_value" && i.input === "money" && suggest(i, v)?.value !== undefined)!;
+    const s = suggest(q, v)!;
+    const sent = renderPage("st-northwind", q.id);
+    expect(await screen.findByText("Our suggestion", {}, { timeout: 10_000 })).toBeTruthy();
+    expect(screen.getByText(new RegExp(s.why.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Use / }));
+    await waitFor(() => expect(sent).toHaveBeenLastCalledWith("st-northwind", 1, q.id, expect.objectContaining({ value: s.value })), { timeout: 10_000 });
+    await waitFor(async () => expect((await get<RulebookVersionDto>("/studies/st-northwind/versions/1")).review.find((i) => i.id === q.id)!.outcome).toBe("matched"), { timeout: 10_000 });
+  }, 60_000);
+
   it("a table's columns: which visit is the highlighted column, real radios with the visits in order, nothing picked; the pick is sent and settles it", async () => {
     const v = await get<RulebookVersionDto>("/studies/st-cobalt/versions/1");
     const q = v.review.find((i) => i.reason === "TABLE_CHECK")!;
@@ -93,7 +105,9 @@ describe("answering on the review page", () => {
     expect((await screen.findByRole("heading", { name: /^Which visit is the highlighted column of the table on page \d+\?$/ }, { timeout: 10_000 })).id).toBe(`q-${q.id}`);
     expect(screen.getByText(/doesn't say which visit each column is/, { selector: "p" })).toBeTruthy();
     const radios = screen.getAllByRole("radio") as HTMLInputElement[];
-    expect(radios.map((r) => r.closest("label")?.textContent)).toEqual(q.options.map((o) => o.label));
+    // our reading is marked on the visit the read gave the column (ADR-003), and nothing is picked for the person
+    expect(radios.map((r) => r.closest("label")?.textContent?.replace(/Our reading$/, ""))).toEqual(q.options.map((o) => o.label));
+    expect(radios.find((r) => r.value === q.table!.expect)!.closest("label")!.textContent).toMatch(/Our reading$/);
     expect(radios.some((r) => r.checked)).toBe(false);
     fireEvent.click(radios[0]!);
     fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
@@ -109,7 +123,7 @@ describe("answering on the review page", () => {
     // the table, then each row, as places to look at
     const places = screen.getByRole("group", { name: "Places in the contract" });
     expect([...places.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["The table", ...q.where.slice(1).map((_, i) => `Row ${i + 1}`)]);
-    expect(screen.getByText(/We don't show our reading/, { selector: "p" })).toBeTruthy();
+    expect(screen.getByText(/A person has to say how the contract bills them/, { selector: "p" })).toBeTruthy();
     const radios = screen.getAllByRole("radio") as HTMLInputElement[];
     expect(radios.map((r) => r.closest("label")?.textContent)).toEqual(["Only where the contract prints a price", "At every scheduled visit shown"]);
     expect(radios.some((r) => r.checked)).toBe(false);

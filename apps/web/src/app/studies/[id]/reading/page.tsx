@@ -152,7 +152,7 @@ export default function ReadingPage() {
                   <Keyboard className="size-5 text-accent" strokeWidth={1.75} />
                   <div>
                     <p className="text-body font-medium">Type it in by hand</p>
-                    <p className="text-small text-muted">You type the values; someone else re-types 10 of them without seeing yours, to catch typos.</p>
+                    <p className="text-small text-muted">You type the values; someone else checks and approves them.</p>
                   </div>
                   <Button className="mt-auto self-start" disabled={!by || byHand.isPending} onClick={() => byHand.mutate()}>
                     Type it in by hand

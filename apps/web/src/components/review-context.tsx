@@ -13,8 +13,8 @@ export type RulebookCtx = {
   show: (path: string, prov: Provenance | null | undefined, label: string) => void;
   /** What backs each number. */
   evidence: Map<string, ValueEvidence["status"]>;
-  /** Values with an open question on a draft: hidden until a person answers (blind entry). */
-  masked: Set<string>;
+  /** Values with an open question on a draft (openPaths): shown, marked "needs you". */
+  asking: Set<string>;
   /** Values someone proofread and found right. */
   proofread: Map<string, ProofreadMark>;
   /** Items matching the search on this contract (pointers of rows or terms). */
@@ -49,10 +49,12 @@ export function Dot({ status }: { status: ValueEvidence["status"] }) {
   );
 }
 
-/** A value with its evidence dot (and a tick once proofread), or "needs you" while its question is open. */
+/** Marks a value whose question is still open: it's shown, and answered in Needs you. */
+export const NeedsYou = () => <span className="text-xs font-medium text-warn">needs you</span>;
+
+/** A value with its evidence dot (and a tick once proofread), and "needs you" while its question is open. */
 export function Val({ path, children }: { path: string; children: ReactNode }) {
-  const { evidence, masked, proofread } = useRulebook();
-  if (masked.has(path)) return <span className="text-warn">needs you</span>;
+  const { evidence, asking, proofread } = useRulebook();
   const status = evidence.get(path);
   const mark = proofread.get(path);
   return (
@@ -65,6 +67,7 @@ export function Val({ path, children }: { path: string; children: ReactNode }) {
           <span className="sr-only">Proofread by {mark.by}</span>
         </span>
       )}
+      {asking.has(path) && <NeedsYou />}
     </span>
   );
 }

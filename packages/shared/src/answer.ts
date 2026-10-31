@@ -1,13 +1,12 @@
 import type { ContractAnomaly } from "./anomaly";
-import { type DiffEntry, withheldPaths } from "./api";
-import { leaf, mask } from "./blind";
+import type { DiffEntry } from "./api";
 import { isoDate as calendarDate } from "./dates";
 import { deepEqual, diffRulebooks, itemIds } from "./diff";
 import { AnswerReviewBody, BODY_WORDS, bodyProblem, checkedByMachine, type ProofreadMark, type ReviewItem, samePerson, settled, type ValueEvidence } from "./evidence";
 import { parseCents, parsePercent } from "./money";
-import { at, parsePointer, setAt } from "./pointer";
+import { at, leaf, parsePointer, setAt } from "./pointer";
 import { ARITHMETIC, fromAnomalies, gridConflicts, recheck, sumAt } from "./problems";
-import { alsoWithheld, amendmentDate, askAbout, BLANK_INVOICEABLE, BLANK_READ, rejectBlank, capFollowUps, empty, noLimit, placeholders, PROSPECTIVE, settleTable, TABLE_CHECK } from "./questions";
+import { amendmentDate, askAbout, BLANK_INVOICEABLE, BLANK_READ, rejectBlank, capFollowUps, decidedBy, empty, noLimit, placeholders, PROSPECTIVE, settleTable, TABLE_CHECK } from "./questions";
 import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
@@ -270,7 +269,7 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   // question still open about them is closed (a follow-up, "This looks wrong"), and logged (followUps).
   const closed: ReviewItem[] = [];
   if (set && /\/cap\/kind$/.test(set.path) && set.value === "none")
-    for (const p of alsoWithheld(set.path)) {
+    for (const p of decidedBy(set.path)) {
       setAt(rb, parsePointer(p), null);
       v.evidence = v.evidence.filter((e) => e.path !== p);
       closed.push(...v.review.filter((i) => i.path === p && !settled(i)));
@@ -402,17 +401,42 @@ export function signOffRefusal(
 }
 
 /**
- * GET …/diff, for the API and the sample server alike: what changed from `before` to `after`, blind. A value withheld on
- * either is left out, and both masters are masked alike, so the words blanked around it on one side don't show as
- * changed against the other. Refused when either has no master.
+ * GET …/diff, for the API and the sample server alike: what changed from `before` to `after`. Refused when either has no
+ * master.
  */
-export function versionDiff(
-  before: { status: string; review: ReviewItem[]; evidence: ValueEvidence[]; rulebook: Rulebook | null },
-  after: { status: string; review: ReviewItem[]; evidence: ValueEvidence[]; rulebook: Rulebook | null },
-): Refusal | DiffEntry[] {
+export function versionDiff(before: { rulebook: Rulebook | null }, after: { rulebook: Rulebook | null }): Refusal | DiffEntry[] {
   if (!before.rulebook || !after.rulebook) return refuse(409, "Both versions need an extracted rulebook to diff");
-  const hidden = [...new Set([...withheldPaths(before), ...withheldPaths(after)])];
-  const where = { evidence: [...before.evidence, ...after.evidence], review: [...before.review, ...after.review] };
-  const view = (rb: Rulebook) => (hidden.length ? mask(upgradeRulebook(rb), hidden, where) : upgradeRulebook(rb));
-  return diffRulebooks(view(before.rulebook), view(after.rulebook)).filter((e) => !hidden.includes(e.path));
+  return diffRulebooks(upgradeRulebook(before.rulebook), upgradeRulebook(after.rulebook));
+}
+
+/** What we suggest for an open question (ADR-003): the answer to pick or the value to type, and why, in plain words. */
+export type Suggestion = { value?: unknown; optionId?: string; why: string };
+
+/**
+ * What we suggest for a question, shown beside it with our reading, for the API's and the sample server's versions
+ * alike. A value the PDF's text prints differently from our reading: the printed text. A value no text checks (a scan,
+ * no quote): our reading. A pick: the read's own (an interpretation, a yes/no), or the visit we matched a table's column
+ * to. A total that doesn't add up: the total as printed, which is what was signed. Nothing where we have no reading
+ * worth suggesting (a missing value, a money term, a blank check, which grid governs) or the question is settled. Taking
+ * it answers the question as typing or picking it would (answerQuestion), so the gate is unchanged.
+ */
+export function suggest(item: ReviewItem, v: { rulebook: Rulebook | null; evidence: ValueEvidence[] }): Suggestion | null {
+  if (settled(item) || !v.rulebook) return null;
+  const has = (id: string) => item.options.some((o) => o.id === id);
+  if (item.table) return has(item.table.expect) ? { optionId: item.table.expect, why: "The visit we matched this column to." } : null;
+  if (ARITHMETIC.has(item.reason)) return has("printed") ? { optionId: "printed", why: "The total as the contract prints it is what was signed. Ask the sponsor about the difference." } : null;
+  if (!item.path || item.reason === "REQUIRED_MISSING" || (item.kind !== "confirm_value" && item.kind !== "interpretation")) return null;
+  const current = at(v.rulebook, item.path);
+  if (current === undefined || empty(current) || !leaf(current)) return null;
+  if (item.options.length && !item.input) {
+    const id = String(current);
+    return has(id) ? { optionId: id, why: item.kind === "interpretation" ? "How we read the clause." : "What we read." } : null;
+  }
+  const ev = v.evidence.find((e) => e.path === item.path);
+  const printed = parsePrinted(item.input, ev?.printed ?? null, calendarDate);
+  if (printed !== undefined && !same(printed, current)) return { value: printed, why: "What the PDF's text prints at this spot. Our reading was different." };
+  return {
+    value: current,
+    why: printed !== undefined ? "What we read, and what the PDF's text prints here." : "What we read on the page. The PDF has no text here to check it against, so compare it with the spot.",
+  };
 }

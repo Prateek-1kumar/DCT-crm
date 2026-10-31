@@ -4,7 +4,7 @@ import { diffRulebooks, labelFor, type Rulebook } from "@dct/shared";
 import { manualRulebook } from "../src/domain.js";
 import { failure } from "../src/jobs.js";
 import { getAt, markManual, parsePointer, setAt } from "../src/lib/pointer.js";
-import { answer, askAbout, mask, recheck, reviewDraft } from "../src/review.js";
+import { answer, askAbout, recheck, reviewDraft } from "../src/review.js";
 
 const prov = (method = "ai") => ({ source: null, confidence: 1, method, crossCheck: "agree" });
 
@@ -80,28 +80,6 @@ describe("manualRulebook", () => {
     const codes = runContractChecks(rb).map((a) => `${a.code}:${a.path}`);
     expect(codes).toContain("REQUIRED_MISSING:/study/investigator/value");
     expect(codes.filter((c) => c.startsWith("LOW_CONFIDENCE"))).toEqual([]);
-  });
-});
-
-describe("blind entry", () => {
-  it("withholds a value and its quote; items and sections stay", () => {
-    const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
-    const rb = manualRulebook(s, []);
-    rb.payment.netDays = { value: 45, prov: { source: { documentId: "d", page: 2, quote: "within 45 days" }, confidence: 1, method: "ai", crossCheck: "agree" } };
-    const out = mask(rb, ["/payment/netDays/value", "/budgetGrids/0/header", "/study/sponsor/value"], { evidence: [], review: [] });
-    expect(out.payment.netDays).toEqual({ value: null, prov: { source: { documentId: "d", page: 2 }, confidence: 1, method: "ai", crossCheck: "agree" } });
-    expect(out.study.sponsor.value).toBeNull();
-    expect(out.budgetGrids[0]!.header).toEqual(rb.budgetGrids[0]!.header);
-    expect(rb.payment.netDays.value).toBe(45); // a copy
-  });
-
-  it("labels a value as the web does", () => {
-    const s = { sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0];
-    const rb = manualRulebook(s, []);
-    rb.budgetGrids[0]!.procedures[0]!.name = "Blood draw";
-    expect(labelFor(rb, "/payment/netDays/value")).toBe("Payment › Net days");
-    expect(labelFor(rb, "/budgetGrids/0/procedures/0/cells/V1")).toBe("Budget grid › Budget › Procedures › Blood draw › V1");
-    expect(labelFor(rb, "/overhead/pct/value")).toBe("Overhead › Percent");
   });
 });
 

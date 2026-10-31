@@ -116,7 +116,7 @@ function Proof({ study, version }: { study: StudyDetailDto; version: RulebookVer
     proof.mutate({ paths, by: by! }, { onSuccess: () => (say("Ticked as right"), go(after(u, paths))) });
   };
 
-  // Each wrong value becomes a blind question in Needs you. On a live version the first report opens a correction
+  // Each wrong value becomes a question in Needs you. On a live version the first report opens a correction
   // draft; the rest go to that draft, and so does a try again after a failure (`opened`). The values not picked are
   // ticked as right, unless an earlier try already sent them.
   const opened = useRef<RulebookVersionDto | null>(null);
@@ -350,13 +350,13 @@ function Panel(p: {
           {p.mark.at ? ` · ${relativeTime(p.mark.at)}` : ""}
         </p>
       )}
-      {p.status === "reported" && <p className="rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">Sent to Needs you. It&apos;s answered there, blind.</p>}
+      {p.status === "reported" && <p className="rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">Sent to Needs you. It&apos;s answered there.</p>}
 
       {p.selecting ? (
         <div className="flex flex-col gap-4 rounded-tile bg-danger-soft/50 p-5 ring-1 ring-danger/20">
           <p className="text-body font-medium">Click the numbers in “Ours” that look wrong.</p>
           <p className="text-small text-muted">
-            Each one becomes a question in Needs you, answered blind{p.live ? " on a correction draft; this live version stays in use until it's approved" : ""}. The numbers you don&apos;t pick are ticked as right.
+            Each one becomes a question in Needs you{p.live ? " on a correction draft; this live version stays in use until it's approved" : ""}. The numbers you don&apos;t pick are ticked as right.
           </p>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Button variant="ghost" onClick={p.onCancel}>

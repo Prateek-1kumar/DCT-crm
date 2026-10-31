@@ -6,7 +6,7 @@ import { labelFor } from "@/lib/format";
 import { getAt } from "@/lib/pointer";
 
 /**
- * Values the newest draft asks about again, blind, that the live version `shown` also holds: same place, same name,
+ * Values the newest draft asks about again that the live version `shown` also holds: same place, same name,
  * since an amendment can move rows. Billing still works from the live version, so these are marked there, never
  * hidden. Path → its question.
  * ponytail: a question about a row's name itself isn't matched (the draft withholds the name its label is made of);

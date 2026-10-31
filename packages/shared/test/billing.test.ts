@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { billedGrids, blindDetail, blindReview, governingGrids, mask, type ReviewItem, Rulebook, upgradeRulebook } from "../src";
+import { billedGrids, governingGrids, type ReviewItem, Rulebook, upgradeRulebook } from "../src";
 import { buildWorkbook } from "../src/xlsx";
 
 const prov = { source: { documentId: "d1", page: 6, location: "§5.2 (90 days)", quote: "within ninety (90) days" }, confidence: 0.98, method: "ai", crossCheck: "agree" } as const;
@@ -51,55 +51,6 @@ describe("the governing grid, one per arm", () => {
     expect(billedGrids(rb).map((g) => g.id)).toEqual(["gA2", "gB2"]);
     // an arm whose grids differ and has no choice bills none of them until one is chosen (never both)
     expect(billedGrids({ ...rb, governingGridIds: [], governingGridId: null }).map((g) => g.id)).toEqual([]);
-  });
-});
-
-describe("mask: a withheld value leaves nothing that restates it", () => {
-  const rb = upgradeRulebook(stored as unknown as Rulebook);
-  const none = { evidence: [], review: [] };
-  it("blanks the numbers in its item's words and location; keeps the page, ids and fixed-list values", () => {
-    const d = mask(rb, ["/deadlines/0/value"], none).deadlines[0]!;
-    expect(d.value).toBeNull();
-    expect(d.kind).toBe("invoice_days_from_expense");
-    expect(d.consequence).toBe("not paid if invoiced more than ••• days after the expense");
-    expect(d.prov.source).toEqual({ documentId: "d1", page: 6, location: "§5.2 (••• days)" });
-    // a row's name keeps its words; only an amount or % in it is blanked
-    const p = mask({ ...rb, budgetGrids: [{ ...rb.budgetGrids[0]!, procedures: [{ ...rb.budgetGrids[0]!.procedures[0]!, name: "ECG, 12-lead $55.00" }] }] }, ["/budgetGrids/0/procedures/0/cells/V1"], none).budgetGrids[0]!.procedures[0]!;
-    expect([p.name, p.code, p.cells.V1]).toEqual(["ECG, 12-lead •••", "36415", null]);
-    expect(mask(rb, ["/screenFail/cap/n"], none).screenFail).toMatchObject({ cap: { kind: "blocks_with_reauth", n: null }, requiredDocs: ["screening log"], paidVia: "invoice" });
-    // the others are untouched
-    expect(mask(rb, ["/deadlines/0/value"], none).invoiceables).toEqual(rb.invoiceables);
-  });
-
-  it("blanks a money term quoted from the same printed line as a withheld value", () => {
-    const at = (y: number) => [{ documentId: "d1", page: 1, box: [0.1, y, 0.8, 0.02] as [number, number, number, number] }];
-    const item = (id: string, y: number): ReviewItem => ({
-      id, kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, question: `Page 1 has an amount that the invoicing master doesn't have: "Re-consent $100.00 $130.00". How should it be handled?`,
-      input: null, options: [], where: at(y), blocking: true, answer: null, outcome: null, compare: null, sentBack: null, term: { quote: "Re-consent $100.00 $130.00", amounts: [13000] },
-    });
-    const evidence = [{ path: "/invoiceables/0/amountCents", status: "conflict" as const, where: at(0.5), printed: "$100.00", note: null }];
-    const [same, other] = blindReview([item("u1", 0.505), item("u2", 0.7)], ["/invoiceables/0/amountCents"], evidence);
-    expect(same!.question).not.toMatch(/100|130/);
-    expect(same!.term).toEqual({ quote: "Re-consent $••• $•••", amounts: [] });
-    expect(other!.question).toMatch(/\$100\.00/);
-
-    // listed to bill by hand, the term carries those words onto the master and into the log: blanked there too
-    const listed = { ...item("u1", 0.505), outcome: "chosen" as const, answer: { optionId: "bill_by_hand", note: "Re-consent at $100.00, the $130.00 one", by: "Asha", at: "" } };
-    const entry = { label: "Re-consent $100.00 $130.00", quote: "Re-consent $100.00 $130.00", page: 1, amounts: [13000], pct: 5, note: "the $130.00 one", prov: { ...prov, method: "manual" as const }, itemId: "u1" };
-    const elsewhere = { ...entry, itemId: "u2", label: "Parking $12.00", quote: "Parking $12.00", amounts: [1200] };
-    const withList = { ...rb, unclassified: [entry, elsewhere] };
-    const on = { evidence, review: [listed, item("u2", 0.7)] };
-    expect(mask(withList, ["/invoiceables/0/amountCents"], on).unclassified).toEqual([
-      { label: "Re-consent $••• $•••", quote: "Re-consent $••• $•••", page: 1, amounts: [], note: "the $••• one", prov: entry.prov, itemId: "u1" },
-      elsewhere,
-    ]);
-    expect(blindReview([listed], ["/invoiceables/0/amountCents"], evidence)[0]!.answer!.note).toBe("Re-consent at $•••, the $••• one");
-    const logged = { version: 1, itemId: "u1", question: listed.question, note: listed.answer.note, billByHand: entry.label };
-    expect(JSON.stringify(blindDetail("review.answered", logged, { hidden: new Set(["/invoiceables/0/amountCents"]), ...on }))).not.toMatch(/100|130/);
-    // its question not on this version: copied from the approved live version with a correction, shown in full there
-    expect(mask(withList, ["/invoiceables/0/amountCents"], { evidence, review: [] }).unclassified).toEqual(withList.unclassified);
-    // nothing withheld on its line: shown as listed
-    expect(mask(withList, ["/deadlines/0/value"], on).unclassified).toEqual(withList.unclassified);
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerQuestion,
+  at,
   type AnswerDraft,
   askAbout,
   type ContractAnomaly,
@@ -11,6 +12,7 @@ import {
   type ReviewItem,
   type Rulebook,
   signOffRefusal,
+  suggest,
   type ValueEvidence,
 } from "../src";
 
@@ -164,5 +166,42 @@ describe("isoDate and proofreadMarks", () => {
   it("a value proofread again by the same person changes nothing", () => {
     const marks = proofreadMarks([], ["/a"], "Sam", "t1")!;
     expect([proofreadMarks(marks, ["/a"], "Sam", "t2"), proofreadMarks(marks, ["/a"], "Ben", "t2")]).toEqual([null, [{ path: "/a", by: "Ben", at: "t2" }]]);
+  });
+});
+
+describe("suggest (ADR-003): what we suggest is shown, and taking it settles the question", () => {
+  const NET = "/payment/netDays/value"; // the read holds 45
+  const take = (d: AnswerDraft) => {
+    const g = suggest(d.review[0]!, d)!;
+    return outcomeOf(answer(d, g.optionId !== undefined ? { optionId: g.optionId } : { value: g.value }));
+  };
+
+  it("the PDF's printed text where it differs from our reading, and taking it matches", () => {
+    const d = draft(reported(NET), "30");
+    expect(suggest(d.review[0]!, d)).toEqual({ value: 30, why: "What the PDF's text prints at this spot. Our reading was different." });
+    expect(take(d)).toBe("matched");
+  });
+
+  it("our reading where the PDF's text agrees or prints nothing, and taking it matches", () => {
+    expect(suggest(draft(reported(NET), "45").review[0]!, draft(reported(NET), "45"))).toMatchObject({ value: 45, why: "What we read, and what the PDF's text prints here." });
+    const scan = draft(reported(NET));
+    expect(suggest(scan.review[0]!, scan)).toMatchObject({ value: 45, why: expect.stringMatching(/^What we read on the page\. The PDF has no text here/) });
+    expect(take(scan)).toBe("matched");
+  });
+
+  it("the read's own pick on an interpretation or a yes/no", () => {
+    const d = draft((rb) => ({ ...askAbout(rb, [], "/payment/visitPayment/value", "q", "reported"), kind: "interpretation" as const }));
+    expect(suggest(d.review[0]!, d)).toEqual({ optionId: "auto_edc", why: "How we read the clause." });
+    expect(take(d)).toBe("matched");
+    const yes = draft(reported(`${GRID}/visits/0/autopay`));
+    expect(suggest(yes.review[0]!, yes)).toMatchObject({ optionId: String(at(yes.rulebook, `${GRID}/visits/0/autopay`)), why: "What we read." });
+  });
+
+  it("nothing for a missing value, or a question already settled", () => {
+    const missing = draft((rb) => askAbout(rb, [], NET, "q", "REQUIRED_MISSING"));
+    expect(suggest(missing.review[0]!, missing)).toBeNull();
+    const d = draft(reported(NET), "45");
+    answer(d, { value: 45 });
+    expect(suggest(d.review[0]!, d)).toBeNull();
   });
 });

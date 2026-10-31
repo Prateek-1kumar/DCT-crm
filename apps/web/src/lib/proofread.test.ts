@@ -1,4 +1,4 @@
-import { RulebookVersionDto, withheldPaths } from "@dct/shared";
+import { RulebookVersionDto, openPaths } from "@dct/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockRequest, mockReset } from "./mock/server";
 import { EVIDENCE } from "../components/review-context";
@@ -28,7 +28,7 @@ describe("proofread units", () => {
 
     // Every confirmed value with a place on a page is in exactly one unit; values with an open question are not, nor a
     // cap's figures while its kind is asked
-    const open = new Set(withheldPaths(v));
+    const open = new Set(openPaths(v));
     expect(open.has("/screenFail/cap/ratio")).toBe(true);
     const confirmed = v.evidence.filter((e) => (e.status === "confirmed" || e.status === "confirmed_by_math") && e.where[0] && !open.has(e.path)).map((e) => e.path);
     expect(units.flatMap((u) => u.cells.map((c) => c.path)).sort()).toEqual([...confirmed].sort());

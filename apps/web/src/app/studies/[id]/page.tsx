@@ -198,8 +198,8 @@ function TypingCard({ study, draft }: { study: StudyDetailDto; draft: RulebookVe
         <p className="eyebrow mb-1">Typed by hand</p>
         <p className="text-lg">Type what the contract says into the invoicing master below</p>
         <p className="mt-1 text-[13px] text-muted">
-          Leave anything the contract doesn&apos;t mention empty. Each value is saved when you leave its box. When you&apos;re done, someone else re-types 10
-          of them without seeing them, to catch typos.
+          Leave anything the contract doesn&apos;t mention empty. Each value is saved when you leave its box. When you&apos;re done, someone else checks and
+          approves them.
         </p>
         <p className="mt-2 text-[13px]">
           {typed} {typed === 1 ? "value" : "values"} typed so far
@@ -437,7 +437,7 @@ function Master({ study, draft }: { study: StudyDetailDto; draft: RulebookVersio
  * term the newest draft is re-checking says so, with the way to its question.
  */
 function Overview({ study, version, draft, rechecks }: { study: StudyDetailDto; version: RulebookVersionDto; draft: RulebookVersionDto | undefined; rechecks: Map<string, ReviewItem> }) {
-  const { rulebook: rb, show, masked } = useRulebook();
+  const { rulebook: rb, show, asking } = useRulebook();
   const terms = keyTerms(rb, version.evidence);
   const count = (st: string) => version.evidence.filter((e) => e.status === st).length;
   const numbers = version.evidence.length;
@@ -446,14 +446,15 @@ function Overview({ study, version, draft, rechecks }: { study: StudyDetailDto; 
     <div className="flex flex-col gap-5">
       <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {terms.map((t) => {
-          const hidden = t.paths.some((p) => masked.has(p));
+          const open = t.paths.some((p) => asking.has(p));
           const path = t.paths[0];
           const again = draft && t.paths.map((p) => rechecks.get(p)).find(Boolean);
           const inner = (
             <>
               <span className="text-small text-muted">{t.label}</span>
-              <span className={cx("num block text-title font-semibold tracking-tight", hidden && "text-warn")}>{hidden ? "Needs you" : t.value}</span>
-              {t.detail && !hidden && <span className="mt-0.5 block text-small text-muted">{t.detail}</span>}
+              <span className="num block text-title font-semibold tracking-tight">{t.value}</span>
+              {t.detail && <span className="mt-0.5 block text-small text-muted">{t.detail}</span>}
+              {open && <span className="mt-0.5 block text-small font-medium text-warn">Needs you: its question is still open</span>}
             </>
           );
           return (

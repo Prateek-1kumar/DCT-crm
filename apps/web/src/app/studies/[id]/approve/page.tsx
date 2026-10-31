@@ -1,6 +1,6 @@
 "use client";
 
-import { checkedByMachine, settled, withheldPaths, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
+import { checkedByMachine, settled, type ReviewItem, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Check, CircleHelp, Eye, FileQuestion, Undo2 } from "lucide-react";
 import Link from "next/link";
@@ -12,7 +12,7 @@ import { SpotView, DEFAULT_ZOOM } from "@/components/SpotView";
 import { Badge, Button, btnCls, cx, Dialog, ErrorNote, fieldCls, inputCls, LoadError, PageTitle, pageCls, Spinner, Stepper } from "@/components/ui";
 import { useActingAs } from "@/lib/acting-as";
 import { api } from "@/lib/api";
-import { HIDDEN, keyTerms, type KeyTerm } from "@/lib/approve";
+import { keyTerms, type KeyTerm } from "@/lib/approve";
 import { relativeTime } from "@/lib/format";
 import { keys, useDiff, useInvalidateStudy, useSettings, useStudy, useVersion } from "@/lib/queries";
 import { approveState, formatAnswer, queueOrder, versionStage } from "@/lib/review";
@@ -76,7 +76,7 @@ function Approve({ study, version, onApproved }: { study: StudyDetailDto; versio
   const by = useActingAs();
   const settings = useSettings();
   const rb = version.rulebook!;
-  const terms = useMemo(() => keyTerms(rb, version.evidence, new Set(withheldPaths(version))), [rb, version]);
+  const terms = useMemo(() => keyTerms(rb, version.evidence), [rb, version]);
   const order = useMemo(() => queueOrder(version.review), [version.review]);
   // Every question holds approval, one not needed to approve too (ADR-001 §6): the API refuses otherwise.
   const open = order.filter((i) => !settled(i));
@@ -179,7 +179,7 @@ function StepHead({ n, title, sub }: { n: number; title: string; sub: ReactNode 
 
 /**
  * "What you're approving": the money at a glance, and how it was checked. The per-patient figure is the first billed
- * grid's key term, so a withheld total shows as hidden (never the visits added up in its place).
+ * grid's key term.
  */
 function Summary({ version, terms }: { version: RulebookVersionDto; terms: KeyTerm[] }) {
   const rb = version.rulebook!;
@@ -203,12 +203,8 @@ function Summary({ version, terms }: { version: RulebookVersionDto; terms: KeyTe
       <p className="eyebrow">What you&apos;re approving</p>
       {perPatient && (
         <div className="mt-3">
-          {perPatient.value === HIDDEN ? (
-            <p className="text-title font-semibold tracking-tight text-warn">{HIDDEN}</p>
-          ) : (
-            <p className="num text-figure font-semibold tracking-tight">{perPatient.value}</p>
-          )}
-          <p className="text-small text-muted">per patient{perPatient.value === HIDDEN ? ": its question is still open" : ` · ${perPatient.detail.replace(/^.* · /, "")}`}</p>
+          <p className="num text-figure font-semibold tracking-tight">{perPatient.value}</p>
+          <p className="text-small text-muted">per patient · {perPatient.detail.replace(/^.* · /, "")}</p>
         </div>
       )}
       <dl className="mt-4 flex flex-col divide-y divide-line">
@@ -387,8 +383,7 @@ function Answers({ study, version, order, open, onNext }: { study: StudyDetailDt
       )}
       <Dialog open={dialog} onClose={() => setDialog(false)} title={`Send ${picked.size} ${picked.size === 1 ? "answer" : "answers"} back`}>
         <p className="text-body text-muted">
-          They&apos;re reopened and answered again, blind. The contract goes back to Needs you, and whoever answers sees your note with any figures in it shown as •••, so
-          they still type what the page says. Point them to the spot instead.
+          They&apos;re reopened and answered again. The contract goes back to Needs you, and whoever answers sees your note.
         </p>
         <label htmlFor="sb-note" className="mt-5 block text-small font-medium text-ink-2">
           What should they look at again?

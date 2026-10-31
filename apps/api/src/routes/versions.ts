@@ -18,6 +18,7 @@ import {
   Rulebook,
   SendBackBody,
   SignOffBody,
+  openPaths,
   searchVersion,
   signOffRefusal,
   tableSendBackRefusal,
@@ -36,7 +37,7 @@ import { getExtraction } from "../extraction/port.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
-import { answer, askAbout, at, empty, hiddenPaths, leaf } from "../review.js";
+import { answer, askAbout, at, empty, leaf } from "../review.js";
 
 type P = { Params: { id: string; v: string } };
 const versionNo = (v: unknown) => {
@@ -60,13 +61,12 @@ export const versionRoutes =
     app.get<P & { Querystring: { q?: string } }>("/studies/:id/versions/:v/search", async (req): Promise<MasterSearch> => {
       const row = await withRulebook(req.params.id, req.params.v);
       const q = text(req.query.q);
-      // blind entry: never a withheld value, by amount or by a term's words (searchVersion, as the sample server)
       return { q, hits: searchVersion(row, q) };
     });
 
     app.get<P & { Querystring: { by?: string } }>("/studies/:id/versions/:v/export.xlsx", async (req, reply) => {
       const row = await withRulebook(req.params.id, req.params.v);
-      // Billing works only from approved terms; a draft also still hides values someone has to type blind.
+      // Billing works only from approved terms.
       if (row.status !== "signed" && row.status !== "superseded") throw new HttpError(409, "Only an approved version can be exported.");
       // What was approved, not the editable study row.
       const st = row.rulebook.study;
@@ -95,7 +95,6 @@ export const versionRoutes =
       const [v, a] = [versionNo(req.params.v), versionNo(against)];
       const after = await loadVersion(db, req.params.id, v);
       const before = await loadVersion(db, req.params.id, a);
-      // blind entry: a withheld value isn't shown as changed either (versionDiff, as the sample server)
       const diff = versionDiff(before, after);
       if ("refusal" in diff) throw new HttpError(diff.refusal.status, diff.refusal.message);
       return diff;
@@ -205,7 +204,7 @@ export const versionRoutes =
 
     /**
      * "This looks wrong". On a draft (one typed by hand once typing is marked done, as values can't be typed any more):
-     * a blocking blind question about the value. On the live version: a correction draft (a copy of it plus that
+     * a blocking question about the value. On the live version: a correction draft (a copy of it plus that
      * question); the live version stays live until the draft is approved.
      */
     app.post<P>("/studies/:id/versions/:v/report", async (req, reply) => {
@@ -237,8 +236,8 @@ export const versionRoutes =
           await audit(tx, by, row.studyId, CORRECTION_OPENED, { version: draft.version, seededFromVersion: row.version });
         } else if (row.status !== "draft") throw new HttpError(409, `Version ${row.version} is ${row.status}; report a value on the live version or a draft.`);
         else if (row.byHand && !row.review.length) throw new HttpError(409, "Typing isn't marked done yet: change the value in the form instead.");
-        // asked already, or withheld with a question (a cap's limit while its kind is asked: its question would name the kind)
-        if (hiddenPaths(draft).includes(path)) throw new HttpError(409, "There's already an open question about this value.");
+        // asked already, or decided by a question (a cap's limit while its kind is asked)
+        if (openPaths(draft).includes(path)) throw new HttpError(409, "There's already an open question about this value.");
         // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
         const item = { ...askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported"), reported: { by, note, at: new Date().toISOString() } };
         const [updated] = await tx.update(rulebookVersions).set({ review: [...draft.review, item], updatedAt: touched(draft.updatedAt) }).where(eq(rulebookVersions.id, draft.id)).returning();
@@ -267,7 +266,7 @@ export const versionRoutes =
       });
     });
 
-    /** The approver reopens answered questions with a note; they're answered again, blind, and the contract goes back to Needs you. */
+    /** The approver reopens answered questions with a note; they're answered again, and the contract goes back to Needs you. */
     app.post<P>("/studies/:id/versions/:v/send-back", async (req, reply) => {
       const body = SendBackBody.safeParse(req.body);
       if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.sendBack));

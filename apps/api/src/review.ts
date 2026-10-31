@@ -1,13 +1,11 @@
 import type { Anchor, NonFee, PrintedRow, RowBand, SolverMode, SolverReport, Span, SweepReport, TextPage } from "@dct/extraction";
 import {
-  alsoWithheld,
   blankQuestions,
   type AnswerDraft,
   answerQuestion,
   askAbout,
   askedAsInterpretation,
   at,
-  blindLabel,
   checkedByMachine,
   type ContractAnomaly,
   cryptoRandom,
@@ -17,6 +15,7 @@ import {
   interpretations,
   isoDate,
   itemIds,
+  labelFor,
   leaf,
   openItems,
   type PageBox,
@@ -31,7 +30,6 @@ import {
   TABLE_CHECK,
   tableQuestions,
   type ValueEvidence,
-  withheldPaths,
 } from "@dct/shared";
 import { isDeepStrictEqual } from "node:util";
 import type { ExtractionPort } from "./extraction/port.js";
@@ -40,7 +38,7 @@ import { getAt, parsePointer } from "./lib/pointer.js";
 
 /**
  * The review queue (ADR-001): the questions a person answers before a draft can be approved after a read or after typing
- * by hand, and blind entry (a value with an open question never leaves the server). How an answer is checked, contract
+ * by hand; each shows our reading and what we suggest (ADR-003). How an answer is checked, contract
  * problems as questions and the value questions are in @dct/shared (answer.ts, problems.ts, questions.ts), so the
  * in-browser sample server (apps/web/src/lib/mock/server.ts) runs the same code.
  */
@@ -56,14 +54,6 @@ const box = (documentId: string, page: number): PageBox => ({ documentId, page, 
 /** For studies.needs_you: a by-hand draft still being typed counts as one thing to do (the typing), as in the web. */
 export const needsYouOf = (v: { status: string; byHand: boolean; review: ReviewItem[] } | undefined) =>
   v?.status !== "draft" ? 0 : v.byHand && !v.review.length ? 1 : openItems(v.review).length;
-
-// ---------- blind entry ----------
-
-/** On a draft, every value with an open question: withheld from every response until it's answered (@dct/shared withheldPaths). */
-export const hiddenPaths = withheldPaths;
-
-// The masking itself lives in @dct/shared, so the in-browser sample server withholds exactly the same.
-export { blindReview, mask } from "@dct/shared";
 
 // ---------- questions at extraction ----------
 
@@ -191,8 +181,8 @@ const capWaits = (path: string, asking: ReadonlySet<string>) => /\/cap\/(?:n|rat
 /**
  * After a read: every money value bound to the PDF's own text (or, on scan pages, to the contract's totals), and the
  * questions for a person: values not confirmed, money terms the master doesn't hold (with their words, to list them to
- * bill by hand), contract problems, the interpretations picked blind, pages nothing can search, corrections an
- * amendment's read couldn't carry over, and the blind re-type of up to 10 confirmed values (ADR-001 §6). `amendment`:
+ * bill by hand), contract problems, the interpretations, pages nothing can search, and corrections an amendment's
+ * read couldn't carry over. `amendment`:
  * the read includes an amendment. `excluded`: pages the read classed as an e-signature record or notice or a reference list
  * (ADR-002): they're not swept, so their leftover money terms and scan questions are dropped here, and `excluded` in the
  * result says how many spans each had (counts only, never amounts). Returns what to say on the draft (`warnings`) and the
@@ -233,7 +223,7 @@ export function reviewDraft(
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
   const spans = new Map(swept.map((s) => [whereKey(s.where), s]));
-  // each table check is asked below as two blind picks; the binder's placeholder question for it is dropped
+  // each table check is asked below as two picks; the binder's placeholder question for it is dropped
   // a cell the read calls "invoiceable" where the table prints nothing has no question of its own: its table's is asked once for all of them
   const blank = new Set(evidence.flatMap((e) => (e.blank ? [e.path] : [])));
   const values = port.reviewFromEvidence(evidence, swept, rb, bound.tableChecks).filter((i) => i.reason !== TABLE_CHECK && !(i.path && blank.has(i.path))).map((i): ReviewItem => {
@@ -337,7 +327,7 @@ function movedTo(rb: Rulebook, path: string, items: string[] | undefined): strin
 
 /**
  * Corrections made on the live version that an amendment's read couldn't carry over (anything but "already equal"): each
- * is said on the draft in plain words, so nobody takes it as carried. One about a value billing reads is asked: blind,
+ * is said on the draft in plain words, so nobody takes it as carried. One about a value billing reads is asked again,
  * where the new read has that value (a moved item found by its identity), unless it's asked already (a cap's limit once
  * its kind is: its evidence stops counting as confirmed); or, where the new read doesn't have it at all, whether it's
  * still in the contract (bill it by hand if so). No value is put in words.
@@ -352,7 +342,7 @@ function uncarried(rb: Rulebook, evidence: ValueEvidence[], c: Carried, asked: S
       continue;
     }
     const who = k.by ?? "Someone";
-    const label = blindLabel(c.live, k.path);
+    const label = labelFor(c.live, k.path);
     const said = `A correction from version ${c.from} wasn't carried over: ${label}, corrected by ${who}.`;
     const now = k.reason === "item_moved" ? movedTo(rb, k.path, k.items) : k.reason === "path_missing" ? undefined : k.path;
     const value = now === undefined ? undefined : at(rb, now);

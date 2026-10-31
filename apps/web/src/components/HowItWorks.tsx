@@ -35,7 +35,7 @@ export function HowItWorks({ open, onClose }: { open: boolean; onClose: () => vo
       icon: MessageCircleQuestion,
       title: "Needs you",
       happens: "A short list of questions, one at a time, next to the highlighted page.",
-      you: "Type what the page says. We don't show our reading first, so a wrong number can't slip past.",
+      you: "Check our reading against the highlighted spot: use it if it's right, type what the page says if it isn't.",
       time: "Usually 5–15 min",
     },
     {

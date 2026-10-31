@@ -6,8 +6,8 @@ import { fakeControls } from "../src/extraction/fake.js";
 import { answer as answerDraft, askAbout, at, reviewDraft } from "../src/review.js";
 import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
-// The review lists that aren't flags (ADR-001 §6): interpretations picked blind, an amendment's start date, the random
-// blind sample of confirmed values and what a miss holds back, and corrections an amendment's read couldn't carry over.
+// The review lists that aren't flags (ADR-001 §6): interpretations, an amendment's start date, and corrections an
+// amendment's read couldn't carry over. Each question shows our reading (ADR-003).
 
 let app: App;
 let built: Built;
@@ -38,32 +38,21 @@ async function draft(seed = "s", opts?: { scan?: boolean }) {
 /** Settles every question but `except` the way settleAll does. */
 const settleRest = async (studyId: string, v = 1, by = "Sam") => settleAll(built, studyId, v, by);
 
-describe("interpretations, picked blind (ADR-001 §6)", () => {
-  it("each field is a pick from its own values next to its quote, nothing preselected, and the read's value withheld until answered", async () => {
+describe("interpretations (ADR-001 §6)", () => {
+  it("each field is a pick from its own values next to its quote, nothing preselected, and the read's value shown", async () => {
     const { studyId } = await draft();
     const raw = (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).body;
-    const v = RulebookVersionDto.parse(JSON.parse(raw)); // still a valid version: null only where withheld
+    const v = RulebookVersionDto.parse(JSON.parse(raw));
     const pay = v.review.find((i) => i.id === "interpret:/payment/visitPayment/value")!;
     expect(pay).toMatchObject({ kind: "interpretation", reason: "INTERPRETATION", blocking: true, input: null, answer: null, outcome: null });
     expect(pay.options.map((o) => o.id)).toEqual(["auto_edc", "invoice", "mixed", "unspecified"]);
-    expect(v.review.find((i) => i.id === "interpret:/siteFees/0/trigger")).toMatchObject({ question: "When is the site fee “Administrative fee” billed? The contract says: “due within ••• days of study initiation”" });
-    // the read's values never leave the server while they're open: not in the master, the search or the log
-    for (const p of ["/payment/visitPayment/value", "/siteFees/0/trigger", "/screenFail/basis", "/screenFail/paidVia", "/rounding/value", "/overhead/appliesTo/value"]) expect(at(v.rulebook, p), p).toBeNull();
-    expect(JSON.stringify(v.rulebook)).not.toMatch(/auto_edc|study_initiation|printed_amounts|all_per_patient_lines/);
-    // the cap's kind is asked, so its limit (cents or a count, by the kind) is withheld with it and isn't sampled
-    expect(at(v.rulebook, "/screenFail/cap/n")).toBeNull();
+    expect(v.review.find((i) => i.id === "interpret:/siteFees/0/trigger")).toMatchObject({ question: "When is the site fee “Administrative fee” billed? The contract says: “due within 45 days of study initiation”" });
+    // the read's values are shown while they're asked (ADR-003)
+    expect(at(v.rulebook, "/payment/visitPayment/value")).toBe("auto_edc");
+    // the cap's kind is asked, so its limit (cents or a count, by the kind) waits for it, and isn't asked on its own
     expect(v.review.some((i) => i.path === "/screenFail/cap/n")).toBe(false);
-    // nor can "This looks wrong" ask it while it's withheld
+    // nor can "This looks wrong" ask it while its kind is asked
     expect((await post(`/studies/${studyId}/versions/1/report`, { path: "/screenFail/cap/n", note: "check", by: "Sam" })).json().message).toBe("There's already an open question about this value.");
-  });
-
-  it("a fee's trigger isn't findable by searching its words while it's asked", async () => {
-    const { studyId } = await draft();
-    const search = async (q: string) => (await get<{ hits: { path: string }[] }>(`/studies/${studyId}/versions/1/search?q=${encodeURIComponent(q)}`)).hits.map((h) => h.path);
-    expect(await search("study initiation")).toEqual([]);
-    expect(await search("administrative")).toEqual(["/siteFees/0"]); // its name still is
-    await answer(studyId, "interpret:/siteFees/0/trigger", { optionId: "study_initiation" });
-    expect(await search("study initiation")).toEqual(["/siteFees/0"]);
   });
 
   it("a pick that differs from the read shows both and is confirmed with a note; one that matches settles at once", async () => {
@@ -71,7 +60,7 @@ describe("interpretations, picked blind (ADR-001 §6)", () => {
     const id = "interpret:/payment/visitPayment/value";
     const differs = await answer(studyId, id, { optionId: "invoice" });
     expect(differs).toMatchObject({ outcome: "differs", compare: { typed: "invoice", read: "auto_edc", printed: null } });
-    expect(at((await version(studyId)).rulebook, "/payment/visitPayment/value")).toBeNull(); // still open, still withheld
+    expect(at((await version(studyId)).rulebook, "/payment/visitPayment/value")).toBe("auto_edc"); // still open: the read's value stands
     expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(id)}`, { optionId: "invoice", by: "Sam" })).json().message).toMatch(/^Add a short note saying where the page prints this value/);
     expect(await answer(studyId, id, { optionId: "invoice", note: "§4.1: visits are invoiced monthly" })).toMatchObject({ outcome: "chosen", answer: { optionId: "invoice", noPdfText: true } });
     expect(at((await version(studyId)).rulebook, "/payment/visitPayment/value")).toBe("invoice");
@@ -95,7 +84,7 @@ describe("interpretations, picked blind (ADR-001 §6)", () => {
     const pay = review.filter((i) => i.path === "/payment/visitPayment/value");
     expect(pay).toHaveLength(1);
     // marked, its message first (numbers blanked), and "not stated" isn't an answer to an unclear clause
-    expect(pay[0]).toMatchObject({ id: "interpret:/payment/visitPayment/value", reason: "AMBIGUOUS_TERM", question: "Ambiguous: whether the •••% applies to visits paid by EDC. How are visits paid?" });
+    expect(pay[0]).toMatchObject({ id: "interpret:/payment/visitPayment/value", reason: "AMBIGUOUS_TERM", question: "Ambiguous: whether the 25% applies to visits paid by EDC. How are visits paid?" });
     expect(pay[0]!.options.map((o) => o.id)).toEqual(["auto_edc", "invoice", "mixed"]);
     expect(review.filter((i) => i.path === "/overhead/appliesTo/value").map((i) => i.reason)).toEqual(["AMBIGUOUS_TERM"]);
     expect(review.find((i) => i.id === "anomaly:AMBIGUOUS_TERM:/payment/netDays/value")).toMatchObject({ kind: "interpretation" });
@@ -118,14 +107,12 @@ describe("interpretations, picked blind (ADR-001 §6)", () => {
     expect((await storedVersion(built, studyId, 1)).review.some((i) => i.path === "/screenFail/cap/n")).toBe(false);
     let v = (await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent("interpret:/screenFail/cap/kind")}`, { optionId: "blocks_with_reauth", by: "Sam" })).json<RulebookVersionDto>();
     expect(v.review.find((i) => i.path === "/screenFail/cap/n")).toMatchObject({ id: "cap:/screenFail/cap/n", reason: "UNGROUNDED_VALUE", input: "number", outcome: null });
-    expect(at(v.rulebook, "/screenFail/cap/n")).toBeNull();
 
     // a text PDF: the limit was confirmed as a count; an amount cap's limit is cents, so it's typed again
     const t = await draft("text");
     await answer(t.studyId, "interpret:/screenFail/cap/kind", { optionId: "amount" });
     v = (await post(`/studies/${t.studyId}/versions/1/review/${encodeURIComponent("interpret:/screenFail/cap/kind")}`, { optionId: "amount", note: "§5: “up to $7.00 in total”", by: "Sam" })).json<RulebookVersionDto>();
     expect(v.review.find((i) => i.path === "/screenFail/cap/n")).toMatchObject({ reason: "CAP_KIND_CHANGED", input: "money" });
-    expect(at(v.rulebook, "/screenFail/cap/n")).toBeNull();
     expect((await signOff(app, t.studyId, 1, { by: "Ben" })).json().message).toMatch(/questions? still need/);
     // the same kind as the read: a confirmed limit isn't asked
     const rb = (await storedVersion(built, t.studyId, 1)).rulebook!;
@@ -219,10 +206,6 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     await extract(app, studyId, { documentIds: [amend!.id] });
     const v = await version(studyId, 2);
     expect(v.review.find((i) => i.path === "/appliesFrom/value")).toMatchObject({ kind: "interpretation", input: "date", outcome: null });
-    expect(at(v.rulebook, "/appliesFrom/value")).toBeNull();
-    // nor the date it's stored as for the version list
-    expect(v.appliesFrom).toBeNull();
-    expect((await get<{ versions: { version: number; appliesFrom: string | null }[] }>(`/studies/${studyId}`)).versions.find((x) => x.version === 2)!.appliesFrom).toBeNull();
     await settleRest(studyId, 2);
     expect((await signOff(app, studyId, 2, { by: "Ben" })).statusCode).toBe(200);
     expect((await version(studyId, 2)).appliesFrom).toBe("2026-01-01");
@@ -264,7 +247,7 @@ describe("no blind sample (ADR-003)", () => {
 describe("corrections an amendment's read couldn't carry over", () => {
   const FEE = "/siteFees/0/amountCents";
 
-  it("each is said on the draft, and asked again blind where the value is now (a moved item found by its identity)", async () => {
+  it("each is said on the draft, and asked again where the value is now (a moved item found by its identity)", async () => {
     const { studyId } = await draft();
     // version 1: the admin fee and the unscheduled visit reported and corrected, each kept over the PDF's text with a reason
     const fee = (await post(`/studies/${studyId}/versions/1/report`, { path: FEE, note: "check", by: "Asha" })).json<RulebookVersionDto>().review.at(-1)!.id;
@@ -289,11 +272,9 @@ describe("corrections an amendment's read couldn't carry over", () => {
     ]);
     // the other is asked already (the PDF's text says otherwise there): once
     expect(v2.review.filter((i) => i.path === "/invoiceables/0/amountWithOverheadCents").map((i) => i.reason)).toEqual(["VALUE_CONFLICT"]);
-    expect([at(v2.rulebook, "/siteFees/1/amountCents"), at(v2.rulebook, "/invoiceables/0/amountWithOverheadCents")]).toEqual([null, null]);
-    // the log's account of it holds no value while it's asked again
+    // the log's account of it: what was corrected, and where it's asked again
     const skipped = () => auditOf(studyId).then((l) => l.find((e) => e.action === "version.corrections_carried")!.detail.skipped as Record<string, unknown>[]);
     expect(await skipped()).toEqual([expect.objectContaining({ reason: "item_moved", askedAt: "/siteFees/1/amountCents" }), expect.objectContaining({ reason: "amendment_changed" })]);
-    expect((await skipped()).some((k) => "after" in k)).toBe(false);
     await settleRest(studyId, 2);
     expect((await skipped())[0]).toMatchObject({ before: 1200000, after: 1250000 });
   });

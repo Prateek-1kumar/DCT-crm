@@ -5,9 +5,6 @@ import {
   armKey,
   askAbout,
   billedGrids,
-  blindDetail,
-  blindEvidence,
-  blindReview,
   BODY_WORDS,
   bodyProblem,
   type BudgetGrid,
@@ -19,7 +16,6 @@ import {
   gridPrices,
   interpretations,
   isoDate,
-  mask,
   openItems,
   parseCents,
   parsePercent,
@@ -34,7 +30,7 @@ import {
   typingDone,
   type ValueEvidence,
   versionDiff,
-  withheldPaths,
+  openPaths,
 } from "../src";
 
 // Regression cases for the review findings of 2026-10-29: each failed before its fix. Shared code, so they hold for the
@@ -111,37 +107,6 @@ describe("1. a total that doesn't add up: 'as printed' after 'the sum' puts the 
     expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(14000);
   });
 
-  it("its printed total is never shown while its grid holds a withheld value", () => {
-    const rb = rulebook();
-    rb.budgetGrids[0]!.visits[0]!.totalCents = 15100;
-    const [q] = fromAnomalies(checks(rb), rb, new Set());
-    expect(blindReview([q!], [TOTAL])[0]).not.toHaveProperty("asPrinted");
-  });
-});
-
-describe("2. a money term whose sentence runs over lines quotes a withheld value on another line", () => {
-  // the fee's due days on line 1 (y 0.10), the term's 1.5% on line 2 (y 0.13): one sentence
-  const quote = "SC003 Administrative fee $12,000.00 due within 45 days of initiation, and late payments accrue interest at 1.5% per month.";
-  const term = (answer: ReviewItem["answer"] = null): ReviewItem => ({
-    id: "u1", kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, question: `Page 1 has a payment term that the invoicing master doesn't have: "${quote}". How should it be handled?`,
-    input: null, options: [{ id: "bill_by_hand", label: "Bill by hand" }], where: box(0.13), quoted: [...box(0.1), ...box(0.13)], blocking: true,
-    answer, outcome: answer ? "chosen" : null, compare: null, sentBack: answer ? null : { by: "Ben", note: "45 days, check it", at: "" }, term: { quote, amounts: [], pct: 1.5 },
-  });
-  const hidden = ["/siteFees/0/dueDays"];
-  const evidence = [ev("/siteFees/0/dueDays", "confirmed", "45", box(0.1))];
-
-  it("blanks the question, the term, every note on it, the bill-by-hand entry and the log", () => {
-    const [shown] = blindReview([term()], hidden, evidence);
-    expect(JSON.stringify(shown)).not.toMatch(/45|12,000|1\.5/);
-    const listed = term({ optionId: "bill_by_hand", note: "Interest at 1.5%, next to the 45 days", by: "Asha", at: "" });
-    const rb = { ...rulebook(), unclassified: [{ label: "SC003 Administrative fee $12,000.00 due within 45…", quote, page: 1, amounts: [], pct: 1.5, note: "Interest at 1.5%", prov: { ...prov, method: "manual" as const }, itemId: "u1" }] };
-    expect(JSON.stringify(mask(rb, hidden, { evidence, review: [listed] }).unclassified)).not.toMatch(/45|12,000|1\.5/);
-    const logged = { version: 1, itemId: "u1", question: listed.question, note: listed.answer!.note, billByHand: rb.unclassified[0]!.label };
-    expect(JSON.stringify(blindDetail("review.answered", logged, { hidden: new Set(hidden), evidence, review: [listed] }))).not.toMatch(/45|12,000|1\.5/);
-    // its figures' own line alone (an item stored before `quoted`) holds nothing withheld: shown as it was
-    const { quoted: _, ...old } = term();
-    expect(blindReview([old], hidden, evidence)[0]!.question).toMatch(/45 days/);
-  });
 });
 
 describe("3. a 'bill by hand' answer whose note changes", () => {
@@ -267,27 +232,6 @@ describe("9. two grids for one arm are never both billed", () => {
   });
 });
 
-describe("10. what a withheld interpretation decides, row by row, is withheld with it", () => {
-  it("each visit's 'paid automatically' with how visits are paid, each row's overhead with its scope; the version still parses", () => {
-    const rb = rulebook();
-    const review = interpretations(rb, { amendment: false });
-    const v = { status: "draft", review, evidence: [], rulebook: rb };
-    const hidden = withheldPaths(v);
-    expect(hidden).toEqual(expect.arrayContaining(["/payment/visitPayment/value", `${V}/autopay`, "/overhead/appliesTo/value", "/budgetGrids/0/procedures/0/overheadApplied"]));
-    const shown = mask(rb, hidden, { evidence: [], review });
-    expect([shown.budgetGrids[0]!.visits[0]!.autopay, shown.budgetGrids[0]!.procedures[0]!.overheadApplied]).toEqual([null, null]);
-    const dto = { version: 1, status: "draft" as const, createdAt: "", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s", rulebook: shown, anomalies: [], editors: [], cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [], updatedAt: "", warnings: [] };
-    expect(RulebookVersionDto.safeParse(dto).success).toBe(true);
-    // a contract problem's numbers in that grid aren't blanked for them
-    const problem = { id: `anomaly:VISIT_TOTAL_MISMATCH:${TOTAL}`, kind: "contract_problem" as const, reason: "VISIT_TOTAL_MISMATCH", path: null, question: "printed total $151.00 ≠ $140.00", input: null, options: [], where: [], blocking: false, answer: null, outcome: null, compare: null, sentBack: null };
-    expect(blindReview([problem], [`${V}/autopay`])[0]!.question).toMatch(/151/);
-    // nor are its rows hidden from a search by amount: a yes/no is never matched by one
-    const searched = { ...v, evidence: [] };
-    expect(searchVersion(searched, "150.00").map((h) => h.path)).toEqual([V]);
-    expect(searchVersion({ ...searched, review: [...review, askAbout(rb, [], TOTAL, "r", "reported")] }, "150.00")).toEqual([]);
-  });
-});
-
 describe("11. typing by hand asks every default nobody chose", () => {
   const blank = (): Rulebook => ({ ...rulebook(), screenFail: null, siteFees: [], budgetGrids: [{ ...grid(), visits: [{ ...grid().visits[0]!, totalCents: 0 }] }] });
 
@@ -314,15 +258,6 @@ describe("11. typing by hand asks every default nobody chose", () => {
   });
 });
 
-describe("12. the log shows no amount a withheld value's label names", () => {
-  it("blanks amounts in `value` while its question is open", () => {
-    const rb = rulebook();
-    const q = askAbout(rb, [], "/siteFees/0/amountCents", "reported:1", "reported");
-    const entry = { version: 1, path: "/siteFees/0/amountCents", value: "Site fee › Archiving fee $250 › Amount", note: "check" };
-    expect(blindDetail("number.reported", entry, { hidden: new Set(["/siteFees/0/amountCents"]), review: [q], evidence: [] }).value).toBe("Site fee › Archiving fee ••• › Amount");
-  });
-});
-
 describe("13. 'needs you' and the gate agree", () => {
   it("a can't tell on a question not needed to approve still needs you", () => {
     const q = { ...askAbout(rulebook(), [], "/payment/netDays/value", "q", "reported"), blocking: false, outcome: "cant_tell" as const };
@@ -331,14 +266,6 @@ describe("13. 'needs you' and the gate agree", () => {
 });
 
 describe("15. lows", () => {
-  it("a money term's send-back note has its numbers blanked while it quotes a withheld value's line", () => {
-    const t: ReviewItem = {
-      id: "u1", kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, question: "Page 1 has an amount: \"Fee $100.00\".", input: null, options: [], where: box(0.5), blocking: true,
-      answer: null, outcome: null, compare: null, sentBack: { by: "Ben", note: "It's $100, not $10", at: "" },
-    };
-    expect(blindReview([t], ["/siteFees/0/amountCents"], [ev("/siteFees/0/amountCents", "conflict", "$100.00")])[0]!.sentBack!.note).toBe("It's $•••, not $•••");
-  });
-
   it("a typed date is a day of the calendar", () => {
     const d = draft([askAbout(rulebook(), [], "/study/effectiveDate/value", "q", "reported")]);
     for (const value of ["next tuesday", "2025-02-30", "2025-8-1"]) expect(refusal(d, "q", { value })).toEqual({ status: 400, message: "That isn't a date. Pick the day the contract gives." });
@@ -366,11 +293,11 @@ describe("15. lows", () => {
 });
 
 describe("16. the sample server's diff is the API's", () => {
-  it("refuses a version with no master, and masks both sides alike", () => {
-    const v = { status: "draft", review: [], evidence: [], rulebook: rulebook() };
-    expect(versionDiff({ ...v, rulebook: null }, v)).toEqual({ refusal: { status: 409, message: "Both versions need an extracted rulebook to diff" } });
-    const after = { ...v, rulebook: { ...rulebook(), payment: { ...rulebook().payment, netDays: s(30) } }, review: [askAbout(rulebook(), [], "/payment/netDays/value", "q", "reported")] };
-    expect(versionDiff({ ...v, status: "signed" }, after)).toEqual([]);
+  it("refuses a version with no master, and shows a change in full (nothing is withheld, ADR-003)", () => {
+    const v = { rulebook: rulebook() };
+    expect(versionDiff({ rulebook: null }, v)).toEqual({ refusal: { status: 409, message: "Both versions need an extracted rulebook to diff" } });
+    const after = { rulebook: { ...rulebook(), payment: { ...rulebook().payment, netDays: s(30) } } };
+    expect(versionDiff(v, after)).toEqual([expect.objectContaining({ path: "/payment/netDays/value", change: "changed", after: 30 })]);
   });
 });
 
@@ -427,39 +354,6 @@ describe("C1. two grids for one arm that an answer makes differ", () => {
   });
 });
 
-describe("M1. a withheld value's spot on the page", () => {
-  it("is its page only, with nothing printed; other values keep theirs", () => {
-    const evidence = [ev("/a", "confirmed", "100.00"), ev("/b", "confirmed", "5.00")];
-    expect(blindEvidence(evidence, ["/a"])).toEqual([{ ...evidence[0]!, printed: null, where: [{ documentId: "d1", page: 1, box: null }] }, evidence[1]]);
-  });
-});
-
-describe("M2. the amendment's own date while the start date is typed blind", () => {
-  it("is withheld with it, and the version still parses", () => {
-    const rb = rulebook();
-    rb.documents.push({ id: "d2", kind: "amendment", title: "Amendment 1", date: "2026-03-15" });
-    const review = interpretations(rb, { amendment: true });
-    const v = { status: "draft", review, evidence: [], rulebook: rb };
-    expect(withheldPaths(v)).toEqual(expect.arrayContaining(["/appliesFrom/value", "/documents/1/date"]));
-    expect(withheldPaths(v)).not.toContain("/documents/0/date"); // the work order's date isn't what it's checked against
-    const shown = mask(rb, withheldPaths(v), { evidence: [], review });
-    expect(shown.documents.map((d) => d.date)).toEqual(["2025-01-10", null]);
-    const dto = { version: 2, status: "draft" as const, createdAt: "", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s", rulebook: shown, anomalies: [], editors: [], cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [], updatedAt: "", warnings: [] };
-    expect(RulebookVersionDto.safeParse(dto).success).toBe(true);
-  });
-});
-
-describe("M3. the log while an amount of the same item is re-typed blind", () => {
-  it("blanks amounts in another value's label and typed text of that item, not of another item", () => {
-    const rb = rulebook();
-    const open = { hidden: new Set(["/siteFees/0/amountCents"]), review: [askAbout(rb, [], "/siteFees/0/amountCents", "spot:/siteFees/0/amountCents", "spot_check")], evidence: [] };
-    const typed = { version: 1, path: "/siteFees/0/name", value: "Site fee › Archiving fee $250 › Name", before: "", after: "Archiving fee $250" };
-    expect(blindDetail("value.typed", typed, open)).toEqual({ ...typed, value: "Site fee › Archiving fee ••• › Name", after: "Archiving fee •••" });
-    const other = { ...typed, path: "/siteFees/1/name" };
-    expect(blindDetail("value.typed", other, open)).toEqual(other);
-  });
-});
-
 describe("M4. 'as printed' on a total asked before its printed value was kept", () => {
   const old = (path = TOTAL) => {
     const rb = rulebook();
@@ -491,25 +385,6 @@ describe("M4. 'as printed' on a total asked before its printed value was kept", 
     expect(d.review[0]).toMatchObject({ outcome: null, asPrinted: 15100 });
     answerAndFollow(d, id, { optionId: "printed", note: "As printed" });
     expect(d.rulebook.budgetGrids[0]!.visits[0]!.totalCents).toBe(15100);
-  });
-});
-
-describe("M5. a withheld value found only by its page", () => {
-  const term = (id: string, page: number, quote: string): ReviewItem => ({
-    id, kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, question: `Page ${page} has a payment term: "${quote}".`, input: null, options: [], blocking: true,
-    where: [{ documentId: "d1", page, box: [0.1, 0.2, 0.5, 0.02] }], answer: null, outcome: null, compare: null, sentBack: null, term: { quote, amounts: [], days: 37 },
-  });
-  const terms = [term("u1", 1, "Sponsor shall pay each invoice within 37 days."), term("u2", 2, "Parking is paid at $12.00 a visit.")];
-  const NET = "/payment/netDays/value";
-
-  it("blanks every money term on its page, none on another", () => {
-    const [p1, p2] = blindReview(terms, [NET], [ev(NET, "ungrounded", null, [{ documentId: "d1", page: 1, box: null }])]);
-    expect(JSON.stringify(p1)).not.toMatch(/37/);
-    expect(p2).toEqual(terms[1]);
-  });
-
-  it("with no page at all, blanks every money term", () => {
-    expect(JSON.stringify(blindReview(terms, [NET], [ev(NET, "ungrounded", null, [])]))).not.toMatch(/37|12\.00/);
   });
 });
 

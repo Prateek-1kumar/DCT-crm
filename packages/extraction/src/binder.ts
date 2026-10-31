@@ -1,4 +1,4 @@
-import { AMOUNT_IN_NAME, type BlankCheck, type BudgetGrid, datesIn, type PageBox, type Provenance, type ReviewItem, type Rulebook, type ValueEvidence } from "@dct/shared";
+import { type BlankCheck, type BudgetGrid, datesIn, type PageBox, type Provenance, type ReviewItem, type Rulebook, type ValueEvidence } from "@dct/shared";
 import { ocrCandidates } from "./candidates";
 import { amounts, bare, boxOf, centsOf, frame, inventory, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
@@ -1178,7 +1178,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
     used.forEach((w) => bound.add(w));
     // OCR that wasn't sure of a word confirms nothing with it: the value is asked, or the contract's totals decide
     if (status === "confirmed" && used.some((w) => (w.conf ?? 1) < MIN_OCR_CONF)) return evidence.push({ path, status: "ungrounded", where, printed: null, note: "the scan is unclear here" });
-    // held: not shown what the page prints (blind entry), and not asked: its table's check is
+    // held: asked by its table's check instead
     evidence.push({ path, status, where, printed: held ? null : printed, note, ...(held ? { held } : {}) });
   };
   const tableChecks: TableCheck[] = [];
@@ -1770,9 +1770,9 @@ const DEADLINE: Record<Rulebook["deadlines"][number]["kind"], string> = {
 };
 const VISIT_FIELD: Record<string, string> = { totalCents: "total", procedureSubtotalCents: "procedure subtotal", overheadCents: "overhead", nonProcedureCents: "non-procedure subtotal" };
 
-/** The question for one value, never the value itself (blind entry): amounts and % inside a name are blanked too. */
+/** The question for one value; the value is shown beside it with what we suggest (ADR-003). */
 function ask(rb: Rulebook, path: string): Pick<ReviewItem, "question" | "input"> {
-  const q = (s: string) => `"${s.replace(AMOUNT_IN_NAME, "…").trim()}"`;
+  const q = (s: string) => `"${s.trim()}"`;
   const [, top, i, sub, j, field, key] = path.split("/").map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"));
   const money = (question: string) => ({ question, input: "money" as const });
   const number = (question: string) => ({ question, input: "number" as const });
@@ -1817,7 +1817,7 @@ const UNACCOUNTED_OPTIONS = [
 ];
 
 /**
- * The review queue for a draft: a blind "type what the page says" item for every value the text didn't confirm, and
+ * The review queue for a draft: a "what does the page say" item for every value the text didn't confirm, and
  * one item per line or sentence of the contract with money terms the master doesn't hold.
  */
 export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[], rulebook: Rulebook, tableChecks: TableCheck[] = []): ReviewItem[] {
@@ -1859,7 +1859,6 @@ export function reviewFromEvidence(evidence: ValueEvidence[], unaccounted: Span[
       input: null,
       options: UNACCOUNTED_OPTIONS,
       where: ss.map((s) => s.where),
-      // the quote is the whole line or sentence: blind entry checks every line it's printed on (quotesWithheld)
       quoted: [...new Map(ss.flatMap((s) => s.lines).map((l) => [JSON.stringify(l), l])).values()],
     };
   });

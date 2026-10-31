@@ -94,7 +94,7 @@ export const rulebookVersions = pgTable(
     editors: jsonb("editors").$type<string[]>().notNull().default([]),
     /** Evidence ledger, one status per money value (ADR-001). */
     evidence: jsonb("evidence").$type<ValueEvidence[]>().notNull().default([]),
-    /** What a person answers before approval. Values with an open question are withheld from responses (versionDto). */
+    /** What a person answers before approval. */
     review: jsonb("review").$type<ReviewItem[]>().notNull().default([]),
     /** Money values checked against the PDF's own text; null for a scan. */
     pdfCheck: jsonb("pdf_check").$type<{ values: number; matched: number }>(),

@@ -6,12 +6,9 @@ import {
   BLANK_INVOICEABLE,
   type BlankCheck,
   blankQuestions,
-  blindEvidence,
-  blindReview,
   type ContractAnomaly,
   followUps,
   isoDate,
-  mask,
   type Rulebook,
   searchVersion,
   settled,
@@ -20,7 +17,7 @@ import {
   tableSendBackRefusal,
   type ValueEvidence,
   versionDiff,
-  withheldPaths,
+  openPaths,
 } from "../src";
 
 // A table prints no price at the visits the read marks "invoiceable": one blind question per table (the blank check)
@@ -111,39 +108,6 @@ describe("the blank check's question", () => {
   });
 });
 
-describe("blind entry", () => {
-  it("withholds the group's cells while it's open, and only those", () => {
-    const d = fresh();
-    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook }).sort()).toEqual([...check.cells].sort());
-    expect(withheldPaths({ status: "signed", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual([]);
-  });
-
-  it("shows no read choice and no group value: the master is null there, the evidence has no printed text, and nothing names the read's pick", () => {
-    const d = fresh();
-    const hidden = withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook });
-    const masked = mask(d.rulebook, hidden, { evidence: d.evidence, review: d.review });
-    for (const p of check.cells) expect(at_(masked, p), p).toBeNull();
-    // the priced cells the table prints are left alone
-    expect(at_(masked, "/budgetGrids/0/procedures/0/cells/V3")).toBe(400);
-    expect(JSON.stringify(masked)).not.toContain(`"${INV}"`);
-    const shown = JSON.stringify({ review: blindReview(d.review, hidden, d.evidence), evidence: blindEvidence(d.evidence, hidden) });
-    // the question says nothing about what was read: no "expect", no read value, no "invoiceable"
-    for (const word of ["expect", "read", INV]) expect(shown, word).not.toContain(`"${word}"`);
-    expect(shown).not.toContain(`"${INV}"`);
-  });
-
-  it("holds the cells back from search and diff too", () => {
-    const d = fresh();
-    const v = { status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook };
-    const hits = searchVersion(v as never, "Exam");
-    expect(hits.length).toBeGreaterThan(0);
-    expect(JSON.stringify(hits)).not.toContain(`"${INV}"`);
-    const moved = structuredClone(d.rulebook);
-    moved.budgetGrids[0]!.procedures[0]!.cells.V1 = 500;
-    expect(versionDiff({ ...v, rulebook: d.rulebook }, { ...v, rulebook: moved } as never)).toEqual([]);
-  });
-});
-
 describe("answering a blank check", () => {
   it("“Only where the contract prints a price” differs from the read: every cell of the group is removed from the grid, its evidence dropped, the person is an editor, and it's logged", () => {
     const d = fresh();
@@ -158,7 +122,7 @@ describe("answering a blank check", () => {
     expect(r.log).toMatchObject({ by: "Asha", action: "review.blank_removed", detail: { cells: 3, outcome: "chosen" } });
     expect(group(d)).toMatchObject({ outcome: "chosen", answer: { optionId: "printed_only", by: "Asha" } });
     // nothing is withheld any more
-    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual([]);
+    expect(openPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual([]);
   });
 
   it("“At every scheduled visit shown” matches the read: the cells stay, attested by the person, and nothing is withheld", () => {
@@ -171,7 +135,7 @@ describe("answering a blank check", () => {
     expect(d.evidence.some((e) => e.blank)).toBe(false);
     expect(r.log.action).toBe("review.answered");
     expect(d.editors).toEqual(["Asha"]);
-    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual([]);
+    expect(openPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual([]);
   });
 
   it("“can't tell” makes each cell an ordinary blind question to type, closes the group's own, and leaves the master as it was", () => {
@@ -188,7 +152,7 @@ describe("answering a blank check", () => {
     for (const p of check.cells) expect(d.evidence.find((e) => e.path === p)).toMatchObject({ status: "ungrounded" });
     expect(d.evidence.some((e) => e.blank)).toBe(false);
     // each is withheld as an open question's value is
-    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook }).sort()).toEqual([...check.cells].sort());
+    expect(openPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook }).sort()).toEqual([...check.cells].sort());
     // can't tell doesn't make the person an editor
     expect(d.editors).toEqual([]);
   });
@@ -284,7 +248,7 @@ describe("a blank check on a table whose columns are held", () => {
       expect(answerIt(d, body), JSON.stringify(body)).toMatchObject({ refusal: { status: 409, message: expect.stringMatching(/^Confirm the table's columns first/) } });
     expect(JSON.stringify([d.review, d.evidence, d.rulebook, d.editors])).toBe(snapshot);
     // still withheld
-    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual(expect.arrayContaining(check.cells));
+    expect(openPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook })).toEqual(expect.arrayContaining(check.cells));
   });
 
   it("becomes answerable once every column pick is right, and not before", () => {
@@ -319,7 +283,7 @@ describe("a blank check on a table whose columns are held", () => {
     for (const p of check.cells) expect(d.evidence.find((e) => e.path === p)).toMatchObject({ status: "ungrounded" });
     // the master is untouched and every one of them is withheld by its own question
     expect(cellsOf(d)).toEqual([INV, INV, INV]);
-    expect(withheldPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook }).sort()).toEqual([...check.cells, ...HELD].sort());
+    expect(openPaths({ status: "draft", review: d.review, evidence: d.evidence, rulebook: d.rulebook }).sort()).toEqual([...check.cells, ...HELD].sort());
   });
 
   it("is untouched on a table whose columns were agreed (no check): answerable at once", () => {

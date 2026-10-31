@@ -1,14 +1,12 @@
 import {
   type AlertKind,
   armKey,
-  blindEvidence,
   type DocumentDto,
   type DocumentKind,
   governingGrids,
   itemIds,
   Rulebook,
   type RulebookVersionDto,
-  shownAppliesFrom,
   type StudyStatus,
   type StudySummaryDto,
   type VersionStatus,
@@ -21,7 +19,7 @@ import type { Tx } from "./db/index.js";
 import { alerts, auditLog, documents, rulebookVersions, studies } from "./db/schema.js";
 import { notFound } from "./lib/http.js";
 import { getAt, markManual, parsePointer, setAt } from "./lib/pointer.js";
-import { blindReview, hiddenPaths, mask, needsYouOf } from "./review.js";
+import { needsYouOf } from "./review.js";
 
 type DocumentRow = typeof documents.$inferSelect;
 type VersionRow = typeof rulebookVersions.$inferSelect;
@@ -48,27 +46,20 @@ export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
   createdAt: v.createdAt.toISOString(),
   signedBy: v.signedBy,
   signedAt: v.signedAt?.toISOString() ?? null,
-  appliesFrom: shownAppliesFrom(v),
+  appliesFrom: v.appliesFrom,
 });
 
-/**
- * Blind entry: on a draft, a value with an open question is withheld (null) from the master along with the words that
- * restate it (mask), its printed text and its spot on the page from the evidence (blindEvidence), and the checks'
- * anomalies (their messages and details carry the reading) until nothing is withheld. Every response that carries a
- * version goes through here.
- */
+/** Every response that carries a version goes through here. Nothing is withheld: questions show our reading (ADR-003). */
 export const versionDto = (v: VersionRow): RulebookVersionDto => {
-  const hidden = hiddenPaths(v);
-  const rulebook = v.rulebook && upgradeRulebook(v.rulebook);
   return {
     ...versionSummaryDto(v),
     studyId: v.studyId,
-    rulebook: rulebook && hidden.length ? mask(rulebook, hidden, v) : rulebook,
-    anomalies: hidden.length ? [] : v.anomalies,
+    rulebook: v.rulebook && upgradeRulebook(v.rulebook),
+    anomalies: v.anomalies,
     editors: v.editors,
     cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
-    evidence: blindEvidence(v.evidence, hidden),
-    review: blindReview(v.review, hidden, v.evidence),
+    evidence: v.evidence,
+    review: v.review,
     pdfCheck: v.pdfCheck,
     byHand: v.byHand,
     proofread: v.proofread,

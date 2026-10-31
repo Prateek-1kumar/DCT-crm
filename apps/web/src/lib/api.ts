@@ -173,7 +173,7 @@ export const api = {
   /** Type one value; by-hand drafts only. */
   typeValue: (id: string, v: number, body: { path: string; value: unknown; by: string }) =>
     request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, { ...body, note: "Typed by hand" }),
-  /** Typing is done; picks the values someone else re-types blind. */
+  /** Typing is done: the checks run on what was typed, and what nobody typed is asked. */
   finishByHand: (id: string, v: number, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/by-hand/done`, { by }),
   /** `asOf`: the version's `updatedAt` as the approver saw it; a 409 if anything changed since. */
   signOff: (id: string, v: number, body: SignOffBody) =>

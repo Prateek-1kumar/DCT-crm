@@ -80,35 +80,6 @@ describe("1. 'the total as printed' after 'the sum'", () => {
   });
 });
 
-describe("2. a money term whose sentence runs over two lines", () => {
-  it("never shows a withheld value printed on its other line: question, term, notes", async () => {
-    const studyId = await textPdf("two-lines", [
-      [60, "UNSCH Unscheduled visit $572.00 $800.00 per occurrence"],
-      // one sentence, 12 pt apart: the fee's due days on the first line, an interest term the read doesn't hold on the second
-      [80, "SC003 Administrative fee $12,000.00 due within 45 days of study initiation, and late"],
-      [92, "payments by the Sponsor accrue interest at 1.5% per month until they are paid."],
-      [140, "This Work Order is effective as of August 22, 2025."],
-    ]);
-    const DAYS = "/siteFees/0/dueDays";
-    if (!(await version(studyId)).review.some((i) => i.path === DAYS && !settled(i)))
-      expect((await post(`/studies/${studyId}/versions/1/report`, { path: DAYS, note: "check the days", by: "Sam" })).statusCode).toBe(200);
-    const v = await version(studyId);
-    expect(at(v.rulebook, DAYS)).toBeNull();
-    const term = v.review.find((i) => i.reason === "UNACCOUNTED_TERM" && /interest/.test(i.question))!;
-    expect(term.quoted!.length).toBe(2); // both lines of its sentence
-    const leaks = /\b45\b|12,000|1\.5/;
-    expect(JSON.stringify([term.question, term.term])).not.toMatch(leaks);
-    // listed to bill by hand, with a note: blanked on the master and in the log too
-    await answer(studyId, term.id, { optionId: "bill_by_hand", note: "Interest of 1.5% on payments later than 45 days" });
-    const shown = await version(studyId);
-    const listed = shown.rulebook!.unclassified[0]!;
-    const asked = shown.review.find((i) => i.id === term.id)!;
-    expect(JSON.stringify([listed.label, listed.quote, listed.note, listed.amounts, listed.pct, asked.question, asked.term, asked.answer!.note])).not.toMatch(leaks);
-    const log = (await get<AuditPage>(`/audit?studyId=${studyId}`)).items.find((e) => e.detail.itemId === term.id)!;
-    expect(JSON.stringify([log.detail.question, log.detail.note, log.detail.billByHand])).not.toMatch(leaks);
-  });
-});
-
 describe("3. a 'bill by hand' answer whose note changes", () => {
   it("puts the new note on the master, and that is what's approved", async () => {
     const { studyId, doc } = await newStudy(app, "note", { scan: true });
@@ -124,7 +95,7 @@ describe("3. a 'bill by hand' answer whose note changes", () => {
 });
 
 describe("4. a total settled by 'the sum' whose part is corrected later", () => {
-  it("is asked again, withheld until it is, and holds approval", async () => {
+  it("is asked again, and holds approval", async () => {
     const { studyId } = await newStudy(app, "stale");
     await extract(app, studyId);
     await answer(studyId, ARITH, { optionId: "sum", note: "Ask the sponsor which total" });
@@ -134,7 +105,6 @@ describe("4. a total settled by 'the sum' whose part is corrected later", () => 
     await answer(studyId, reported, { value: 243500, note: "PDF text is the old exhibit; the signed page prints 2,435.00" });
     const row = await storedVersion(built, studyId, 1);
     expect(row.review.find((i) => i.id === ARITH)).toMatchObject({ outcome: null, answer: null, asPrinted: 848900 });
-    expect(at((await version(studyId)).rulebook, `${G1_V2}/totalCents`)).toBeNull();
   });
 });
 
@@ -180,20 +150,6 @@ describe("8. amounts and percentages on the bill-by-hand list", () => {
   });
 });
 
-describe("10. what a withheld interpretation decides, row by row", () => {
-  it("each visit's 'paid automatically' while how visits are paid is asked, each row's overhead while its scope is", async () => {
-    const { studyId } = await newStudy(app, "rows");
-    await extract(app, studyId);
-    let v = await version(studyId);
-    expect(v.rulebook!.budgetGrids.flatMap((g) => [...g.visits.map((x) => x.autopay), ...g.procedures.map((p) => p.overheadApplied)])).toEqual([null, null, null, null, null, null]);
-    await answer(studyId, "interpret:/payment/visitPayment/value", { optionId: "auto_edc" });
-    await answer(studyId, "interpret:/overhead/appliesTo/value", { optionId: "all_per_patient_lines" });
-    v = await version(studyId);
-    expect(v.rulebook!.budgetGrids[0]!.visits[0]!.autopay).toBe(true);
-    expect(v.rulebook!.budgetGrids[0]!.procedures[0]!.overheadApplied).toBe(true);
-  });
-});
-
 describe("11. typing by hand", () => {
   it("asks how each visit is paid, as a pick, when nobody chose it", async () => {
     const { studyId } = await newStudy(app, "hand", { scan: true });
@@ -203,17 +159,6 @@ describe("11. typing by hand", () => {
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: "/budgetGrids/0/visits/0/totalCents", value: 5500, note: "x", by: "Asha" })).statusCode).toBe(200);
     const v = (await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Asha" })).json<RulebookVersionDto>();
     expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/autopay")).toMatchObject({ id: "missing:/budgetGrids/0/visits/0/autopay", reason: "REQUIRED_MISSING", input: null, options: [{ id: "true" }, { id: "false" }] });
-  });
-});
-
-describe("12. the log while an amount its label names is typed blind", () => {
-  it("blanks the amount in the value's label", async () => {
-    const { studyId } = await newStudy(app, "label");
-    await extract(app, studyId);
-    await setRulebook(studyId, (rb) => (rb.siteFees[0]!.name = "Archiving fee $250"));
-    expect((await post(`/studies/${studyId}/versions/1/report`, { path: "/siteFees/0/amountCents", note: "check", by: "Ben" })).statusCode).toBe(200);
-    const entry = (await get<AuditPage>(`/audit?studyId=${studyId}`)).items.find((e) => e.action === "number.reported")!;
-    expect(entry.detail.value).toBe("Site fee › Archiving fee ••• › Amount");
   });
 });
 
@@ -304,20 +249,6 @@ describe("15. lows", () => {
     expect((await get<AlertPage>("/alerts?for=BEN&limit=50")).unread).toBe(0);
   });
 
-  it("the log's search pages on when only blanked entries match, instead of reading the whole log in one request", async () => {
-    const { studyId } = await newStudy(app, "bound");
-    await extract(app, studyId);
-    // 40 entries about a question still open: their note, which the search matches in SQL, is blanked as shown
-    await built.ctx.db.transaction(async (tx) => {
-      for (let n = 0; n < 40; n++) await audit(tx, "Sam", studyId, "review.answered", { version: 1, itemId: "confirm:/payment/netDays/value", note: "zzq123" });
-    });
-    const page = await get<AuditPage>(`/audit?studyId=${studyId}&q=zzq123&limit=1`);
-    expect(page.items).toEqual([]);
-    expect(page.nextCursor).not.toBeNull();
-    let cursor = page.nextCursor;
-    for (let n = 0; cursor && n < 10; n++) cursor = (await get<AuditPage>(`/audit?studyId=${studyId}&q=zzq123&limit=1&cursor=${cursor}`)).nextCursor;
-    expect(cursor).toBeNull();
-  });
 });
 
 // ---- The second review of 2026-10-29, through the API: each `it` failed before its fix. ----
@@ -356,21 +287,6 @@ describe("C1. two grids for one arm that priced the same at the read", () => {
   });
 });
 
-describe("M2. 'prospective only' while the start date is asked", () => {
-  it("withholds the amendment's own date, what a typed date is checked against", async () => {
-    const { studyId } = await liveStudy(built, "dated");
-    const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend-dated") }])).json<DocumentDto[]>();
-    expect((await patch(`/documents/${amend!.id}`, { kind: "amendment", by: "Asha" })).statusCode).toBe(200);
-    await extract(app, studyId, { documentIds: [amend!.id] });
-    await setRulebook(studyId, (rb) => (rb.documents.find((d) => d.kind === "amendment")!.date = "2026-03-15"), 2);
-    const v = await version(studyId, 2);
-    expect(JSON.stringify(v.rulebook!.documents)).not.toMatch(/2026-03-15/);
-    const q = v.review.find((i) => i.path === "/appliesFrom/value")!;
-    await answer(studyId, q.id, { optionId: "prospective", value: "2026-01-01" }, 2);
-    expect((await version(studyId, 2)).rulebook!.documents.map((d) => d.date)).toContain("2026-03-15");
-  });
-});
-
 describe("M4. 'the total as printed' on a question stored before it kept the printed total", () => {
   it("puts back what the read's check found printed", async () => {
     const { studyId } = await newStudy(app, "old-total");
@@ -389,19 +305,6 @@ describe("M4. 'the total as printed' on a question stored before it kept the pri
     const res = await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(ARITH)}`, { optionId: "printed", note: "?", by: "Sam" });
     expect(res.json()).toMatchObject({ statusCode: 409, message: expect.stringMatching(/^This question was asked before the app kept the total as printed/) });
     expect((await storedVersion(built, studyId, 1)).rulebook!.budgetGrids[0]!.visits[1]!.totalCents).toBe(848800);
-  });
-});
-
-describe("M5. a rule the read gives without its quote", () => {
-  it("blanks every money term on its page while it's asked", async () => {
-    const studyId = await textPdf("netdays", [
-      [60, "Sponsor shall pay each undisputed invoice within 37 days of receipt by the Sponsor."],
-      [140, "This Work Order is effective as of August 22, 2025, and runs until the study closes."],
-    ]);
-    const v = await version(studyId);
-    expect(v.evidence.find((e) => e.path === "/payment/netDays/value")!.where.map((w) => [w.page, w.box])).toEqual([[1, null]]);
-    const term = v.review.find((i) => i.reason === "UNACCOUNTED_TERM" && /undisputed/.test(i.question))!;
-    expect(JSON.stringify([term.question, term.term])).not.toMatch(/37/);
   });
 });
 

@@ -1,4 +1,4 @@
-import { AuditPage, type ReviewItem, RulebookVersionDto, withheldPaths } from "@dct/shared";
+import { AuditPage, type ReviewItem, RulebookVersionDto, openPaths } from "@dct/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getAt } from "../pointer";
 import { makeRulebook, mockSampling, SEEDS } from "./fixtures";
@@ -74,7 +74,7 @@ describe("the sample server, by the API's rules", () => {
 
   it("12, 16. the log labels a value as the API does, and a question about it is worded as the API words it", async () => {
     const v = await version("st-northwind");
-    const i = v.rulebook!.invoiceables.findIndex((_, n) => !withheldPaths(v).includes(`/invoiceables/${n}/amountCents`));
+    const i = v.rulebook!.invoiceables.findIndex((_, n) => !openPaths(v).includes(`/invoiceables/${n}/amountCents`));
     const name = v.rulebook!.invoiceables[i]!.name;
     const res = await post("/studies/st-northwind/versions/1/report", { path: `/invoiceables/${i}/amountCents`, note: "check", by: "Avery Chen" });
     expect(res.status).toBe(200);
@@ -108,13 +108,6 @@ describe("the second review of 2026-10-29, by the API's rules", () => {
     expect(after).toMatchObject({ outcome: "chosen" });
     const asked = (await version("st-solace")).review.find((i) => i.reason === "GRID_CONFLICT");
     expect(asked).toMatchObject({ outcome: null, options: [{ id: "g-hand" }, { id: "g-hand-2" }] });
-  });
-
-  it("M2. the amendment's own date is withheld while the start date is typed blind", async () => {
-    const Q = "interpret:/appliesFrom/value";
-    expect((await version("st-halcyon", 2)).rulebook!.documents.map((d) => d.date)).toContain("2026-09-30");
-    await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [Q], note: "Check §1", by: "Morgan Lee" });
-    expect((await version("st-halcyon", 2)).rulebook!.documents.map((d) => d.date)).not.toContain("2026-09-30");
   });
 
   it("L2. a cap with no limit has no limit to report", async () => {

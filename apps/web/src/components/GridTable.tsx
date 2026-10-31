@@ -3,7 +3,7 @@
 import { gridChoice, type BudgetGrid } from "@dct/shared";
 import type { ReactNode } from "react";
 import { formatCents } from "@/lib/money";
-import { isHit, useRulebook, Val } from "./review-context";
+import { isHit, NeedsYou, useRulebook, Val } from "./review-context";
 import { Badge, cx } from "./ui";
 
 const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCents" | "totalCents"; label: string }[] = [
@@ -15,7 +15,7 @@ const FOOT: { key: "procedureSubtotalCents" | "overheadCents" | "nonProcedureCen
 
 /** Procedure × visit grid: sticky headers and first column, horizontal scroll, invoiceable cells marked. */
 export function GridTable({ index }: { index: number }) {
-  const { rulebook, show, focused, masked, hits } = useRulebook();
+  const { rulebook, show, focused, asking, hits } = useRulebook();
   const grid = rulebook.budgetGrids[index]!;
   const base = `/budgetGrids/${index}`;
   const visits = [...grid.visits].sort((a, b) => a.order - b.order);
@@ -44,7 +44,7 @@ export function GridTable({ index }: { index: number }) {
         )}
         <span className="text-muted">
           Stated overhead <Val path={`${base}/statedOverheadPct`}>{grid.statedOverheadPct ?? "—"}%</Val> · Header:{" "}
-          {masked.has(`${base}/header`) ? <span className="text-warn">needs you</span> : `${grid.header.investigator ?? "—"}, ${grid.header.siteName ?? "—"}`}
+          {`${grid.header.investigator ?? "—"}, ${grid.header.siteName ?? "—"}`}{asking.has(`${base}/header`) && <> <NeedsYou /></>}
         </span>
         <button type="button" className="text-accent hover:underline" onClick={() => show(base, grid.prov, grid.label)}>
           Show in the contract
@@ -69,7 +69,6 @@ export function GridTable({ index }: { index: number }) {
                 >
                   <span className="block">{v.code}</span>
                   <span className="block font-normal text-muted">{v.name}</span>
-                  {/* withheld (null) while how visits are paid is asked blind */}
                   {v.autopay === false && <span className="block font-normal text-warn">invoice</span>}
                 </th>
               ))}

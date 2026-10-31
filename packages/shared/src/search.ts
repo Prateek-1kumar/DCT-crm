@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { StudySummaryDto, withheldPaths } from "./api";
-import { mask } from "./blind";
+import { StudySummaryDto } from "./api";
 import type { ReviewItem, ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
 import { parseCents } from "./money";
@@ -118,17 +117,5 @@ export function searchMaster(rb: Rulebook, q: string): MasterSearch["hits"] {
   return hits;
 }
 
-/**
- * GET …/versions/:v/search, for the API and the sample server alike. On a draft, a value still hidden for someone to type
- * blind must not be findable: amounts match values, and a term's words include its values, so an item that holds one
- * isn't found by them; names and codes don't, so those still match. The master is searched as it's shown (mask), so a
- * withheld fixed-list word (a fee's trigger) isn't matched either. A withheld yes/no (how a visit is paid, a row's
- * overhead) is never matched by an amount, so it doesn't hide its row.
- */
-export function searchVersion(v: { status: string; review: ReviewItem[]; evidence: ValueEvidence[]; rulebook: Rulebook }, q: string): MasterSearch["hits"] {
-  const hidden = withheldPaths(v);
-  if (!hidden.length) return searchMaster(v.rulebook, q);
-  const values = hidden.filter((p) => !/\/(?:autopay|overheadApplied)$/.test(p));
-  const byValue = (h: MasterSearch["hits"][number]) => amountOf(q) !== null || h.section === "terms";
-  return searchMaster(mask(v.rulebook, hidden, v), q).filter((h) => !(byValue(h) && values.some((p) => p === h.path || p.startsWith(`${h.path}/`))));
-}
+/** GET …/versions/:v/search, for the API and the sample server alike: the master as it is (nothing is withheld, ADR-003). */
+export const searchVersion = (v: { rulebook: Rulebook }, q: string): MasterSearch["hits"] => searchMaster(v.rulebook, q);

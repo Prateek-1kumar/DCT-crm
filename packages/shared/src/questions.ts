@@ -2,17 +2,16 @@ import type { ContractAnomaly } from "./anomaly";
 import { labelFor } from "./diff";
 import { type BlankCheck, checkedByMachine, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
-import { at, parsePointer } from "./pointer";
+import { at, leaf, parsePointer } from "./pointer";
 import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
 
 /**
- * The review lists that aren't flags (ADR-001 §6): the interpretations a person picks blind after every read, and the
- * random blind re-type of values the PDF check confirmed, with what a miss holds back. Pure, so the API and the
- * in-browser sample server ask, withhold and refuse exactly the same.
+ * The review lists that aren't flags (ADR-001 §6): the interpretations a person picks after every read, the table and
+ * blank checks, one-value questions, and what we suggest for each (ADR-003). Pure, so the API and the in-browser sample
+ * server ask and refuse exactly the same.
  */
 
 export const INTERPRETATION = "INTERPRETATION";
-/** A value of the read picked at random to be typed blind (ADR-001 §6 "Sample re-key"). */
 /** The option of the start-date question that means "from the amendment's own date". */
 export const PROSPECTIVE = "prospective";
 
@@ -96,13 +95,13 @@ const pageOf = (r: { documentId: string; page: number }): PageBox => ({ document
 const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a.path === path || `${a.path}/value` === path);
 
 /**
- * One blind pick per interpretation field, next to its quote (numbers blanked, so it can't hand over another value),
- * nothing preselected; the read's value is withheld until it's answered (its path is the question's). An AMBIGUOUS_TERM
+ * One pick per interpretation field, next to its quote, nothing preselected; the read's value is shown as our suggestion
+ * (suggest). An AMBIGUOUS_TERM
  * about the same value is this question, marked ambiguous (reason AMBIGUOUS_TERM, its message first, and no "not
  * stated"); a RETROACTIVE_NO_DATE is the start-date question. `amendment`: the read includes an amendment.
  *
  * Two tiers (ADR-002 §4). A clause that states a parameter outright is not asked: the field is "explicit and confirmed"
- * when all of these hold, and then it's an ordinary value, drawn into the blind sample like any confirmed one: (1) the
+ * when all of these hold, and then it's an ordinary confirmed value: (1) the
  * read gives a value that isn't "not stated"; (2) the read cites the clause's exact words (`prov.source.quote`); (3) the
  * figure that decides the field (`Field.stated`) is confirmed (`confirmed` or `confirmed_by_math`) in `evidence`, which
  * the binder gives only for a figure found inside that quote on the cited page; (4) no AMBIGUOUS_TERM or
@@ -256,7 +255,7 @@ export function provOf(rb: Rulebook, path: string): Provenance | null {
 export const choicesOf = (path: string) => ENUM_LABELS[/\/cap\/kind$/.test(path) ? "capKind" : fieldKey(path)];
 
 /**
- * A blind question about one value: "This looks wrong" (reason "reported"), a required value the read didn't find.
+ * A question about one value: "This looks wrong" (reason "reported"), a required value the read didn't find.
  * Yes/no and fixed-list values are picked; the rest typed.
  */
 export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): ReviewItem {
@@ -328,9 +327,9 @@ export const tableSendBackRefusal = (items: Pick<ReviewItem, "table" | "reason">
 const cellVisit = (path: string) => /^\/budgetGrids\/\d+\/procedures\/\d+\/cells\/(.+)$/.exec(path)?.[1]?.replace(/~1/g, "/").replace(/~0/g, "~");
 
 /**
- * Two blind picks per table check, drawn with `random`: which visit the highlighted column is, among the grid's visits in
+ * Two picks per table check, drawn with `random`: which visit the highlighted column is, among the grid's visits in
  * order, none preselected. Two different visits, columns with held prices first. The read's visit for the column goes on
- * the item as `table.expect`, which blindReview never sends. None when the table has no columns: the caller rejects the
+ * the item as `table.expect`, shown as our suggestion. None when the table has no columns: the caller rejects the
  * check at once (rejectTable), or its held prices could never be settled.
  */
 export function tableQuestions(rb: Pick<Rulebook, "budgetGrids">, evidence: ValueEvidence[], checks: TableCheck[], random: () => number = cryptoRandom): ReviewItem[] {
@@ -414,9 +413,9 @@ const BLANK_OPTIONS = [
 ];
 
 /**
- * One blind pick per blank check, none preselected: how the highlighted items are billed where the table prints no price.
- * The question shows the table and the rows' boxes (their cells' evidence), never the read's choice; the cells are
- * withheld while it's open (`ValueEvidence.blank`, withheldPaths).
+ * One pick per blank check, none preselected: how the highlighted items are billed where the table prints no price.
+ * The question shows the table and the rows' boxes (their cells' evidence); the cells wait with it (`ValueEvidence.blank`,
+ * openPaths).
  */
 export function blankQuestions(evidence: ValueEvidence[], checks: BlankCheck[]): ReviewItem[] {
   return checks.map((c): ReviewItem => {

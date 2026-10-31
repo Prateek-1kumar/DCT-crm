@@ -1,7 +1,6 @@
 import {
   answerQuestion,
   appliesFromOf,
-  blindDetail,
   BODY_WORDS,
   bodyProblem,
   calendarDay,
@@ -13,14 +12,10 @@ import {
   noLimit,
   noLimitTyped,
   proofreadMarks,
-  shownAppliesFrom,
   signOffRefusal,
   tableSendBackRefusal,
-  blindEvidence,
-  blindReview,
   ByHandBody,
   leaf,
-  mask,
   ConfirmStudyBody,
   CorrectValueBody,
   PatchSettingsBody,
@@ -34,10 +29,9 @@ import {
   AlertListQuery,
   AuditListQuery,
   auditMatches,
-  blankNumbers,
   ReadAlertsBody,
   upgradeRulebook,
-  withheldPaths,
+  openPaths,
   type AlertDto,
   searchMaster,
   searchVersion,
@@ -103,8 +97,8 @@ type Db = {
   alertReads: Record<string, string[]>;
 };
 
-// v9: the blind sample at its page only, and a total that doesn't add up keeps its printed value (asPrinted)
-const KEY = "dct.mockdb.v9";
+// v10: no blind sample and nothing withheld (ADR-003): a browser's saved sample data from before is read afresh
+const KEY = "dct.mockdb.v10";
 let db: Db | null = null;
 
 const now = () => new Date().toISOString();
@@ -416,8 +410,7 @@ function listAlerts(d: Db, query: URLSearchParams): Res {
   const start = cursor ? Number(atob(cursor)) || 0 : 0;
   const items = all.slice(start, start + limit).map((a) => {
     const st = d.studies.find((x) => x.id === a.studyId);
-    // everyone sees every alert, and a send-back note can name the value being answered again blind
-    return { ...a, note: a.note && blankNumbers(a.note), protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, read: isRead(a) };
+    return { ...a, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, read: isRead(a) };
   });
   return ok({ items, unread: all.filter((a) => !isRead(a)).length, nextCursor: start + limit < all.length ? btoa(String(start + limit)) : null });
 }
@@ -525,7 +518,7 @@ function detail(d: Db, s: Study): StudyDetailDto {
   return {
     ...summary(d, s),
     documents: d.documents.filter((x) => s.documentIds.includes(x.id)),
-    versions: versionsOf(d, s.id).map((v) => ({ version: v.version, status: v.status, createdAt: v.createdAt, signedBy: v.signedBy, signedAt: v.signedAt, appliesFrom: shownAppliesFrom(v) })),
+    versions: versionsOf(d, s.id).map((v) => ({ version: v.version, status: v.status, createdAt: v.createdAt, signedBy: v.signedBy, signedAt: v.signedAt, appliesFrom: v.appliesFrom })),
   };
 }
 
@@ -572,30 +565,13 @@ function answer(d: Db, st: Study, ver: RulebookVersionDto, itemId: string, raw: 
   return ok(view(ver));
 }
 
-/**
- * A version as a response shows it, as the real API (versionDto): on a draft, each value with an open question is
- * withheld with the words that restate it (mask), its printed text and spot on the page too (blindEvidence), the checks'
- * findings, and the numbers in notes about it (blindReview).
- */
+/** A version as a response shows it, as the real API (versionDto): as it is, nothing withheld (ADR-003). */
 function view(ver: RulebookVersionDto): RulebookVersionDto {
-  const hidden = withheldPaths(ver);
-  const rulebook = ver.rulebook && upgradeRulebook(ver.rulebook);
-  // never withholding nothing: a table pick's expected visit still stays out (blindReview)
-  if (!hidden.length) return { ...ver, rulebook, review: blindReview(ver.review, hidden, ver.evidence) };
-  return {
-    ...ver,
-    appliesFrom: shownAppliesFrom(ver),
-    rulebook: rulebook && mask(rulebook, hidden, ver),
-    anomalies: [],
-    evidence: blindEvidence(ver.evidence, hidden),
-    review: blindReview(ver.review, hidden, ver.evidence),
-  };
+  return { ...ver, rulebook: ver.rulebook && upgradeRulebook(ver.rulebook) };
 }
 
 /**
- * GET /audit, as the real API: newest first, narrowed to a contract, every word of `q` in what's shown. While a value's
- * question is open on its draft, an entry about it (its path, or the question it answered or sent back) shows no
- * before/after value, and its note has its numbers blanked.
+ * GET /audit, as the real API: newest first, narrowed to a contract, every word of `q` in what's shown.
  */
 function listAudit(d: Db, query: URLSearchParams): Res {
   const parsed = AuditListQuery.safeParse(Object.fromEntries(query));
@@ -603,10 +579,7 @@ function listAudit(d: Db, query: URLSearchParams): Res {
   const { studyId, q, cursor, limit } = parsed.data;
   const shown = (e: Entry): AuditEntryDto => {
     const st = d.studies.find((s) => s.id === e.studyId);
-    const ver = d.versions.find((v) => v.studyId === e.studyId && v.version === e.detail.version);
-    // the real API's rule, the same code (@dct/shared blindDetail)
-    const detail = blindDetail(e.action, e.detail, ver && { hidden: new Set(withheldPaths(ver)), review: ver.review, evidence: ver.evidence });
-    return { ...e, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null, detail };
+    return { ...e, protocol: st?.protocol ?? null, sponsor: st?.sponsor ?? null };
   };
   // newest first; reversed first so that, at the same time, the later entry comes first
   const all = [...d.audit]
@@ -620,7 +593,7 @@ function listAudit(d: Db, query: URLSearchParams): Res {
   return ok({ items: all.slice(start, start + limit), nextCursor: start + limit < all.length ? btoa(String(start + limit)) : null });
 }
 
-/** POST .../send-back: the approver reopens answered questions with a note; they're answered again, blind. */
+/** POST .../send-back: the approver reopens answered questions with a note; they're answered again. */
 function sendBack(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown, at = now()): Res {
   const parsed = SendBackBody.safeParse(raw);
   if (!parsed.success) return err(400, bodyProblem(parsed.error, BODY_WORDS.sendBack));
@@ -670,7 +643,7 @@ function addQuestion(d: Db, ver: RulebookVersionDto, x: Spec) {
 }
 
 /**
- * POST .../report. On a draft (one typed by hand once typing is marked done): a blocking blind question about the value.
+ * POST .../report. On a draft (one typed by hand once typing is marked done): a blocking question about the value.
  * On the live version: a correction draft (a copy of it plus that question); the live version stays live until the
  * draft is approved.
  */
@@ -692,7 +665,7 @@ function report(d: Db, st: Study, ver: RulebookVersionDto, raw: unknown): Res {
     st.status = "amendment_in_review";
   } else if (ver.status !== "draft") return err(409, `Version ${ver.version} is ${ver.status}; report a value on the live version or a draft.`);
   else if (ver.byHand && !ver.review.length) return err(409, "Typing isn't marked done yet: change the value in the form instead.");
-  if (withheldPaths(draft).includes(path)) return err(409, "There's already an open question about this value.");
+  if (openPaths(draft).includes(path)) return err(409, "There's already an open question about this value.");
   const x = askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported");
   addQuestion(d, draft, x);
   // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
@@ -1004,11 +977,10 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
   if (vrest === "" && method === "GET") return ok(view(ver));
   if (vrest === "/search" && method === "GET") {
     const q = query.get("q") ?? "";
-    // as the real API: never a value withheld for a blind answer (searchVersion, @dct/shared)
     return ok({ q, hits: ver.rulebook ? searchVersion({ ...ver, rulebook: upgradeRulebook(ver.rulebook) }, q) : [] });
   }
   if (vrest === "/diff" && method === "GET") {
-    // as the real API: its refusals, and its blind diff (versionDiff, @dct/shared)
+    // as the real API: its refusals and its diff (versionDiff, @dct/shared)
     const against = query.get("against");
     if (!against) return err(400, "Query parameter `against` (version number) is required");
     if (!/^[1-9]\d{0,8}$/.test(against)) return err(400, `Invalid version "${against}"`);

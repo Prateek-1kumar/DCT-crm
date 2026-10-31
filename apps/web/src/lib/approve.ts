@@ -3,13 +3,13 @@ import { ENUM_OPTIONS, formatDate, formatValue } from "./format";
 import { findProv } from "./pointer";
 
 /**
- * One term the approver ticks: plain words, its quote, and where the contract prints it. `paths`: the values it's made of,
- * so a term whose value is withheld for a blind answer shows as hidden, never as "Not stated" or "No amount".
+ * One term the approver ticks: plain words, its quote, and where the contract prints it. `paths`: the values it's made of
+ * (a draft's re-check of any of them is pointed out on the contract page).
  */
 export type KeyTerm = { id: string; label: string; value: string; detail: string; quote: string | null; where: PageBox | null; paths: string[] };
 
 const money = (cents: number | null) => (cents === null ? "No amount" : formatValue("/x/amountCents", cents));
-/** A fixed-list value in words; on a draft it may be withheld (null) for a blind answer, and the term then shows hidden. */
+/** A fixed-list value in words. */
 const words = (list: string, v: string | null) => (v === null ? "" : (ENUM_OPTIONS[list]?.[v] ?? v));
 
 function capText(cap: Rulebook["invoiceables"][number]["cap"]): string {
@@ -27,16 +27,13 @@ function capText(cap: Rulebook["invoiceables"][number]["cap"]): string {
   }
 }
 
-/** What a key term shows while a value it's made of is withheld for a blind answer. */
-export const HIDDEN = "Hidden until answered";
-
 /**
  * The handful of terms that decide most of the money, for the approver to tick: payment, holdback, overhead,
  * screen failures, the per-patient total of each grid billed, the biggest site fees, the invoice deadline, and when an
  * amendment applies. Missing terms are stated too ("No holdback"): an absence nobody confirmed is the costliest silent
- * mistake. `hidden`: values withheld for a blind answer (withheldPaths); a term made of one says so, never what it holds.
+ * mistake.
  */
-export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: ReadonlySet<string> = new Set()): KeyTerm[] {
+export function keyTerms(rb: Rulebook, evidence: ValueEvidence[]): KeyTerm[] {
   const at = (path: string): PageBox | null => {
     const w = evidence.find((e) => e.path === path)?.where[0];
     if (w) return w;
@@ -46,8 +43,6 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
   const quote = (path: string) => findProv(rb, path)?.source?.quote ?? null;
   const term = (id: string, label: string, value: string, detail: string, path: string | null, also: string[] = []): KeyTerm => {
     const paths = [...(path ? [path] : []), ...also];
-    if (paths.some((p) => hidden.has(p)))
-      return { id, label, value: HIDDEN, detail: "Someone types what the contract says here first: answer its question", quote: null, where: path ? at(path) : null, paths };
     return { id, label, value, detail, quote: path ? quote(path) : null, where: path ? at(path) : null, paths };
   };
   const out: KeyTerm[] = [];
@@ -88,8 +83,7 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
   );
 
   // The grids billing uses (billedGrids): each arm's chosen grid, or its only one, never two for one arm. An arm whose
-  // grids differ with none chosen bills nothing: said, never left out (hidden while a number in them is withheld, as
-  // they may price the same once it's answered).
+  // grids differ with none chosen bills nothing: said, never left out.
   const billed = new Set(billedGrids(rb));
   const arms = new Set([...billed].map(armKey));
   rb.budgetGrids.forEach((g, gi) => {
@@ -97,21 +91,19 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
       if (arms.has(armKey(g))) return;
       arms.add(armKey(g));
       const own = rb.budgetGrids.flatMap((x, xi) => (armKey(x) === armKey(g) ? [{ x, xi }] : []));
-      const inThem = [...hidden].filter((p) => own.some(({ xi }) => p.startsWith(`/budgetGrids/${xi}/`)));
-      out.push(term(`patient-${gi}`, "Per patient", "No grid chosen", `${g.arm ? `${g.arm}: ` : ""}${own.map(({ x }) => x.label).join(" and ")} disagree, so nothing is billed until one is chosen`, null, inThem));
+      out.push(term(`patient-${gi}`, "Per patient", "No grid chosen", `${g.arm ? `${g.arm}: ` : ""}${own.map(({ x }) => x.label).join(" and ")} disagree, so nothing is billed until one is chosen`, null));
       return;
     }
     const t = g.perPatientTotals[0];
     if (t) out.push(term(`patient-${gi}`, "Per patient", money(t.cents), `${t.label} · ${g.label}`, `/budgetGrids/${gi}/perPatientTotals/0/cents`));
-    // no printed total: the visits added up, never while one of them is withheld
+    // no printed total: the visits added up
     else out.push(term(`patient-${gi}`, "Per patient", money(g.visits.reduce((n, v) => n + v.totalCents, 0)), `All visits added up · ${g.label}`, null, g.visits.map((_, vi) => `/budgetGrids/${gi}/visits/${vi}/totalCents`)));
   });
 
-  // a fee whose amount is withheld for a blind answer may be the biggest: it's listed first, hidden, never left out
-  const size = (f: Rulebook["siteFees"][number]) => f.amountCents ?? Number.MAX_SAFE_INTEGER;
+  const size = (f: Rulebook["siteFees"][number]) => f.amountCents ?? 0;
   rb.siteFees
     .map((f, i) => ({ f, i }))
-    .filter(({ f, i }) => f.amountCents !== null || hidden.has(`/siteFees/${i}/amountCents`))
+    .filter(({ f }) => f.amountCents !== null)
     .sort((a, b) => size(b.f) - size(a.f))
     .slice(0, 3)
     .forEach(({ f, i }) =>
@@ -125,7 +117,7 @@ export function keyTerms(rb: Rulebook, evidence: ValueEvidence[], hidden: Readon
 
   // An amendment's start date is always a key term: with none, billing would start from the contract's effective date.
   const af = rb.appliesFrom.value;
-  if (af || hidden.has("/appliesFrom/value") || rb.documents.some((d) => d.kind === "amendment"))
+  if (af || rb.documents.some((d) => d.kind === "amendment"))
     out.push(
       term(
         "applies-from",

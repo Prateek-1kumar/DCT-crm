@@ -142,7 +142,7 @@ export const ReviewAnswer = z.object({
 });
 export type ReviewAnswer = z.infer<typeof ReviewAnswer>;
 
-/** One thing a person must look at, shown one at a time. Never carries the tool's reading before it is answered (blind entry). */
+/** One thing a person must look at, shown one at a time, with our reading and what we suggest (suggest, ADR-003). */
 export const ReviewItem = z.object({
   /** Stable within a version. */
   id: z.string(),
@@ -167,13 +167,13 @@ export const ReviewItem = z.object({
   where: z.array(PageBox),
   /**
    * Where the words a money term quotes are printed, one box per line: its whole sentence, which can run over lines its
-   * figures (`where`) aren't on. Blind entry blanks the quote when any of them holds a withheld value. Absent: `where`.
+   * figures (`where`) aren't on. Absent: `where`.
    */
   quoted: z.array(PageBox).optional(),
   /**
    * A total that doesn't add up (VISIT_TOTAL_MISMATCH, PER_PATIENT_TOTAL_MISMATCH): the total as printed, as it stood
    * when asked or as a person typed it since (answerQuestion), what "the total as printed" puts back after "the sum" was
-   * picked. Never "the sum". Never shown while the total is withheld.
+   * picked. Never "the sum".
    */
   asPrinted: z.number().int().optional(),
   /** Must be settled before approval. */
@@ -189,7 +189,7 @@ export const ReviewItem = z.object({
   reported: z.object({ by: z.string(), note: z.string(), at: z.string() }).nullable().optional(),
   /**
    * One of a table check's picks (reason TABLE_CHECK): which table, and the visit the read gave the highlighted column,
-   * which the pick is compared with. Server-side only: blindReview takes it out of every response.
+   * which the pick is compared with, and which we suggest (suggest).
    */
   table: z.object({ id: z.string(), axis: z.enum(["column"]), expect: z.string() }).optional(),
   /**

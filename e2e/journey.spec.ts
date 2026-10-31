@@ -4,7 +4,7 @@ import type { RulebookVersionDto } from "../packages/shared/src/api";
 
 /**
  * Today's journey, against the real API (EXTRACTION_FAKE=1 fakes only the AI) and a production build of the web in real
- * mode: add a contract → reading → answering (a mismatch, an interpretation picked blind) →
+ * mode: add a contract → reading → answering (our suggestion taken, a mismatch, an interpretation picked) →
  * proofreading → approval → live → search and ⌘K → export → amendment → "This looks wrong" →
  * send back → alerts. The PDFs are synthetic, printed by the browser: a text PDF whose
  * numbers match the fake reading, so most of them are confirmed against the PDF's own text, as with a DocuSign copy.
@@ -95,7 +95,7 @@ const ANSWERS: [RegExp, { type: string } | { pick: RegExp; note?: string }][] = 
   [/"Administrative fee" due/, { type: "45" }],
   [/Master CTA/, { pick: /doesn't affect billing/, note: "The master agreement sets no prices for this work order." }],
   [/bill from/, { pick: /Exhibit A \(revised\)/ }],
-  // the interpretations every read asks, picked blind as the contract words them (ADR-001 §6)
+  // the interpretations every read asks, picked as the contract words them (ADR-001 §6)
   [/Which lines does the overhead apply to/, { pick: /^All per-patient lines$/ }],
   [/When is the site fee “Administrative fee” billed/, { pick: /^On study initiation$/ }],
   [/How are screen failures paid for/, { pick: /^Fixed$/ }],
@@ -245,14 +245,22 @@ test("add a contract → answer → proofread → approve → live → search �
     await page.waitForURL(/\/review/);
   });
 
-  await test.step("answering, blind, with a mismatch", async () => {
-    // The page shows the spot, never our reading.
+  await test.step("answering, with a mismatch", async () => {
+    // The page shows the spot.
     await expect(page.getByRole("region", { name: "The spot in the contract" }).getByRole("img").first()).toBeVisible();
     let mismatch = false;
     let picked = false;
+    let suggested = false;
     await answerAll(page, async (q) => {
+      if (/how many days must an invoice be paid/.test(q)) {
+        // Our suggestion (ADR-003): what we read, shown with why, taken with one click.
+        await expect(page.getByText("Our suggestion")).toBeVisible();
+        await send(page, "Use 45");
+        suggested = true;
+        return;
+      }
       if (/How are visits paid/.test(q)) {
-        // An interpretation picked blind: a pick other than our reading shows both, and asks where the page says so.
+        // An interpretation: a pick other than our reading shows both, and asks where the page says so.
         await page.getByRole("radio", { name: /^By invoice$/ }).check();
         await send(page, "Save and next");
         await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
@@ -271,7 +279,7 @@ test("add a contract → answer → proofread → approve → live → search �
       await send(page, "Save and next");
       mismatch = true;
     });
-    expect([mismatch, picked]).toEqual([true, true]);
+    expect([mismatch, picked, suggested]).toEqual([true, true, true]);
     await expect(page.getByRole("heading", { name: "Every question has an answer" })).toBeVisible();
   });
 
@@ -405,8 +413,8 @@ test("add a contract → answer → proofread → approve → live → search �
     await expect(refused).toBeHidden();
     await page.keyboard.press("Escape"); // and the drawer
     await page.getByRole("combobox", { name: /^Version/ }).selectOption("2");
-    // On the draft, a value still waiting for its blind answer shows as such, not as missing.
-    await expect(page.getByRole("button", { name: /^Payment Needs you/ })).toBeVisible();
+    // On the draft, a value whose question is open is shown, marked as waiting for its answer.
+    await expect(page.getByRole("button", { name: /^Payment .*Needs you: its question is still open/ })).toBeVisible();
     // A number of the billed grid that nothing asks yet: a value asked already can't be reported.
     const v2: { review: { path: string | null; outcome: string | null }[] } = await (await request.get(`/api/v1${studyUrl}/versions/2`)).json();
     const asked = new Set(v2.review.flatMap((i) => (i.path && i.outcome === null ? [i.path] : [])));
@@ -426,7 +434,7 @@ test("add a contract → answer → proofread → approve → live → search �
     await answerAll(page, async (q) => {
       if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
       if (/printed for "Total"/.test(q)) {
-        // The value reported above, typed blind.
+        // The value reported above, typed.
         await page.getByLabel("What the contract says").fill("15,943.00");
         return send(page, "Save and next");
       }

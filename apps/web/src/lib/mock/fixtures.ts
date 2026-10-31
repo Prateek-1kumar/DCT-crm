@@ -355,7 +355,7 @@ export const toItem = (x: Spec): ReviewItem => ({
 export const toSecret = (x: Spec): Secret => ({ truth: x.truth, lines: x.lines });
 
 /**
- * A blind question about one value, asked as the real API asks it (askAbout, @dct/shared), with its secret: the right
+ * A question about one value, asked as the real API asks it (askAbout, @dct/shared), with its secret: the right
  * answer is the value we hold, and the page prints it on a line of its own.
  */
 export function askAbout(rb: Rulebook, evidence: ValueEvidence[], path: string, id: string, reason: string): Spec {
@@ -424,8 +424,8 @@ const capWaits = (path: string | null, asking: Set<string>) => !!path && /\/cap\
 
 /**
  * Questions, evidence ledger and PDF check for a draft, as the real API asks them after a read: the specs, every value
- * nothing confirms on a scan, the interpretations picked blind (`unclear`: the ones the contract words ambiguously;
- * `amendment`, `retroactive`: the start-date question), and the blind re-type of up to 10 confirmed values. Values
+ * nothing confirms on a scan, the interpretations (`unclear`: the ones the contract words ambiguously;
+ * `amendment`, `retroactive`: the start-date question). Values
  * outside the questions match the PDF (or, on a scan, the grid totals).
  */
 export function buildDraft(base: Rulebook, specs: Spec[], opts: { scan?: boolean; table?: boolean; blank?: boolean; amendment?: boolean; retroactive?: boolean; unclear?: { path: string; message: string }[] } = {}): Draft {
@@ -531,7 +531,7 @@ const cell = (id: string, reason: string, gi: number, pi: number, visit: string,
   };
 };
 
-/** Northwind: a text PDF in "Needs you": these, its interpretations and the blind sample (buildDraft). */
+/** Northwind: a text PDF in "Needs you": these and its interpretations (buildDraft). */
 export function northwindSpecs(): Spec[] {
   const wo = "doc-nw-wo";
   return [
@@ -573,7 +573,7 @@ export function cobaltSpecs(): Spec[] {
   ];
 }
 
-/** A new contract read in the demo: these, one more when the master agreement is missing, its interpretations and the sample. */
+/** A new contract read in the demo: these, one more when the master agreement is missing, and its interpretations. */
 export function newContractSpecs(t: { doc: string; pages: number; gridPage: number; hasMaster: boolean }): Spec[] {
   const p = (n: number) => Math.min(n, t.pages);
   const out: Spec[] = [
@@ -597,7 +597,7 @@ export function newContractSpecs(t: { doc: string; pages: number; gridPage: numb
 /**
  * An amendment: a misread new fee, a hand-billed term, a total that doesn't add up (`week52`: the Week 52 visit's total its
  * lines add up to; the amendment prints it $5.00 lower). Retroactive with no date: buildDraft asks the start date
- * (`retroactive`), with the interpretations and the sample.
+ * (`retroactive`), with the interpretations.
  */
 export function amendmentSpecs(doc: string, rmvIndex: number, week52: number): Spec[] {
   return [

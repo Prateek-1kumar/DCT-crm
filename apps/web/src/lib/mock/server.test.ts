@@ -184,9 +184,8 @@ describe("mock API", () => {
     expect(draft.review[0]!.question).toMatch(/^What amount is printed for /);
     const st = StudyDetailDto.parse(await get("/studies/st-meridian"));
     expect(st).toMatchObject({ status: "amendment_in_review", liveVersion: 1 });
-    // the note names the value being typed blind on the draft: its numbers are blanked until that's answered
     const audit = AuditPage.parse(await get("/audit?studyId=st-meridian")).items;
-    expect(audit[0]).toMatchObject({ action: "number.reported", protocol: "MTX-5510", detail: { note: "Should be $•••" } });
+    expect(audit[0]).toMatchObject({ action: "number.reported", protocol: "MTX-5510", detail: { note: "Should be $104" } });
     // Only the newest version can be reported on now.
     expect((await post("/studies/st-meridian/versions/1/report", { path: "/payment/netDays/value", note: "x", by: "Sam" })).status).toBe(409);
   });
@@ -203,46 +202,6 @@ describe("mock API", () => {
     }
     v = RulebookVersionDto.parse((await post(url, { value: 45, note: "§4.2 on page 4, first line", by: "Sam Rivera" })).json);
     expect(v.review.find((i) => i.id === "c2")).toMatchObject({ outcome: "chosen", answer: { value: 45, note: "§4.2 on page 4, first line", noPdfText: true } });
-  }, 30_000);
-
-  it("a note never gives a value away while its question is open: the version, the log, its search and the alert", async () => {
-    const ha = RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"));
-    const a2 = ha.review.find((i) => i.id === "a2")!; // Remote monitoring visit, answered $420.00
-    const note = "Page 4 prints $420.00 (four hundred twenty), see §3";
-    const blanked = "Page 4 prints $••• (•••), see §3";
-    await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [a2.id], note, by: "Morgan Lee" });
-    const refused = await post("/studies/st-halcyon/versions/2/send-back", { itemIds: [a2.id], note, by: "Morgan Lee" }); // now unanswered
-    expect(refused.status).toBe(409);
-    // the sample server leaves masking the values themselves to the web; the notes are its to blank
-    const notes = (v: RulebookVersionDto) => v.review.map((i) => [i.sentBack?.note, i.answer?.note, i.reported?.note]);
-    // ids and times can hold any digits; only what people read counts
-    const words = (x: unknown) => JSON.stringify(x).replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z|"id":"[^"]*"/g, "");
-    const raw = words([
-      refused.json,
-      notes(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"))),
-      await get("/audit?studyId=st-halcyon&limit=100"),
-      await get("/alerts?for=Avery%20Chen&limit=50"),
-      ...(await Promise.all(["420", "four", "hundred"].map((q) => get(`/audit?q=${q}`)))),
-    ]);
-    expect(raw).not.toMatch(/420|four|hundred|twenty/);
-    expect(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).review.find((i) => i.id === "a2")!.sentBack).toMatchObject({ note: blanked });
-    const log = AuditPage.parse(await get("/audit?studyId=st-halcyon&limit=100")).items;
-    expect(log[0]).toMatchObject({ action: "review.sent_back", detail: { note: blanked } });
-    expect(log.find((e) => e.action === "review.answered" && e.detail.itemId === "a2")!.detail).not.toHaveProperty("after");
-    expect(AuditPage.parse(await get("/audit?q=420")).items).toEqual([]);
-
-    // "This looks wrong": the note goes with the question, figures blanked for whoever answers it.
-    const rep = RulebookVersionDto.parse((await post("/studies/st-halcyon/versions/2/report", { path: "/payment/netDays/value", note: "Should be 45 days, see Amendment 1 §2", by: "Sam Rivera" })).json).review.at(-1)!;
-    expect(rep).toMatchObject({ reason: "reported", reported: { by: "Sam Rivera", note: "Should be ••• days, see Amendment 1 §2" } });
-    expect(words(notes(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2"))))).not.toMatch(/45/);
-
-    // Answered again: the full note, found by its numbers; the alert went to everyone, so it stays blanked.
-    expect((await post(`/studies/st-halcyon/versions/2/review/${rep.id}`, { value: 30, by: "Taylor Brooks" })).status).toBe(200);
-    expect(RulebookVersionDto.parse(await get("/studies/st-halcyon/versions/2")).review.at(-1)!.reported!.note).toBe("Should be 45 days, see Amendment 1 §2");
-    expect((await post("/studies/st-halcyon/versions/2/review/a2", { value: 42000, by: "Taylor Brooks" })).status).toBe(200);
-    expect(AuditPage.parse(await get("/audit?studyId=st-halcyon&limit=100")).items.find((e) => e.action === "review.sent_back")!.detail.note).toBe(note);
-    expect(AuditPage.parse(await get("/audit?q=420.00")).items.map((e) => e.action)).toEqual(["review.sent_back"]);
-    expect(AlertPage.parse(await get("/alerts?for=Avery%20Chen&limit=50")).items.find((a) => a.kind === "sent_back")!.note).toBe(blanked);
   }, 30_000);
 
   it("pages and searches the activity log on the server", async () => {
@@ -342,12 +301,6 @@ describe("mock API", () => {
 describe("mock API: in step with the real API's rules", () => {
   beforeEach(() => mockReset());
 
-  it("withholds a value with an open question: the value, its printed text, its quote and the words that restate it", async () => {
-    const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
-    expect(nw.rulebook!.budgetGrids[0]!.procedures[3]!.cells.V2).toBeNull(); // q1
-    expect(nw.rulebook!.payment.visitPayment.value).toBeNull(); // an interpretation, picked blind
-  });
-
   it("bill by hand lists the term on the master; another answer takes it off; send back too", async () => {
     let v = await answer("st-northwind", "q7", { optionId: "bill_by_hand" });
     expect(v.rulebook!.unclassified).toMatchObject([{ label: "§7.2 Parking. Sponsor will reimburse parking at $12.00 per…", amounts: [1200], itemId: "q7" }]);
@@ -370,15 +323,15 @@ describe("mock API: in step with the real API's rules", () => {
     expect(AuditPage.parse(await get("/audit?studyId=st-northwind&limit=100")).items).toHaveLength(logged);
   });
 
-  it("asks the interpretations blind, as the real API: a pick that differs is shown with the read and confirmed", async () => {
+  it("asks the interpretations as the real API: our reading shown, a pick that differs is shown with the read and confirmed", async () => {
     const nw = RulebookVersionDto.parse(await get("/studies/st-northwind/versions/1"));
     expect(nw.review.filter((i) => i.kind === "interpretation").map((i) => i.path)).toEqual([
       "/overhead/appliesTo/value", "/payment/visitPayment/value", ...NW.siteFees.map((_, i) => `/siteFees/${i}/trigger`),
       "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/holdback/appliesTo", "/rounding/value",
     ]);
     expect(nw.review.find((i) => i.path === "/overhead/appliesTo/value")).toMatchObject({ reason: "AMBIGUOUS_TERM", question: expect.stringMatching(/^The budget says overhead is “applied to the costs above”\. Which lines/) });
-    // withheld, with the cap's ratio its kind gives meaning to
-    expect([nw.rulebook!.payment.visitPayment.value, nw.rulebook!.screenFail!.cap.kind, nw.rulebook!.screenFail!.cap.ratio]).toEqual([null, null, null]);
+    // shown while asked (ADR-003)
+    expect(nw.rulebook!.payment.visitPayment.value).toBe("auto_edc");
     const id = "interpret:/payment/visitPayment/value";
     expect((await answer("st-northwind", id, { optionId: "invoice" })).review.find((i) => i.id === id)).toMatchObject({ outcome: "differs", compare: { typed: "invoice", read: "auto_edc" } });
     expect((await post(`/studies/st-northwind/versions/1/review/${encodeURIComponent(id)}`, { optionId: "invoice", by: "Sam Rivera" })).status).toBe(400);
@@ -438,9 +391,9 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
    */
   async function reloadWith(edit: (saved: { versions: RulebookVersionDto[] }) => void) {
     await get("/settings"); // saved after every request
-    const saved = JSON.parse(localStorage.getItem("dct.mockdb.v9")!) as { versions: RulebookVersionDto[] };
+    const saved = JSON.parse(localStorage.getItem("dct.mockdb.v10")!) as { versions: RulebookVersionDto[] };
     edit(saved);
-    localStorage.setItem("dct.mockdb.v9", JSON.stringify(saved));
+    localStorage.setItem("dct.mockdb.v10", JSON.stringify(saved));
     vi.resetModules();
     const { mockRequest: request } = await import("./server");
     return request;
@@ -468,13 +421,13 @@ describe("mock API: the API's own rules (@dct/shared), where its copies used to 
     expect(RulebookVersionDto.parse(res.json).review.find((i) => i.id === reported.id)!.outcome).toBe("matched");
   });
 
-  it("keeps the date a version's terms apply from: the effective date it falls back to, withheld while asked", async () => {
+  it("keeps the date a version's terms apply from: the effective date it falls back to, shown while asked", async () => {
     const shown = async (study: string, v: number) => [RulebookVersionDto.parse(await get(`/studies/${study}/versions/${v}`)).appliesFrom, StudyDetailDto.parse(await get(`/studies/${study}`)).versions.find((x) => x.version === v)!.appliesFrom];
     expect(await shown("st-northwind", 1)).toEqual(["2025-07-01", "2025-07-01"]); // a draft, from the contract's effective date
     expect(await shown("st-meridian", 1)).toEqual(["2024-11-18", "2024-11-18"]); // approved with it
     expect(await shown("st-halcyon", 2)).toEqual(["2026-09-01", "2026-09-01"]); // the amendment's start date, answered
     await post("/studies/st-halcyon/versions/2/send-back", { itemIds: ["interpret:/appliesFrom/value"], note: "Check §1", by: "Morgan Lee" });
-    expect(await shown("st-halcyon", 2)).toEqual([null, null]); // asked again, blind
+    expect(await shown("st-halcyon", 2)).toEqual(["2026-09-01", "2026-09-01"]); // asked again: the earlier answer stands meanwhile
     await answer("st-halcyon", "interpret:/appliesFrom/value", { optionId: "prospective", value: "2026-09-30", by: "Taylor Brooks" }, 2);
     expect(await shown("st-halcyon", 2)).toEqual(["2026-09-30", "2026-09-30"]);
   });

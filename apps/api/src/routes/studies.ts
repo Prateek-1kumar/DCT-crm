@@ -230,7 +230,7 @@ export const studyRoutes =
 
     /**
      * Typing a contract in by hand when it couldn't be read: a blank draft (one empty budget grid), every value typed is
-     * attested, and someone else re-types a sample blind when typing is done. Replaces a failed version in place.
+     * attested, and whoever typed it can't approve it. Replaces a failed version in place.
      */
     app.post<{ Params: { id: string } }>("/studies/:id/versions/by-hand", async (req, reply) => {
       const body = ByHandBody.safeParse(req.body);

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { AuditPage, BLANK_INVOICEABLE, RulebookVersionDto, withheldPaths } from "@dct/shared";
+import { AuditPage, BLANK_INVOICEABLE, RulebookVersionDto, openPaths } from "@dct/shared";
 import { getAt } from "../pointer";
 import { mockSampling } from "./fixtures";
 import { mockRequest, mockReset } from "./server";
@@ -43,7 +43,7 @@ async function confirmTable() {
 describe("mock API blank check", () => {
   beforeEach(() => mockReset());
 
-  it("asks one blind pick with the table's and rows' boxes, and withholds its cells: null in the master, no printed text", async () => {
+  it("asks one pick with the table's and rows' boxes; its cells wait with it, with no printed text", async () => {
     const q = await group();
     expect(q).toMatchObject({ path: null, blocking: true, outcome: null, input: null });
     expect(q.options.map((o) => o.id)).toEqual(["printed_only", "every_visit"]);
@@ -53,11 +53,9 @@ describe("mock API blank check", () => {
     const cells = v.evidence.filter((e) => e.blank);
     expect(cells.length).toBeGreaterThan(0);
     for (const e of cells) {
-      expect(getAt(v.rulebook, e.path), e.path).toBeNull();
       expect(e).toMatchObject({ printed: null, status: "ungrounded" });
     }
-    expect(withheldPaths(v)).toEqual(expect.arrayContaining(cells.map((e) => e.path)));
-    expect(JSON.stringify(await get(url))).not.toContain('"invoiceable"');
+    expect(openPaths(v)).toEqual(expect.arrayContaining(cells.map((e) => e.path)));
     // approval waits for it
     expect((await post(`${url}/sign-off`, { by: "Taylor Brooks", asOf: v.updatedAt })).status).toBe(409);
   });

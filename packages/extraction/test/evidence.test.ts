@@ -725,7 +725,7 @@ describe("reviewFromEvidence", () => {
     const { evidence, unaccounted } = bindEvidence(rb, pages.slice(1, 2)); // the grid page only: the terms page's rules aren't there
     const asked = reviewFromEvidence(evidence, unaccounted, rb).filter((i) => i.kind === "confirm_value" && !/procedures|visits|perPatient|amount/i.test(i.path!));
     expect(Object.fromEntries(asked.map((i) => [i.path, `${i.input}: ${i.question}`]))).toEqual({
-      "/budgetGrids/0/statedOverheadPct": 'percent: What overhead percentage is printed on the budget grid "Exhibit A at …"?',
+      "/budgetGrids/0/statedOverheadPct": 'percent: What overhead percentage is printed on the budget grid "Exhibit A at 40%"?',
       "/study/effectiveDate/value": "date: What effective date does the contract give?",
       "/appliesFrom/value": "date: From what date do the new terms apply?",
       "/overhead/pct/value": "percent: What overhead percentage does the contract state?",

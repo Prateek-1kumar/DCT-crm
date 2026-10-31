@@ -93,145 +93,19 @@ describe("reading checks every number against the PDF's own text", () => {
   });
 });
 
-describe("blind entry", () => {
-  it("the version never sends a hidden value, its printed text or quote, the checks' findings, or a comparison before an answer", async () => {
+describe("nothing withheld (ADR-003)", () => {
+  it("a value with an open question is in the version, with its printed text and the checks' findings, and search finds it", async () => {
     const { studyId } = await draft();
-    const stored = await storedVersion(built, studyId, 1);
-    expect([at(stored.rulebook, G2_TOTAL), at(stored.rulebook, NET_DAYS)]).toEqual([848800, 45]);
-    const raw = (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).body;
-    const v = JSON.parse(raw) as RulebookVersionDto;
-    for (const p of [G2_TOTAL, ...UNGROUNDED]) expect(at(v.rulebook, p), p).toBeNull();
-    expect(at(v.rulebook, "/budgetGrids/0/visits/0/overheadCents")).toBe(213000); // no open question: sent as is
-    // a value the PDF confirmed and nobody asks about is sent as is
-    expect(at(v.rulebook, "/budgetGrids/0/visits/0/totalCents")).not.toBeNull();
-    expect(v.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "conflict", printed: null });
-    expect(v.anomalies).toEqual([]);
-    expect(v.review.every((i) => i.compare === null && i.answer === null)).toBe(true);
-    expect(raw).not.toMatch(/truth|secret|"apply"/);
-
-    // Answered: the value is back once nothing about it is open. Here the typed total no longer adds up, so that's asked
-    // first (recheck), and it holds the value back too. A differs answer shows the comparison, to that item only.
-    await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 });
-    expect(at((await version(studyId)).rulebook, G2_TOTAL)).toBeNull();
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Ask why the total is a dollar over" });
-    expect(at((await version(studyId)).rulebook, G2_TOTAL)).toBe(848900);
-    const differs = await answer(studyId, `confirm:${NET_DAYS}`, { value: 30 });
-    expect(differs.compare).toEqual({ typed: 30, read: 45, printed: null });
-    expect(at((await version(studyId)).rulebook, NET_DAYS)).toBeNull(); // still open
-  });
-
-  it("searching a draft never finds a hidden value by amount or by a term's words; names still match", async () => {
-    const { studyId } = await draft();
-    const search = async (q: string) => (await get<MasterSearch>(`/studies/${studyId}/versions/1/search?q=${encodeURIComponent(q)}`)).hits.map((h) => h.path);
-    expect(await search("8,488.00")).not.toContain("/budgetGrids/1/visits/1");
-    expect(await search("payment")).not.toContain("/payment");
-    expect(await search("blood")).toEqual(["/budgetGrids/0/procedures/0", "/budgetGrids/1/procedures/0"]);
-    await settleAll(built, studyId, 1);
-    expect(await search("payment")).toContain("/payment");
-  });
-
-  it("an amendment's diff and the audit log don't show it either", async () => {
-    const { studyId } = await liveStudy(built);
-    // The amendment reads the unscheduled visit with overhead as $900.00; the page prints $800.00.
-    const [amend] = (await upload(app, [{ name: "Amendment 1.pdf", data: await makePdf("amend") }])).json<{ id: string }[]>();
-    await extract(app, studyId, { documentIds: [amend!.id] });
-    const unsched = "/invoiceables/0/amountWithOverheadCents";
-    expect((await version(studyId, 2)).review.map((i) => i.path)).toContain(unsched);
-    const diff = async () => (await get<DiffEntry[]>(`/studies/${studyId}/versions/2/diff?against=1`)).map((e) => e.path);
-    expect(await diff()).not.toContain(unsched);
-    // the fee the amendment adds is shown; its due days and the new applies-from date are asked (nothing prints them)
-    expect(await diff()).toContain("/siteFees/0");
-    expect(await diff()).not.toContain("/appliesFrom/value");
-    // nor inside the entry that adds the fee: its due days (30 in the read) are withheld there too
-    const res = await app.inject({ url: `/api/v1/studies/${studyId}/versions/2/diff?against=1` });
-    const added = res.json<DiffEntry[]>().find((e) => e.path === "/siteFees/0")!;
-    expect(added).toMatchObject({ change: "added", after: { name: "Start-up fee", dueDays: null } });
-    expect(res.body).not.toMatch(/"dueDays":30\b/);
-    expect(res.body.replace(/"(?:id|documentId)":"[^"]*"/g, "")).not.toMatch(/\b30\b/);
-
-    // Answered, sent back: the earlier answer stays out of the log while the question is open again.
-    const item = `confirm:${unsched}`;
-    await answer(studyId, item, { value: 80000 }, 2);
-    const logged = async () => (await auditOf(studyId)).find((e) => e.action === "review.answered" && e.detail.path === unsched)!.detail;
-    expect(await logged()).toMatchObject({ before: 90000, after: 80000 });
-    expect((await auditOf(studyId, "90000")).map((e) => e.action)).toContain("review.answered");
-    expect((await post(`/studies/${studyId}/versions/2/send-back`, { itemIds: [item], note: "look again", by: "Morgan" })).statusCode).toBe(200);
-    expect(await logged()).not.toHaveProperty("before");
-    expect(await logged()).not.toHaveProperty("after");
-    expect(await auditOf(studyId, "90000")).toEqual([]); // nor found by it
-    expect(await diff()).not.toContain(unsched);
-  });
-
-  it("a note never gives a hidden value away, on any route, until its question is settled", async () => {
-    const { studyId } = await draft();
-    await settleAll(built, studyId, 1);
-    const item = `confirm:${G2_TOTAL}`;
-    // what an approver, a reporter and an answerer might write: amounts, a count in words, a duration, a date
-    const sent = "Page 2 prints $6,543.21 here, not what was typed (sixty-five forty); see §4.2";
-    const reported = "Should be 47 days from Sept 9, 2031";
-    const unsure = "Hard to read, maybe 6543.21?";
-    const leaks = /6,?543|sixty|forty|47 days|sept|2031/i;
-    const bodies: [string, string][] = [];
-    const call = async (method: "GET" | "POST", url: string, payload?: object) => {
-      const res = await app.inject({ method, url: `/api/v1${url}`, payload });
-      bodies.push([`${method} ${url}`, res.body]);
-      return res;
-    };
-    const back = await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: [item], note: sent, by: "Morgan" });
-    expect(back.json<RulebookVersionDto>().review.find((i) => i.id === item)!.sentBack).toMatchObject({ by: "Morgan", note: "Page 2 prints $••• here, not what was typed (•••); see §4.2" });
-    expect((await call("POST", `/studies/${studyId}/versions/1/review/${encodeURIComponent(item)}`, { cantTell: true, note: unsure, by: "Sam" })).statusCode).toBe(200);
-    const report = await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" });
-    expect(report.statusCode).toBe(200);
-    // and the errors a curious person could provoke
-    expect((await call("POST", `/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: reported, by: "Avery" })).statusCode).toBe(409);
-    expect((await call("POST", `/studies/${studyId}/versions/1/sign-off`, { by: "Ben", asOf: (await version(studyId)).updatedAt })).statusCode).toBe(409);
-    const reportedId = report.json<RulebookVersionDto>().review.at(-1)!.id;
-    expect((await call("POST", `/studies/${studyId}/versions/1/send-back`, { itemIds: [reportedId], note: sent, by: "Morgan" })).statusCode).toBe(409); // open again: nothing to send back
-    expect((await call("POST", `/studies/${studyId}/versions/1/review/nope`, { value: 1, by: "Sam" })).statusCode).toBe(404);
-
-    const reads = [
-      `/studies/${studyId}/versions/1`,
-      `/studies/${studyId}`,
-      "/studies?limit=100",
-      `/studies/${studyId}/versions/1/search?q=blood`,
-      "/search?q=6543.21",
-      "/alerts?for=Avery&limit=50",
-      `/audit?studyId=${studyId}&limit=100`,
-      "/audit?limit=100",
-      ...["6,543.21", "6543", "sixty", "forty", "47", "sept", "2031"].map((q) => `/audit?q=${encodeURIComponent(q)}`),
-    ];
-    for (const url of reads) expect((await call("GET", url)).statusCode, url).toBe(200);
-    // ids and times can hold any digits; only what people read counts
-    const words = (body: string) => body.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{4}-\d{2}-\d{2}T[\d:.]+Z/gi, "");
-    for (const [req, body] of bodies) expect(words(body), req).not.toMatch(leaks);
-
-    // what's shown: the words, and where to look
     const v = await version(studyId);
-    expect(v.review.find((i) => i.id === item)).toMatchObject({ outcome: "cant_tell", answer: { note: "Hard to read, maybe •••?" } });
-    // whoever answers the reported question sees why it was reported, its figures blanked
-    expect(v.review.find((i) => i.reason === "reported")).toMatchObject({ path: NET_DAYS, reported: { by: "Avery", note: "Should be ••• days from •••" } });
-    const log = await auditOf(studyId);
-    expect(log.find((e) => e.action === "review.sent_back")!.detail).toMatchObject({ itemIds: [item], note: "Page 2 prints $••• here, not what was typed (•••); see §4.2" });
-    expect(log.find((e) => e.action === "number.reported")!.detail.note).toBe("Should be ••• days from •••");
-    expect(log[0]).toMatchObject({ protocol: "SYN-001", sponsor: "Synthetic Pharma" });
-    expect((await auditOf(studyId, "§4.2")).map((e) => e.action)).toEqual(["review.sent_back"]); // the words are still found
-
-    // Settled: the full notes, and found by their numbers. The alert went to everyone, so it stays blanked.
-    await answer(studyId, item, { value: 848900 });
-    // the typed total doesn't add up, which is asked about that same total: the note stays blanked until that's settled too
-    expect((await auditOf(studyId)).find((e) => e.action === "review.sent_back")!.detail.note).not.toBe(sent);
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
-    await answer(studyId, v.review.find((i) => i.reason === "reported")!.id, { value: 45 });
-    expect((await version(studyId)).review.find((i) => i.reason === "reported")!.reported).toMatchObject({ by: "Avery", note: reported });
-    const settledLog = await auditOf(studyId);
-    expect(settledLog.find((e) => e.action === "review.sent_back")!.detail.note).toBe(sent);
-    expect(settledLog.find((e) => e.action === "number.reported")!.detail.note).toBe(reported);
-    expect((await auditOf(studyId, "543.21")).map((e) => e.action).sort()).toEqual(["review.answered", "review.sent_back"]);
-    expect((await auditOf(studyId, "2031")).map((e) => e.action)).toEqual(["number.reported"]);
-    const alert = (await get<AlertPage>("/alerts?for=Avery&limit=50")).items.find((a) => a.kind === "sent_back")!;
-    expect(alert.note).toBe("Page 2 prints $••• here, not what was typed (•••); see §4.2");
+    expect(v.review.some((i) => i.path === G2_TOTAL && i.outcome === null)).toBe(true);
+    expect(at(v.rulebook, G2_TOTAL)).toBe(848800);
+    expect(v.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "conflict", printed: expect.stringContaining("8,489.00") });
+    expect(v.anomalies.length).toBeGreaterThan(0);
+    const search = async (q: string) => (await get<MasterSearch>(`/studies/${studyId}/versions/1/search?q=${encodeURIComponent(q)}`)).hits.map((h) => h.path);
+    expect(await search("8,488.00")).toContain("/budgetGrids/1/visits/1");
   });
 });
+
 
 describe("answering", () => {
   it("matches, differs, then settles (a note only to keep your own value over the PDF text); answers can change; options are chosen", async () => {
@@ -363,7 +237,7 @@ describe("answering", () => {
 });
 
 describe("“This looks wrong”", () => {
-  it("on a draft adds a blocking blind question and sends an approval-ready study back to Needs you", async () => {
+  it("on a draft adds a blocking question and sends an approval-ready study back to Needs you", async () => {
     const { studyId } = await draft();
     await settleAll(built, studyId, 1);
     expect(await summary(studyId)).toMatchObject({ needsYou: 0 });
@@ -372,7 +246,7 @@ describe("“This looks wrong”", () => {
     expect(res.statusCode).toBe(200);
     const v = res.json<RulebookVersionDto>();
     expect(v.review.at(-1)).toMatchObject({ kind: "confirm_value", reason: "reported", blocking: true, input: "number", path: NET_DAYS, answer: null, compare: null, question: "What value is printed for Payment › Net days?" });
-    expect(at(v.rulebook, NET_DAYS)).toBeNull();
+    expect(at(v.rulebook, NET_DAYS)).toBe(45); // shown with its question (ADR-003)
     expect(await summary(studyId)).toMatchObject({ needsYou: 1 });
     expect((await post(url, { path: NET_DAYS, note: "again", by: "Sam" })).statusCode).toBe(409);
     expect((await post(url, { path: "/budgetGrids/0", note: "whole grid", by: "Sam" })).statusCode).toBe(400);
@@ -388,11 +262,11 @@ describe("“This looks wrong”", () => {
     expect(v2).toMatchObject({ version: 2, status: "draft", byHand: false, editors: [] });
     expect(v2.review).toHaveLength(1);
     expect(v2.review[0]!.question).toMatch(/^What amount is printed for /);
-    expect(at(v2.rulebook, cell)).toBeNull();
-    expect(at((await version(studyId, 1)).rulebook, cell)).toBe(5500); // the live version is never withheld
+    expect(at(v2.rulebook, cell)).toBe(5500);
+    expect(at((await version(studyId, 1)).rulebook, cell)).toBe(5500);
     expect(await get<StudyDetailDto>(`/studies/${studyId}`)).toMatchObject({ status: "amendment_in_review", liveVersion: 1, needsYou: 1 });
     // the note names the value being typed blind on v2: its numbers are blanked until that's answered
-    expect((await auditOf(studyId))[0]).toMatchObject({ action: "number.reported", by: "Sam", detail: { version: 2, note: "Should be $•••" } });
+    expect((await auditOf(studyId))[0]).toMatchObject({ action: "number.reported", by: "Sam", detail: { version: 2, note: "Should be $56" } });
     // Only the newest version can be reported on now.
     expect((await post(`/studies/${studyId}/versions/1/report`, { path: NET_DAYS, note: "x", by: "Sam" })).json().message).toBe("Version 2 is already in progress. Report it there.");
 
@@ -429,7 +303,7 @@ describe("proofreading", () => {
 });
 
 describe("send back", () => {
-  it("reopens answers blind with the note, turns their evidence back to conflict, and raises sent_back alone", async () => {
+  it("reopens answers with the note, turns their evidence back to conflict, and raises sent_back alone", async () => {
     const { studyId } = await draft();
     await settleAll(built, studyId, 1);
     const alerts = async () => (await get<AlertPage>("/alerts?for=Avery&limit=50")).items;
@@ -439,8 +313,8 @@ describe("send back", () => {
     expect(res.statusCode).toBe(200);
     const v = res.json<RulebookVersionDto>();
     for (const id of ids) expect(v.review.find((i) => i.id === id)).toMatchObject({ outcome: null, answer: null, compare: null, sentBack: { by: "Morgan", note: "Check page 2" } });
-    expect(v.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "conflict", note: "Sent back by Morgan", printed: null });
-    expect(at(v.rulebook, G2_TOTAL)).toBeNull();
+    expect(v.evidence.find((e) => e.path === G2_TOTAL)).toMatchObject({ status: "conflict", note: "Sent back by Morgan" });
+    expect(at(v.rulebook, G2_TOTAL)).not.toBeNull();
     expect(await summary(studyId)).toMatchObject({ needsYou: 2 });
     const raised = (await alerts()).slice(0, (await alerts()).length - seen);
     expect(raised).toEqual([expect.objectContaining({ kind: "sent_back", count: 2, note: "Check page 2", by: "Morgan" })]);
@@ -494,7 +368,6 @@ describe("typing in by hand", () => {
     expect(v.review.map((i) => i.reason).sort()).toEqual(Array(8).fill("REQUIRED_MISSING"));
     expect(v.review.find((i) => i.path === "/budgetGrids/0/visits/0/totalCents")).toMatchObject({ reason: "REQUIRED_MISSING", blocking: true, input: "money" });
     expect(v.review.every((i) => i.blocking && i.answer === null)).toBe(true);
-    expect(v.review.every((i) => i.path && at(v.rulebook, i.path) === null)).toBe(true); // blind
     expect((await post(`/studies/${studyId}/versions/1/by-hand/done`, { by: "Avery" })).statusCode).toBe(409);
     expect((await patch(`/studies/${studyId}/versions/1/values`, { path: NET_DAYS, value: 30, note: "x", by: "Avery" })).json().message).toBe("Typing is marked done. Use “This looks wrong” to change a value.");
     expect(v.review.some((i) => i.path === NET_DAYS)).toBe(false);

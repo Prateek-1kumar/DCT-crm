@@ -66,37 +66,6 @@ describe("H2: the host guard holds behind the web app's proxy", () => {
   });
 });
 
-describe("H7: blind entry has no side doors", () => {
-  it("a value reported again hides its earlier answer, and its grid's numbers in a contract problem's question", async () => {
-    const { studyId } = await newStudy(app, "blind");
-    await extract(app, studyId);
-    // A contract problem withholds the value it's about (its path), so its question can't print it either.
-    const problem = (await version(studyId)).review.find((i) => i.reason === "VISIT_TOTAL_MISMATCH")!;
-    expect(problem.question).not.toMatch(/848900/);
-    expect(await answer(studyId, `confirm:${G2_TOTAL}`, { value: 848900 })).toMatchObject({ outcome: "matched" });
-    await answer(studyId, problem.id, { optionId: "printed", note: "Query the total" });
-    // the typed total doesn't add up in its own grid either: asked on the typed numbers (recheck), and settled
-    await answer(studyId, `anomaly:VISIT_TOTAL_MISMATCH:${G2_TOTAL}`, { optionId: "printed", note: "Query the total" });
-    expect((await version(studyId)).review.find((i) => i.id === problem.id)!.question).toMatch(/848900/); // nothing in its grid withheld now
-
-    // "This looks wrong" on two values: one the earlier answer holds, one in the problem's grid.
-    expect((await post(`/studies/${studyId}/versions/1/report`, { path: G2_TOTAL, note: "check", by: "Sam" })).statusCode).toBe(200);
-    expect((await post(`/studies/${studyId}/versions/1/report`, { path: "/budgetGrids/0/visits/0/totalCents", note: "check", by: "Sam" })).statusCode).toBe(200);
-    const v = await version(studyId);
-    expect(at(v.rulebook, G2_TOTAL)).toBeNull();
-    const earlier = v.review.find((i) => i.id === `confirm:${G2_TOTAL}`)!;
-    expect(earlier).toMatchObject({ outcome: "matched", compare: null });
-    expect(earlier.answer).not.toHaveProperty("value");
-    expect(v.review.find((i) => i.id === problem.id)!.question).not.toMatch(/\d{4,}/);
-    expect(at(v.rulebook, "/budgetGrids/0/visits/0/totalCents")).toBeNull();
-
-    const audit = (await get(`/audit?studyId=${studyId}`)).json<AuditPage>().items;
-    const answered = audit.filter((e) => e.action === "review.answered");
-    expect(answered.find((e) => e.detail.itemId === `confirm:${G2_TOTAL}`)!.detail).not.toHaveProperty("after");
-    expect(String(answered.find((e) => e.detail.itemId === problem.id)!.detail.question)).not.toMatch(/\d{4,}/);
-  });
-});
-
 describe("M1: a signed version can't be changed or removed, even in the database", () => {
   // the trigger's own refusal (drizzle/0006_signed_versions_locked.sql), not just any error
   const refused = async (q: ReturnType<typeof sql>) => expect(await cause(built.ctx.db.execute(q))).toMatch(/immutable/);

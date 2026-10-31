@@ -1,17 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  blindDetail,
   calendarDay,
   dateField,
   interpretations,
-  blindEvidence,
-  mask,
   type ReviewItem,
   type Rulebook,
   RulebookVersionDto,
   type ValueEvidence,
   ValueEvidence as ValueEvidenceSchema,
-  withheldPaths,
+  openPaths,
 } from "../src";
 
 // The review lists that aren't flags (ADR-001 §6): interpretations picked blind, and the random blind sample.
@@ -59,15 +56,15 @@ describe("interpretations", () => {
     ]);
   });
 
-  it("asks blind: nothing preselected or answered, the field's own values, the quote and names with no figure in them", () => {
+  it("nothing preselected or answered, the field's own values, the quote and names as printed", () => {
     const items = interpretations(rulebook(), { amendment: false });
     expect(items.every((i) => i.blocking && i.kind === "interpretation" && i.answer === null && i.outcome === null)).toBe(true);
     const overhead = items[0]!;
-    expect(overhead.question).toBe("Which lines does the overhead apply to? The contract says: “•••% overhead on procedure costs”");
+    expect(overhead.question).toBe("Which lines does the overhead apply to? The contract says: “25% overhead on procedure costs”");
     expect(overhead.options.map((o) => o.id)).toEqual(["procedures_only", "procedures_and_staff", "all_per_patient_lines", "none", "unspecified"]);
     expect(items.find((i) => i.path === "/screenFail/basis")!.options.map((o) => o.id)).toEqual(["fixed", "per_procedure"]); // not an invoiceable's
-    expect(items.find((i) => i.path === "/invoiceables/0/cap/kind")).toMatchObject({ question: "What limit does the contract put on billing “Mileage …”?", options: expect.arrayContaining([{ id: "amount", label: "A total amount at most" }]) });
-    expect(items.find((i) => i.path === "/siteFees/0/trigger")!.question).toMatch(/“due within ••• days of execution”$/);
+    expect(items.find((i) => i.path === "/invoiceables/0/cap/kind")).toMatchObject({ question: "What limit does the contract put on billing “Mileage $0.67”?", options: expect.arrayContaining([{ id: "amount", label: "A total amount at most" }]) });
+    expect(items.find((i) => i.path === "/siteFees/0/trigger")!.question).toMatch(/“due within 30 days of execution”$/);
   });
 
   it("a holdback's scope is typed; an amendment's start date takes a date or 'prospective only'", () => {
@@ -87,10 +84,10 @@ describe("interpretations", () => {
     expect(interpretations(rb, { amendment: false }).find((i) => i.path === "/appliesFrom/value")!.options.map((o) => o.id)).toEqual(["prospective"]);
   });
 
-  it("an AMBIGUOUS_TERM about one of them is that question, marked, its figures blanked", () => {
+  it("an AMBIGUOUS_TERM about one of them is that question, marked, its message first", () => {
     const [item] = interpretations(rulebook(), { amendment: false, anomalies: [{ code: "AMBIGUOUS_TERM", path: "/overhead/appliesTo", message: "Ambiguous: whether 25% covers stipends", refs: [{ documentId: "d1", page: 7 }] }] });
     expect(item).toMatchObject({ reason: "AMBIGUOUS_TERM", where: [{ documentId: "d1", page: 3, box: null }, { documentId: "d1", page: 7, box: null }] });
-    expect(item!.question).toMatch(/^Ambiguous: whether •••% covers stipends\. Which lines/);
+    expect(item!.question).toMatch(/^Ambiguous: whether 25% covers stipends\. Which lines/);
     expect(item!.options.map((o) => o.id)).not.toContain("unspecified");
   });
 });
@@ -109,7 +106,7 @@ describe("interpretations the clause states outright (ADR-002 §4)", () => {
     expect(paths(rb, { amendment: false })).toContain("/invoiceables/0/cap/kind"); // no evidence: asked, as before
     for (const status of ["confirmed", "confirmed_by_math"] as const) expect(paths(rb, { amendment: false, evidence: sure(status) })).not.toContain("/invoiceables/0/cap/kind");
     const review = interpretations(rb, { amendment: false, evidence: sure("confirmed") });
-    expect(withheldPaths({ status: "draft", review, evidence: [] })).not.toEqual(expect.arrayContaining(["/invoiceables/0/cap/n"]));
+    expect(openPaths({ status: "draft", review, evidence: [] })).not.toEqual(expect.arrayContaining(["/invoiceables/0/cap/n"]));
   });
 
   it("is still asked when the figure isn't confirmed, the read cites no quote, the term is ambiguous, or the kind needs more than a figure", () => {
@@ -154,38 +151,6 @@ describe("a typed date", () => {
     expect(["/overhead/appliesTo/value", "/payment/netDays/value", "/deadlines/0/value", "/study/sponsor/value"].some(dateField)).toBe(false);
     expect(["2024-02-29", "2025-12-31"].every(calendarDay)).toBe(true);
     expect(["2025-02-29", "2025-06-31", "2025-13-01", "2025-8-22", "August 22, 2025", "", null, 20250822].some(calendarDay)).toBe(false);
-  });
-});
-
-describe("withheld while asked", () => {
-  it("an interpretation's value, and a cap's figures while its kind is asked; the version still parses", () => {
-    const rb = rulebook();
-    const review = interpretations(rb, { amendment: false });
-    const v = { status: "draft", review, evidence: [] };
-    const hidden = withheldPaths(v);
-    expect(hidden).toEqual(expect.arrayContaining(["/payment/visitPayment/value", "/invoiceables/0/cap/kind", "/invoiceables/0/cap/n", "/invoiceables/0/cap/ratio"]));
-    const shown = mask(rb, hidden, { evidence: [], review });
-    expect([shown.payment.visitPayment.value, shown.invoiceables[0]!.cap.kind, shown.invoiceables[0]!.cap.n, shown.siteFees[0]!.trigger]).toEqual([null, null, null, null]);
-    expect(JSON.stringify(shown)).not.toMatch(/auto_edc|agreement_execution|77700/);
-    const dto = { version: 1, status: "draft", createdAt: "", signedBy: null, signedAt: null, appliesFrom: null, studyId: "s", rulebook: shown, anomalies: [], editors: [], cost: { usd: 0, inputTokens: 0, outputTokens: 0 }, evidence: [], review, pdfCheck: null, byHand: false, proofread: [], updatedAt: "", warnings: [] };
-    expect(RulebookVersionDto.safeParse(dto).success).toBe(true);
-  });
-
-  it("a value the contract's own totals confirm stays masked while its path is withheld, and the status parses either way", () => {
-    const rb = rulebook();
-    const evidence = [{ ...ev("/siteFees/0/amountCents", "confirmed_by_math"), printed: "1,234.00", where: [{ documentId: "d1", page: 3, box: [0.1, 0.1, 0.2, 0.02] as [number, number, number, number] }] }];
-    const hidden = ["/siteFees/0/amountCents"];
-    const shown = blindEvidence(evidence, hidden);
-    expect(shown[0]).toMatchObject({ path: "/siteFees/0/amountCents", status: "confirmed_by_math", printed: null });
-    expect(mask(rb, hidden, { evidence, review: [] }).siteFees[0]!.amountCents).toBeNull();
-    for (const status of ["confirmed", "confirmed_by_math", "attested", "conflict", "ungrounded"] as const) expect(ValueEvidenceSchema.safeParse(ev("/x", status)).success, status).toBe(true);
-    expect(ValueEvidenceSchema.safeParse(ev("/x", "confirmed_by_hand" as never)).success).toBe(false);
-  });
-
-  it("the log withholds a skipped correction while it's asked again where its item moved (`askedAt`)", () => {
-    const skipped = [{ path: "/siteFees/0/amountCents", before: 100, after: 200, reason: "item_moved", askedAt: "/siteFees/1/amountCents" }];
-    const out = blindDetail("version.corrections_carried", { version: 2, skipped }, { hidden: new Set(["/siteFees/1/amountCents"]), review: [], evidence: [] });
-    expect(out.skipped).toEqual([{ path: "/siteFees/0/amountCents", reason: "item_moved", askedAt: "/siteFees/1/amountCents" }]);
   });
 });
 

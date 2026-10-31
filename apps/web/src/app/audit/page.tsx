@@ -23,7 +23,7 @@ const DETAIL: Record<string, string> = {
   before: "Before", after: "After", note: "Note", question: "Question", outcome: "Answer", version: "Version", seededFromVersion: "Copied from version",
   file: "File", filename: "File", pageCount: "Pages", text: "PDF", documents: "Files", documentKinds: "Files", format: "Format", questions: "Questions",
   anomalies: "Contract problems", pdfCheck: "Checked against the PDF", costUsd: "Reading cost", error: "Problem", typed: "Values typed",
-  "re-type": "To re-type blind", values: "Values", items: "Rows", appliesFrom: "Applies from", carried: "Carried over", skipped: "Not carried over",
+  "re-type": "To re-type", values: "Values", items: "Rows", appliesFrom: "Applies from", carried: "Carried over", skipped: "Not carried over",
   studyGuess: "Found on the cover pages", sponsor: "Sponsor", protocol: "Protocol", siteName: "Site", site: "Site", investigator: "Principal investigator",
   makerChecker: "A second person approves", people: "People",
 };
@@ -96,7 +96,6 @@ export default function AuditPage() {
           <input type="search" aria-label="Search the log" placeholder="Search person, action, note…" className={cx(inputBase, "w-full pl-10")} value={text} onChange={(e) => setText(e.target.value)} />
         </div>
       </div>
-      <p className="mb-4 text-small text-faint">While a number is waiting to be typed in, notes about it show its figures as •••, so nobody is steered. They show in full once it&apos;s answered.</p>
       {log.isPending && <Spinner />}
       {!log.data && log.error && <LoadError error={log.error} what="the activity log" retry={() => void log.refetch()} />}
       {/* a page of older entries that didn't load: what's shown stays */}

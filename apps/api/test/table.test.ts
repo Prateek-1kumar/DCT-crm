@@ -45,48 +45,22 @@ async function held() {
 const picksOf = async (studyId: string) => (await storedVersion(built, studyId, 1)).review.filter((i) => i.reason === TABLE_CHECK);
 
 describe("the table check, over the API", () => {
-  it("asks two blind picks, and the visit the read gave a column is in no response", async () => {
+  it("asks two picks, each with the visit the read gave its column (what we suggest), and approval waits", async () => {
     const { studyId, expect: right } = await held();
     const raw = (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).body;
     const v = RulebookVersionDto.parse(JSON.parse(raw));
     const qs = v.review.filter((i) => i.reason === TABLE_CHECK);
     expect(qs).toHaveLength(2);
     expect(qs.every((q) => q.blocking && q.path === null && q.outcome === null && q.where[0]!.box)).toBe(true);
-    expect(raw).not.toContain('"expect"');
-    expect(raw).not.toContain('"table":');
-    // the answer's own response, a wrong or a right one, doesn't carry it either; nor does the log
-    const id = qs[0]!.id;
-    const res = await answer(studyId, id, right[id]!);
+    for (const q of qs) expect(q.table?.expect, q.id).toBe(right[q.id]);
+    const res = await answer(studyId, qs[0]!.id, right[qs[0]!.id]!);
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.body).not.toContain('"expect"');
-    expect(JSON.stringify(await get<AuditPage>(`/audit?studyId=${studyId}&limit=100`))).not.toContain('"expect"');
     // approval waits for the table
     const refused = await signOff(app, studyId, 1, { by: "Ben" });
     expect(refused.statusCode).toBe(409);
   });
 
-  it("withholds every held price while its table is open: not in the master, the evidence's text or spot, or a search", async () => {
-    const { studyId, grid } = await held();
-    const stored = await storedVersion(built, studyId, 1);
-    const amounts = grid.map((p) => at(stored.rulebook, p) as number);
-    const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`)); // valid: null only where withheld
-    for (const p of grid) {
-      expect(at(v.rulebook, p), p).toBeNull();
-      expect(v.evidence.find((e) => e.path === p), p).toMatchObject({ printed: null, held: "t1" });
-      expect(v.evidence.find((e) => e.path === p)!.where.every((w) => w.box === null)).toBe(true);
-    }
-    // a price held is no more findable by its amount than an asked one
-    for (const cents of new Set(amounts)) {
-      const hits = (await get<{ hits: { path: string }[] }>(`/studies/${studyId}/versions/1/search?q=${(cents / 100).toFixed(2)}`)).hits.map((h) => h.path);
-      for (const p of grid) expect(hits, `${p} by ${cents}`).not.toContain(p.replace(/\/cells\/.*$/, ""));
-    }
-    // once the table is confirmed they show
-    for (const q of stored.review.filter((i) => i.table)) await answer(studyId, q.id, q.table!.expect);
-    const after = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
-    for (const p of grid) expect(at(after.rulebook, p)).toBe(at(stored.rulebook, p));
-  });
-
-  it("settles only by a real pick; “can't tell” rejects the mapping and the prices are asked blind", async () => {
+  it("settles only by a real pick; “can't tell” rejects the mapping and the prices are asked one by one", async () => {
     const { studyId, grid, expect: right } = await held();
     const [first] = Object.keys(right);
     const url = `/studies/${studyId}/versions/1/review/${encodeURIComponent(first!)}`;
@@ -100,7 +74,6 @@ describe("the table check, over the API", () => {
     expect(stored.review.some((i) => i.reason === TABLE_CHECK)).toBe(false);
     expect(stored.review.filter((i) => i.reason === "TABLE_REJECTED").map((i) => i.path).sort()).toEqual([...grid].sort());
     const v = RulebookVersionDto.parse(await get(`/studies/${studyId}/versions/1`));
-    for (const p of grid) expect(at(v.rulebook, p)).toBeNull(); // still blind: now by their own questions
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(409);
   });
 
@@ -120,7 +93,7 @@ describe("the table check, over the API", () => {
     expect((await signOff(app, studyId, 1, { by: "Ben" })).statusCode).toBe(200);
   });
 
-  it("a wrong pick rejects the columns: each price is typed blind, the other pick closes, and the answer is final", async () => {
+  it("a wrong pick rejects the columns: each price is asked, the other pick closes, and the answer is final", async () => {
     const { studyId, grid, expect: right } = await held();
     const [first, second] = Object.keys(right);
     const wrong = (await get<RulebookVersionDto>(`/studies/${studyId}/versions/1`)).review.find((i) => i.id === first)!.options.find((o) => o.id !== right[first!])!.id;
@@ -133,7 +106,6 @@ describe("the table check, over the API", () => {
     expect(typed.every((i) => i.blocking && !settled(i))).toBe(true);
     // blind: their values are withheld until typed
     const v = await get<RulebookVersionDto>(`/studies/${studyId}/versions/1`);
-    expect(v.rulebook!.budgetGrids[0]!.procedures[0]!.cells[Object.keys(stored.rulebook!.budgetGrids[0]!.procedures[0]!.cells)[0]!]).toBeNull();
     expect((await get<AuditPage>(`/audit?studyId=${studyId}&limit=100`)).items.map((e) => e.action)).toContain("review.table_rejected");
     // final, and not sent back
     expect((await answer(studyId, first!, right[first!]!, "Ben")).statusCode).toBe(409);

@@ -73,7 +73,7 @@ describe("Rulebook schema", () => {
   });
 });
 
-describe("RulebookVersionDto: blind entry", () => {
+describe("RulebookVersionDto: nothing withheld (ADR-003)", () => {
   const question = (path: string) => ({
     id: `q:${path}`, kind: "confirm_value", reason: "VALUE_CONFLICT", path, question: "What amount is printed?", input: "money", options: [], where: [],
     blocking: true, answer: null, outcome: null, compare: null, sentBack: null,
@@ -90,14 +90,14 @@ describe("RulebookVersionDto: blind entry", () => {
   };
   const path = "/budgetGrids/0/visits/0/totalCents";
 
-  it("takes null at an open question's path on a draft, and nowhere else", () => {
-    expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [question(path)])).success).toBe(true);
+  it("refuses a null where the master needs a value, an open question on it or not", () => {
+    expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [question(path)])).success).toBe(false);
     expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [])).success).toBe(false);
     expect(RulebookVersionDto.safeParse(dto(withheld(), "draft", [{ ...question(path), outcome: "matched" }])).success).toBe(false);
     expect(RulebookVersionDto.safeParse(dto(withheld(), "signed", [question(path)])).success).toBe(false);
   });
 
-  it("still rejects a wrong value at a withheld path, and anything else invalid", () => {
+  it("rejects a wrong value at a question's path, and anything else invalid", () => {
     const rb = structuredClone(minimal) as unknown as Rulebook;
     (rb.budgetGrids[0]!.visits[0] as { totalCents: unknown }).totalCents = 12.5;
     expect(RulebookVersionDto.safeParse(dto(rb, "draft", [question(path)])).success).toBe(false);

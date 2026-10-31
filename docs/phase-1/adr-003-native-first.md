@@ -1,6 +1,6 @@
 # ADR-003: Native first, show our reading, ask only what the contract can't settle
 
-**Status:** Accepted by the owner (Prateek), 2026-11-01. Built in the stages of §4; until a stage lands, the code enforces what it enforces today. **Supersedes:** ADR-001 §6's blind sample and blind entry (I6's "picked blind"), and ADR-002 §4's floor "the blind sample of 10 stays".
+**Status:** Accepted by the owner (Prateek), 2026-11-01. Built in the stages of §4: **C1 and C2 built** (2026-11-01); the rest not yet, and until a stage lands the code enforces what it enforces today. **Supersedes:** ADR-001 §6's blind sample and blind entry (I6's "picked blind"), and ADR-002 §4's floor "the blind sample of 10 stays".
 
 ## 1. What we measured (2026-11-01, no AI spend)
 
@@ -15,7 +15,7 @@
 
 1. **Native first.** A contract with no text layer is a printed copy or a scan: the app says so in plain words and asks for the signed original or the sponsor's budget spreadsheet. If there isn't one, the scan is still read (our own OCR, the contract's arithmetic as referee). No new vendor.
 2. **No blind sample.** The accountant rechecks the whole rulebook before approval; sampling values the page already confirms adds questions, not safety. The by-hand re-type sample (`spot_check`) goes with it: maker-checker still keeps whoever typed a value from approving it.
-3. **Show our reading.** A question shows what we found, where, and what we recommend; the accountant accepts it or corrects it. Values are no longer withheld from the screens, versions, search, diff or audit.
+3. **Show our reading.** A question shows what we found, where, and what we recommend; the accountant accepts it or corrects it. Values are no longer withheld from the screens, versions, search, diff or audit. A suggested pick is marked "Our reading" but never pre-picked, so a key press alone confirms nothing (a table's columns above all); typing a value other than the PDF's own text still asks once more, with a reason.
 4. **The goal:** as few questions as possible, and **no billable term missed**. A question exists only where the contract itself can't settle the answer: its text and its arithmetic disagree, it is silent, or its wording genuinely reads two ways.
 
 **Unchanged:** every value still carries evidence (`confirmed`, `confirmed_by_math`, `attested`, `conflict`, `ungrounded`) and sign-off still refuses anything not confirmed or attested; every question must be settled; maker-checker; approved versions immutable; append-only audit; integer cents; the sweep for money terms the master can't hold; no AI spend without the owner's approval; nothing from `data/` committed or logged.

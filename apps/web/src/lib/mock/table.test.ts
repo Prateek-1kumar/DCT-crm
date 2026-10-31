@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { AuditPage, RulebookVersionDto } from "@dct/shared";
-import { getAt } from "../pointer";
 import { mockSampling } from "./fixtures";
 import { mockRequest, mockReset } from "./server";
 
@@ -34,28 +33,24 @@ async function rightOption(index: number, before: string[] = []) {
 describe("mock API table check", () => {
   beforeEach(() => mockReset());
 
-  it("asks two blind picks with the column's box, never sends the visit the read gave it, and holds the prices", async () => {
+  it("asks two picks with the column's box and our reading of it, and holds the prices", async () => {
     const qs = await picks();
     expect(qs).toHaveLength(2);
     expect(qs.every((q) => q.path === null && q.blocking && q.where[0]!.box && q.options.length > 2 && q.outcome === null)).toBe(true);
-    const raw = JSON.stringify(await get(url));
-    expect(raw).not.toContain('"expect"');
-    expect(raw).not.toContain('"table":');
-    expect(JSON.stringify((await pick(qs[0]!.id, qs[0]!.options[0]!.id)).json)).not.toContain('"expect"');
-    // every held price is withheld as an asked one is: null in the master, no printed text, no spot on the page
+    // each carries the visit the read gave its column: what we suggest (ADR-003)
+    expect(qs.every((q) => !!q.table && q.options.some((o) => o.id === q.table!.expect))).toBe(true);
+    // every held price waits for the check: no printed text of its own until then
     const v = await version();
     const heldEv = v.evidence.filter((e) => e.held);
     expect(heldEv.length).toBeGreaterThan(0);
     for (const e of heldEv) {
-      expect(getAt(v.rulebook, e.path), e.path).toBeNull();
       expect(e).toMatchObject({ printed: null });
-      expect(e.where.every((w) => w.box === null)).toBe(true);
     }
     const asOf = (await version()).updatedAt;
     expect((await post(`${url}/sign-off`, { by: "Taylor Brooks", asOf })).status).toBe(409);
   });
 
-  it("only a pick settles it, and “can't tell” rejects the mapping: its prices are asked blind", async () => {
+  it("only a pick settles it, and “can't tell” rejects the mapping: its prices are asked one by one", async () => {
     const [a] = await picks();
     for (const body of [{}, { value: "x" }, { optionId: "nope" }]) expect((await post(`${url}/review/${encodeURIComponent(a!.id)}`, { by: "Sam Rivera", ...body })).status).toBe(400);
     expect((await post(`${url}/review/${encodeURIComponent(a!.id)}`, { by: "Sam Rivera", cantTell: true })).status).toBe(200);
@@ -64,7 +59,6 @@ describe("mock API table check", () => {
     expect(v.review.some((i) => i.reason === "TABLE_CHECK")).toBe(false);
     const typed = v.review.filter((i) => i.reason === "TABLE_REJECTED");
     expect(typed.length).toBeGreaterThan(0);
-    for (const i of typed) expect(getAt(v.rulebook, i.path!), i.path!).toBeNull();
   });
 
   it("every pick right confirms the table's prices; a wrong one rejects the columns and asks each price", async () => {
