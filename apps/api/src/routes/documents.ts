@@ -1,4 +1,4 @@
-import { type DocumentDto, SetDocumentKindBody } from "@dct/shared";
+import { type DocumentDto, notAContractWords, notAPdfWords, SetDocumentKindBody } from "@dct/shared";
 import { eq, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
@@ -57,11 +57,19 @@ async function pageCount(file: string, filename: string): Promise<number> {
 }
 
 /** "text" when any page carries real text (its numbers can be checked against it), else "scan"; null when mupdf can't read it (extraction will say why). */
-async function textSource(file: string): Promise<"text" | "scan" | null> {
+/** An amount printed with its currency: a manual or reference document prints none (ADR-003 P1). */
+const AMOUNT = /(?:\$|€|£|\bUSD)\s?\d/;
+
+/**
+ * What a PDF's own text says, read once, no AI: "text" when a page has its own text, "scan" when none does (a printed copy
+ * or a scan: PRINTED_COPY_WORDS), null when it couldn't be read; and whether any page prints an amount.
+ */
+async function textSource(file: string): Promise<{ text: "text" | "scan" | null; amounts: boolean }> {
   try {
-    return (await (await getExtraction()).readTextLayer(file, "")).some((p) => p.source === "text") ? "text" : "scan";
+    const pages = await (await getExtraction()).readTextLayer(file, "");
+    return { text: pages.some((p) => p.source === "text") ? "text" : "scan", amounts: pages.some((p) => AMOUNT.test(p.words.map((w) => w.text).join(" "))) };
   } catch {
-    return null;
+    return { text: null, amounts: true };
   }
 }
 
@@ -93,7 +101,7 @@ export const documentRoutes =
           }
           const buf = await part.toBuffer(); // throws 413 past the 50 MB limit
           const filename = (part.filename || "upload.pdf").slice(0, 255);
-          if (buf.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(415, `${filename} is not a PDF`);
+          if (buf.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(415, notAPdfWords(filename));
           const sha256 = createHash("sha256").update(buf).digest("hex");
           const [known] = await db.select({ pages: documents.pageCount }).from(documents).where(eq(documents.sha256, sha256));
           const f: Staged = { filename, sha256, pages: known?.pages ?? 0, tmp: known ? null : path.join(config.uploadDir, `${sha256}.pdf.${randomUUID()}.tmp`), text: null };
@@ -102,10 +110,15 @@ export const documentRoutes =
             await writeDurable(f.tmp, buf);
             f.pages = await pageCount(f.tmp, filename);
           }
-          if (f.pages > config.maxUploadPages) throw new HttpError(422, `${filename} has ${f.pages} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
+          if (f.pages > config.maxUploadPages) {
+            // a long manual with no amounts isn't split and read: nothing in it is billed (ADR-003 P1)
+            const read = f.tmp ? await textSource(f.tmp) : null;
+            if (read?.text === "text" && !read.amounts) throw new HttpError(422, notAContractWords(filename, f.pages));
+            throw new HttpError(422, `${filename} has ${f.pages} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
+          }
         }
         if (!files.length) throw new HttpError(400, "No files in upload (field files[])");
-        for (const f of files) if (f.tmp) f.text = await textSource(f.tmp);
+        for (const f of files) if (f.tmp) f.text = (await textSource(f.tmp)).text;
 
         const placed: string[] = [];
         const moves: { from: string; to: string }[] = [];

@@ -31,6 +31,7 @@ import {
   auditMatches,
   ReadAlertsBody,
   upgradeRulebook,
+  notAPdfWords,
   openPaths,
   type AlertDto,
   searchMaster,
@@ -882,7 +883,7 @@ async function route(d: Db, method: string, fullPath: string, body: unknown): Pr
     const files = fd.getAll("files[]") as File[];
     if (!files.length) return err(400, "No files in upload (field files[])");
     // as the real API, all or none: a file that isn't a PDF refuses the whole upload
-    for (const f of files) if (new TextDecoder().decode(await f.slice(0, 5).arrayBuffer()) !== "%PDF-") return err(415, `${f.name} is not a PDF`);
+    for (const f of files) if (new TextDecoder().decode(await f.slice(0, 5).arrayBuffer()) !== "%PDF-") return err(415, notAPdfWords(f.name));
     for (const f of files) {
       const sha = await sha256Hex(f);
       const existing = d.documents.find((x) => x.sha256 === sha);

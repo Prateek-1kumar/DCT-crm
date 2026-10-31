@@ -1,5 +1,6 @@
 import type { AuditPage, DocumentDto, RulebookVersionDto } from "@dct/shared";
 import { sql } from "drizzle-orm";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -144,6 +145,26 @@ describe("Lows", () => {
     const res = await upload(app, [{ name: "huge.pdf", data: await makePdf("huge", config.maxUploadPages + 1) }]);
     expect(res.statusCode).toBe(422);
     expect(res.json().message).toBe(`huge.pdf has ${config.maxUploadPages + 1} pages; the limit is ${config.maxUploadPages} per document. Split it into smaller PDFs and upload those.`);
+  });
+
+  it("ADR-003 P1: a long text PDF with no amounts is a manual, left out; a long one with amounts, or a scan, is split; a spreadsheet says what to upload", async () => {
+    const textPdf = async (pages: number, line: string) => {
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      // a page is text from 200 characters (MIN_PAGE_TEXT): five lines of it
+      for (let i = 0; i < pages; i++) {
+        const page = doc.addPage([612, 792]);
+        for (let l = 0; l < 5; l++) page.drawText(`${line} Page ${i + 1}, line ${l + 1}.`, { x: 72, y: 700 - 14 * l, size: 10, font });
+      }
+      return Buffer.from(await doc.save());
+    };
+    const n = config.maxUploadPages + 1;
+    const manual = await upload(app, [{ name: "Lab Manual.pdf", data: await textPdf(n, "Collect two tubes and ship them on dry ice the same day.") }]);
+    expect([manual.statusCode, manual.json().message]).toEqual([422, `Lab Manual.pdf has ${n} pages and no amounts in it: it looks like a manual or a reference document, not a contract, so nothing in it is billed. Leave it out.`]);
+    const priced = await upload(app, [{ name: "Big.pdf", data: await textPdf(n, "The site is paid $55.00 for each blood draw.") }]);
+    expect(priced.json().message).toMatch(/^Big\.pdf has \d+ pages; the limit is \d+ per document\. Split it/);
+    const sheet = await upload(app, [{ name: "Ex A-1 Final.xlsx", data: Buffer.from("PK\u0003\u0004 not a pdf") }]);
+    expect([sheet.statusCode, sheet.json().message]).toEqual([415, "Ex A-1 Final.xlsx is a spreadsheet. Upload the signed contract PDF: its budget is read from there. A budget spreadsheet can't be read yet."]);
   });
 
   it("L6: a read is never retried by the queue (each try pays for AI calls) and may run two hours", async () => {

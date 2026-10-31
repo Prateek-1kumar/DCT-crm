@@ -52,7 +52,7 @@ export function CheckResult({ studyId, draft }: { studyId: string; draft: Rulebo
       {!pdf && (
         <p className="flex items-start gap-2.5 rounded-tile bg-sunken px-4 py-3 text-small text-ink-2">
           <Info className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={2} />
-          This PDF is a scan, and none of its numbers could be checked against what&apos;s printed, so they come to you to confirm.
+          This PDF has no text in it (a printed copy or a scan), so its numbers were read from pictures and more of them come to you to check. If you have the signed DocuSign PDF, read that instead: its numbers are read exactly.
         </p>
       )}
 

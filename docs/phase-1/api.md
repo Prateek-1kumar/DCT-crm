@@ -46,7 +46,7 @@ Probes, outside `/api/v1` (for whatever runs the server, not part of the API's c
 
 | Method | Route | Body / query | Does |
 |---|---|---|---|
-| POST | `/uploads` | multipart `files[]`, `by` | Stores each PDF by sha256 → 201 `DocumentDto[]` (`duplicateOf`; `pageCount` as mupdf counts it; `text` from the text layer) |
+| POST | `/uploads` | multipart `files[]`, `by` | Stores each PDF by sha256 → 201 `DocumentDto[]` (`duplicateOf`; `pageCount` as mupdf counts it; `text` from the text layer: `scan` is a printed copy or a scan, and the web asks for the signed original, `PRINTED_COPY_WORDS`). Refused (ADR-003 P1, words in `@dct/shared` `labels.ts`): a file that isn't a PDF, 415 (`notAPdfWords`: a spreadsheet or Word file says what to upload instead); a PDF over the page limit, 422: one with text and no amount anywhere is a manual or reference, left out (`notAContractWords`), anything else is split |
 | PATCH | `/documents/:id` | `SetDocumentKindBody` | Fixes a document's kind → `DocumentDto`; logged on every study that uses the file |
 | GET | `/documents/:id/pages/:n.png` | `?dpi=72–400` | Page image, cached on disk |
 | POST | `/studies` | `CreateStudyBody` | Creates a study, queues identify → 201 `{ studyId, jobId }` (same file set twice → same study) |

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
 import NewStudyPage from "@/app/studies/new/page";
-import { DocList, newDocs } from "./UploadDocs";
+import { DocList, Dropzone, newDocs } from "./UploadDocs";
 
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push: vi.fn() }), useSearchParams: () => new URLSearchParams() }));
@@ -29,12 +29,13 @@ describe("files uploaded before", () => {
     expect(newDocs([doc("wo")], [msa, doc("wo"), { ...msa, filename: "copy of msa.pdf" }])).toEqual([msa]);
   });
 
-  it("say plainly that the stored copy is used, keep their kind menu, and still say it is a scan", () => {
+  it("say plainly that the stored copy is used, keep their kind menu, and still say it is a printed copy or scan, asking for the original", () => {
     wrap(<DocList docs={[doc("msa", { duplicateOf: "msa", text: "scan" })]} onChange={() => {}} />);
     expect(screen.getByText("Uploaded before · will be used")).toBeTruthy();
     expect(screen.queryByText("Already added")).toBeNull();
     expect(screen.getByLabelText("What kind of file msa.pdf is")).toBeTruthy();
-    expect(screen.getByText(/A scanned PDF/)).toBeTruthy();
+    expect(screen.getByText(/· Printed copy or scan/)).toBeTruthy();
+    expect(screen.getByText(/upload that instead: its numbers are read exactly/)).toBeTruthy();
   });
 
   it("can start a new contract: a site's master agreement shared with another study", async () => {
@@ -47,5 +48,18 @@ describe("files uploaded before", () => {
     expect((go as HTMLButtonElement).disabled).toBe(false);
     await act(async () => fireEvent.click(go));
     expect(create).toHaveBeenCalledWith(["msa"], "Asha Patel");
+  });
+});
+
+describe("choosing files that aren't the contract (ADR-003 P1)", () => {
+  it("a spreadsheet and a Word file each say what they are and what to upload instead; nothing is sent", () => {
+    localStorage.setItem("dct.actingAs", "Sam Rivera");
+    const sent = vi.spyOn(api, "upload");
+    const { container } = wrap(<Dropzone onUploaded={() => {}} />);
+    const input = container.querySelector('input[type="file"]')!;
+    fireEvent.change(input, { target: { files: [new File(["x"], "Ex A-1 Final.xlsx"), new File(["x"], "Cheat sheet.docx")] } });
+    expect(screen.getByText("Ex A-1 Final.xlsx is a spreadsheet. Upload the signed contract PDF: its budget is read from there. A budget spreadsheet can't be read yet.")).toBeTruthy();
+    expect(screen.getByText("Cheat sheet.docx is a Word document, not the signed contract. Upload the signed contract PDF (the DocuSign copy).")).toBeTruthy();
+    expect(sent).not.toHaveBeenCalled();
   });
 });

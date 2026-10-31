@@ -82,3 +82,21 @@ export const ACTION_LABELS: Record<string, string> = {
 };
 /** "review.sent_back" → "Answers sent back"; an action without a label reads as its words. */
 export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * Why an upload isn't taken, in plain words (ADR-003 P1), for the API, the sample server and the upload screen alike: a
+ * spreadsheet or a Word file says what to upload instead; anything else that isn't a PDF says so.
+ * ponytail: a budget spreadsheet is refused until it's read (ADR-003 P2), so nobody thinks it was used.
+ */
+export const notAPdfWords = (name: string) =>
+  /\.(?:xlsx|xlsm|xls|csv)$/i.test(name) ? `${name} is a spreadsheet. Upload the signed contract PDF: its budget is read from there. A budget spreadsheet can't be read yet.`
+  : /\.(?:docx?|rtf|odt)$/i.test(name) ? `${name} is a Word document, not the signed contract. Upload the signed contract PDF (the DocuSign copy).`
+  : `${name} is not a PDF`;
+
+/** A long PDF with text but no amounts anywhere: a lab manual or a reference, never billed from, so never read (ADR-003 P1). */
+export const notAContractWords = (name: string, pages: number) =>
+  `${name} has ${pages} pages and no amounts in it: it looks like a manual or a reference document, not a contract, so nothing in it is billed. Leave it out.`;
+
+/** A PDF with no text in it: a printed copy or a scan. Read anyway, from pictures; the signed original reads exactly (ADR-003 P1). */
+export const PRINTED_COPY_WORDS =
+  "This PDF has no text in it: it's a printed copy or a scan, so its numbers are read from a picture and more of them come to you to check. If you have the signed original (the DocuSign PDF the sponsor sent), upload that instead: its numbers are read exactly. You can also go ahead with this one.";

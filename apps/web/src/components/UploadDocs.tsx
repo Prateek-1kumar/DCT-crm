@@ -1,6 +1,6 @@
 "use client";
 
-import type { DocumentDto, DocumentKind } from "@dct/shared";
+import { type DocumentDto, type DocumentKind, notAPdfWords, PRINTED_COPY_WORDS } from "@dct/shared";
 import { useMutation } from "@tanstack/react-query";
 import { ChevronDown, FileCheck2, FileText, Info, UploadCloud, X } from "lucide-react";
 import { useState, type DragEvent } from "react";
@@ -55,10 +55,8 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
     const files = Array.from(list ?? []);
     const pdfs = files.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
     const small = pdfs.filter((f) => f.size <= MAX_UPLOAD_BYTES);
-    setRejected([
-      ...files.filter((f) => !pdfs.includes(f)).map((f) => `${f.name} (not a PDF)`),
-      ...pdfs.filter((f) => !small.includes(f)).map((f) => `${f.name} (over 50 MB)`),
-    ]);
+    // each says what it is and what to upload instead (a spreadsheet, a Word file), as the API would
+    setRejected([...files.filter((f) => !pdfs.includes(f)).map((f) => `${notAPdfWords(f.name)}.`.replace(/\.\.$/, ".")), ...pdfs.filter((f) => !small.includes(f)).map((f) => `${f.name} is over 50 MB.`)]);
     setFailed([]);
     if (small.length && by) upload.mutate(small);
   }
@@ -116,10 +114,12 @@ export function Dropzone({ onUploaded, compact }: { onUploaded: (docs: DocumentD
           </span>
         )}
         {!compact && !upload.isPending && (
-          <span className="mt-1 max-w-[52ch] text-small text-faint">Add the signed contract and its budget, plus any master agreement or amendment. Scanned or DocuSign copies both work.</span>
+          <span className="mt-1 max-w-[52ch] text-small text-faint">Add the signed contract and its budget, plus any master agreement or amendment. The signed DocuSign PDF reads best; printed copies and scans work too, with more to check.</span>
         )}
       </label>
-      {rejected.length > 0 && <ErrorNote>Only PDFs up to 50 MB can be added. Skipped: {rejected.join(", ")}</ErrorNote>}
+      {rejected.map((m) => (
+        <ErrorNote key={m}>{m}</ErrorNote>
+      ))}
       {failed.map((m) => (
         <ErrorNote key={m}>{m}</ErrorNote>
       ))}
@@ -177,7 +177,7 @@ export function DocList({ docs, onChange, onRemove }: { docs: DocumentDto[]; onC
                 <span className="num flex flex-wrap items-center gap-x-2 text-small text-muted">
                   {d.pageCount} {d.pageCount === 1 ? "page" : "pages"}
                   {d.text === "text" && <span className="text-ok">· Text PDF, numbers can be checked</span>}
-                  {scan && <span className="text-warn">· Scan</span>}
+                  {scan && <span className="text-warn">· Printed copy or scan</span>}
                 </span>
               </span>
               {d.duplicateOf && <Badge title="This exact file was uploaded before, for this or another study. The copy already stored is used, so it isn't stored twice.">Uploaded before · will be used</Badge>}
@@ -191,7 +191,7 @@ export function DocList({ docs, onChange, onRemove }: { docs: DocumentDto[]; onC
             {scan && (
               <p className="flex items-start gap-2.5 border-t border-line bg-sunken px-4 py-3 text-small text-ink-2">
                 <Info className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={2} />
-                <span>A scanned PDF: we read it on this computer and check every number against what&apos;s printed; any we can&apos;t confirm come to you.</span>
+                <span>{PRINTED_COPY_WORDS}</span>
               </p>
             )}
           </li>
