@@ -21,7 +21,8 @@ const scoreOnly = args.includes("--score-only");
 const only = args.filter((a) => !a.startsWith("--"));
 
 const goldenDir = join(root, "data/golden");
-const outDir = join(root, "data/extractions");
+// EVAL_OUT: write the reads here instead (a run to compare with the saved ones must not overwrite them)
+const outDir = process.env.EVAL_OUT ?? join(root, "data/extractions");
 if (!existsSync(goldenDir)) {
   console.error(`No golden files in ${goldenDir}. Set DCT_ROOT to the repo checkout that has data/.`);
   process.exit(1);
@@ -52,6 +53,7 @@ if (!scoreOnly) {
       });
       writeFileSync(join(outDir, `${g.name}.json`), JSON.stringify(out, null, 2));
       const usd = out.cost.reduce((a, c) => a + c.usd, 0);
+      if (out.anchors) console.log(`\n  anchors ${out.anchors.length} (cells ${out.anchors.filter((a) => a.field === "cell").length}, visit sums ${out.anchors.filter((a) => a.field !== "cell").length}), no-fee marks ${out.nonFee?.length ?? 0}, printed rows ${out.printedRows?.length ?? 0}`);
       console.log(`\n  done in ${Math.round((Date.now() - t0) / 1000)}s, $${usd.toFixed(2)}${out.warnings.length ? `; warnings: ${out.warnings.map((w) => w.text).join("; ")}` : ""}`);
     } catch (e) {
       console.log(`\n  FAILED: ${(e as Error).message}`);

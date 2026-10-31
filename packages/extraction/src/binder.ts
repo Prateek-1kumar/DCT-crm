@@ -471,6 +471,47 @@ function tablesOn(p: TextPage, dir: Word["dir"]): { t: Piece; i: number }[] {
 const TOTALISH = /total|overhead|indirect|f\s?&\s?a\b/i;
 /** `rows`: the AI's procedure index → the table's row. `cols`: visit code → the table's column; `first`/`last`: the visit columns' ends. */
 /** `unitCol`: the one column left of the visits that the headers name a unit price (not one with overhead), else -1. */
+/**
+ * A grid value the model says it read from word `word` of a page (the token id its read gave, resolved by extract.ts; ADR-002 PR 3).
+ * A claim about where, never about what: it places a row in a table row and a visit in a column, and the value is still judged
+ * against what that cell prints.
+ */
+export type Anchor = { grid: number; documentId: string; page: number; word: number; field: "cell" | "procedureSubtotal" | "overhead" | "nonProcedure" | "total"; visit: string; /** index in the grid's procedures; null for a visit's own sum */ procedure: number | null };
+const ANCHOR_FIELD = { overheadCents: "overhead", nonProcedureCents: "nonProcedure", procedureSubtotalCents: "procedureSubtotal", totalCents: "total" } as const;
+
+/** Table rows by procedure, and the visit columns in visit order (null unless every visit has one that the model's tokens agree on). */
+type Hints = { rows: Map<number, number>; cols: number[] | null };
+
+/** The value most of `xs` is, when at least 60% are; else none. */
+const majority = (xs: number[]): number | null => {
+  const best = [...new Set(xs)].map((x) => ({ x, n: xs.filter((y) => y === x).length })).sort((a, b) => b.n - a.n)[0];
+  return best && best.n >= 0.6 * xs.length ? best.x : null;
+};
+
+/**
+ * Where the model's tokens sit in the drawn table `t`: each procedure's row is the one most of its tokens are in, each visit's
+ * column the one most of its tokens (its cells' and its own sums') are in. Rows in print order, two procedures never one row,
+ * columns in visit order and all different, else nothing is taken from it (the placement by prices and headers is what's left).
+ */
+function hintsFor(t: Table, p: TextPage, mine: readonly Anchor[], visits: BudgetGrid["visits"]): Hints | null {
+  const at = new Map<Word, [number, number]>();
+  t.cells.forEach((row, r) => row.forEach((ws, c) => ws.forEach((w) => at.set(w, [r, c]))));
+  const hit = mine.flatMap((a) => {
+    const rc = at.get(p.words[a.word]!);
+    return rc ? [{ a, r: rc[0], c: rc[1] }] : [];
+  });
+  const rows = new Map<number, number>();
+  for (const pi of new Set(hit.flatMap(({ a }) => (a.procedure === null ? [] : [a.procedure])))) {
+    const r = majority(hit.filter(({ a }) => a.procedure === pi).map((h) => h.r));
+    if (r !== null) rows.set(pi, r);
+  }
+  const order = [...rows].sort((a, b) => a[0] - b[0]);
+  const sound = order.every(([, r], i) => i === 0 || r > order[i - 1]![1]);
+  const cols = [...visits].sort((a, b) => a.order - b.order).map((v) => majority(hit.filter(({ a }) => a.visit === v.code).map((h) => h.c)));
+  const run = cols.every((c, i): c is number => c !== null && (i === 0 || c > cols[i - 1]!));
+  return sound && rows.size ? { rows, cols: run ? (cols as number[]) : null } : null;
+}
+
 type Plan = { rows: Map<number, number>; cols: Map<string, number>; first: number; last: number; held: boolean; headed: boolean; unitCol: number; unfit: (pi: number, j: number, byPrice: boolean) => boolean };
 
 /**
@@ -513,8 +554,9 @@ const rowLabels = (t: Table) =>
  * the mapping is `held`: every check applies, but which visit each column is waits for a person (a table check).
  * ponytail: a visit column blank in every matched row, outside the span of the printed ones, is found only if the headers pick the run. Upgrade: columns from the rules' own spacing.
  */
-function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean, pct: number | null = null): Plan | null {
+function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boolean, pct: number | null = null, hint: Hints | null = null): Plan | null {
   const labels = rowLabels(t);
+  const pinned = new Set(hint?.rows.values());
   const label = labels.map((ws) => ws.map((w) => norm(w.text)).filter(Boolean));
   const owns = (j: number, p: BudgetGrid["procedures"][number]) => tokens(p.name).some((n) => label[j]!.some((l) => sameToken(n, l)));
   /** How well a row's name and the printed label say the same, 0 to 1 (words shared, over both's words). */
@@ -526,7 +568,11 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
     const p = g.procedures[pi]!;
     const want = [...Object.values(p.cells).filter((v): v is number => typeof v === "number"), ...(p.unitCents !== null ? [p.unitCents] : [])];
     return t.cells.map((_, j) => {
-      if (taken(j) || (TOTALISH.test(txt(labels[j]!)) && !TOTALISH.test(p.name))) return 0;
+      // a row the model pointed at (its tokens sit in this table row) is placed there, whatever the scan made of its prices or its label;
+      // a row it didn't point at never takes a pointed row
+      const to = hint?.rows.get(pi);
+      if (to !== undefined) return j === to && !taken(j) ? 2000 : 0;
+      if (taken(j) || pinned.has(j) || (TOTALISH.test(txt(labels[j]!)) && !TOTALISH.test(p.name))) return 0;
       // each value of the read takes one printed cell of the row, a cell that prints it plainly before one that only the scan's
       // noise rules can read as it ("526" says 526 and, on a scan, 26): two values never share a cell
       const have = t.printed[j]!.flatMap((_, c) => (present(t, j, c) ? [c] : []));
@@ -557,23 +603,36 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
   const used = [...found.values()];
   const head = (c: number) => txt(t.cells.slice(0, Math.min(...used)).flatMap((row) => row[c]!));
   const data = t.u.flatMap((_, c) => (used.some((r) => present(t, r, c)) ? [c] : []));
-  const unit = Math.max(-1, ...data.filter((c) => UNIT.test(head(c)) && !/total/i.test(head(c))));
+  // The columns left of the visits: the unit ones by their header, and where a page has no header (a continuation) the cost columns
+  // by the page's own arithmetic (costColumns), so a cost column is never taken for a visit.
+  const costs = costColumns(t, pct);
+  const unit = Math.max(-1, ...data.filter((c) => UNIT.test(head(c)) && !/total/i.test(head(c))), ...(costs && !t.cells.slice(0, Math.min(...used)).some((row) => row.some((ws) => ws.length)) ? [costs.base, costs.incl] : []));
   // The visit columns: a run of as many columns as the read's visits, with every printed column right of the unit ones in
   // it or left of it and a header over each that doesn't contradict its visit. The one such run, or of several the one from
   // the first printed column to the last (a column between two that print is a visit's too, blank in every matched row or
   // not). A total, and a gap between pieces (no word in it anywhere), is no visit's.
   const visits = [...g.visits].sort((a, b) => a.order - b.order);
-  const pool = t.u.flatMap((_, c) => (c > unit && t.cells.some((row) => row[c]!.length) && !/total/i.test(head(c)) ? [c] : []));
+  const pool0 = t.u.flatMap((_, c) => (c > unit && t.cells.some((row) => row[c]!.length) && !/total/i.test(head(c)) ? [c] : []));
+  // A column printing, on most rows, the sum of the columns before it is the table's own total, not a visit (a page whose
+  // header is on the page before has no word to say so). The columns after it are the conditional visits.
+  const totalCol = (c: number) => {
+    const left = pool0.filter((k) => k < c);
+    const rs = used.filter((j) => solid(t, j, c) !== null && left.filter((k) => solid(t, j, k) !== null).length >= 2 && left.every((k) => !t.cells[j]![k]!.length || solid(t, j, k) !== null));
+    const hit = rs.filter((j) => solid(t, j, c) === left.reduce((a, k) => a + (solid(t, j, k) ?? 0), 0));
+    return hit.length >= 2 && hit.length * 2 > rs.length;
+  };
+  const pool = pool0.filter((c) => !totalCol(c));
   const runs = pool.flatMap((_, i) => (i + visits.length <= pool.length ? [pool.slice(i, i + visits.length)] : []));
   const [first, last] = [data.find((c) => c > unit) ?? -1, pool.filter((c) => c <= data.at(-1)!).at(-1)];
-  const clear = runs.filter((r) => data.every((c) => c <= unit || c < r[0]! || r.includes(c) || /total/i.test(head(c))));
+  const clear = runs.filter((r) => data.every((c) => c <= unit || c < r[0]! || r.includes(c) || /total/i.test(head(c)) || (pool0.includes(c) && !pool.includes(c))));
   const pick = (rs: number[][]) => (rs.length === 1 ? rs[0] : rs.find((r) => r[0] === first && r.at(-1) === last));
   const fits = clear.filter((r) => headerAgrees(visits, r.map(head)));
   // ponytail: held only when no run's headers agree at all; several that do, none the printed span, stay unmapped. Upgrade: ask which run.
   const loose = fits.length ? undefined : pick(clear.filter((r) => !headerFit(visits, r.map(head)).contradicts));
-  const visitCols = pick(fits) ?? loose ?? [];
+  // the model's pointers, when every visit's tokens agree on a column and the columns run in visit order, are the columns: not a guess by count and order
+  const visitCols = hint?.cols ?? pick(fits) ?? loose ?? [];
   if (visitCols.length !== visits.length) return null;
-  const held = !!loose;
+  const held = !hint?.cols && !!loose;
   const plain = data.filter((c) => c < visitCols[0]! && UNIT.test(head(c)) && !/total|overhead|incl|with|\boh\b|w\//i.test(head(c)));
   // The unit price is the cost column before overhead. By the page's arithmetic when it has one (costColumns), which a header that
   // names another column contradicts (then none); else the one column the headers name.
@@ -590,6 +649,8 @@ function plan(t: Table, g: BudgetGrid, rows: number[], taken: (r: number) => boo
     const named = tokens(p.name);
     const [at, alone] = [Object.keys(p.cells).map((code) => cols.get(code)), named.filter((n) => label[j]!.some((l) => sameToken(n, l))).length * 2 <= named.length];
     const blank = Object.entries(p.cells).some(([code, v]) => typeof v === "number" && !present(t, j, cols.get(code) ?? -1));
+    // a row the model pointed at: a cell the scan can't read is the scan's, a cell with no word in it at all is blank
+    if (hint?.rows.get(pi) === j) return Object.entries(p.cells).some(([code, v]) => typeof v === "number" && !t.cells[j]![cols.get(code) ?? -1]?.length);
     // Held: the columns aren't vouched for, so a row the read gives fewer than two prices (the unit price counts) must print
     // something in every cell the read gives it, "invoiceable" ones too. One price and a shared word of its name fit a
     // sibling row too (a planted digit in a unit price did), and only the pattern of printed cells tells them apart.
@@ -1001,19 +1062,30 @@ function geometryTotals(t: Table, pl: Plan): Map<number, { cents: number; by: "r
   const out = new Map<number, { cents: number; by: "row_total" | "quantity"; col?: number }>();
   const labels = rowLabels(t);
   const visits = [...pl.cols.values()];
-  const rows = t.cells.flatMap((_, j) => {
-    if (TOTALISH.test(txt(labels[j]!))) return [];
-    const cells = visits.flatMap((c) => (t.cells[j]![c]!.length ? [solid(t, j, c)] : []));
-    return cells.length && cells.every((x): x is number => x !== null) ? [{ j, n: cells.length, sum: cells.reduce((a, b) => a + b, 0) }] : [];
-  });
+  const body = t.cells.flatMap((_, j) => (TOTALISH.test(txt(labels[j]!)) ? [] : [j]));
+  // A total column is any column that is no visit's, no unit price and not left of the visits, wherever it sits: right of every
+  // visit, or between the scheduled ones and conditional ones (unscheduled, early termination) printed after it. It totals the visit
+  // cells left of it; the columns right of it are outside the row's sum.
   for (const c of t.u.keys()) {
-    if (c <= pl.last) continue;
+    if (c <= pl.first || visits.includes(c) || c === pl.unitCol) continue;
+    const left = visits.filter((v) => v < c);
+    const rows = body.flatMap((j) => {
+      const cells = left.flatMap((v) => (t.cells[j]![v]!.length ? [solid(t, j, v)] : []));
+      return cells.length && cells.every((x): x is number => x !== null) ? [{ j, n: cells.length, sum: cells.reduce((a, b) => a + b, 0) }] : [];
+    });
     const prints = rows.filter((r) => solid(t, r.j, c) !== null);
     const hit = prints.filter((r) => solid(t, r.j, c) === r.sum);
     if (hit.length < 2 || hit.length * 2 <= prints.length || !hit.some((r) => r.n >= 2)) continue;
-    for (const r of prints) out.set(r.j, { cents: solid(t, r.j, c)!, by: "row_total", col: c });
+    // the column is a total column now: every body row that prints a total the scan is sure of has it, a row with a cell the scan can't
+    // read included (its total is then what says what that cell is)
+    for (const j of body) if (solid(t, j, c) !== null) out.set(j, { cents: solid(t, j, c)!, by: "row_total", col: c });
     return out;
   }
+  // rows whose every visit cell the scan is sure of, for the quantity that equals the count of populated cells
+  const rows = body.flatMap((j) => {
+    const cells = visits.flatMap((c) => (t.cells[j]![c]!.length ? [solid(t, j, c)] : []));
+    return cells.length && cells.every((x): x is number => x !== null) ? [{ j, n: cells.length, sum: cells.reduce((a, b) => a + b, 0) }] : [];
+  });
   if (pl.unitCol < 0) return out;
   for (const c of t.u.keys()) {
     if (c >= pl.first || c === pl.unitCol) continue;
@@ -1024,15 +1096,17 @@ function geometryTotals(t: Table, pl: Plan): Map<number, { cents: number; by: "r
       return m ? Number(m[1]) : null;
     };
     const prints = rows.filter((r) => q(r.j) !== null && q(r.j)! > 0 && solid(t, r.j, pl.unitCol) !== null);
+    // quantity times unit price needs no visit cell, so a row whose cells the scan is unsure of still counts for it
+    const sold = body.filter((j) => q(j) !== null && q(j)! > 0 && solid(t, j, pl.unitCol) !== null);
     // a total column: the printed total is the quantity times the unit price (the scan's own figures, never the read's), so a visit
     // cell the scan dropped from a wide row can't hide it; any column but the unit price, the quantity and the visits qualifies, so a
     // column of leftovers right of the total (printing the unit price again) is never taken for it
     for (const tc of t.u.keys()) {
       if (tc === c || tc === pl.unitCol || [...pl.cols.values()].includes(tc)) continue;
-      const printed = prints.filter((r) => solid(t, r.j, tc) !== null);
-      const agree = printed.filter((r) => Math.abs(solid(t, r.j, tc)! - solid(t, r.j, pl.unitCol)! * q(r.j)!) <= 1);
+      const printed = sold.filter((j) => solid(t, j, tc) !== null);
+      const agree = printed.filter((j) => Math.abs(solid(t, j, tc)! - solid(t, j, pl.unitCol)! * q(j)!) <= 1);
       if (agree.length < 2 || agree.length * 2 <= printed.length) continue;
-      for (const r of printed) out.set(r.j, { cents: solid(t, r.j, tc)!, by: "row_total", col: tc });
+      for (const j of printed) out.set(j, { cents: solid(t, j, tc)!, by: "row_total", col: tc });
       return out;
     }
     const hit = prints.filter((r) => q(r.j) === r.n);
@@ -1095,7 +1169,7 @@ function rowBandsOf(gi: number, planned: readonly Planned[], printedRows: readon
   });
 }
 
-export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows: readonly PrintedRow[] = []): Bound {
+export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows: readonly PrintedRow[] = [], anchors: readonly Anchor[] = []): Bound {
   const data = new Map(pages.filter((p) => p.source === "text" || p.source === "ocr").map((p) => [`${p.documentId}#${p.page}`, pageData(p)]));
   const pageAt = (src: Provenance["source"]) => (src ? data.get(`${src.documentId}#${src.page}`) : undefined);
   const evidence: ValueEvidence[] = [];
@@ -1235,7 +1309,9 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
       for (const { t: ruled, i: ti } of tablesOn(pg.p, dir)) {
         const t = tableOf(pg.p, ruled, dir);
         const rest = idx.filter((pi) => !viaGrid.has(pi) && !heldRows.has(pi));
-        const pl = t && rest.length ? plan(t, g, rest, (r) => gridTaken.has(`${k}#${ti}#${r}`), pct) : null;
+        const mine = anchors.filter((a) => a.grid === gi && `${a.documentId}#${a.page}` === k);
+        const hint = t && mine.length ? hintsFor(t, pg.p, mine, g.visits) : null;
+        const pl = t && rest.length ? plan(t, g, rest, (r) => gridTaken.has(`${k}#${ti}#${r}`), pct, hint) : null;
         if (!t || !pl) continue;
         let id: string | undefined;
         const check = () => (id ??= checkFor(pg, k, ti, ruled, t, pl, dir));
@@ -1509,7 +1585,26 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
           if (f !== "overheadCents" && (value !== total || !parts.length || !parts.every(sure) || (f === "totalCents" && (v.procedureSubtotalCents === null || v.overheadCents === null)))) continue;
           const labelled = rowsLabelled(LABELS[f]);
           const hits = (f === "overheadCents" && !labelled.length && lostOverhead.length === 1 ? lostOverhead : labelled).flatMap(({ d, row }) => (d.pl.cols.has(v.code) ? [{ d, ws: row[d.pl.cols.get(v.code)!]! }] : []));
-          if (hits.length === 1 && agrees(hits[0]!.ws, value, hits[0]!.d.pg.p.source === "ocr")) settleOn(at(f), hits[0]!, parts, true, value);
+          if (hits.length === 1 && agrees(hits[0]!.ws, value, hits[0]!.d.pg.p.source === "ocr")) {
+            settleOn(at(f), hits[0]!, parts, true, value);
+            continue;
+          }
+          // No labelled row to find it by (the scan lost the label, or the table is none the plan took): the word the read pointed at
+          // for it, when that word says this amount. The parts' sum (or the stated overhead %) is what proves it; the pointer says where.
+          const a = anchors.find((x) => x.grid === gi && x.procedure === null && x.field === ANCHOR_FIELD[f] && x.visit === v.code);
+          const pg = a && data.get(`${a.documentId}#${a.page}`);
+          const word = pg?.p.words[a!.word];
+          if (!pg || !word || word.hidden || bound.has(word)) continue;
+          const into = planned.find((d) => d.pg === pg && d.t.cells.some((row) => row.some((ws) => ws.includes(word))));
+          const cell = into?.t.cells.flatMap((row) => row.filter((ws) => ws.includes(word)))[0];
+          // inside a drawn table the pointed cell is in the visit's own column, else it points at another visit's figure
+          if (into && cell && into.pl.cols.get(v.code) !== into.t.cells.flatMap((row) => row.map((ws, c) => (ws === cell ? c : -1))).find((c) => c >= 0)) continue;
+          const ws = cell ?? [word];
+          if (!agrees(ws, value, pg.p.source === "ocr")) continue;
+          const ids = new Set(parts.flatMap((x) => live(x)?.held ?? []));
+          if (ids.size > 1) continue;
+          evidence.splice(evidence.findIndex((e) => e.path === at(f)), 1);
+          put(at(f), ids.size ? "ungrounded" : "confirmed", [boxOf(pg.p, ws)], txt(ws), "the read pointed at it on the page, it says this amount" + (f === "overheadCents" ? ", and it is the grid's stated overhead %" : ", and its parts are confirmed and add up to it") + (readOf(txt(ws), value, pg.p.source === "ocr") === "noisy" ? ` (${NOISY})` : ""), ws, [...ids][0]);
         }
       });
       // a per-patient total: the sum of every visit's total, printed on its own labelled row

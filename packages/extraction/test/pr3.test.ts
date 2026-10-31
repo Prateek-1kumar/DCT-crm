@@ -157,7 +157,7 @@ function mock(rb: Rulebook, calls: Call[], grid?: (req: LlmRequest<unknown>) => 
   let n = 0;
   const gridOf = (): AiGrid => {
     const { id, ...g } = rb.budgetGrids[0]!;
-    return { ...g, procedures: g.procedures.map((p) => ({ ...p, cells: Object.entries(p.cells).map(([visit, value]) => ({ visit, value })) })) };
+    return { ...g, procedures: g.procedures.map((p) => ({ ...p, cells: Object.entries(p.cells).map(([visit, value]) => ({ visit, value, source_token_id: null })) })) };
   };
   return {
     provider: "anthropic",
@@ -209,7 +209,10 @@ describe("the switches are off by default, and then nothing changes", () => {
   });
 
   it("an image with no tokens is the same request as before: tokenText is only added when there are some", () => {
-    expect(tokenText([{ id: "0.1.2", text: "$1.00", box: [1, 2, 3, 4] }])).toContain('[["0.1.2","$1.00",1,2,3,4]]');
+    // a number goes as its shape (every digit a "#"), a word without one as it is; a line of the image is one entry, left to right
+    const map = tokenText([{ id: "0.1.2", text: "$1.00", box: [50, 2, 80, 14] }, { id: "0.1.3", text: "Visit", box: [10, 3, 40, 15] }, { id: "0.1.4", text: "V2", box: [90, 2, 100, 14] }, { id: "0.1.5", text: "$12.50", box: [50, 40, 80, 52] }]);
+    expect(map).toContain('[[2,15,["0.1.3","Visit",10,40],["0.1.2","$#.##",50,80],["0.1.4","V#",90,100]],[40,52,["0.1.5","$##.##",50,80]]]');
+    expect(map).not.toMatch(/1\.00|12\.50/);
   });
 });
 
@@ -287,7 +290,7 @@ describe("tile limits", () => {
 describe("token map (EXTRACTION_TOKEN_MAP=1)", () => {
   const ids = (calls: Call[], name: string) => calls.filter((c) => c.name === name).flatMap((c) => c.images.flatMap((i) => i.tokens ?? []));
 
-  it("goes with the grid images only, never a terms page, without the bank details, and its prompts say the image is the truth", async () => {
+  it("goes with the grid images only, never a terms page, without the bank details, and its prompts say to read every figure from the image", async () => {
     CONFIG.tokenMap = true;
     const calls: Call[] = [];
     const out = await readOf(tablePdf(), calls);
@@ -302,7 +305,8 @@ describe("token map (EXTRACTION_TOKEN_MAP=1)", () => {
     for (const t of all) expect(t.id).toMatch(/^0\.1\.\d+$/);
     const grid = calls.find((c) => c.name === "grid")!;
     expect(grid.prompt).toMatch(/TOKEN MAP/);
-    expect(grid.prompt).toMatch(/image is the truth/);
+    expect(grid.prompt).toMatch(/never from the map/);
+    expect(grid.prompt).toMatch(/nonFee/);
     expect(grid.prompt).toMatch(/source_token_id/);
     expect(grid.schema).toBe(AiGridsAnchored);
     for (const c of calls.filter((x) => x.name.startsWith("terms"))) expect(c.prompt).not.toMatch(/TOKEN MAP|source_token_id/);
@@ -316,12 +320,12 @@ describe("token map (EXTRACTION_TOKEN_MAP=1)", () => {
       const known = req.images.flatMap((i) => i.tokens ?? []);
       const real = known.find((t) => /^\d+\.\d\d$/.test(t.text))!.id;
       const g = makeRulebook().budgetGrids[0]!;
-      const cells = (p: (typeof g.procedures)[number]) => Object.entries(p.cells).map(([visit, value], k) => ({ visit, value, ...(p.code === "99205" ? { source_token_id: k === 0 ? real : "9.9.9" } : {}) }));
+      const cells = (p: (typeof g.procedures)[number]) => Object.entries(p.cells).map(([visit, value], k) => ({ visit, value, source_token_id: p.code === "99205" ? (k === 0 ? real : "9.9.9") : null }));
       return { grids: [{ ...g, id: undefined, procedures: g.procedures.map((p) => ({ ...p, cells: cells(p) })), visitTokens: [{ visit: "V1", field: "total", source_token_id: real }, { visit: "V2", field: "total", source_token_id: "nope" }] }] };
     });
     const real = out.anchors!;
     expect(real.map((a) => [a.field, a.visit, a.procedure])).toEqual([["cell", "V1", 0], ["total", "V1", null]]);
-    expect(real.every((a) => /^0\.1\.\d+$/.test(a.tokenId))).toBe(true);
+    expect(real.every((a) => a.documentId === "0" || a.page === 1)).toBe(true);
     expect(Rulebook.parse(out.rulebook).budgetGrids[0]!.procedures[0]!.cells).toEqual({ V1: 30000, V2: 30000 });
     expect(JSON.stringify(out.rulebook)).not.toMatch(/source_token_id|visitTokens/);
   });

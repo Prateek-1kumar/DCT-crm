@@ -99,8 +99,9 @@ describe("a table's printed row totals", () => {
 
   it("a total the scan is unsure of is not read; the rows that are sure keep theirs", () => {
     expect(totals(WITH_TOTALS, read(READ), { unsure: ["3:5"] }).map((r) => r[1])).toEqual([30000, 10000, null]);
-    // and an unsure visit cell takes its row out of the count
-    expect(totals(WITH_TOTALS, read(READ), { unsure: ["1:2"] }).map((r) => r[1])).toEqual([null, 10000, 7500]);
+    // an unsure visit cell takes its row out of the count that finds the column, but once the column is found the row keeps the sure
+    // total it prints: the total is then what says what the unreadable cell is
+    expect(totals(WITH_TOTALS, read(READ), { unsure: ["1:2"] }).map((r) => r[1])).toEqual([30000, 10000, 7500]);
   });
 
   it("a totals row is no body row: it takes no part in finding the column, and gets no band", () => {

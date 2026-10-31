@@ -1,4 +1,4 @@
-import type { bindEvidence, gateSweep, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
+import type { Anchor, bindEvidence, gateSweep, NonFee, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
@@ -18,6 +18,9 @@ export type ExtractionOutput = {
   warnings?: ReadWarning[];
   /** What the grid read says each row prints as its quantity and its own total; `bindEvidence` checks it against the scan (ADR-002). Absent when no row gave one. */
   printedRows?: PrintedRow[];
+  /** Where the grid read says each value was printed (a token of the page's text or OCR), and the amounts it called no fee: claims `bindEvidence` and the sweep check against the page (ADR-002 PR 3). */
+  anchors?: Anchor[];
+  nonFee?: NonFee[];
 };
 
 export type ExtractionNote = {

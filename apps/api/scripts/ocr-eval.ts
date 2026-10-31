@@ -29,7 +29,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bindEvidence, gateSweep, norm, readTextLayer, reviewFromEvidence, runContractChecks, sameName, sharesWord, solveGrids, type SolverMode } from "@dct/extraction";
+import { type Anchor, bindEvidence, gateSweep, type NonFee, type PrintedRow, norm, readTextLayer, reviewFromEvidence, runContractChecks, sameName, sharesWord, solveGrids, type SolverMode } from "@dct/extraction";
 import { Rulebook, type ValueEvidence } from "@dct/shared";
 import { reviewDraft, solve } from "../src/review.js";
 
@@ -41,8 +41,11 @@ const mode: SolverMode = process.env.OCR_EVAL_SOLVER === "guide" ? "guide" : "st
 // OCR_EVAL_ROUNDING=1: the solver's rounding-aware addition (off in the app until the senior engineer approves it)
 const rounding = process.env.OCR_EVAL_ROUNDING === "1";
 // What reviewDraft makes of a binding: the binder's evidence, then the solver (its upgrades that cite no page undone, as in the app).
+// What the live read said besides the rulebook (printed quantities and totals, where it read each value, the amounts it called no fee):
+// set per contract below, from its saved read; an older read has none.
+let extras: { printedRows?: PrintedRow[]; anchors?: Anchor[]; nonFee?: NonFee[] } = {};
 const piped = (m: Rulebook, pg: Parameters<typeof bindEvidence>[1]) => {
-  const b = bindEvidence(m, pg);
+  const b = bindEvidence(m, pg, extras.printedRows, extras.anchors);
   return solve(solveGrids, m, b.evidence, mode, b.rows, rounding, new Set(pg.filter((p) => p.source === "ocr").map((p) => `${p.documentId}#${p.page}`))).evidence;
 };
 
@@ -167,13 +170,17 @@ const confirmedIn = (ev: ValueEvidence[]) => new Set(ev.filter(sure).map((e) => 
 // too; scored against a key only where data/golden has one, so "wrong confirmed" there covers keyed contracts only.
 const heldout = process.env.OCR_EVAL_SET === "heldout";
 const setDir = join(root, heldout ? "data/heldout" : "data/contracts");
-const readsDir = heldout ? join(setDir, "extractions") : join(root, "data/extractions");
+// OCR_EVAL_READS: another folder of saved reads (a live eval run with EVAL_OUT)
+const readsDir = heldout ? join(setDir, "extractions") : process.env.OCR_EVAL_READS ?? join(root, "data/extractions");
 const set_ = heldout ? Object.fromEntries(readdirSync(readsDir).filter((f) => f.endsWith(".json")).map((f) => [f.slice(0, -5), f.slice(0, -5)])) : CONTRACTS;
 const files = readdirSync(setDir).filter((f) => f.endsWith(".pdf"));
 const report: Record<string, unknown> = {};
 const seconds: number[] = [];
-for (const [name, label] of Object.entries(set_)) {
-  const read = JSON.parse(readFileSync(join(readsDir, `${name}.json`), "utf8")) as { rulebook: unknown };
+// OCR_EVAL_ONLY=hcwc,mcallen: just these contracts (a folder of reads that holds some)
+const only = process.env.OCR_EVAL_ONLY?.split(",");
+for (const [name, label] of Object.entries(set_).filter(([n]) => !only || only.includes(n))) {
+  const read = JSON.parse(readFileSync(join(readsDir, `${name}.json`), "utf8")) as { rulebook: unknown; printedRows?: PrintedRow[]; anchors?: Anchor[]; nonFee?: NonFee[] };
+  extras = { printedRows: read.printedRows, anchors: read.anchors, nonFee: read.nonFee };
   const rb = Rulebook.parse(read.rulebook);
   const goldenFile = join(root, "data/golden", `${name}.json`);
   const golden = heldout && !existsSync(goldenFile) ? null : (JSON.parse(readFileSync(goldenFile, "utf8")) as Golden);
@@ -187,8 +194,8 @@ for (const [name, label] of Object.entries(set_)) {
   if (!ocred && pages.some((p) => p.source === "image_only")) throw new Error("The OCR didn't run: install it with pnpm run setup (packages/extraction/ocr/setup.sh)");
   if (ocred) seconds.push((Date.now() - t0) / 1000 / ocred);
   const anomalies = runContractChecks(rb);
-  const today = reviewDraft(port, rb, anomalies, scan, docs, { solver: mode, rounding });
-  const withOcr = reviewDraft(port, rb, anomalies, pages, docs, { solver: mode, rounding });
+  const today = reviewDraft(port, rb, anomalies, scan, docs, { solver: mode, rounding, ...extras });
+  const withOcr = reviewDraft(port, rb, anomalies, pages, docs, { solver: mode, rounding, ...extras });
 
   const key = golden ? keyed(rb, golden) : new Map<string, number | string>();
   const final = new Map(withOcr.evidence.map((e) => [e.path, sure(e) ? "confirmed" : e.status]));
@@ -202,7 +209,7 @@ for (const [name, label] of Object.entries(set_)) {
   }
 
   // planted errors, bound against the OCR alone (the totals can't confirm a changed value: they no longer add up)
-  const base = bindEvidence(rb, pages);
+  const base = bindEvidence(rb, pages, extras.printedRows, extras.anchors);
   const confirmed = confirmedIn(piped(rb, pages));
   const heldPaths = new Set(base.evidence.filter((e) => e.held).map((e) => e.path));
   const planted: Record<"digit" | "lookalike" | "columnShift" | "wrongVisit" | "rowSwap" | "rowShift" | "costColumnSwap" | "summaryRowShift" | "decimalShift", [tried: number, caught: number]> = { digit: [0, 0], lookalike: [0, 0], columnShift: [0, 0], wrongVisit: [0, 0], rowSwap: [0, 0], rowShift: [0, 0], costColumnSwap: [0, 0], summaryRowShift: [0, 0], decimalShift: [0, 0] };
@@ -415,7 +422,7 @@ for (const [name, label] of Object.entries(set_)) {
   });
   // Confirmed only where the page prints that very price in that visit's cell (the binder confirms nothing else): there
   // the read left a visit out. Counted apart, as the read's misses, not as errors the check let through.
-  const placedBind = bindEvidence(misplaced, pages);
+  const placedBind = bindEvidence(misplaced, pages, extras.printedRows, extras.anchors);
   const boundPlace = placedBind.evidence;
   const afterPlace = boundPlace.filter((e) => sure(e) && placed.includes(e.path));
   // what the arithmetic then confirms among the rest is an error let through

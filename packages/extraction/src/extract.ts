@@ -5,10 +5,10 @@ import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient, type LlmRequest, priceOf, tokenText } from "./llm";
 import { planBands } from "./bands";
 import { type AiGrid, AiGrids, AiGridsAnchored, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
-import type { PrintedRow } from "./binder";
+import type { Anchor, PrintedRow } from "./binder";
 import { bandPixels, dpiToFit, type PageRect, pageCount, pageText, RENDER_LIMITS, renderBands, renderPng, renderTiles, type Rotation, tileLayout, uprightFrame } from "./render";
 import { amounts, type TextPage, bankRects, KEYWORDS, readTextLayer } from "./textlayer";
-import { dropUnknownTokens, tokensFor } from "./tokens";
+import { dropUnknownTokens, parseTokenId, tokensFor } from "./tokens";
 
 export type InputDoc = { id: string; filename: string; path: string; kind: DocumentKind | null };
 
@@ -24,7 +24,9 @@ export type ExtractionOutput = {
   /** Extra: non-fatal problems, e.g. cross-read failed. */
   warnings: ReadWarning[];
   /** EXTRACTION_TOKEN_MAP on: the tokens the primary grid read named. Absent when the switch is off. */
-  anchors?: TokenAnchor[];
+  anchors?: Anchor[];
+  /** EXTRACTION_TOKEN_MAP on: amounts the grid read called no fee (a claim; the sweep believes one only where its own rule agrees). */
+  nonFee?: NonFee[];
   /** What the grid read says each row prints as its quantity and its own total (grid and procedure are indexes into the rulebook); for `bindEvidence` to check against the scan. Only rows that gave one. */
   printedRows?: PrintedRow[];
 };
@@ -50,11 +52,8 @@ export type ReadWarning = { text: string } & (
   | { kind: "bands_fallback"; pages: { documentId: string; filename: string; page: number; why: "rows" | "size" }[] }
 );
 
-/**
- * Where a value of the grid read was printed, as the token id the model gave (EXTRACTION_TOKEN_MAP), kept for a later binder
- * step. A claim only: it confirms nothing, and every id here is in the map the model had with that call.
- */
-export type TokenAnchor = { grid: string; field: "cell" | "procedureSubtotal" | "overhead" | "nonProcedure" | "total"; visit: string; /** index in the grid's procedures; null for a visit's own sum */ procedure: number | null; tokenId: string };
+/** An amount the model said is no fee: the token's page and word, and why. */
+export type NonFee = { documentId: string; page: number; word: number; why: string };
 
 type ReadInput = { documents: InputDoc[]; onProgress?: (pct: number, step: string) => void; signal?: AbortSignal };
 
@@ -401,7 +400,7 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
           effort,
           maxTokens: CONFIG.maxOutputTokens.grid,
         });
-        if (CONFIG.tokenMap) dropUnknownTokens(out.grids, known);
+        if (CONFIG.tokenMap) dropUnknownTokens(out, known);
         return out;
       };
       let res = await readGrid("medium");
@@ -425,10 +424,10 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
         }
       }
       tick(`Read budget grid ${i + 1}/${groups.length} (${who})`);
-      return res.grids;
+      return res;
     });
     const [terms, grids] = await Promise.all([termsP, gridsP]);
-    return assemble(terms, grids.flat(), documents);
+    return assemble(terms, grids.flatMap((r) => r.grids), documents, grids.flatMap((r) => r.nonFee ?? []));
   };
 
   const [primary, cross] = await Promise.all([
@@ -470,13 +469,13 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
     cost: [clients.primary.cost(), ...(clients.fast ? [clients.fast.cost()] : []), ...(clients.cross ? [clients.cross.cost()] : [])],
     notes: primary.notes,
     warnings,
-    ...(CONFIG.tokenMap ? { anchors: primary.anchors } : {}),
+    ...(CONFIG.tokenMap ? { anchors: primary.anchors, nonFee: primary.nonFee } : {}),
     ...(primary.printedRows.length ? { printedRows: primary.printedRows } : {}),
   };
 }
 
 /** Merge one provider's term + grid reads into a Rulebook that passes Rulebook.parse. */
-function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDoc[]): { rulebook: Rulebook; notes: ExtractionNote[]; anchors: TokenAnchor[]; printedRows: PrintedRow[] } {
+function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDoc[], marked: NonNullable<AiGridsAnchored["nonFee"]> = []): { rulebook: Rulebook; notes: ExtractionNote[]; anchors: Anchor[]; printedRows: PrintedRow[]; nonFee: NonFee[] } {
   const { notes, ...t } = terms;
   const documents = docs.map((d) => {
     const m = t.documents.find((x) => x.id === d.id);
@@ -496,13 +495,23 @@ function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDo
   const ids = new Set(docs.map((d) => d.id));
   sanitize(raw, ids, docs.length === 1 ? docs[0]!.id : null);
   const cleanNotes = notes.map((n) => ({ ...n, source: n.source && ids.has(n.source.documentId) ? n.source : null }));
-  // what the model said each value was read from (already limited to the ids it was given); the rulebook itself doesn't hold them
-  const anchors = grids.flatMap((g, i): TokenAnchor[] => [
-    ...g.procedures.flatMap((p, pi) => p.cells.flatMap((c) => (c.source_token_id ? [{ grid: `g${i + 1}`, field: "cell" as const, visit: c.visit, procedure: pi, tokenId: c.source_token_id }] : []))),
-    ...(g.visitTokens ?? []).map((t) => ({ grid: `g${i + 1}`, field: t.field, visit: t.visit, procedure: null, tokenId: t.source_token_id })),
+  // what the model said each value was read from (already limited to the ids it was given; the rulebook itself doesn't hold them)
+  const anchor = (id: string, rest: Omit<Anchor, "documentId" | "page" | "word">): Anchor[] => {
+    const t = parseTokenId(id);
+    const doc = t && docs[t.doc];
+    return t && doc ? [{ ...rest, documentId: doc.id, page: t.page, word: t.word }] : [];
+  };
+  const anchors = grids.flatMap((g, grid): Anchor[] => [
+    ...g.procedures.flatMap((p, procedure) => p.cells.flatMap((c) => (c.source_token_id ? anchor(c.source_token_id, { grid, field: "cell", visit: c.visit, procedure }) : []))),
+    ...(g.visitTokens ?? []).flatMap((t) => anchor(t.source_token_id, { grid, field: t.field, visit: t.visit, procedure: null })),
   ]);
   const printedRows = grids.flatMap((g, grid) => g.procedures.flatMap((p, procedure): PrintedRow[] => (p.printedQty != null || p.printedRowTotalCents != null ? [{ grid, procedure, qty: p.printedQty ?? null, totalCents: p.printedRowTotalCents ?? null }] : [])));
-  return { rulebook: Rulebook.parse(raw), notes: cleanNotes, anchors, printedRows };
+  const nonFee = marked.flatMap((m): NonFee[] => {
+    const t = parseTokenId(m.source_token_id);
+    const doc = t && docs[t.doc];
+    return t && doc ? [{ documentId: doc.id, page: t.page, word: t.word, why: m.why }] : [];
+  });
+  return { rulebook: Rulebook.parse(raw), notes: cleanNotes, anchors, printedRows, nonFee };
 }
 
 const BANKISH = /\b(routing|aba|swift|iban|bic|account\s*(no|number|#)|acct|bank)\b/i;

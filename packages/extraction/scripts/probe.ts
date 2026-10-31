@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ZodType } from "zod";
 import { anthropicClient, DEFAULT_FAST_MODEL, openaiClient, type LlmClient } from "../src/llm";
-import { AiGrids, AiIdentify, AiPages, AiTermsItems, AiTermsPayment, AiTermsStudy } from "../src/prompts";
+import { AiGrids, AiGridsAnchored, AiIdentify, AiPages, AiTermsItems, AiTermsPayment, AiTermsStudy } from "../src/prompts";
 
 const root = process.env.DCT_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 if (existsSync(join(root, ".env"))) process.loadEnvFile(join(root, ".env"));
@@ -21,7 +21,7 @@ if (!clients.length) {
   process.exit(0);
 }
 
-const schemas: Record<string, ZodType> = { AiPages, AiIdentify, AiTermsItems, AiTermsPayment, AiTermsStudy, AiGrids };
+const schemas: Record<string, ZodType> = { AiPages, AiIdentify, AiTermsItems, AiTermsPayment, AiTermsStudy, AiGrids, AiGridsAnchored };
 // Page sorting and identify run on the fast model (Haiku).
 if (process.env.ANTHROPIC_API_KEY) clients.push(anthropicClient({ apiKey: process.env.ANTHROPIC_API_KEY, model: process.env.ANTHROPIC_FAST_MODEL || DEFAULT_FAST_MODEL }));
 let failed = 0;

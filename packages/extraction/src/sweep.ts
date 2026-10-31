@@ -46,13 +46,19 @@ export type SweepCtx = {
   rows?: readonly RowBand[];
   /** The visits whose column adds up to a subtotal the page confirms (`solveGrids(...).report.vouched`). Absent: none is vouched for. */
   vouched?: readonly string[];
+  /**
+   * Amounts the grid read says are no fee (`ExtractionOutput.nonFee`: its token's page and word, and why). A claim, dropped only where
+   * a rule of ours agrees (`ownRule`); the rest stay asked, counted in the report as `modelKept`.
+   */
+  nonFee?: readonly { documentId: string; page: number; word: number; why: string }[];
 };
 
-export type DropReason = "consumed" | "insurance_clause" | "explained_by_master" | "no_currency_cue";
+export type DropReason = "consumed" | "insurance_clause" | "explained_by_master" | "no_currency_cue" | "model_non_fee";
 /** `as`: for an explained drop, which master value the amount equals (a count per kind shows what the filter hid). */
 export type Dropped = { reason: DropReason; where: PageBox; span: Span; as?: string };
 /** `explainedBy`: the explained drops counted by the kind of master amount they equal. */
-export type SweepReport = { consumed: number; insurance: number; explained: number; noCue: number; kept: number; explainedBy: Record<string, number> };
+/** `modelNonFee`: spans dropped on the read's say-so and a rule of ours, by its reason; `modelKept`: spans the read called no fee that no rule of ours backed (still asked). */
+export type SweepReport = { consumed: number; insurance: number; explained: number; noCue: number; kept: number; explainedBy: Record<string, number>; modelNonFee: Record<string, number>; modelKept: number };
 
 type B = readonly [number, number, number, number];
 const EPS = 1e-6;
@@ -334,13 +340,21 @@ export function gateSweep(unaccounted: readonly Span[], ctx: SweepCtx): { kept: 
 
   const kept: Span[] = [];
   const dropped: Dropped[] = [];
-  const report: SweepReport = { consumed: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {} };
-  const drop = (reason: DropReason, span: Span, counter: "consumed" | "insurance" | "explained" | "noCue", as?: string) => {
+  const report: SweepReport = { consumed: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {}, modelNonFee: {}, modelKept: 0 };
+  const drop = (reason: DropReason, span: Span, counter: "consumed" | "insurance" | "explained" | "noCue" | "modelNonFee", as?: string) => {
     dropped.push({ reason, where: span.where, span, ...(as ? { as } : {}) });
-    report[counter]++;
+    if (counter === "modelNonFee") report.modelNonFee[as!] = (report.modelNonFee[as!] ?? 0) + 1;
+    else report[counter]++;
     if (as) report.explainedBy[as] = (report.explainedBy[as] ?? 0) + 1;
   };
   const master = ctx.rb ? { amounts: masterAmounts(ctx.rb), words: knownWords(ctx.rb) } : null;
+  const flagged = new Map<string, string>();
+  for (const f of ctx.nonFee ?? []) {
+    const w = pages.get(pageKey(f))?.words[f.word];
+    if (w) flagged.set(`${pageKey(f)}|${f.word}`, f.why);
+  }
+  const wordAt = new Map<Word, string>();
+  for (const [k, pg] of pages) pg.words.forEach((w, i) => flagged.has(`${k}|${i}`) && wordAt.set(w, flagged.get(`${k}|${i}`)!));
   const layouts = new Map<string, Layout>();
   // overhead rates in basis points: the contract's and each grid's own
   const rates = ctx.rb ? [...new Set([ctx.rb.overhead.pct.value, ...ctx.rb.budgetGrids.map((g) => g.statedOverheadPct)].flatMap((x) => (typeof x === "number" && x > 0 ? [Math.round(x * 100)] : [])))] : [];
@@ -433,6 +447,18 @@ export function gateSweep(unaccounted: readonly Span[], ctx: SweepCtx): { kept: 
     if (INSURANCE.test(c.tokens.join(" ")) && !within(MOVES_MONEY, c, span, SWEEP.verbTokens)) {
       drop("insurance_clause", span, "insurance");
       continue;
+    }
+
+    // The read says this amount is no fee. Believed only when a rule of ours agrees: a code or a page number prints no currency mark,
+    // no cents and no thousands comma; a repeat equals a price the master holds. Anything else it calls no fee is still asked.
+    const said = span.words.map((w) => wordAt.get(w)).find((x) => x);
+    if (said) {
+      const plain = !/[$]|\bUSD\b|\.\d{2}\b|\d,\d{3}/i.test(span.words.map((w) => w.text).join(" "));
+      if ((said === "repeat" && cents !== null && !!master?.amounts.has(cents)) || ((said === "code" || said === "page_number") && plain)) {
+        drop("model_non_fee", span, "modelNonFee", said);
+        continue;
+      }
+      report.modelKept++;
     }
 
     const page = pages.get(key);

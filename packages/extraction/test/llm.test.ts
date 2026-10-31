@@ -74,7 +74,9 @@ describe("model replies (the only way model output gets in)", () => {
     await llm.call({ name: "terms", system: "", prompt: "p", images: [{ label: "a", png }, { label: "b", png }], schema: Schema, cacheImages: true });
     const [withMap, without] = sent.map((r) => (r.params as unknown as { messages: { content: Block[] }[] }).messages[0]!.content);
     expect(withMap!.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text", "text"]);
-    expect(withMap![4]!.text).toContain('[["0.1.2","$5.00",1,2,3,4]]');
+    // a word that holds a number goes as "#", so the model's figures are its own reading of the image; a word without one keeps its text
+    expect(withMap![4]!.text).toContain('[[2,4,["0.1.2","$#.##",1,3]]]');
+    expect(withMap![4]!.text).not.toContain("5.00");
     expect(withMap![4]!.cache_control).toBeDefined();
     expect(withMap![3]!.cache_control).toBeUndefined();
     expect(without!.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text"]);

@@ -226,7 +226,7 @@ describe("the report", async () => {
   });
 
   it("is quiet on nothing", () => {
-    expect(gateSweep([], { evidence: [], pages: [] })).toEqual({ kept: [], dropped: [], report: { consumed: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {} } });
+    expect(gateSweep([], { evidence: [], pages: [] })).toEqual({ kept: [], dropped: [], report: { consumed: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {}, modelNonFee: {}, modelKept: 0 } });
   });
 
   it("keeps a span whose page it doesn't know (nothing to say it is narrative)", () => {

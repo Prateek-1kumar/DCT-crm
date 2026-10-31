@@ -71,10 +71,12 @@ export type AiGrid = z.infer<typeof AiGrid>;
 export const AiGridsAnchored = z.object({
   grids: z.array(
     AiGrid.extend({
-      procedures: z.array(GridProcedure.extend({ cells: z.array(z.object({ visit: z.string(), value: GridCell, source_token_id: z.string().optional() })), ...PrintedBesideRow })),
+      procedures: z.array(GridProcedure.extend({ cells: z.array(z.object({ visit: z.string(), value: GridCell, source_token_id: z.string().nullable() })), ...PrintedBesideRow })),
       visitTokens: z.array(z.object({ visit: z.string(), field: z.enum(["procedureSubtotal", "overhead", "nonProcedure", "total"]), source_token_id: z.string() })).optional(),
     }),
   ),
+  /** Amounts in the image the model is sure are not a fee (a code, a page number, a repeat of a price it read, an insurance limit). Only a claim: the sweep drops one only when its own rules agree (sweep.ts). */
+  nonFee: z.array(z.object({ source_token_id: z.string(), why: z.enum(["code", "page_number", "repeat", "insurance_limit", "other"]) })).optional(),
 });
 export type AiGridsAnchored = z.infer<typeof AiGridsAnchored>;
 
@@ -139,8 +141,8 @@ const TILES = "Each page is given as an overview image followed by overlapping h
 const BANDS = "Each page is given as an overview image followed by row bands in table order (the band's place is in its label). Every band starts with the table's title and column headings, repeated, and then holds its own rows: read each row's cells against the headings at the top of the same image. Each row is in one band only: count it once. Use the overview only to see the layout.";
 
 /** Said once to the reader of a grid image that comes with a token map (never a terms page); the grid read also asks for each value's token. */
-const TOKEN_HELP = "Next to each image you may get a TOKEN MAP: the words a text pass found in it, as [id, text, x0, y0, x1, y1] with the box in the image's own pixels. The image is the truth. The text can have typos: a last digit dropped, a \"$\" read as a \"5\", a decimal point read as a comma, colon or hyphen. Always give the value you see in the image.";
-const TOKEN_ANCHOR = " For every cell, and every visit subtotal, overhead, non-procedure amount and total, give the id of the token it is printed in as source_token_id (visit values go in visitTokens, with the visit code and the field), using only ids from the map next to the image you read it in. Leave source_token_id out when no token holds the value; never make an id up.";
+const TOKEN_HELP = "Next to each image you may get a TOKEN MAP: the words a text pass found in it, one entry per printed line of the image from top to bottom, as [y0, y1, [id, text, x0, x1], ...] with the words left to right and the boxes in the image's own pixels. A number is shown as its shape, every digit a \"#\" (\"$###.##\"): read every figure from the image itself, never from the map. The map only tells you where each word is, so you can point at it: a cell is the word on its row's line at its column's x position.";
+const TOKEN_ANCHOR = " For every cell give the id of the token it is printed in as source_token_id, and for every visit subtotal, overhead, non-procedure amount and total printed in the grid give it in visitTokens (visit code, field, id), using only ids from the map next to the image you read it in. source_token_id is null only when no token holds the value; never make an id up. A token of the map that holds an amount and is none of your cells or sums, and that you are sure is not a fee (a code, a page number, a footnote or summary that repeats a price you already read, an insurance or liability limit), goes in nonFee with its id and why; leave out anything you are unsure of.";
 
 export const gridPrompt = (documentId: string, pages: number[], tiles: boolean, how: { bands?: boolean; tokens?: boolean } = {}) => `Budget grid on documentId ${documentId}, page(s) ${pages.join(", ")}. ${
   how.bands && tiles

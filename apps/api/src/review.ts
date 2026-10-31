@@ -1,4 +1,4 @@
-import type { PrintedRow, RowBand, SolverMode, SolverReport, Span, SweepReport, TextPage } from "@dct/extraction";
+import type { Anchor, NonFee, PrintedRow, RowBand, SolverMode, SolverReport, Span, SweepReport, TextPage } from "@dct/extraction";
 import {
   alsoWithheld,
   blankQuestions,
@@ -206,7 +206,7 @@ export function reviewDraft(
   anomalies: ContractAnomaly[],
   pages: TextPage[],
   docs: { id: string; filename: string }[],
-  opts: { amendment?: boolean; carried?: Carried | null; excluded?: { documentId: string; page: number }[]; solver?: SolverMode; rounding?: boolean; printedRows?: PrintedRow[] } = {},
+  opts: { amendment?: boolean; carried?: Carried | null; excluded?: { documentId: string; page: number }[]; solver?: SolverMode; rounding?: boolean; printedRows?: PrintedRow[]; anchors?: Anchor[]; nonFee?: NonFee[] } = {},
 ): Checked & {
   warnings: string[];
   skipped: (Skipped & { askedAt?: string })[];
@@ -218,7 +218,7 @@ export function reviewDraft(
   const key = (w: { documentId: string; page: number } | undefined) => (w ? `${w.documentId}#${w.page}` : "");
   const textPages = new Set(pages.filter((p) => p.source === "text").map(key));
   const scanPages = new Set(pages.filter((p) => p.source !== "text").map(key));
-  const bound = port.bindEvidence(rb, pages, opts.printedRows);
+  const bound = port.bindEvidence(rb, pages, opts.printedRows, opts.anchors);
   const off = new Set((opts.excluded ?? []).map(key));
   const totals = byTotals(rb);
   // A cited page that doesn't exist is neither: its values stay ungrounded and are asked.
@@ -230,7 +230,7 @@ export function reviewDraft(
   const solved = solve(port.solveGrids, rb, scanned, opts.solver ?? "guide", bound.rows, opts.rounding, new Set(pages.filter((p) => p.source === "ocr").map((p) => `${p.documentId}#${p.page}`)));
   const evidence = solved.evidence;
   // the leftover-money sweep, zone-gated on the solved evidence (a math-confirmed cell is bound like a printed one); dropped spans are counted, never silent
-  const gated = port.gateSweep ? port.gateSweep(bound.unaccounted.filter((s) => !off.has(key(s.where))), { evidence, pages, rb, rows: bound.rows, vouched: solved.report?.vouched }) : null;
+  const gated = port.gateSweep ? port.gateSweep(bound.unaccounted.filter((s) => !off.has(key(s.where))), { evidence, pages, rb, rows: bound.rows, vouched: solved.report?.vouched, nonFee: opts.nonFee }) : null;
   const swept = gated ? gated.kept : bound.unaccounted.filter((s) => !off.has(key(s.where)));
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)

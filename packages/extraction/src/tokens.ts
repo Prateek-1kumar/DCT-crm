@@ -33,10 +33,17 @@ export function tokensFor(p: TextPage, docIndex: number, to: (r: PageRect) => Pa
   });
 }
 
-/** Cells of a grid read keep a token id only if it is in the map the model was given with that call; any other is dropped. */
-export function dropUnknownTokens(grids: { procedures: { cells: { source_token_id?: string | undefined }[] }[]; visitTokens?: { source_token_id: string }[] | undefined }[], known: Set<string>): void {
-  for (const g of grids) {
-    for (const c of g.procedures.flatMap((p) => p.cells)) if (c.source_token_id !== undefined && !known.has(c.source_token_id)) delete c.source_token_id;
+/** Cells of a grid read keep a token id only if it is in the map the model was given with that call; any other is dropped (the non-fee list too). */
+export function dropUnknownTokens(out: { grids: { procedures: { cells: { source_token_id?: string | null | undefined }[] }[]; visitTokens?: { source_token_id: string }[] | undefined }[]; nonFee?: { source_token_id: string }[] | undefined }, known: Set<string>): void {
+  for (const g of out.grids) {
+    for (const c of g.procedures.flatMap((p) => p.cells)) if (c.source_token_id != null && !known.has(c.source_token_id)) delete c.source_token_id;
     if (g.visitTokens) g.visitTokens = g.visitTokens.filter((t) => known.has(t.source_token_id));
   }
+  if (out.nonFee) out.nonFee = out.nonFee.filter((t) => known.has(t.source_token_id));
+}
+
+/** The parts of a token id (`doc.page.word`, as `tokensFor` makes it); null for anything else the model might say. */
+export function parseTokenId(id: string): { doc: number; page: number; word: number } | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(id);
+  return m ? { doc: Number(m[1]), page: Number(m[2]), word: Number(m[3]) } : null;
 }

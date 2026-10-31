@@ -311,6 +311,8 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
       excluded: out.pages.filter(isExcludedPage),
       solver: config.extractionSolver,
       printedRows: out.printedRows,
+      anchors: out.anchors,
+      nonFee: out.nonFee,
     });
     const { evidence, review, pdfCheck } = checked;
     // each skipped correction with where it's asked again, so the log withholds it while that question is open

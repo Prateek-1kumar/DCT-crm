@@ -11,8 +11,32 @@ export type Token = { id: string; text: string; box: [number, number, number, nu
 /** `tokens` (EXTRACTION_TOKEN_MAP): the map sent beside the image; absent, the request is the same as before it existed. */
 export type Image = { label: string; png: Buffer; tokens?: Token[] };
 
-/** The map as the model reads it: one JSON list of [id, text, x0, y0, x1, y1], compact, with a line saying what it is. */
-export const tokenText = (tokens: Token[]) => `TOKEN MAP for the image above ([id, text, x0, y0, x1, y1] in its pixels): ${JSON.stringify(tokens.map((t) => [t.id, t.text, ...t.box]))}`;
+/**
+ * A word that holds a number goes to the model as its shape, every digit a "#" ("$###.##"): the model reads every figure from the
+ * image, so what it says is independent of the OCR's digits (ADR-002 PR 3, owner's rule); the shape only helps it find the word.
+ */
+const shape = (text: string) => (/\d/.test(text) && !/[A-Za-z]{2,}/.test(text) ? text.replace(/\d/g, "#") : text);
+
+/**
+ * The map as the model reads it: the image's printed lines top to bottom, each [y0, y1, [id, text, x0, x1], ...] with its words left
+ * to right, so a row is one entry and a column is an x range. Boxes are in the image's own pixels.
+ */
+export function tokenText(tokens: Token[]): string {
+  const h = (t: Token) => t.box[3] - t.box[1];
+  const lines: { cy: number; y0: number; y1: number; ts: Token[] }[] = [];
+  for (const t of [...tokens].sort((a, b) => a.box[1] + a.box[3] - (b.box[1] + b.box[3]))) {
+    const cy = (t.box[1] + t.box[3]) / 2;
+    const l = lines.at(-1);
+    if (l && Math.abs(cy - l.cy) <= 0.6 * Math.max(h(t), l.y1 - l.y0)) {
+      l.ts.push(t);
+      l.cy = (l.cy * (l.ts.length - 1) + cy) / l.ts.length;
+      l.y0 = Math.min(l.y0, t.box[1]);
+      l.y1 = Math.max(l.y1, t.box[3]);
+    } else lines.push({ cy, y0: t.box[1], y1: t.box[3], ts: [t] });
+  }
+  const rows = lines.map((l) => [l.y0, l.y1, ...l.ts.sort((a, b) => a.box[0] - b.box[0]).map((t) => [t.id, shape(t.text), t.box[0], t.box[2]])]);
+  return `TOKEN MAP for the image above (its printed lines, top to bottom, as [y0, y1, [id, text, x0, x1], ...] in the image's pixels; a number is shown with each digit as "#"): ${JSON.stringify(rows)}`;
+}
 
 export type LlmRequest<T> = {
   name: string;
