@@ -264,7 +264,7 @@ export const BODY_WORDS = {
   confirmStudy: { sponsor: "Fill in the sponsor.", protocol: "Fill in the protocol.", siteName: "Fill in the site.", investigator: "Fill in the investigator.", by: "Say who is confirming the details." },
   extract: { documentIds: "Pick the files to add (up to 50).", by: "Say who is starting the read." },
   documentKind: { kind: "Pick what kind of document this is.", by: "Say who is setting the document's kind." },
-  settings: { makerChecker: "Say whether maker-checker is on or off.", people: "List the people's names.", by: "Say who is changing the settings." },
+  settings: { makerChecker: "Say whether maker-checker is on or off.", people: "List the people's names.", by: "Say who is changing the settings.", makerCheckerBy: "Pick your name first: turning maker-checker on or off is signed by whoever does it." },
   readAlerts: { ids: "Pick the alerts to mark as read (up to 100).", by: "Say who is reading the alerts." },
   signOff: { asOf: "Reload the page and approve again: it didn't say which version you saw.", note: "Write the note as text.", by: "Say who is approving." },
   budgetCheck: { by: "Say who is checking." },

@@ -73,7 +73,7 @@ Probes, outside `/api/v1` (for whatever runs the server, not part of the API's c
 | GET | `/alerts` | `AlertListQuery` | One person's alerts, newest first → `AlertPage`; a send-back note as written |
 | POST | `/alerts/read` | `ReadAlertsBody` | Marks alerts read → `{ unread }` |
 | GET | `/audit` | `AuditListQuery` | One page of the log, newest first, searched by `q` → `AuditPage`; every entry's details as written (nothing blanked, ADR-003) |
-| GET, PATCH | `/settings` | `PatchSettingsBody` (`by` required) | `SettingsDto` (people, makerChecker: on unless turned off) |
+| GET, PATCH | `/settings` | `PatchSettingsBody` (`by` required to switch maker-checker; the people list can be edited before anyone can be picked, logged as "system") | `SettingsDto` (people, makerChecker: on unless turned off) |
 
 **`RulebookVersionDto`** also carries `updatedAt` (what approval sends back as `asOf`; every write moves it forward by at least a millisecond, `touched`) and `warnings`: plain words for what made the reading weaker (a budget grid read only once, a failed second reading, a read over the cost limit; `@dct/extraction` reports each by kind, `ReadWarning`, and `plainWarnings` words each kind in an exhaustive switch, so rewording one there can't make it vanish here) and for corrections an amendment's read couldn't carry over.
 

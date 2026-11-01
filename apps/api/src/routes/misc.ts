@@ -21,7 +21,7 @@ function decodeCursor(c: string) {
   }
 }
 
-/** Batches of `limit + 1` entries one request reads at most while `q` matches in SQL but not in what.s shown (GET /audit). */
+/** Batches of `limit + 1` entries one request reads at most while `q` matches in SQL but not in what's shown (GET /audit). */
 const SCAN_ROUNDS = 10;
 
 /** Every text and number in the details, keys left out (as @dct/shared detailText reads them). */
@@ -80,7 +80,7 @@ export const miscRoutes =
 
     app.get("/settings", () => read());
 
-    /** PATCH accepts any subset of SettingsDto, plus who changed it (required: maker-checker off is never "system"). */
+    /** PATCH accepts any subset of SettingsDto, plus who changed it: required to switch maker-checker, so turning it off is never "system". */
     app.patch("/settings", async (req, reply) => {
       const parsed = PatchSettingsBody.safeParse(req.body);
       if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.settings));
@@ -90,10 +90,11 @@ export const miscRoutes =
         const [row] = await tx.select().from(settings).where(eq(settings.id, 1)).for("no key update");
         const before: SettingsDto = { makerChecker: row?.makerChecker ?? true, people: row?.people ?? [] };
         const after = { ...before, ...patch };
+        if (after.makerChecker !== before.makerChecker && !by) throw new HttpError(400, BODY_WORDS.settings.makerCheckerBy);
         // the same settings again change nothing, so they log nothing
         if (isDeepStrictEqual(before, after)) return before;
         await tx.insert(settings).values({ id: 1, ...after }).onConflictDoUpdate({ target: settings.id, set: after });
-        await audit(tx, by, null, "settings.updated", { before, after });
+        await audit(tx, by ?? "system", null, "settings.updated", { before, after });
         return read(tx);
       });
     });

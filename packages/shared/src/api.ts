@@ -191,4 +191,5 @@ export type SettingsDto = z.infer<typeof SettingsDto>;
 
 /** PATCH /settings — any subset of SettingsDto, plus who changed it. */
 /** `by` is required: turning maker-checker off is logged under the name of whoever did it, never "system". */
-export const PatchSettingsBody = SettingsDto.partial().extend({ by: Person });
+/** `by` is optional (the first person is added before anyone can be picked), but required to switch maker-checker. */
+export const PatchSettingsBody = SettingsDto.partial().extend({ by: Person.optional() });

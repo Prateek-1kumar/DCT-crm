@@ -186,7 +186,7 @@ export const api = {
   /** One page of the activity log, newest first; the server narrows, searches and pages. Pass `nextCursor` back for older ones. */
   audit: (query: AuditListQuery) => request<AuditPage>("GET", `/audit${qs(query)}`),
   getSettings: () => request<SettingsDto>("GET", "/settings"),
-  patchSettings: (body: Partial<SettingsDto> & { by: string }) => request<SettingsDto>("PATCH", "/settings", body),
+  patchSettings: (body: Partial<SettingsDto> & { by?: string }) => request<SettingsDto>("PATCH", "/settings", body),
 
   /**
    * Downloads the invoicing master as an Excel file, built by the server. Fetched rather than linked to, so a refusal or a

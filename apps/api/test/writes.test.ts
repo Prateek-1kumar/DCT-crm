@@ -109,10 +109,13 @@ describe("repeats that change nothing", () => {
 });
 
 describe("who changed it", () => {
-  it("settings can't be changed without a name, so turning maker-checker off is never logged as the system", async () => {
-    expect((await patch("/settings", { makerChecker: false })).json()).toMatchObject({ statusCode: 400, message: "Say who is changing the settings." });
-    expect((await patch("/settings", { makerChecker: false, by: " " })).statusCode).toBe(400);
+  it("maker-checker can't be switched without a name, so turning it off is never logged as the system", async () => {
+    expect((await patch("/settings", { makerChecker: true })).json()).toMatchObject({ statusCode: 400, message: "Pick your name first: turning maker-checker on or off is signed by whoever does it." });
+    expect((await patch("/settings", { makerChecker: true, by: " " })).statusCode).toBe(400);
     expect(await count("settings.updated")).toBe(0);
+    // the first person is added before anyone can be picked
+    expect((await patch("/settings", { people: ["Asha Patel"] })).statusCode).toBe(200);
+    expect(await count("settings.updated")).toBe(1);
   });
 
   it("every 400 names the problem in words", async () => {

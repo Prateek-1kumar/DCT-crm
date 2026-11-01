@@ -16,7 +16,7 @@ export default function SettingsPage() {
   const [name, setName] = useState("");
   const save = useMutation({
     // no name picked yet: the API refuses in words ("Say who is changing the settings."), beside the prompt to pick one
-    mutationFn: (patch: Partial<SettingsDto>) => api.patchSettings({ ...patch, by: me ?? "" }),
+    mutationFn: (patch: Partial<SettingsDto>) => api.patchSettings({ ...patch, ...(me ? { by: me } : {}) }),
     onSuccess: (s) => qc.setQueryData(keys.settings, s),
   });
 
