@@ -1,66 +1,49 @@
-import { RulebookVersionDto } from "@dct/shared";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { confirmed, grid, rulebook } from "../test/fixtures";
 import { keyTerms } from "./approve";
-import { mockSampling } from "./mock/fixtures";
-import { mockRequest, mockReset } from "./mock/server";
-
-// the blind sample pinned, as in server.test.ts: which values it withholds is the same every run
-mockSampling.random = () => 1 - 2 ** -32;
-
-const version = async (study: string, v = 1) => RulebookVersionDto.parse((await mockRequest("GET", `/studies/${study}/versions/${v}`, undefined)).json);
 
 describe("key terms", () => {
-  beforeEach(() => mockReset());
-
-  it("lists the terms that decide the money, each pointing at the contract", async () => {
-    const v = await version("st-meridian");
-    const terms = keyTerms(v.rulebook!, v.evidence);
+  it("lists the terms that decide the money, each pointing at the contract", () => {
+    const rb = rulebook();
+    const terms = keyTerms(rb, confirmed(rb));
     expect(terms.map((t) => t.label)).toEqual(expect.arrayContaining(["Payment", "Holdback", "Overhead", "Screen failures", "Per patient", "Site fee", "Invoice deadline"]));
-    expect(terms.filter((t) => t.label === "Site fee").length).toBeLessThanOrEqual(3);
-    expect(terms.find((t) => t.id === "payment")).toMatchObject({ value: expect.stringMatching(/^\d+ days$/), where: { page: expect.any(Number) } });
+    expect(terms.filter((t) => t.label === "Site fee")).toHaveLength(3); // the biggest three of four
+    expect(terms.find((t) => t.id === "payment")).toMatchObject({ value: "45 days", where: { page: 4 } });
   });
 
-  it("states an absent term instead of leaving it out", async () => {
-    const v = await version("st-meridian");
-    const terms = keyTerms({ ...v.rulebook!, holdback: null }, v.evidence);
-    expect(terms.find((t) => t.id === "holdback")).toMatchObject({ value: "None", where: null });
+  it("states an absent term instead of leaving it out", () => {
+    const rb = rulebook();
+    expect(keyTerms({ ...rb, holdback: null }, confirmed(rb)).find((t) => t.id === "holdback")).toMatchObject({ value: "None", where: null });
   });
 
-  it("an amendment's start date: the answer; prospective only says so", async () => {
-    const ha = await version("st-halcyon", 2);
-    const at = (rb: typeof ha.rulebook) => keyTerms(rb!, ha.evidence).find((t) => t.id === "applies-from");
-    expect(at(ha.rulebook)).toMatchObject({ value: "Sep 1, 2026", detail: "The date this version's prices start" }); // typed when seeded
-    expect(at({ ...ha.rulebook!, appliesFrom: { ...ha.rulebook!.appliesFrom, value: "2026-09-30" } })).toMatchObject({ value: "Sep 30, 2026", detail: "Prospective only: from the amendment's own date" });
+  it("an amendment's start date: the answer; prospective only says so", () => {
+    const rb = rulebook();
+    rb.documents.push({ id: "doc-2", kind: "amendment", title: "Amendment 1", date: "2026-09-30" });
+    const at = (value: string | null) => keyTerms({ ...rb, appliesFrom: { ...rb.appliesFrom, value } }, []).find((t) => t.id === "applies-from");
+    expect(at("2026-09-01")).toMatchObject({ value: "Sep 1, 2026", detail: "The date this version's prices start" });
+    expect(at("2026-09-30")).toMatchObject({ value: "Sep 30, 2026", detail: "Prospective only: from the amendment's own date" });
     // an amendment never left without one
-    expect(at({ ...ha.rulebook!, appliesFrom: { ...ha.rulebook!.appliesFrom, value: null } })).toMatchObject({ value: "Not stated", detail: expect.stringMatching(/effective date/) });
+    expect(at(null)).toMatchObject({ value: "Not stated", detail: expect.stringMatching(/effective date/) });
   });
 
-  it("each arm's chosen grid is billed: one per-patient total per arm", async () => {
-    const v = await version("st-cobalt"); // Arm A and Arm B
-    const rb = v.rulebook!;
-    const twice = { ...rb, budgetGrids: [...rb.budgetGrids, { ...rb.budgetGrids[0]!, id: "g-cb-a2", label: "Arm A budget" }], governingGridIds: ["g-cb-a2"] };
-    expect(keyTerms(twice, v.evidence).filter((t) => t.label === "Per patient").map((t) => t.detail)).toEqual([expect.stringContaining("Exhibit A – Arm B"), expect.stringContaining("Arm A budget")]);
+  it("each arm's chosen grid is billed: one per-patient total per arm", () => {
+    const rb = rulebook();
+    rb.budgetGrids = [grid("g-a", "Exhibit A – Arm A", "Arm A"), grid("g-b", "Exhibit A – Arm B", "Arm B", 100), grid("g-a2", "Arm A budget", "Arm A", 200)];
+    rb.governingGridIds = ["g-a2"];
+    expect(keyTerms(rb, []).filter((t) => t.label === "Per patient").map((t) => t.detail)).toEqual([expect.stringContaining("Exhibit A – Arm B"), expect.stringContaining("Arm A budget")]);
   });
 
-  it("an arm whose grids differ with none chosen is said, never left out", async () => {
-    const nw = await version("st-northwind"); // its two grids differ, none chosen yet
-    const terms = keyTerms(nw.rulebook!, nw.evidence);
-    expect(terms.filter((t) => t.label === "Per patient")).toEqual([expect.objectContaining({ value: "No grid chosen", detail: "Exhibit A – Budget and Attachment 2 – Payment Schedule disagree, so nothing is billed until one is chosen" })]);
+  it("an arm whose grids differ with none chosen is said, never left out", () => {
+    const rb = rulebook();
+    rb.budgetGrids = [grid("g-a", "Exhibit A – Budget"), grid("g-b", "Attachment 2 – Payment Schedule", null, 100)];
+    expect(keyTerms(rb, []).filter((t) => t.label === "Per patient")).toEqual([
+      expect.objectContaining({ value: "No grid chosen", detail: "Exhibit A – Budget and Attachment 2 – Payment Schedule disagree, so nothing is billed until one is chosen" }),
+    ]);
   });
 
-  it("keeps the value's path when it's empty, so a withheld value isn't shown as missing", async () => {
-    const v = await version("st-meridian");
-    const rb = v.rulebook!;
-    const terms = keyTerms({ ...rb, payment: { ...rb.payment, netDays: { ...rb.payment.netDays, value: null } } }, v.evidence);
+  it("keeps the value's path when it's empty, so a value asked about isn't shown as missing", () => {
+    const rb = rulebook();
+    const terms = keyTerms({ ...rb, payment: { ...rb.payment, netDays: { ...rb.payment.netDays, value: null } } }, confirmed(rb));
     expect(terms.find((t) => t.id === "payment")).toMatchObject({ value: "Not stated", paths: ["/payment/netDays/value"] });
-  });
-
-  it("an approver can send answers back; they reopen blind with the note", async () => {
-    const ha = await version("st-halcyon", 2);
-    const answered = ha.review.filter((i) => i.outcome !== null).slice(0, 2).map((i) => i.id);
-    const res = await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: answered, note: "Check the amendment page again", by: "Morgan Lee" });
-    const after = RulebookVersionDto.parse(res.json);
-    for (const id of answered) expect(after.review.find((i) => i.id === id)).toMatchObject({ outcome: null, answer: null, sentBack: { by: "Morgan Lee", note: "Check the amendment page again" } });
-    expect((await mockRequest("POST", "/studies/st-halcyon/versions/2/send-back", { itemIds: answered, note: "again", by: "Morgan Lee" })).status).toBe(409);
   });
 });

@@ -118,7 +118,7 @@ export function PageViewer({ documents, target }: { documents: DocumentDto[]; ta
       <div ref={scrollRef} tabIndex={0} aria-label={`${doc.filename}, page ${page} of ${pages}`} className="relative min-h-0 flex-1 overflow-auto bg-sunken p-4">
         {src.data && failed !== src.data ? (
           <div className="relative mx-auto" style={{ width: `${zoom * 100}%` }}>
-            {/* Page images are dynamic API/data URLs; next/image adds nothing here. */}
+            {/* Page images are dynamic API URLs; next/image adds nothing here. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={src.data} alt={`${doc.filename}, page ${page}`} onLoad={toBox} onError={() => setFailed(src.data)} className="block w-full rounded-md bg-surface shadow-card" />
             {box && (

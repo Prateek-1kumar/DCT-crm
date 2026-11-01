@@ -107,18 +107,26 @@ export function visualLines(words: Word[]): Word[][] {
 }
 
 /**
- * The words a page prints to the right of a spot, on its own line (a table row: a fee's frequency beside its amount),
- * from the PDF's own text or our OCR, never hidden text. `box`: the spot, in fractions of the page as evidence holds it.
- * Null when the page has no such words.
+ * The words a page prints right of a spot in its own cell (a table row: a fee's frequency beside its amount), from the
+ * PDF's own text or our OCR, never hidden text. `box`: the spot, in fractions of the page as evidence holds it. Only the
+ * first run of words: a gap wider than the spot's own height ends it, and so does the edge of a ruled table the spot sits
+ * in, so a two-column page's other column ("…paid once the site…") is never read as this row's words. Null when the page
+ * has no such words.
  */
 export function besideOnLine(pages: TextPage[], at: { documentId: string; page: number; box: [number, number, number, number] | null }): string | null {
   const p = pages.find((x) => x.documentId === at.documentId && x.page === at.page && (x.source === "text" || x.source === "ocr"));
   if (!p || !at.box) return null;
   const [x, y, w, h] = at.box;
-  const [right, mid] = [(x + w) * p.width, (y + h / 2) * p.height];
+  const [left, right, mid, height] = [x * p.width, (x + w) * p.width, (y + h / 2) * p.height, h * p.height];
+  const table = p.grids?.find((g) => g.box[0] <= left && right <= g.box[2] && g.box[1] <= mid && mid <= g.box[3]);
   const line = visualLines(p.words.filter((v) => !v.hidden && v.dir === 0)).find((l) => l.some((v) => v.rect[1] <= mid && mid <= v.rect[3]));
-  const words = line?.filter((v) => v.rect[0] >= right - 0.5).map((v) => v.text) ?? [];
-  return words.length ? words.join(" ") : null;
+  const words: Word[] = [];
+  for (const v of line ?? []) {
+    if (v.rect[0] < right - 0.5) continue;
+    if ((table && v.rect[2] > table.box[2] + 0.5) || (words.length && v.rect[0] - words.at(-1)!.rect[2] > height)) break;
+    words.push(v);
+  }
+  return words.length ? words.map((v) => v.text).join(" ") : null;
 }
 
 // ---------- money-relevant inventory (ADR-001 §3) ----------

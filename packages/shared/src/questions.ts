@@ -7,8 +7,8 @@ import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail,
 
 /**
  * The review lists that aren't flags (ADR-001 §6): the interpretations a person picks after every read, the table and
- * blank checks, one-value questions, and what we suggest for each (ADR-003). Pure, so the API and the in-browser sample
- * server ask and refuse exactly the same.
+ * blank checks, one-value questions, and what we suggest for each (ADR-003). Pure, so the
+ * API and the web ask and refuse by one rule.
  */
 
 export const INTERPRETATION = "INTERPRETATION";
@@ -91,23 +91,30 @@ function fields(rb: Rulebook, amendment: boolean, retroactive: boolean): Field[]
 }
 
 const pageOf = (r: { documentId: string; page: number }): PageBox => ({ documentId: r.documentId, page: r.page, box: null });
-/** Whether an anomaly (or a note's path, "/overhead/appliesTo") is about the value at `path`. */
-const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a.path === path || `${a.path}/value` === path);
+/**
+ * Whether an anomaly is about the value at `path`: that value, or anything holding it. The read flags a {value, prov}
+ * wrapper ("/overhead/appliesTo"), a cap ("/invoiceables/0/cap") or a whole fee ("/siteFees/1"), and the field under it
+ * must still be asked as unclear, never taken as stated outright.
+ */
+const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a.path === path || path.startsWith(`${a.path}/`));
 
 /**
  * One pick per interpretation field, next to its quote, nothing preselected; the read's value is shown as our suggestion
  * (suggest). An AMBIGUOUS_TERM
- * about the same value is this question, marked ambiguous (reason AMBIGUOUS_TERM, its message first, and no "not
- * stated"); a RETROACTIVE_NO_DATE is the start-date question. `amendment`: the read includes an amendment.
+ * about the same value, or about anything holding it (a cap, a fee, a section: `about`), is this question, marked
+ * ambiguous (reason AMBIGUOUS_TERM, its message first, and no "not stated"); a RETROACTIVE_NO_DATE is the start-date
+ * question. `amendment`: the read includes an amendment.
  *
  * Two tiers (ADR-002 §4). A clause that states a parameter outright is not asked: the field is "explicit and confirmed"
  * when all of these hold, and then it's an ordinary confirmed value: (1) the
  * read gives a value that isn't "not stated"; (2) the read cites the clause's exact words (`prov.source.quote`); (3) the
  * figure that decides the field (`Field.stated`) is confirmed (`confirmed` or `confirmed_by_math`) in `evidence`, which
- * the binder gives only for a figure found inside that quote on the cited page; (4) no AMBIGUOUS_TERM or
- * RETROACTIVE_NO_DATE is about it. Everything else keeps its question: a clause that is silent, conditional or worded two
- * ways, any field with no deciding figure (overhead scope, how visits are paid, a fee's trigger, a count cap, the screen-fail
- * terms, rounding, the holdback's scope), and any read made without `evidence`.
+ * the binder gives only for a figure found inside that quote on the cited page; or, for a fee's trigger, its row prints
+ * words beside its confirmed amount (`opts.printed`) that name one trigger, the read's (`triggerOf`, ADR-003); (4) no
+ * AMBIGUOUS_TERM or RETROACTIVE_NO_DATE is about it. Everything else keeps its question: a clause that is silent,
+ * conditional or worded two ways, any field with no deciding figure (overhead scope, how visits are paid, a fee's trigger
+ * with no such words, a count cap, the screen-fail terms, rounding, the holdback's scope), and any read made without
+ * `evidence`.
  */
 export function interpretations(
   rb: Rulebook,
@@ -151,20 +158,29 @@ type Trigger = Rulebook["siteFees"][number]["trigger"];
 /**
  * The one trigger a fee's printed frequency names, by fixed, generic phrases ("one-time payment", "per year", "per sample",
  * "at close-out"), or null when it names none or more than one ("paid per terms of the exhibit": per what?). Never a guess:
- * a phrase that could mean two triggers leaves the question asked.
+ * a match skips the "When is the fee billed?" question, so anything that could mean another trigger leaves it asked.
  */
 export function triggerOf(words: string): Trigger | null {
   const t = words.toLowerCase();
+  // a period the triggers don't hold ("per month", "quarterly"): billed by none of them, so a person says how
+  if (/\b(?:per|each|every|a)\s+(?:calendar\s+)?(?:month|quarter|week|day)\b|\b(?:monthly|quarterly|weekly|daily|semi[\s-]?annual(?:ly)?|bi[\s-]?annual(?:ly)?)\b/.test(t)) return null;
+  // "execution of each amendment" is a later document's signing, not the agreement's
+  if (/\bexecution\b/.test(t) && /\b(?:amendments?|renewals?|extensions?)\b/.test(t)) return null;
   const hits = new Set<Trigger>();
-  if (/\bone[\s-]?time\b|\bonce\b/.test(t)) hits.add("one_time");
+  // not bare "once": "paid once the IRB approves" is a condition, not a single payment
+  if (/\bone[\s-]?time\b|\bonce\s+only\b|\bonly\s+once\b|\bsingle\s+(?:payment|fee)\b|\bnon[\s-]?recurring\b/.test(t)) hits.add("one_time");
   if (/\b(?:per|each|every)\s+(?:year|annum)\b|\bannual(?:ly)?\b|\byearly\b/.test(t)) hits.add("annual");
   if (/\bclose[\s-]?out\b/.test(t)) hits.add("closeout");
   if (/\b(?:study|site)\s+initiation\b/.test(t)) hits.add("study_initiation");
   if (/\bexecution\b/.test(t)) hits.add("agreement_execution");
   if (/\bregulatory\s+(?:package|documents?)\b/.test(t)) hits.add("regulatory_package");
   if (/\bactual\s+cost|\bas\s+incurred\b|\bat\s+cost\b/.test(t)) hits.add("actual_cost");
-  // per event: "per <thing>" or "each <thing>", once nothing above names the event; "per terms" names none
-  if (/\b(?:per|each)\s+(?!terms?\b|the\b|year\b|annum\b)[a-z]+/.test(t)) hits.add("per_event");
+  // Per event only for a countable thing on this list, a word or two after "per", "each" or "every" ("per enrolled
+  // patient"), and never beside a reference to a document or its terms: "per Exhibit B", "per protocol" and "per site"
+  // name no event. An allow-list fails closed: a new kind of event is asked, never guessed.
+  const reference = /\b(?:exhibits?|sections?|schedules?|appendix|appendices|attachments?|articles?|paragraphs?|clauses?|protocol|agreement|contract|budget|terms?)\b/.test(t);
+  const event = /\b(?:per|each|every)\s+(?:[a-z-]+\s+){0,2}?(?:patients?|subjects?|participants?|visits?|samples?|specimens?|occurrences?|events?|procedures?|submissions?|resubmissions?|amendments?|shipments?|hours?|miles?|saes?|kits?|scans?|ads?|reports?|pickups?)\b/;
+  if (!reference && event.test(t)) hits.add("per_event");
   if (hits.size > 1 && hits.has("per_event") && [...hits].some((h) => h !== "per_event" && h !== "one_time")) hits.delete("per_event");
   return hits.size === 1 ? [...hits][0]! : null;
 }
@@ -227,7 +243,7 @@ export function capFollowUps(
 export const noLimit = (rb: unknown, path: string) => /\/cap\/(?:n|ratio)$/.test(path) && valueAt(rb, path.replace(/(?:n|ratio)$/, "kind")) === "none";
 
 /**
- * Typing by hand (PATCH …/values, the API and the sample server alike): what's refused when a typed value at `path`
+ * Typing by hand (PATCH …/values): what's refused when a typed value at `path`
  * leaves a cap it touches with "No limit" and a limit or ratio, `after` being the master with it, `before` without. The
  * export bills such a cap as "No cap", and its figure could never be re-typed (answerQuestion refuses one there), so
  * it's refused whichever is typed second, the figure or the kind. A cap that was so already (typed before this rule)

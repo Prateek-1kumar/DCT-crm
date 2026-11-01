@@ -80,7 +80,7 @@ function fresh(): AnswerDraft {
 }
 const ask = (d: AnswerDraft) => (p: string, id: string, reason: string) => askAbout(d.rulebook, d.evidence, p, id, reason);
 const noFindings = () => [] as ContractAnomaly[];
-/** What the API and the sample server do for one answer. */
+/** What the API does for one answer. */
 function answerIt(d: AnswerDraft, body: object, checks: (rb: Rulebook) => ContractAnomaly[] = noFindings, itemId = check.id) {
   const r = answerQuestion(d, itemId, { by: "Asha", ...body }, { isoDate, now: "2026-01-01T00:00:00Z" });
   if ("refusal" in r || r.unchanged) return r;

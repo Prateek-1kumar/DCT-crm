@@ -13,13 +13,14 @@ import {
   proofreadMarks,
   type ReviewItem,
   type Rulebook,
+  PAGE_OPTIONS,
   signOffRefusal,
   suggest,
+  upgradeReview,
   type ValueEvidence,
 } from "../src";
 
-// The review rules the API and the in-browser sample server both run (answer.ts, problems.ts, questions.ts, diff.ts):
-// what each server passes in is the same, so one table here stands for both.
+// The review rules the API runs (answer.ts, problems.ts, questions.ts, diff.ts), and the web where it shows them.
 
 const prov = { source: { documentId: "d1", page: 3 }, confidence: 0.9, method: "ai" as const, crossCheck: "not_checked" as const };
 const s = <T>(value: T) => ({ value, prov });
@@ -55,11 +56,14 @@ function rulebook(): Rulebook {
 }
 const ev = (path: string, status: ValueEvidence["status"], printed: string | null = null): ValueEvidence => ({ path, status, where: [], printed, note: null });
 
-/** A draft whose only question is `item`, the PDF's text printing `printed` at its value's spot. */
+/**
+ * A draft whose only question is `item`, the PDF's text printing `printed` at its value's spot (a conflict), or nothing
+ * there at all (null: a scan, a value the check didn't find).
+ */
 function draft(item: (rb: Rulebook) => ReviewItem, printed: string | null = null, extra: Partial<AnswerDraft> = {}): AnswerDraft {
   const rb = rulebook();
   const i = item(rb);
-  return { version: 1, byHand: false, rulebook: rb, review: [i], evidence: i.path ? [ev(i.path, "conflict", printed)] : [], editors: [], ...extra };
+  return { version: 1, byHand: false, rulebook: rb, review: [i], evidence: i.path ? [ev(i.path, printed === null ? "ungrounded" : "conflict", printed)] : [], editors: [], ...extra };
 }
 const reported = (path: string, reason = "reported") => (rb: Rulebook) => askAbout(rb, [], path, "q", reason);
 const answer = (d: AnswerDraft, body: Record<string, unknown>) => answerQuestion(d, "q", { by: "Sam", ...body }, { isoDate, now: "2026-10-29T09:00:00.000Z" });
@@ -83,6 +87,11 @@ describe("answerQuestion", () => {
     ["nobody named is refused", () => draft(reported(NET)), [{ value: 45, by: "" }], { status: 400, message: "Say who is answering." }],
     ["a yes/no pick other than the value held differs", () => draft(reported(`${GRID}/visits/0/autopay`)), [{ optionId: "false" }], "differs"],
     ["…and the second pick needs a note saying where the page prints it", () => draft(reported(`${GRID}/visits/0/autopay`)), [{ optionId: "false" }, { optionId: "false" }], { status: 400, message: "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note." }],
+    // after "differs", only the same answer again (or the PDF's) settles it: a third value is a new answer, checked again
+    ["a different value after a differs is checked again, note or not", () => draft(reported(NET), "45"), [{ value: 30 }, { value: 31, note: "§4.2" }], "differs"],
+    ["…and settles once it's typed again", () => draft(reported(NET), "45"), [{ value: 30 }, { value: 31, note: "§4.2" }, { value: 31, note: "§4.2" }], "chosen"],
+    ["a different pick after a differs is checked again", () => draft(reported("/payment/visitPayment/value")), [{ optionId: "invoice" }, { optionId: "mixed", note: "page 4" }], "differs"],
+    ["…the same pick again settles it", () => draft(reported("/payment/visitPayment/value")), [{ optionId: "invoice" }, { optionId: "invoice", note: "page 4" }], "chosen"],
   ];
   it.each(cases)("%s", (_, start, bodies, expected) => expect(outcomeOf(answers(start(), ...bodies))).toEqual(expected));
 
@@ -132,13 +141,14 @@ describe("followUps", () => {
 
 describe("signOffRefusal", () => {
   const settledItem = { ...askAbout(rulebook(), [], "/payment/netDays/value", "q", "reported"), outcome: "matched" as const };
-  const ready = { version: 2, status: "draft", rulebook: rulebook(), updatedAt: "t1", byHand: false, review: [settledItem], evidence: [ev("/x", "confirmed")], proofread: [], editors: ["Asha"] };
+  const ready = { version: 2, status: "draft", rulebook: rulebook(), updatedAt: "t1", byHand: false, typingDoneAt: null, review: [settledItem], evidence: [ev("/x", "confirmed")], proofread: [], editors: ["Asha"] };
   const as = { asOf: "t1", by: "Ben", makerChecker: true };
   it.each([
     ["approves a draft as seen, every question settled, every number backed, by someone else", ready, as, null],
     ["not an approved version", { ...ready, status: "signed" }, as, "Version 2 is signed and immutable; changes need a new version (amendment)"],
     ["not one changed since it was opened", ready, { ...as, asOf: "t0" }, "This contract changed since you opened it. Check it again."],
     ["not typing still being done", { ...ready, byHand: true, review: [] }, as, "Typing isn't marked done yet. Mark it done when every value is typed."],
+    ["typing marked done with nothing left to ask", { ...ready, byHand: true, typingDoneAt: "t0", review: [] }, as, null],
     ["not with a question left can't tell", { ...ready, review: [{ ...settledItem, outcome: "cant_tell" as const }] }, as, "1 question still needs an answer before this can be approved."],
     ["not with a number nobody backs", { ...ready, evidence: [ev("/x", "ungrounded"), ev("/y", "conflict")] }, as, "2 numbers aren't confirmed by the PDF, the contract's own totals or a person yet."],
     ["a number the contract's own totals confirm counts as backed", { ...ready, evidence: [ev("/x", "confirmed_by_math"), ev("/y", "attested")] }, as, null],
@@ -199,6 +209,20 @@ describe("suggest (ADR-003): what we suggest is shown, and taking it settles the
     expect(suggest(yes.review[0]!, yes)).toMatchObject({ optionId: String(at(yes.rulebook, `${GRID}/visits/0/autopay`)), why: "What we read." });
   });
 
+  it("nothing to take where the PDF's text contradicts our reading with no one figure, and our reading never matches there", () => {
+    // the binder's conflict when the page prints several figures, none of them ours: no printed value, or one that won't parse
+    for (const printed of [null, "$3,000.00 $4,500.00"]) {
+      const FEE = "/siteFees/0/amountCents"; // the read holds $5,000.00
+      const d = draft(reported(FEE));
+      d.evidence = [ev(FEE, "conflict", printed)];
+      expect(suggest(d.review[0]!, d)).toBeNull();
+      expect(outcomeOf(answer(d, { value: 500000 }))).toBe("differs");
+      expect(answer(d, { value: 500000 })).toEqual({ refusal: { status: 400, message: "Add a short note saying where the page prints this value. The PDF's text can't confirm it, so the approver relies on your note." } });
+      const r = answer(d, { value: 500000, note: "Clause 4, first figure" });
+      expect([outcomeOf(r), d.review[0]!.answer?.noPdfText, d.evidence[0]!.status]).toEqual(["chosen", true, "attested"]);
+    }
+  });
+
   it("nothing for a missing value, or a question already settled", () => {
     const missing = draft((rb) => askAbout(rb, [], NET, "q", "REQUIRED_MISSING"));
     expect(suggest(missing.review[0]!, missing)).toBeNull();
@@ -213,7 +237,8 @@ describe("no question with one possible answer (ADR-003 C3)", () => {
     ({ id: `${code}:${path ?? ""}`, code, severity, message, path, refs: [{ documentId: "d1", page: 7 }], detail: {}, resolution: null });
   const found = [
     anomaly("HEADER_MISMATCH", `${GRID}/header/investigator`, 'Exhibit A: grid header names PI "Dr. B", contract PI is "Dr. A"'),
-    anomaly("AMBIGUOUS_TERM", "/siteFees", "Ambiguous: site cost amounts may or may not include overhead", "warning"),
+    // no path: nothing the master holds (one on "/siteFees" asks the fees' triggers: questions.test.ts)
+    anomaly("AMBIGUOUS_TERM", null, "Ambiguous: site cost amounts may or may not include overhead", "warning"),
     anomaly("UNREADABLE_PAGE", null, "Page 7 of document d1 could not be read; enter its values manually if it has any"),
   ];
 
@@ -241,5 +266,52 @@ describe("no question with one possible answer (ADR-003 C3)", () => {
     expect(page).toMatchObject({ kind: "unaccounted", question: "Page 7 couldn't be read, so it can't be searched for money terms. Does it have any that the invoicing master doesn't hold?" });
     const d: AnswerDraft = { version: 1, byHand: false, rulebook: rb, review: [{ ...page!, id: "q" }], evidence: [], editors: [] };
     expect(answer(d, { optionId: "bill_by_hand", note: "Courier, $95 per pickup" })).toMatchObject({ outcome: "chosen", listed: { added: "Page 7 of “Work order”" } });
+  });
+});
+
+describe("upgradeReview: a draft saved before ADR-003 is asked by today's rules", () => {
+  const CELL = `${GRID}/procedures/0/cells/V1`;
+  const UNIT = `${GRID}/procedures/0/unitCents`;
+  const NET = "/payment/netDays/value";
+  const page7 = [{ documentId: "d1", page: 7, box: null }];
+  const answered = { by: "Asha", at: "t" };
+  // the shapes as they were stored: a sample miss, an open sample and re-type, a one-click "go ahead" page, a header question
+  const old = () => {
+    const rb = rulebook();
+    const evidence = [ev(CELL, "attested"), ev(UNIT, "confirmed", "$100.00"), ev(NET, "confirmed", "45")];
+    const review = [
+      { ...askAbout(rb, evidence, CELL, `sample:${CELL}`, "SAMPLE"), outcome: "chosen" as const, answer: { value: 9800, note: "page 3", ...answered }, missed: true, retyped: true },
+      askAbout(rb, evidence, NET, `sample:${NET}`, "SAMPLE"),
+      askAbout(rb, evidence, NET, `spot:${NET}`, "spot_check"),
+      { id: "anomaly:UNREADABLE_PAGE:", kind: "contract_problem" as const, reason: "UNREADABLE_PAGE", path: null, question: "Page 7 could not be read. Go ahead with the contract as printed?", input: null, options: [{ id: "as_printed", label: "Yes, go ahead as printed" }], where: page7, blocking: true, answer: { optionId: "as_printed", ...answered }, outcome: "chosen" as const, compare: null, sentBack: null },
+      { id: "anomaly:HEADER_MISMATCH:x", kind: "contract_problem" as const, reason: "HEADER_MISMATCH", path: `${GRID}/header/investigator`, question: "The grid names Dr. B. Go ahead?", input: null, options: [{ id: "as_printed", label: "Yes" }], where: page7, blocking: true, answer: null, outcome: null, compare: null, sentBack: null },
+    ] as ReviewItem[];
+    return { version: 1, status: "draft", rulebook: rb, updatedAt: "t", byHand: false, review, evidence, proofread: [] as { path: string; by: string; at: string }[], editors: ["Asha"] };
+  };
+  const gate = (v: ReturnType<typeof old>) => signOffRefusal(v, { asOf: "t", by: "Ben", makerChecker: true });
+
+  it("a sample miss asks each value of its kind still only checked by machine; a page is asked again; a notice isn't asked", () => {
+    const v = old();
+    expect(gate({ ...v, review: [v.review[0]!] })).toBeNull(); // before: a miss approved without the proofread the old rule required
+    const review = upgradeReview(v);
+    expect(review.map((i) => [i.id, i.reason, i.outcome])).toEqual([
+      [`sample:${CELL}`, "SAMPLE", "chosen"],
+      ["anomaly:UNREADABLE_PAGE:", "UNREADABLE_PAGE", null],
+      [`miss:${UNIT}`, "SAMPLE_MISS", null],
+    ]);
+    expect(review[1]).toMatchObject({ kind: "unaccounted", options: PAGE_OPTIONS, answer: null, where: page7 });
+    expect(review[2]).toMatchObject({ path: UNIT, blocking: true, answer: null });
+    expect(gate({ ...v, review })).toBe("2 questions still need an answer before this can be approved.");
+    // the same on every load, and nothing asked of a value already proofread
+    expect(upgradeReview({ ...v, review })).toEqual(review);
+    expect(upgradeReview({ ...v, proofread: [{ path: UNIT, by: "Ben", at: "t" }] }).map((i) => i.id)).not.toContain(`miss:${UNIT}`);
+  });
+
+  it("a sample whose first answer differed counts as a miss; a signed version is never changed", () => {
+    const v = old();
+    const evidence = [ev(CELL, "confirmed", "$100.00"), ...v.evidence.slice(1)];
+    const differing = { ...askAbout(v.rulebook, evidence, CELL, `sample:${CELL}`, "SAMPLE"), outcome: "differs" as const, answer: { value: 9800, ...answered }, retyped: true } as ReviewItem;
+    expect(upgradeReview({ ...v, evidence, review: [differing] }).map((i) => i.id)).toEqual([`sample:${CELL}`, `miss:${UNIT}`]);
+    expect(upgradeReview({ ...v, status: "signed" })).toBe(v.review);
   });
 });

@@ -231,9 +231,17 @@ export async function runIdentify({ db, log }: JobCtx, { jobId, studyId }: Ident
       // read under the study's lock, so details someone confirmed even a moment ago are never overwritten by a guess
       const s = await lockStudy(tx, studyId);
       if (!(await lockLive(tx, jobId))) return; // another run of this job got there first
+      // A guess fills only a kind still at its starting "other": never one a person set (document.kind_set, "other" on
+      // purpose too), and never one a file shared with another study already has. Documents after the study and the
+      // job, as PATCH /documents takes them.
+      // ponytail: the audit check scans kind_set entries (no index on action); an index on (action) if the log gets large.
       for (const d of docs) {
         const kind = documentKinds[d.id];
-        if (kind) await tx.update(documents).set({ kind }).where(eq(documents.id, d.id));
+        if (kind)
+          await tx
+            .update(documents)
+            .set({ kind })
+            .where(and(eq(documents.id, d.id), eq(documents.kind, "other"), sql`NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.action = 'document.kind_set' AND a.detail->>'documentId' = ${d.id})`));
       }
       await tx
         .update(studies)
@@ -313,7 +321,7 @@ export async function runExtract({ db, log }: JobCtx, { jobId, studyId, version 
       nonFee: out.nonFee,
     });
     const { evidence, review, pdfCheck } = checked;
-    // each skipped correction with where it's asked again, so the log withholds it while that question is open
+    // each skipped correction with where it's asked again, so the log says it wasn't carried and where it's asked
     const carriedDetail =
       carried && live
         ? { version, from: live.version, carried: carried.carried, skipped: checked.skipped, grid: { from: carried.liveRb.governingGridIds.length ? carried.liveRb.governingGridIds : [carried.liveRb.governingGridId].filter(Boolean), to: carried.grids } }

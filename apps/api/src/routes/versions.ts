@@ -23,14 +23,17 @@ import {
   SendBackBody,
   SignOffBody,
   openPaths,
+  Person,
+  samePerson,
   searchVersion,
   signOffRefusal,
+  staleBudgetCheck,
   tableSendBackRefusal,
   typingDone,
   type ValueEvidence,
   versionDiff,
 } from "@dct/shared";
-import { buildWorkbook, readSheets } from "@dct/shared/xlsx";
+import { buildWorkbook, MAX_SHEET_BYTES, readSheets } from "@dct/shared/xlsx";
 import { and, desc, eq } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { createHash } from "node:crypto";
@@ -39,7 +42,7 @@ import type { Ctx } from "../app.js";
 import { rulebookVersions, settings } from "../db/schema.js";
 import { audit, CORRECTION_OPENED, loadVersion, raiseAlert, refreshStudyStatus, touched, versionDto } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
-import { HttpError, notFound, parse } from "../lib/http.js";
+import { HttpError, notFound } from "../lib/http.js";
 import { fingerprintOf, write } from "../lib/idempotency.js";
 import { parsePointer, setAt } from "../lib/pointer.js";
 import { answer, askAbout, at, empty, leaf } from "../review.js";
@@ -62,7 +65,7 @@ export const versionRoutes =
       return row as typeof row & { rulebook: Rulebook };
     }
 
-    /** One document, so searched in the app with the same matcher the in-browser sample server uses. */
+    /** One document, so searched in the app with the same matcher as @dct/shared searchVersion. */
     app.get<P & { Querystring: { q?: string } }>("/studies/:id/versions/:v/search", async (req): Promise<MasterSearch> => {
       const row = await withRulebook(req.params.id, req.params.v);
       const q = text(req.query.q);
@@ -113,10 +116,10 @@ export const versionRoutes =
       write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         if (row.status !== "draft" || !row.byHand || !row.rulebook) throw new HttpError(409, "Values can only be typed on a contract being typed in by hand. Use “This looks wrong” instead.");
-        if (row.review.length) throw new HttpError(409, "Typing is marked done. Use “This looks wrong” to change a value.");
+        if (row.typingDoneAt) throw new HttpError(409, "Typing is marked done. Use “This looks wrong” to change a value.");
         const body = CorrectValueBody.safeParse(req.body);
         if (!body.success) throw new HttpError(400, bodyProblem(body.error, BODY_WORDS.values));
-        const { path, value, by } = body.data;
+        const { path, value, note, by } = body.data;
         const tokens = parsePointer(path);
         const before = at(row.rulebook, path);
         if (before === undefined && tokens.at(-2) !== "cells") throw new HttpError(400, `Unknown field ${path}`);
@@ -148,21 +151,23 @@ export const versionRoutes =
           })
           .filter((e) => e.path !== path && at(rb, e.path) !== undefined);
         if (leaf(after) && !empty(after)) evidence.push({ path, status: "attested", where: [], printed: null, note: `Typed by hand by ${by}` });
-        const editors = row.editors.includes(by) ? row.editors : [...row.editors, by];
+        const editors = row.editors.some((e) => samePerson(e, by)) ? row.editors : [...row.editors, by];
+        // a budget check made before a price changed no longer holds (staleBudgetCheck)
+        const warnings = isDeepStrictEqual(row.rulebook.budgetGrids, rb.budgetGrids) ? row.warnings : staleBudgetCheck(row.warnings);
         const [updated] = await tx
           .update(rulebookVersions)
-          .set({ rulebook: rb, evidence, editors, appliesFrom: appliesFromOf(rb), updatedAt: touched(row.updatedAt) })
+          .set({ rulebook: rb, evidence, editors, warnings, appliesFrom: appliesFromOf(rb), updatedAt: touched(row.updatedAt) })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
         // A row or visit added or removed is logged too, by its size: the master changed shape.
-        await audit(tx, by, row.studyId, "value.typed", { version: row.version, path, value: labelFor(rb, path), ...(leaf(after) ? { before: before ?? null, after } : { items: Array.isArray(after) ? after.length : null }) });
+        await audit(tx, by, row.studyId, "value.typed", { version: row.version, path, value: labelFor(rb, path), note, ...(leaf(after) ? { before: before ?? null, after } : { items: Array.isArray(after) ? after.length : null }) });
         return versionDto(updated!);
       }),
     );
 
     /**
-     * Typing is done (typingDone, @dct/shared, as the sample server): the contract's checks run on what was typed, as
+     * Typing is done (typingDone, @dct/shared): the contract's checks run on what was typed, as
      * after a read, and everything nobody typed or picked (a placeholder of the blank form) is asked as a missing value.
      */
     app.post<P>("/studies/:id/versions/:v/by-hand/done", async (req, reply) => {
@@ -173,7 +178,8 @@ export const versionRoutes =
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         const done = typingDone(row, { checks: (rb) => port.runContractChecks(rb) });
         if ("refusal" in done) throw new HttpError(done.refusal.status, done.refusal.message);
-        const [updated] = await tx.update(rulebookVersions).set({ review: done.review, anomalies: done.anomalies, updatedAt: touched(row.updatedAt) }).where(eq(rulebookVersions.id, row.id)).returning();
+        const now = touched(row.updatedAt);
+        const [updated] = await tx.update(rulebookVersions).set({ review: done.review, anomalies: done.anomalies, typingDoneAt: now, updatedAt: now }).where(eq(rulebookVersions.id, row.id)).returning();
         await refreshStudyStatus(tx, row.studyId, body.data.by);
         await audit(tx, body.data.by, row.studyId, "byhand.done", done.detail);
         return versionDto(updated!);
@@ -197,7 +203,11 @@ export const versionRoutes =
         const reopened = followUps(draft, answered, (rb) => port.runContractChecks(rb), (p, id, reason) => askAbout(draft.rulebook, draft.evidence, p, id, reason));
         const [updated] = await tx
           .update(rulebookVersions)
-          .set({ rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: touched(row.updatedAt) })
+          .set({
+            rulebook: draft.rulebook, review: draft.review, evidence: draft.evidence, editors: draft.editors, appliesFrom: appliesFromOf(draft.rulebook), updatedAt: touched(row.updatedAt),
+            // a budget check made before a price changed no longer holds (staleBudgetCheck)
+            warnings: isDeepStrictEqual(row.rulebook.budgetGrids, draft.rulebook.budgetGrids) ? row.warnings : staleBudgetCheck(row.warnings),
+          })
           .where(eq(rulebookVersions.id, row.id))
           .returning();
         await refreshStudyStatus(tx, row.studyId, by);
@@ -240,10 +250,10 @@ export const versionRoutes =
           )[0]!;
           await audit(tx, by, row.studyId, CORRECTION_OPENED, { version: draft.version, seededFromVersion: row.version });
         } else if (row.status !== "draft") throw new HttpError(409, `Version ${row.version} is ${row.status}; report a value on the live version or a draft.`);
-        else if (row.byHand && !row.review.length) throw new HttpError(409, "Typing isn't marked done yet: change the value in the form instead.");
+        else if (row.byHand && !row.typingDoneAt) throw new HttpError(409, "Typing isn't marked done yet: change the value in the form instead.");
         // asked already, or decided by a question (a cap's limit while its kind is asked)
         if (openPaths(draft).includes(path)) throw new HttpError(409, "There's already an open question about this value.");
-        // the note goes with the question, so whoever answers it sees why (its numbers blanked until it's settled)
+        // the note goes with the question, so whoever answers it sees why
         const item = { ...askAbout(draft.rulebook!, draft.evidence, path, `reported:${draft.review.length + 1}`, "reported"), reported: { by, note, at: new Date().toISOString() } };
         const [updated] = await tx.update(rulebookVersions).set({ review: [...draft.review, item], updatedAt: touched(draft.updatedAt) }).where(eq(rulebookVersions.id, draft.id)).returning();
         await refreshStudyStatus(tx, row.studyId, by);
@@ -286,11 +296,15 @@ export const versionRoutes =
         } else if (!file) file = { name: (part.filename || "budget.xlsx").slice(0, 255), buf: await part.toBuffer() };
         else await part.toBuffer();
       }
-      if (!by) throw new HttpError(400, "Say who is checking.");
+      if (!Person.safeParse(by).success) throw new HttpError(400, BODY_WORDS.budgetCheck.by);
       if (!file) throw new HttpError(400, "Choose the budget spreadsheet (.xlsx) to check.");
       // an .xlsx is a zip; anything else (an old .xls, a PDF, a CSV) isn't read
       if (file.buf.subarray(0, 4).toString("latin1") !== "PK\u0003\u0004") throw new HttpError(415, `${file.name} isn't an Excel spreadsheet (.xlsx).`);
-      const sheets = await readSheets(file.buf.buffer.slice(file.buf.byteOffset, file.buf.byteOffset + file.buf.byteLength) as ArrayBuffer).catch(() => null);
+      const sheets = await readSheets(file.buf).catch((e: Error) => {
+        if (e.name === "SpreadsheetTooLargeError")
+          throw new HttpError(413, `${file.name} is too big to check: it unpacks to more than ${MAX_SHEET_BYTES / 1024 / 1024} MB. Save a copy with only the budget sheet and check that.`);
+        return null;
+      });
       if (!sheets) throw new HttpError(422, `${file.name} couldn't be read as a spreadsheet. Save it again from Excel as .xlsx and try once more.`);
       const sha256 = createHash("sha256").update(file.buf).digest("hex");
       const { name } = file;
@@ -351,7 +365,9 @@ export const versionRoutes =
 
     /** Approval (ADR-001 I1–I6): refused, with what to do, by the gate the approve page explains (signOffRefusal). */
     app.post<P>("/studies/:id/versions/:v/sign-off", async (req, reply) => {
-      const body = parse(SignOffBody, req.body);
+      const parsed = SignOffBody.safeParse(req.body);
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.signOff));
+      const body = parsed.data;
       return write(db, req, reply, async (tx) => {
         const row = await loadVersion(tx, req.params.id, versionNo(req.params.v), true);
         const [cfg] = await tx.select().from(settings).where(eq(settings.id, 1));

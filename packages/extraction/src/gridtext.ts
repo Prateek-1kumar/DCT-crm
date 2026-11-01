@@ -24,6 +24,8 @@ export type TextGrid = {
   /** The identities checked and the ones that failed, in words for a log: never contract text. */
   checked: number;
   failed: string[];
+  /** Every page its tables sit on, a failed one's too: the caller keeps the model's read of a page any failed grid touches. */
+  pages: number[];
 };
 
 const NUM = /^\(?\$?\d[\d,]*(?:\.\d+)?\)?$/;
@@ -98,20 +100,53 @@ function blocksOf(page: TextPage, carry: Block | null): Block[] {
   return blocks;
 }
 
+/** `qty` in hundredths, as `parseCents` reads it ("3" is 300), so a row's identity is integer arithmetic. */
 type Row = { code: string | null; name: string; qty: number | null; unit: number; cells: Record<string, number>; oh: boolean; section: Block["section"]; page: number };
 type Sum = { label: string; values: Map<string, number>; first: number | null; pct: number | null; section: Block["section"]; page: number };
 
-/** One block's procedure rows and summary rows, each label made of the label lines nearest its number line. */
-function rowsOf(b: Block): { rows: Row[]; sums: Sum[] } | null {
+/**
+ * One block's procedure rows and summary rows, each label made of the label lines nearest its number line, and what it
+ * couldn't account for (`failed`): a table it can't read whole is failed, never read in part, since nothing reads what it drops.
+ */
+function rowsOf(b: Block): { rows: Row[]; sums: Sum[]; failed: string[] } {
   const unit = b.roles.indexOf("unit");
-  if (unit < 0) return null;
+  if (unit < 0) return { rows: [], sums: [], failed: [`page ${b.page.page}: a table with no unit price column`] };
   const visits = b.cols.flatMap((c, i) => (b.roles[i] === "visit" && i > unit ? [{ c, i }] : []));
-  if (!visits.length) return null;
+  if (!visits.length) return { rows: [], sums: [], failed: [`page ${b.page.page}: a table with no visit columns`] };
+  const failed: string[] = [];
   // a row's label is everything left of its first figure column (quantity or unit price), numbers in a name included
   const figureAt = b.cols.find((_, i) => b.roles[i] === "qty" || b.roles[i] === "unit")!.x0;
   // half the narrowest step between neighbouring columns: a number belongs to one column at most
   const slack = Math.max(2, Math.min(...b.cols.slice(1).map((c, i) => (c.c - b.cols[i]!.c) / 2)));
+  /** The column a word sits in: the nearest by centre, if it falls in it at all; else -1. */
+  const colOf = (w: W) => {
+    const i = b.cols.reduce((best, k, j) => (Math.abs(k.c - w.cx) < Math.abs(b.cols[best]!.c - w.cx) ? j : best), 0);
+    return inCol(w, b.cols[i]!, slack) ? i : -1;
+  };
+  // Every figure column (from the quantity or unit price rightwards) is one the read accounts for: left of the unit price a
+  // quantity or a total, right of it a visit or a total. An unlabelled column, a second price column or a quantity among the
+  // visits would be dropped or mistaken for another, so it fails the table. Numbers left of the figure columns are the label's.
+  // With no quantity column the unit price is in no identity, so it is kept only when it is the one column of figures anywhere
+  // in the table the headers name a price: the binder then confirms what that column prints, as it would the model's read.
+  const used = new Set(b.lines.flatMap((l) => l.nums.map(colOf)));
+  for (const i of new Set(b.lines.flatMap((l) => l.nums.filter((w) => w.rect[0] >= figureAt - 1).map(colOf)))) {
+    if (i >= 0 && i !== unit && !(i < unit ? ["qty", "total"] : ["visit", "total"]).includes(b.roles[i]!)) failed.push(`page ${b.page.page}: column ${i + 1} holds figures that are no quantity, unit price, visit or total`);
+  }
+  if ([...used].filter((i) => b.roles[i] === "unit").length > 1) failed.push(`page ${b.page.page}: more than one column could be the unit price`);
+  // two visits of one name would share their cells (`cells` is keyed by name)
+  const names = visits.map(({ c }) => c.label.replace(/\s+/g, ""));
+  if (new Set(names).size < names.length) failed.push(`page ${b.page.page}: two visit columns with one name`);
   const data = b.lines.filter((l) => l.nums.some((w) => w.rect[0] >= figureAt - 1));
+  // A word in a visit column of a row ("X", "as needed", "-", "$55*") is a cell the sums can't see, so the row's charge would
+  // be lost while the arithmetic still closes. A row is a line between the table's first and last figure that prints a label
+  // (a word left of the figure columns) or a unit price; a truly empty cell prints nothing. A label word, wrapped or not, sits
+  // left of the figure columns and isn't looked at; a line with neither (a note set across the columns) is no row.
+  const isVisit = new Set(visits.map((v) => v.i));
+  const [top, bottom] = [Math.min(...data.map((l) => l.y)), Math.max(...data.map((l) => l.y))];
+  const isRow = (l: Line) => l.words.some((w) => w.rect[2] <= figureAt + 1) || l.nums.some((w) => colOf(w) === unit);
+  for (const l of b.lines.filter((x) => x.y >= top && x.y <= bottom && isRow(x))) {
+    if (l.words.some((w) => !isNum(w) && w.rect[0] >= figureAt - 1 && isVisit.has(colOf(w)))) failed.push(`page ${b.page.page}: a visit cell that isn't a price`);
+  }
   const labelLines = b.lines.filter((l) => !data.includes(l));
   const labelOf = (l: Line) => {
     const own = l.words.filter((w) => w.rect[2] <= figureAt + 1);
@@ -141,14 +176,14 @@ function rowsOf(b: Block): { rows: Row[]; sums: Sum[] } | null {
       const q = qtyCol >= 0 ? valueIn(l, qtyCol) : null;
       const name = labelOf(l).replace(codeWord ? new RegExp(`^${codeWord.text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`) : /^$/, "");
       const oh = b.oh !== null && l.words.some((w) => !isNum(w) && Math.abs(w.cx - b.oh!) <= slack);
-      rows.push({ code: codeWord?.text ?? null, name, qty: q === null ? null : q / 100, unit: u, cells, oh, section: b.section, page: b.page.page });
+      rows.push({ code: codeWord?.text ?? null, name, qty: q, unit: u, cells, oh, section: b.section, page: b.page.page });
     } else {
       const label = labelOf(l);
       const pct = /(\d+(?:\.\d+)?)\s*%/.exec(label);
       sums.push({ label, values: new Map(Object.entries(cells)), first: l.nums[0] ? parseCents(l.nums[0].text) : null, pct: pct ? parsePercent(pct[0]) : null, section: b.section, page: b.page.page });
     }
   }
-  return { rows, sums };
+  return { rows, sums, failed };
 }
 
 const prov = (documentId: string, page: number): Provenance => ({ source: { documentId, page }, confidence: 1, method: "text", crossCheck: "not_checked" });
@@ -161,10 +196,10 @@ const prov = (documentId: string, page: number): Provenance => ({ source: { docu
 export function readTextGrids(pages: TextPage[], documentId: string): TextGrid[] {
   const blocks: Block[] = [];
   for (const p of pages.filter((x) => x.source === "text").sort((a, b) => a.page - b.page)) blocks.push(...blocksOf(p, blocks.at(-1) ?? null));
-  const groups: { visits: string[]; parts: { rows: Row[]; sums: Sum[]; b: Block }[] }[] = [];
+  const groups: { visits: string[]; parts: { rows: Row[]; sums: Sum[]; failed: string[]; b: Block }[] }[] = [];
   for (const b of blocks) {
     const read = rowsOf(b);
-    if (!read || (!read.rows.length && !read.sums.length)) continue;
+    if (!read.rows.length && !read.sums.length && !read.failed.length) continue;
     const visits = b.cols.flatMap((c, i) => (b.roles[i] === "visit" && i > b.roles.indexOf("unit") ? [c.label.replace(/\s+/g, "")] : []));
     const g = groups.at(-1);
     if (g && g.visits.join("|") === visits.join("|")) g.parts.push({ ...read, b });
@@ -173,7 +208,8 @@ export function readTextGrids(pages: TextPage[], documentId: string): TextGrid[]
   return groups.flatMap((g, gi) => {
     const rows = g.parts.flatMap((p) => p.rows);
     const sums = g.parts.flatMap((p) => p.sums);
-    if (!rows.length) return [];
+    const failed = g.parts.flatMap((p) => p.failed);
+    if (!rows.length && !failed.length) return [];
     const first = g.parts[0]!.b;
     const sumOf = (re: RegExp, section?: Block["section"]) => sums.find((s) => re.test(s.label) && (!section || s.section === section));
     const procSub = sumOf(/sub\s*-?\s*total/i, "procedure");
@@ -181,12 +217,11 @@ export function readTextGrids(pages: TextPage[], documentId: string): TextGrid[]
     const overhead = sumOf(/overhead|\bo\/?h\b|indirect/i);
     const total = sums.find((s) => /\btotal\b/i.test(s.label) && !/sub\s*-?\s*total|per\s*patient|per\s*subject/i.test(s.label));
     const perPatient = sumOf(/per\s*(?:patient|subject)/i);
-    const failed: string[] = [];
     let checked = 0;
     const check = (ok: boolean, what: string) => (checked++, ok || failed.push(what));
-    // a row: its quantity counts units, so its cells add up to quantity × unit price
+    // a row: its quantity counts units, so its cells add up to quantity × unit price; in whole cents, exactly (qty is in hundredths)
     rows.forEach((r, i) => {
-      if (r.qty !== null) check(Object.values(r.cells).reduce((a, b) => a + b, 0) === Math.round(r.qty * r.unit), `row ${i + 1}: cells ≠ quantity × unit price`);
+      if (r.qty !== null) check(Object.values(r.cells).reduce((a, b) => a + b, 0) * 100 === r.qty * r.unit, `row ${i + 1}: cells ≠ quantity × unit price`);
     });
     // a visit: its section's cells, its subtotals and overhead, its total
     g.visits.forEach((v, vi) => {
@@ -216,17 +251,6 @@ export function readTextGrids(pages: TextPage[], documentId: string): TextGrid[]
       header: { investigator: null, siteName: null },
       prov: prov(documentId, first.page.page),
     };
-    return [{ grid, qty: rows.map((r) => r.qty), checked, failed }];
+    return [{ grid, qty: rows.map((r) => (r.qty === null ? null : r.qty / 100)), checked, failed, pages: [...new Set(g.parts.map((p) => p.b.page.page))] }];
   });
 }
-
-/** For the native gate's diagnostics: the blocks a document's pages split into, roles and counts, no text. @internal */
-export const blocksForDebug = (pages: TextPage[]) => {
-  const out: Block[] = [];
-  for (const p of pages.filter((x) => x.source === "text").sort((a, b) => a.page - b.page)) out.push(...blocksOf(p, out.at(-1) ?? null));
-  return out.map((b) => ({
-    page: b.page.page, section: b.section, roles: b.roles.join(","),
-    labelShape: b.cols.map((c) => c.label.replace(/[A-Za-z]+/g, "w").replace(/\d+/g, "N")).join("|"),
-    lines: b.lines.length, dataLines: b.lines.filter((l) => l.nums.length).length, rows: rowsOf(b)?.rows.length ?? -1, sums: rowsOf(b)?.sums.length ?? -1,
-  }));
-};

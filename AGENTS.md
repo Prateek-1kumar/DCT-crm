@@ -34,7 +34,7 @@ ADR-001 ([docs/phase-1/adr-001-extraction-evidence.md](docs/phase-1/adr-001-extr
 | The audit log is append-only and written in the same transaction as the change | triggers in `0001_guards.sql` and `0011_truncate_guards.sql`; `audit()` in `domain.ts` |
 | Money is integer cents everywhere, and every amount or percentage is read one way, never by float math | `parseCents`, `parsePercent` in `packages/shared/src/money.ts` (the binder's `centsOf`, search and the web's `parseDollars` wrap it); the schemas in `rulebook.ts` |
 
-The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks follow-ups, marks typing done, gates approval, diffs and searches by calling the same `@dct/shared` functions as the API (`answer.ts`, `problems.ts`, `questions.ts`, `search.ts`). A shared rule returns a refusal as a value (`{ refusal: { status, message } }`), which the API throws as an `HttpError` and the sample server sends as a response. What it keeps of its own: routing, in-memory storage and idempotency keys, seed data, and its stand-in for the contract checks (`mockChecks`). Keep the two in step.
+The web has no copy of the API: every screen reads and writes through it (`apps/web/src/lib/api.ts`). Where a screen shows a rule (the approve page's gate, what we suggest, "needs you"), it calls the same `@dct/shared` function the API runs. A shared rule returns a refusal as a value (`{ refusal: { status, message } }`), which the API throws as an `HttpError`. The web's tests use small invented fixtures (`apps/web/src/test/fixtures.ts`), parsed with the shared schemas.
 
 ## Adding or changing a write endpoint
 
@@ -44,8 +44,8 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks f
 4. Refuse with `HttpError` in plain English: 400 for a bad request, 409 for a state that has moved on, saying what to do next. A repeat that changes nothing writes nothing and logs nothing.
 5. In the same transaction: the change, `refreshStudyStatus(tx, studyId, by)` if any version changed (the only place study status and `needs_you` are computed), `audit(tx, by, studyId, action, detail)`, and `queueJob(tx, boss, …)` for any job. Give a new audit action a label in `ACTION_LABELS` (`packages/shared/src/labels.ts`).
 6. Return versions through `versionDto`, never a raw row.
-7. Mirror it in the sample server. A rule about money or questions goes in `@dct/shared` as a pure function that returns `{ refusal }` instead of throwing (as `answerQuestion`, `typingDone`, `signOffRefusal`, `versionDiff`, `noLimitTyped` do), called by the route and the sample server alike; anything else (send back, uploads, studies, settings) the sample server repeats with the same status codes and messages. Add the call to `apps/web/src/lib/api.ts`. Invalidate through `apps/web/src/lib/queries.ts` (`keys`, `useInvalidateStudy`).
-8. Tests: the rule in `packages/shared/test`, the route's behavior, plus `apps/api/test/idempotency.test.ts` (twice with one key: replayed byte for byte, and every row of every table it writes unchanged) and `apps/api/test/atomicity.test.ts` (a failing last insert leaves nothing). The sample server's responses must still parse with the shared schemas (`apps/web/src/lib/mock/server.test.ts`).
+7. A rule about money or questions goes in `@dct/shared` as a pure function that returns `{ refusal }` instead of throwing (as `answerQuestion`, `typingDone`, `signOffRefusal`, `versionDiff`, `noLimitTyped` do), called by the route (and by the web where a screen shows it). Add the call to `apps/web/src/lib/api.ts`. Invalidate through `apps/web/src/lib/queries.ts` (`keys`, `useInvalidateStudy`).
+8. Tests: the rule in `packages/shared/test`, the route's behavior, plus `apps/api/test/idempotency.test.ts` (twice with one key: replayed byte for byte, and every row of every table it writes unchanged) and `apps/api/test/atomicity.test.ts` (a failing last insert leaves nothing). The web's fixtures must still parse with the shared schemas (`pnpm --filter web test`).
 9. Update the routes and idempotency tables in [docs/phase-1/api.md](docs/phase-1/api.md).
 
 ## Changing the database schema
@@ -63,7 +63,7 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks f
 | Shared, extraction, web units | `pnpm --filter @dct/shared test`, `pnpm --filter @dct/extraction test`, `pnpm --filter web test` | the local OCR for extraction (`pnpm run setup`); the AI is mocked |
 | The native gate (ADR-003 P2): grids read by code, grid questions (must be 0), planted money errors caught (must be all) | `pnpm --filter @dct/extraction native` | `data/` (the signed native contract and its answer key); no AI |
 | Everything above | `pnpm test` | Postgres |
-| Browser journey (Playwright, production builds, fake AI). Before answering, a step fails if its answers don't cover every value the random sample could draw | `pnpm e2e` | Postgres, Google Chrome, ports 3301 / 4301 free |
+| Browser journey (Playwright, production builds, fake AI) | `pnpm e2e` | Postgres, Google Chrome, ports 3301 / 4301 free |
 | Types | `pnpm -r typecheck` | — |
 | Lint: ESLint in every package (the web its own config; api, shared and extraction the root `eslint.config.mjs`: un-awaited promises and thenables, misused promises, `return await` in try) | `pnpm lint` | — |
 
@@ -77,7 +77,6 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks f
 - Comments explain why, not what. Match the density and style of the code around you.
 - Light mode only.
 - Every API route is under `/api/v1`; `/livez` and `/readyz` sit outside it.
-- The sample server stays in parity with the API: same routes, status codes, messages and rules.
 - Conventional Commit messages (`feat(api): …`), with no `Co-Authored-By` or AI attribution lines. Commit only when the owner asks.
 
 ## Gotchas
@@ -89,5 +88,5 @@ The in-browser sample server (`apps/web/src/lib/mock/server.ts`) answers, asks f
 - Drizzle queries are thenables that run only when awaited: an un-awaited `audit(tx, …)` or `tx.update(…)` writes nothing, silently. `pnpm lint` catches it (`no-floating-promises` with `checkThenables`).
 - `db.sh` publishes Postgres on 127.0.0.1 only, but a `dct-postgres` container created before that change (`d496a1f`) keeps listening on every interface until it's recreated. That deletes its data: see the runbook ("Recreating the dev database container") and ask the owner first.
 - The API reads the repo-root `.env`; the web doesn't (Next reads `apps/web/.env*` and the shell).
-- Only one `next dev` can run in `apps/web` (it locks `.next/dev`). To see your web change while the owner's dev server runs, use a sample build on another port: `pnpm --filter web build:sample && pnpm --filter web exec next start -H 127.0.0.1 -p 3200`.
+- Only one `next dev` can run in `apps/web` (it locks `.next/dev`). To see your web change while the owner's dev server runs, build it and serve it on another port: `pnpm --filter web build && pnpm --filter web exec next start -H 127.0.0.1 -p 3200`. It proxies to `API_URL` (default the owner's API on 4100), so what you do there changes the owner's data: look, don't write. To click through a change, use `pnpm e2e` (its own API and database).
 - Saving an API file restarts `tsx watch`, which fails any read in progress.

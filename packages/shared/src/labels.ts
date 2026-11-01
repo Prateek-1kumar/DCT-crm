@@ -85,7 +85,7 @@ export const ACTION_LABELS: Record<string, string> = {
 export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 /**
- * Why an upload isn't taken, in plain words (ADR-003 P1), for the API, the sample server and the upload screen alike: a
+ * Why an upload isn't taken, in plain words (ADR-003 P1), for the API and the upload screen alike: a
  * spreadsheet or a Word file says what to upload instead; anything else that isn't a PDF says so.
  * A budget spreadsheet isn't a contract document: it's checked against the read (`budgetCheck`, POST …/budget-check).
  */

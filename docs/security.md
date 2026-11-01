@@ -60,18 +60,17 @@ In `apps/api/src/app.ts`, on every request, `fastify.inject` tests included:
 
 - **5xx responses never show their cause.** The error handler (`apps/api/src/app.ts`) answers "Something went wrong on the server… (ref <request id>)"; a database error's message holds the SQL and every value bound to it, so the log gets the error code, message and SQL text without the bound values. A failed job stores plain words for people and a separate technical detail, never SQL or values (`failure` in `apps/api/src/jobs.ts`). The web shows only plain messages (`errorText` in `apps/web/src/components/ui.tsx`).
 - **Logs** hold the method and route pattern of each request, never bodies, ids, query strings, contract text or amounts.
-- **Blind entry** keeps a withheld value, and what it decides (`alsoWithheld`), out of every response: versions, search (which reads the masked master), diff, the audit log and alerts. Its evidence goes out without its printed text and at its page only. The numbers are blanked in what could restate it: its item's other words and location, notes about it, a money term quoted from any line of its sentence, and every money term on its page when it's known only by its page (`packages/shared/src/blind.ts`; see [api.md](phase-1/api.md#review-questions-adr-001)).
-- **Idempotent replays** return the saved response byte for byte, masked as it was when first sent, and are not masked again. For the 24 hours a response is kept, a replay can therefore show a value withheld since (an answer sent back or reported), but only to a client holding that request's key.
+- **Nothing is withheld from people using the app** (ADR-003, 2026-11-01: blind entry was removed). Versions, search, diff, the audit log and alerts carry every value and note as it is (`versionDto` in `apps/api/src/domain.ts`), and each open question shows our reading and what we suggest (`suggest` in `packages/shared/src/answer.ts`). What keeps contract terms in is who can reach the app, not masking.
+- **Idempotent replays** return the saved response byte for byte, for the 24 hours it is kept, and only to a client holding that request's key.
 - Every API response has `X-Content-Type-Options: nosniff`; JSON is `Cache-Control: no-store`.
 
 ## Web headers
 
 Set for every page in `apps/web/next.config.ts`, checked by the e2e on the production build:
 
-- `Content-Security-Policy`: `default-src 'self'`, `script-src 'self' 'unsafe-inline'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob:`, `font-src 'self'`, `connect-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'none'`. Development adds `'unsafe-eval'` for React's tooling.
+- `Content-Security-Policy`: `default-src 'self'`, `script-src 'self' 'unsafe-inline'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self'`, `font-src 'self'`, `connect-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'none'`. Development adds `'unsafe-eval'` for React's tooling.
 - The CSP is static, not nonce-based, because partial prerendering can't carry a per-request nonce; so inline scripts are allowed. zod runs `jitless` (`apps/web/src/instrumentation-client.ts`) so no `eval` is needed.
 - `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, a `Permissions-Policy` that turns off camera, microphone, geolocation and browsing topics, and no `X-Powered-By`.
-- Sample data can't reach a real build: `pnpm --filter web build` forces `NEXT_PUBLIC_API_MOCK` off, and the flag is inlined so the sample server isn't bundled.
 
 ## Uploads
 

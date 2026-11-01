@@ -20,8 +20,6 @@ import type {
 
 /** Typed client for the HTTP API in docs/phase-1/api.md. Everything goes through `request`. */
 
-export const MOCK = process.env.NEXT_PUBLIC_API_MOCK === "1";
-
 /** Every route of the real API is under /api/v1 (the Next rewrite forwards /api/* as is). */
 const BASE = "/api/v1";
 
@@ -71,12 +69,6 @@ function request<T>(method: string, path: string, body?: Body): Promise<T> {
  * nothing, so running it again is safe.
  */
 async function send<T>(method: string, path: string, body: Body, key?: string): Promise<T> {
-  if (MOCK) {
-    const { mockRequest } = await import("./mock/server");
-    const res = await mockRequest(method, path, body, key);
-    if (res.status >= 400) throw new ApiError(res.status, errorMessage(res.json, res.status));
-    return res.json as T;
-  }
   const headers: Record<string, string> = key ? { "idempotency-key": `"${key}"` } : {};
   const init: RequestInit = { method, headers };
   if (body instanceof FormData) init.body = body;
@@ -194,44 +186,32 @@ export const api = {
   /** One page of the activity log, newest first; the server narrows, searches and pages. Pass `nextCursor` back for older ones. */
   audit: (query: AuditListQuery) => request<AuditPage>("GET", `/audit${qs(query)}`),
   getSettings: () => request<SettingsDto>("GET", "/settings"),
-  patchSettings: (body: Partial<SettingsDto>) => request<SettingsDto>("PATCH", "/settings", body),
+  patchSettings: (body: Partial<SettingsDto> & { by: string }) => request<SettingsDto>("PATCH", "/settings", body),
 
   /**
-   * Downloads the invoicing master as an Excel file (built by the server; by the sample server in mock mode). Fetched
-   * rather than linked to, so a refusal or a failure throws for the screen to show instead of downloading as a file.
+   * Downloads the invoicing master as an Excel file, built by the server. Fetched rather than linked to, so a refusal or a
+   * failure throws for the screen to show instead of downloading as a file.
    * Never retried: each export is logged.
    */
   exportXlsx: async (id: string, v: number, by: string) => {
-    let file: { blob: Blob; filename: string };
-    if (MOCK) {
-      const { mockExport } = await import("./mock/server");
-      // The sample server refuses with a plain Error; the screen shows only an ApiError's message.
-      file = await mockExport(id, v, by).catch((e: unknown) => {
-        throw new ApiError(409, e instanceof Error ? e.message : String(e));
-      });
-    } else {
-      let res: Response;
-      try {
-        res = await fetch(`${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`);
-      } catch {
-        throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
-      }
-      if (!res.ok) {
-        const text = await res.text();
-        throw new ApiError(res.status, errorMessage(text ? safeJson(text) : null, res.status));
-      }
-      if (!/spreadsheetml/.test(res.headers.get("content-type") ?? "")) throw new ApiError(502, "The export didn't come back as a spreadsheet.");
-      const named = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1];
-      file = { blob: await res.blob(), filename: named ?? `invoicing-master-v${v}.xlsx` };
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`);
+    } catch {
+      throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
     }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new ApiError(res.status, errorMessage(text ? safeJson(text) : null, res.status));
+    }
+    if (!/spreadsheetml/.test(res.headers.get("content-type") ?? "")) throw new ApiError(502, "The export didn't come back as a spreadsheet.");
+    const named = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1];
+    const file = { blob: await res.blob(), filename: named ?? `invoicing-master-v${v}.xlsx` };
     const href = URL.createObjectURL(file.blob);
     Object.assign(document.createElement("a"), { href, download: file.filename }).click();
     setTimeout(() => URL.revokeObjectURL(href), 10_000);
   },
 
-  /** URL for an <img>. Mock mode renders a synthetic (vector) page in the browser. `dpi`: sharper page for close-ups. */
-  pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => {
-    if (MOCK) return (await import("./mock/server")).mockPageSrc(docId, page);
-    return `${BASE}/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`;
-  },
+  /** URL for an <img>. `dpi`: sharper page for close-ups. */
+  pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => `${BASE}/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`,
 };

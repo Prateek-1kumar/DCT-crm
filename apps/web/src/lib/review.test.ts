@@ -29,12 +29,13 @@ describe("stages", () => {
   it("from the newest version", () => {
     expect(versionStage(undefined, undefined).stage).toBe("Upload");
     expect(versionStage({ status: "extracting" }, undefined).stage).toBe("Reading");
-    expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", true), q("2", false, "matched")] })).toEqual({ stage: "Needs you", needs: 1 });
-    expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", false, "cant_tell")] })).toEqual({ stage: "Needs you", needs: 1 });
-    expect(versionStage({ status: "draft" }, { byHand: false, review: [q("1", false, "chosen")] })).toEqual({ stage: "Approve" });
-    // Typed by hand: still typing, then the blind re-type questions.
-    expect(versionStage({ status: "draft" }, { byHand: true, review: [] })).toEqual({ stage: "Reading", byHand: true });
-    expect(versionStage({ status: "draft" }, { byHand: true, review: [q("1", true)] })).toEqual({ stage: "Needs you", needs: 1, byHand: true });
+    expect(versionStage({ status: "draft" }, { byHand: false, typingDoneAt: null, review: [q("1", true), q("2", false, "matched")] })).toEqual({ stage: "Needs you", needs: 1 });
+    expect(versionStage({ status: "draft" }, { byHand: false, typingDoneAt: null, review: [q("1", false, "cant_tell")] })).toEqual({ stage: "Needs you", needs: 1 });
+    expect(versionStage({ status: "draft" }, { byHand: false, typingDoneAt: null, review: [q("1", false, "chosen")] })).toEqual({ stage: "Approve" });
+    // Typed by hand: still typing until it's marked done, then its questions, or none at all.
+    expect(versionStage({ status: "draft" }, { byHand: true, typingDoneAt: null, review: [] })).toEqual({ stage: "Reading", byHand: true });
+    expect(versionStage({ status: "draft" }, { byHand: true, typingDoneAt: "t", review: [q("1", true)] })).toEqual({ stage: "Needs you", needs: 1, byHand: true });
+    expect(versionStage({ status: "draft" }, { byHand: true, typingDoneAt: "t", review: [] })).toEqual({ stage: "Approve", byHand: true });
     expect(stepsFor({ stage: "Reading", byHand: true }).map((x) => x.label)).toEqual(["Upload", "Typed by hand", "Needs you", "Approve", "Live"]);
     expect(versionStage({ status: "signed" }, undefined).stage).toBe("Live");
   });
@@ -45,7 +46,7 @@ describe("stages", () => {
 });
 
 describe("approveState", () => {
-  const draft = { version: 1, status: "draft" as const, rulebook, editors: ["Avery"], byHand: false, evidence: [], review: [q("1", true, "matched"), q("2", false, "chosen")], proofread: [], updatedAt: "2026-10-29T09:00:00.000Z" };
+  const draft = { version: 1, status: "draft" as const, rulebook, editors: ["Avery"], byHand: false, typingDoneAt: null, evidence: [], review: [q("1", true, "matched"), q("2", false, "chosen")], proofread: [], updatedAt: "2026-10-29T09:00:00.000Z" };
 
   it("allows a draft whose questions are all settled", () => {
     expect(approveState(draft, { makerChecker: false }, "Avery")).toEqual({ allowed: true, reasons: [] });
@@ -57,6 +58,7 @@ describe("approveState", () => {
   });
   it("as the API: typing by hand marked done, and every number backed", () => {
     expect(approveState({ ...draft, byHand: true, review: [] }, { makerChecker: false }, "Avery").reasons.join(" ")).toMatch(/Typing isn't marked done yet/);
+    expect(approveState({ ...draft, byHand: true, typingDoneAt: "t", review: [] }, { makerChecker: false }, "Avery")).toEqual({ allowed: true, reasons: [] });
     const unbacked = { ...draft, evidence: [{ path: "/x", status: "conflict" as const, where: [], printed: null, note: null }] };
     expect(approveState(unbacked, { makerChecker: false }, "Avery").reasons.join(" ")).toMatch(/1 number isn't confirmed/);
   });

@@ -4,14 +4,15 @@
  * For every answer key in data/golden whose contract has its own text, reads its budget grids by code (readTextGrids)
  * and scores them against the key: grid rows exactly right (unit price and every cell), visit totals, per-patient
  * totals, and the contract's own arithmetic on what was read (identities checked and failed). Then plants errors in the
- * read (a digit changed, a number moved one column over) and counts how many that change money the arithmetic catches:
- * every one must be. A plant that changes only a code or a name is counted apart (no sum can see it; the binder matches
+ * read (a digit changed, a number moved one column over, a price replaced by a word, a column's header words removed, a
+ * column's header copied over its neighbour's, an "X" in an empty visit cell; the last three again with the quantity column taken
+ * out, since its sum catches them all) and counts how many that change money the reader catches: every one must be. A plant that changes only a code or a name is counted apart (no sum can see it; the binder matches
  * labels against the page). Prints counts only, never contract text or amounts. Repo root = DCT_ROOT, else three levels up.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type BudgetGrid, Rulebook } from "@dct/shared";
+import { type BudgetGrid, parseCents, Rulebook } from "@dct/shared";
 import { makeRulebook } from "../test/helpers";
 import { bindEvidence, reviewFromEvidence } from "../src/binder";
 import { readTextGrids, type TextGrid } from "../src/gridtext";
@@ -24,17 +25,40 @@ const goldenDir = join(root, "data/golden");
 /** The rows of a grid as the key holds them: unit price and cells in visit order (null where none). */
 const rowsOf = (g: BudgetGrid) => g.procedures.map((p) => ({ unitCents: p.unitCents, cells: g.visits.map((v) => (typeof p.cells[v.code] === "number" ? (p.cells[v.code] as number) : null)) }));
 
+/** The grids a read would use, as `extractWith` does: those that close, on pages no failed grid touches. */
+const used = (read: TextGrid[]) => {
+  const unsure = new Set(read.filter((g) => g.failed.length).flatMap((g) => g.pages));
+  return read.filter((g) => !g.failed.length && g.pages.every((p) => !unsure.has(p)));
+};
+
 /**
  * Re-run the read on changed pages' text. null: the plant changed nothing that was read (a number outside every grid).
- * Else caught when the read no longer closes, so it would go to the model and a person, never be used as is.
+ * Else caught when no grid the read would use carries the change: each one used is one of the unplanted read's, as it was.
  */
-function caught(pages: TextPage[], id: string, plant: (pages: TextPage[]) => boolean, before: string): boolean | "label" | null {
+function caught(pages: TextPage[], id: string, plant: (pages: TextPage[]) => boolean, before: string[]): boolean | "label" | null {
   const copy = structuredClone(pages);
   if (!plant(copy)) return null;
-  const read = readTextGrids(copy, id);
-  if (JSON.stringify(read.map((g) => money(g.grid))) === before) return JSON.stringify(read.map((g) => g.grid)) === JSON.stringify(readTextGrids(pages, id).map((g) => g.grid)) ? null : "label";
-  return !read.length || read.some((g) => g.failed.length > 0);
+  const read = used(readTextGrids(copy, id));
+  if (JSON.stringify(read.map((g) => JSON.stringify(money(g.grid)))) === JSON.stringify(before)) return JSON.stringify(read.map((g) => g.grid)) === JSON.stringify(used(readTextGrids(pages, id)).map((g) => g.grid)) ? null : "label";
+  return read.every((g) => before.includes(JSON.stringify(money(g.grid))));
 }
+
+/**
+ * The page's figure columns, as [left, right] spans: the x-centres of its numbers on lines of three or more, split at gaps
+ * wider than 8 pt. A rough copy of the reader's own, only to know where to plant.
+ */
+function strips(p: TextPage): [number, number][] {
+  const xs = p.words.filter((w) => /^\$?\d[\d,.]*$/.test(w.text)).map((w) => (w.rect[0] + w.rect[2]) / 2).sort((a, b) => a - b);
+  const out: [number, number][] = [];
+  for (const x of xs) {
+    const last = out.at(-1);
+    if (last && x - last[1] <= 8) last[1] = x;
+    else out.push([x, x]);
+  }
+  return out;
+}
+const isFigure = (t: string) => /^\(?\$?\d[\d,]*(?:\.\d+)?\)?$/.test(t);
+const inStrip = (w: TextPage["words"][number], [a, b]: [number, number]) => (w.rect[0] + w.rect[2]) / 2 >= a - 4 && (w.rect[0] + w.rect[2]) / 2 <= b + 4;
 
 /** A grid's money only: the figures the arithmetic guards. A code or name is matched against the page by the binder. */
 const money = (g: BudgetGrid) => ({ visits: g.visits.map(({ prov: _p, ...v }) => v), procedures: g.procedures.map((p) => [p.unitCents, p.cells, p.category]), perPatient: g.perPatientTotals.map((t) => t.cents) });
@@ -55,8 +79,10 @@ async function main() {
       console.log(`[${key.name}] not a native PDF: skipped`);
       continue;
     }
-    const grids = readTextGrids(pages, "d");
-    const out: Record<string, unknown> = { grids: grids.length, closes: grids.filter((g) => !g.failed.length).length, identities: grids.reduce((a, g) => a + g.checked, 0), failed: grids.flatMap((g) => g.failed) };
+    const all = readTextGrids(pages, "d");
+    const grids = used(all);
+    // a table that fails (not a budget grid, or one this reader can't read whole) is left to the model: its pages are listed
+    const out: Record<string, unknown> = { grids: grids.length, closes: all.filter((g) => !g.failed.length).length, identities: grids.reduce((a, g) => a + g.checked, 0), failed: grids.flatMap((g) => g.failed), leftToModel: [...new Set(all.filter((g) => g.failed.length).flatMap((g) => g.pages))] };
     key.grids.forEach((kg, i) => {
       const g = grids[i]?.grid;
       if (!g) return void (out[`grid ${i + 1}`] = "not read");
@@ -80,7 +106,7 @@ async function main() {
     out.bound = { values: onGrid.length, confirmed: status("confirmed"), conflict: status("conflict"), ungrounded: status("ungrounded"), held: onGrid.filter((e) => e.held).length, gridQuestions: asked.length };
     // planted errors, each on its own copy of the pages: all must be caught by the arithmetic
     const spots = priced(pages, grids);
-    const before = JSON.stringify(grids.map((g) => money(g.grid)));
+    const before = grids.map((g) => JSON.stringify(money(g.grid)));
     const pick = (n: number) => spots.filter((_, i) => i % Math.max(1, Math.floor(spots.length / n)) === 0).slice(0, n);
     const digit = pick(200).map(([pi, wi]) => caught(pages, "d", (ps) => {
       const w = ps[pi]!.words[wi]!;
@@ -94,10 +120,63 @@ async function main() {
       w.rect = [w.rect[0] + step, w.rect[1], w.rect[2] + step, w.rect[3]];
       return true;
     }, before));
+    // a price replaced by a word ("X", as a schedule marks a visit): the reader must not drop it and close
+    const word = pick(200).map(([pi, wi]) => caught(pages, "d", (ps) => ((ps[pi]!.words[wi]!.text = "X"), true), before));
+    // The plants a quantity column hides: with one, a row's cells must add up to quantity × unit price, so a cell lost to any of
+    // them is caught by that sum. They are planted again on the pages with the quantity column taken out (its header and its
+    // figures), where only the visits' own sums are left, and the reader must still fail on each.
+    const gridPages = [...new Set(grids.flatMap((g) => g.pages))].map((n) => pages.findIndex((p) => p.page === n));
+    const units = new Set(grids.flatMap((g) => g.grid.procedures.map((p) => p.unitCents)));
+    const visits = Math.max(...grids.map((g) => g.grid.visits.length));
+    const layout = gridPages.map((pi) => {
+      const ss = strips(pages[pi]!);
+      const at = ss.map((st) => pages[pi]!.words.filter((w) => isFigure(w.text) && inStrip(w, st) && units.has(parseCents(w.text) ?? Number.NaN)));
+      const u = at.reduce((best, ws, i) => (ws.length > at[best]!.length ? i : best), 0);
+      return { pi, ss, unit: at[u]!, visit: ss.slice(u + 1, u + 1 + visits), qty: grids.some((g) => g.qty.some((q) => q !== null)) ? ss[u - 1] : undefined };
+    });
+    const noQty = structuredClone(pages);
+    for (const l of layout) if (l.qty) noQty[l.pi]!.words = noQty[l.pi]!.words.filter((w) => !inStrip(w, l.qty!));
+    const noQtyCloses = JSON.stringify(used(readTextGrids(noQty, "d")).map((g) => JSON.stringify(money(g.grid)))) === JSON.stringify(before);
+    // the grid as read is no longer used whole: what an "X" in an empty cell must cause, since it changes no figure read
+    const dropped = (base: TextPage[], plant: (ps: TextPage[]) => void) => {
+      const copy = structuredClone(base);
+      plant(copy);
+      const read = used(readTextGrids(copy, "d")).map((g) => JSON.stringify(money(g.grid)));
+      return !before.every((b) => read.includes(b));
+    };
+    const blanks = layout.flatMap((l) => l.unit.flatMap((uw) => l.visit.filter((st) => !pages[l.pi]!.words.some((w) => inStrip(w, st) && w.rect[1] < uw.rect[3] && w.rect[3] > uw.rect[1])).map((st) => ({ pi: l.pi, uw, x: (st[0] + st[1]) / 2 }))));
+    const someBlanks = blanks.filter((_, i) => i % Math.max(1, Math.floor(blanks.length / 200)) === 0).slice(0, 200);
+    const blankWord = (base: TextPage[]) => someBlanks.map((b) => dropped(base, (ps) => void ps[b.pi]!.words.push({ ...b.uw, text: "X", rect: [b.x - 3, b.uw.rect[1], b.x + 3, b.uw.rect[3]] })));
+    const columns = layout.flatMap((l) => l.ss.map((st) => [l.pi, st] as const));
+    // every column of a grid page, its header words removed: a column with no name must fail, never be left out
+    const unnamed = (base: TextPage[]) => columns.map(([pi, st]) => caught(base, "d", (ps) => {
+      const n = ps[pi]!.words.length;
+      ps[pi]!.words = ps[pi]!.words.filter((w) => isFigure(w.text) || !inStrip(w, st));
+      return ps[pi]!.words.length < n;
+    }, before));
+    // every column's header words copied over its right-hand neighbour's: two columns of one name must fail
+    const twice = (base: TextPage[]) => columns.flatMap(([pi, st], ci) => {
+      const next = columns[ci + 1];
+      if (!next || next[0] !== pi) return [];
+      return [caught(base, "d", (ps) => {
+        const p = ps[pi]!;
+        const dx = (next[1][0] + next[1][1]) / 2 - (st[0] + st[1]) / 2;
+        const words = p.words.filter((w) => !isFigure(w.text) && inStrip(w, st));
+        if (!words.length) return false;
+        p.words = [...p.words.filter((w) => isFigure(w.text) || !inStrip(w, next[1])), ...words.map((w) => ({ ...w, rect: [w.rect[0] + dx, w.rect[1], w.rect[2] + dx, w.rect[3]] as typeof w.rect }))];
+        return true;
+      }, before)];
+    });
     // a plant that changed money must be caught, every one; one that changed only a code or a name is counted apart
     const count = (xs: (boolean | "label" | null)[]) => `${xs.filter((x) => x === true).length}/${xs.filter((x) => typeof x === "boolean").length}`;
     const labels = (xs: (boolean | "label" | null)[]) => xs.filter((x) => x === "label").length;
-    out.planted = { digit: count(digit), movedOneColumn: count(moved), labelOnly: labels(digit) + labels(moved) };
+    const [u1, t1] = [unnamed(pages), twice(pages)];
+    const [u2, t2] = noQtyCloses ? [unnamed(noQty), twice(noQty)] : [[], []];
+    out.planted = {
+      digit: count(digit), movedOneColumn: count(moved), nonNumericCell: count(word), wordInEmptyCell: count(blankWord(pages)), headerRemoved: count(u1), duplicateHeader: count(t1),
+      withoutQuantity: noQtyCloses ? { wordInEmptyCell: count(blankWord(noQty)), headerRemoved: count(u2), duplicateHeader: count(t2) } : "the grid doesn't close without its quantity column: not planted",
+      labelOnly: [digit, moved, word, u1, t1, u2, t2].reduce((a, xs) => a + labels(xs), 0),
+    };
     console.log(`[${key.name}]`, JSON.stringify(out, null, 1));
   }
 }

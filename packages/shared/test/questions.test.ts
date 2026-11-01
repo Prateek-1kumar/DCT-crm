@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  askedAsInterpretation,
   calendarDay,
+  type ContractAnomaly,
+  fromAnomalies,
+  isNotice,
+  notices,
   dateField,
   interpretations,
   triggerOf,
@@ -12,7 +17,8 @@ import {
   openPaths,
 } from "../src";
 
-// The review lists that aren't flags (ADR-001 §6): interpretations picked blind, and the random blind sample.
+// The review lists that aren't flags (ADR-001 §6): interpretations, asked only for genuine ambiguity or silence (a clause that
+// states its figure, or a fee's trigger printed beside its amount, goes unasked: ADR-002 §4, ADR-003); and what a typed date must be.
 
 const prov = (quote?: string) => ({ source: { documentId: "d1", page: 3, ...(quote ? { quote } : {}) }, confidence: 0.9, method: "ai" as const, crossCheck: "not_checked" as const });
 const s = <T>(value: T, quote?: string) => ({ value, prov: prov(quote) });
@@ -163,8 +169,19 @@ describe("a fee's trigger the page prints beside its amount (ADR-003)", () => {
     expect(["one-time payment", "One time", "per year", "Annually", "per sample", "per ad campaign approved by sponsor", "at close-out", "at actual cost", "on study initiation"].map(triggerOf)).toEqual([
       "one_time", "one_time", "annual", "annual", "per_event", "per_event", "closeout", "actual_cost", "study_initiation",
     ]);
+    expect(["per enrolled patient", "each visit", "per SAE report", "one time only", "upon execution of the agreement", "annually, prorated"].map(triggerOf)).toEqual([
+      "per_event", "per_event", "per_event", "one_time", "agreement_execution", "annual",
+    ]);
     // vague, or two triggers at once: asked
     expect(["paid per terms within the exhibit", "as agreed", "one-time payment, then per year"].map(triggerOf)).toEqual([null, null, null]);
+    // fails closed (a match skips the question): a reference to a document or its terms names no event, a period the
+    // triggers don't hold names none, "once" as a condition isn't a single payment, a later document's signing isn't the agreement's
+    expect([
+      "payable per Exhibit B", "paid per Section 4.2 below", "per protocol", "per the budget", "per site, upon activation", "each party shall bear its own costs",
+      "per month", "per patient per month", "invoiced quarterly", "each week", "semi-annually",
+      "paid once the IRB approves", "once the site is activated",
+      "upon execution of each amendment", "on execution of every renewal",
+    ].map(triggerOf)).toEqual(Array(15).fill(null));
   });
 
   it("isn't asked when the fee's amount is confirmed and its printed words name the read's trigger; asked otherwise", () => {
@@ -179,5 +196,58 @@ describe("a fee's trigger the page prints beside its amount (ADR-003)", () => {
     expect(asked({ evidence: [], printed: new Map([[at, "one-time payment"]]) })).toBe(true); // the amount isn't confirmed at that row
     expect(asked({ evidence: sure })).toBe(true); // nothing printed beside it
     expect(asked({ evidence: sure, printed: new Map([[at, "one-time payment"]]), anomalies: [{ code: "AMBIGUOUS_TERM", path: at, message: "unclear", refs: [] }] })).toBe(true);
+  });
+});
+
+describe("unclear wording about anything the master holds is asked, never only a notice", () => {
+  const flag = (path: string | null): ContractAnomaly => ({ id: `AMBIGUOUS_TERM:${path}`, code: "AMBIGUOUS_TERM", severity: "warning", message: "Ambiguous: per subject or for the whole study", path, refs: [{ documentId: "d1", page: 3 }], detail: {}, resolution: null });
+  const quoted = () => {
+    const rb = rulebook();
+    rb.invoiceables[0]!.prov = prov("billed up to $777.00 in total");
+    return rb;
+  };
+
+  it("a flag on a cap, a fee or a section asks the interpretation fields under it, even where the figure is confirmed", () => {
+    const rb = quoted();
+    const sure = [{ path: "/invoiceables/0/cap/n", status: "confirmed" as const }, { path: "/siteFees/0/amountCents", status: "confirmed" as const }];
+    rb.siteFees[0]!.trigger = "one_time";
+    const printed = new Map([["/siteFees/0/trigger", "one-time payment"]]);
+    // stated outright and confirmed: not asked
+    expect(interpretations(rb, { amendment: false, evidence: sure, printed }).map((i) => i.path)).not.toEqual(expect.arrayContaining(["/invoiceables/0/cap/kind"]));
+    for (const [path, field] of [["/invoiceables/0/cap", "/invoiceables/0/cap/kind"], ["/invoiceables/0", "/invoiceables/0/cap/kind"], ["/siteFees/0", "/siteFees/0/trigger"], ["/siteFees", "/siteFees/0/trigger"]] as const) {
+      const a = flag(path);
+      expect(isNotice(a, rb), path).toBe(false);
+      expect(notices([a], rb), path).toEqual([]);
+      const item = interpretations(rb, { amendment: false, evidence: sure, printed, anomalies: [a] }).find((i) => i.path === field);
+      expect(item, path).toMatchObject({ reason: "AMBIGUOUS_TERM", blocking: true });
+      expect(item!.question.startsWith("Ambiguous: per subject or for the whole study.")).toBe(true);
+      // asked once: there, not again as a contract problem
+      expect(askedAsInterpretation(a, new Set([field])), path).toBe(true);
+    }
+    // a sibling's path isn't a parent's: "/siteFees/1" says nothing about "/siteFees/10"
+    expect(askedAsInterpretation(flag("/siteFees/1"), new Set(["/siteFees/10/trigger"]))).toBe(false);
+  });
+
+  it("a flag on a {value, prov} wrapper with no interpretation field asks its value", () => {
+    const rb = rulebook();
+    const a = flag("/payment/netDays");
+    expect(isNotice(a, rb)).toBe(false);
+    expect(askedAsInterpretation(a, new Set(interpretations(rb, { amendment: false, anomalies: [a] }).map((i) => i.path!)))).toBe(false);
+    expect(fromAnomalies([a], rb, new Set())).toMatchObject([{ path: "/payment/netDays/value", reason: "AMBIGUOUS_TERM", kind: "interpretation", blocking: true }]);
+  });
+
+  it("a flag on an item with no field to pick is still asked, as a contract problem", () => {
+    const rb = rulebook(); // the SAE report has no cap, so no interpretation field
+    const a = flag("/invoiceables/1");
+    expect(isNotice(a, rb)).toBe(false);
+    expect(fromAnomalies([a], rb, new Set())).toMatchObject([{ reason: "AMBIGUOUS_TERM", blocking: true }]);
+  });
+
+  it("only a flag about nothing the master holds is a notice", () => {
+    const rb = rulebook();
+    for (const path of [null, "/nothingHere", "/siteFees/5"]) {
+      expect(isNotice(flag(path), rb), String(path)).toBe(true);
+      expect(fromAnomalies([flag(path)], rb, new Set()), String(path)).toEqual([]);
+    }
   });
 });

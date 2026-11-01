@@ -34,7 +34,7 @@ import {
 } from "../src";
 
 // Regression cases for the review findings of 2026-10-29: each failed before its fix. Shared code, so they hold for the
-// API and the in-browser sample server alike.
+// API and the web alike.
 
 const prov = { source: { documentId: "d1", page: 3 }, confidence: 0.9, method: "ai" as const, crossCheck: "not_checked" as const };
 const s = <T>(value: T) => ({ value, prov });
@@ -254,7 +254,21 @@ describe("11. typing by hand asks every default nobody chose", () => {
     expect(done.review.some((i) => i.path === "/payment/netDays/value")).toBe(false);
     expect(done.anomalies.map((a) => a.code)).toEqual(["VISIT_TOTAL_MISMATCH"]);
     expect(done.detail).toEqual({ version: 1, typed: 1, questions: done.review.length });
-    expect(typingDone({ ...d, review: done.review }, { checks })).toEqual({ refusal: { status: 409, message: "Typing is already marked done." } });
+    expect(typingDone({ ...d, review: done.review, typingDoneAt: "t" }, { checks })).toEqual({ refusal: { status: 409, message: "Typing is already marked done." } });
+  });
+
+  it("a contract typed in full, with nothing left to ask, can still be approved: done is its own mark, never “has questions”", () => {
+    const rb = blank();
+    const typed = placeholders(rb, []).map((p) => ev(p, "attested"));
+    const d = { version: 1, status: "draft", byHand: true, typingDoneAt: null, rulebook: rb, review: [], evidence: typed, updatedAt: "t", editors: ["Asha"] };
+    const done = typingDone(d, { checks: () => [] });
+    if ("refusal" in done) throw new Error(done.refusal.message);
+    expect(done.review).toEqual([]);
+    // the caller marks it done (the API's typing_done_at): approvable, and done only once
+    const after = { ...d, review: done.review, typingDoneAt: "2026-11-01T00:00:00.000Z" };
+    expect(signOffRefusal(after, { asOf: "t", by: "Ben", makerChecker: true })).toBeNull();
+    expect(typingDone(after, { checks: () => [] })).toEqual({ refusal: { status: 409, message: "Typing is already marked done." } });
+    expect(signOffRefusal(d, { asOf: "t", by: "Ben", makerChecker: true })).toBe("Typing isn't marked done yet. Mark it done when every value is typed.");
   });
 });
 
@@ -292,7 +306,7 @@ describe("15. lows", () => {
   });
 });
 
-describe("16. the sample server's diff is the API's", () => {
+describe("16. the diff, one rule (versionDiff)", () => {
   it("refuses a version with no master, and shows a change in full (nothing is withheld, ADR-003)", () => {
     const v = { rulebook: rulebook() };
     expect(versionDiff({ rulebook: null }, v)).toEqual({ refusal: { status: 409, message: "Both versions need an extracted rulebook to diff" } });

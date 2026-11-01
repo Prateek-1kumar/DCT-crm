@@ -11,6 +11,7 @@ import {
   type StudySummaryDto,
   type VersionStatus,
   upgradeRulebook,
+  upgradeReview,
   type VersionSummaryDto,
 } from "@dct/shared";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -49,12 +50,16 @@ export const versionSummaryDto = (v: VersionRow): VersionSummaryDto => ({
   appliesFrom: v.appliesFrom,
 });
 
-/** Every response that carries a version goes through here. Nothing is withheld: questions show our reading (ADR-003). */
-export const versionDto = (v: VersionRow): RulebookVersionDto => {
+/**
+ * Every response that carries a version goes through here, read as today's rules read it (asToday), whichever write
+ * returned it. Nothing is withheld: questions show our reading (ADR-003).
+ */
+export const versionDto = (row: VersionRow): RulebookVersionDto => {
+  const v = asToday(row);
   return {
     ...versionSummaryDto(v),
     studyId: v.studyId,
-    rulebook: v.rulebook && upgradeRulebook(v.rulebook),
+    rulebook: v.rulebook,
     anomalies: v.anomalies,
     editors: v.editors,
     cost: { usd: v.costUsd, inputTokens: v.inputTokens, outputTokens: v.outputTokens },
@@ -62,6 +67,7 @@ export const versionDto = (v: VersionRow): RulebookVersionDto => {
     review: v.review,
     pdfCheck: v.pdfCheck,
     byHand: v.byHand,
+    typingDoneAt: v.typingDoneAt?.toISOString() ?? null,
     proofread: v.proofread,
     updatedAt: v.updatedAt.toISOString(),
     warnings: v.warnings,
@@ -115,7 +121,7 @@ export async function refreshStudyStatus(tx: Tx, studyId: string, by = "system",
   else if (latest.status === "signed") status = "live";
   else if (latest.status === "draft" && hasLive) status = "amendment_in_review";
   else status = ({ extracting: "extracting", failed: "extraction_failed", draft: "needs_review" } as const)[latest.status as "extracting" | "failed" | "draft"] ?? "needs_review";
-  const needsYou = needsYouOf(latest);
+  const needsYou = needsYouOf(latest && asToday(latest));
   const [after] = await tx.update(studies).set({ status, needsYou, updatedAt: new Date() }).where(eq(studies.id, studyId)).returning({ stage: studies.stage });
   const from = before?.stage;
   const kind: AlertKind | null =
@@ -140,18 +146,25 @@ export async function lockStudy(tx: Tx, id: string): Promise<StudyRow> {
 }
 
 /**
- * `forUpdate` (a write): the study is locked first (lockStudy), then the version. Its rulebook is read as the current
- * schema reads it (upgradeRulebook): a version saved before a field existed has it empty.
+ * A version as today's rules read it: its rulebook as the current schema reads it (upgradeRulebook: a field it was saved
+ * before is empty), and a draft's questions as today's rules ask them (upgradeReview: a draft saved before ADR-003).
+ * Signed and superseded versions are never rewritten, so only a draft's questions change, and only when it's next written.
  */
+function asToday(row: VersionRow): VersionRow {
+  const rulebook = row.rulebook && upgradeRulebook(row.rulebook);
+  return { ...row, rulebook, review: upgradeReview({ ...row, rulebook }) };
+}
+
+/** `forUpdate` (a write): the study is locked first (lockStudy), then the version, read as today's rules read it (asToday). */
 export async function loadVersion(tx: Tx, studyId: string, version: number, forUpdate = false): Promise<VersionRow> {
   if (forUpdate) await lockStudy(tx, studyId);
   const q = tx.select().from(rulebookVersions).where(and(eq(rulebookVersions.studyId, studyId), eq(rulebookVersions.version, version)));
   const [row] = forUpdate ? await q.for("update") : await q;
   if (!row) throw notFound(`Version ${version} of study ${studyId}`);
-  return { ...row, rulebook: row.rulebook && upgradeRulebook(row.rulebook) };
+  return asToday(row);
 }
 
-// the date a version's terms apply from lives in @dct/shared, so the sample server keeps it the same way
+// the date a version's terms apply from lives in @dct/shared, so the web shows it the same way
 export { appliesFromOf } from "@dct/shared";
 
 const MANUAL = { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } as const;

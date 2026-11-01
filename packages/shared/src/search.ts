@@ -6,7 +6,7 @@ import { parseCents } from "./money";
 import type { Rulebook } from "./rulebook";
 
 /**
- * Searching and listing are done by the server (or the in-browser sample server), never by filtering everything
+ * Searching and listing are done by the server, never by filtering everything
  * client-side. The page sends a query and shows what comes back.
  */
 
@@ -117,5 +117,5 @@ export function searchMaster(rb: Rulebook, q: string): MasterSearch["hits"] {
   return hits;
 }
 
-/** GET …/versions/:v/search, for the API and the sample server alike: the master as it is (nothing is withheld, ADR-003). */
+/** GET …/versions/:v/search: the master as it is (nothing is withheld, ADR-003). */
 export const searchVersion = (v: { rulebook: Rulebook }, q: string): MasterSearch["hits"] => searchMaster(v.rulebook, q);

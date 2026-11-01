@@ -7,7 +7,7 @@ import { armKey, gridChoice, governingGrids, type Rulebook, upgradeRulebook } fr
  * The invoicing master as an Excel workbook: Summary, Budget grid, Fees & invoiceables, Payment terms, Bill by hand.
  * Billing works from it, so every term that limits or changes a bill is in it: caps with their numbers, which grid is
  * billed for each arm, how each visit is paid, which rows get overhead, and the terms billed by hand.
- * Built by the server (GET /studies/:id/versions/:v/export.xlsx) and by the in-browser sample server. Import it from
+ * Built by the server (GET /studies/:id/versions/:v/export.xlsx). Import it from
  * "@dct/shared/xlsx" so ExcelJS stays out of everything else that uses @dct/shared.
  */
 
@@ -189,10 +189,68 @@ export async function buildWorkbook(stored: Rulebook, meta: WorkbookMeta): Promi
   return new Uint8Array((await wb.xlsx.writeBuffer()) as ArrayBuffer);
 }
 
-/** Every sheet's cells as values: a formula's last computed result, rich text as its text, anything else as null. */
-export async function readSheets(data: ArrayBuffer): Promise<Sheet[]> {
+/** The most a spreadsheet may unpack to: a budget is a few MB, and ExcelJS holds all of it (several times over) in memory. */
+export const MAX_SHEET_BYTES = 25 * 1024 * 1024;
+
+/** readSheets refuses a file that unpacks past MAX_SHEET_BYTES, before ExcelJS inflates any of it. */
+export class SpreadsheetTooLargeError extends Error {
+  override name = "SpreadsheetTooLargeError";
+}
+
+/** A deflated part's size once unpacked, counted as it unpacks and stopped once past `room`. */
+async function inflated(part: Uint8Array, room: number): Promise<number> {
+  const reader = new Blob([part as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return n;
+    n += value.byteLength;
+    if (n > room) {
+      await reader.cancel();
+      return n;
+    }
+  }
+}
+
+/**
+ * What an .xlsx (a zip) unpacks to, up to just past `limit`: each part found through the zip's central directory and
+ * unpacked for real, since the sizes a zip states can lie (a zip bomb) and its bytes can't. Throws on what isn't a zip.
+ */
+async function unpackedSize(data: Uint8Array, limit: number): Promise<number> {
+  const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  // the end-of-directory record: 22 bytes, then a comment of at most 64 KB
+  let end = -1;
+  for (let i = data.byteLength - 22; i >= Math.max(0, data.byteLength - 22 - 0xffff); i--)
+    if (v.getUint32(i, true) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  if (end < 0) throw new Error("not a zip");
+  let at = v.getUint32(end + 16, true);
+  let total = 0;
+  for (let n = v.getUint16(end + 10, true); n > 0 && total <= limit; n--) {
+    if (v.getUint32(at, true) !== 0x02014b50) throw new Error("not a zip");
+    const [method, size, local] = [v.getUint16(at + 10, true), v.getUint32(at + 20, true), v.getUint32(at + 42, true)];
+    at += 46 + v.getUint16(at + 28, true) + v.getUint16(at + 30, true) + v.getUint16(at + 32, true);
+    const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+    // past the end of the file: a zip64 size, a broken offset
+    if (start + size > data.byteLength) throw new Error("not a zip");
+    const part = data.subarray(start, start + size);
+    if (method === 0) total += size;
+    else if (method === 8) total += await inflated(part, limit - total);
+    else throw new Error("not an Excel zip");
+  }
+  return total;
+}
+
+/**
+ * Every sheet's cells as values: a formula's last computed result, rich text as its text, anything else as null. Throws
+ * SpreadsheetTooLargeError past MAX_SHEET_BYTES unpacked, anything else on a file that can't be read.
+ */
+export async function readSheets(data: ArrayBuffer | Uint8Array): Promise<Sheet[]> {
+  if ((await unpackedSize(data instanceof Uint8Array ? data : new Uint8Array(data), MAX_SHEET_BYTES)) > MAX_SHEET_BYTES) throw new SpreadsheetTooLargeError("too large");
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(data);
+  await wb.xlsx.load(data as ArrayBuffer); // a Uint8Array (a Node Buffer) loads as well
   const value = (v: ExcelJS.CellValue): Cell => {
     if (v === null || v === undefined) return null;
     if (typeof v === "number" || typeof v === "string") return v;

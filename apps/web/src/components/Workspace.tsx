@@ -107,7 +107,7 @@ function ValueDrawer({ study, version, path, label, report, zoom, onZoom, onClos
   const spot = at;
   const value = getAt(rb, path);
   // typed by hand: reported once typing is marked done (before, the value is changed in the form)
-  const reportable = report && (version.status === "signed" || (version.status === "draft" && (!version.byHand || version.review.length > 0))) && isLeaf(value) && !asked;
+  const reportable = report && (version.status === "signed" || (version.status === "draft" && (!version.byHand || !!version.typingDoneAt))) && isLeaf(value) && !asked;
 
   const self = useRef<HTMLElement>(null);
   useEffect(() => self.current?.focus({ preventScroll: true }), []);

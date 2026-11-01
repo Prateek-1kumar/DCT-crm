@@ -1,19 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "./api";
 
-// The sample server, for the tests that switch sample mode on (the client loads it only then).
-const sampleServer = vi.hoisted(() => ({ mockRequest: vi.fn(), mockExport: vi.fn() }));
-vi.mock("./mock/server", () => sampleServer);
-/** The client as a sample build has it: sample mode is read once, when the module loads. */
-async function sampleClient() {
-  vi.resetModules();
-  vi.stubEnv("NEXT_PUBLIC_API_MOCK", "1");
-  return import("./api");
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -75,16 +64,6 @@ describe("api writes", () => {
     fetch.mockResolvedValueOnce(ok({ version: 2 }));
     expect(await api.reportValue("s", 2, body)).toEqual({ version: 2 });
   });
-
-  it("send a double click to the sample server once too", async () => {
-    const { mockRequest } = sampleServer;
-    mockRequest.mockImplementation(async () => ({ status: 200, json: { version: 3 } }));
-    const { api: sample } = await sampleClient();
-    const body = { path: "/budgetGrids/0/visits/0/totalCents", value: 123456, by: "Asha" };
-    await Promise.all([sample.typeValue("s", 3, body), sample.typeValue("s", 3, body)]);
-    expect(mockRequest).toHaveBeenCalledTimes(1);
-    expect(mockRequest.mock.calls[0]![3]).toMatch(/^[0-9a-f-]{32,36}$/);
-  });
 });
 
 describe("api.exportXlsx", () => {
@@ -124,13 +103,5 @@ describe("api.exportXlsx", () => {
     const saved = click.mock.contexts[0] as HTMLAnchorElement;
     expect(saved.download).toBe("HAL-2207-v2-invoicing-master.xlsx");
     expect(saved.href).toBe("blob:sheet");
-  });
-
-  it("shows the sample server's refusal as a message too", async () => {
-    sampleServer.mockExport.mockRejectedValue(new Error("Only an approved version can be exported."));
-    const { api: sample, ApiError: SampleError } = await sampleClient();
-    const e = await sample.exportXlsx("s", 2, "Asha").catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(SampleError);
-    expect(e).toMatchObject({ status: 409, message: "Only an approved version can be exported." });
   });
 });

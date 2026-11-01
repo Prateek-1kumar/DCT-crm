@@ -82,6 +82,8 @@ export const RulebookVersionDto = VersionSummaryDto.extend({
   pdfCheck: z.object({ values: z.number().int(), matched: z.number().int() }).nullable(),
   /** Typed in by hand (contract couldn't be read): values are set with PATCH .../values, which only by-hand drafts accept. */
   byHand: z.boolean(),
+  /** When typing by hand was marked done (by-hand/done); null while it's still being typed, and on a version read from the PDF. */
+  typingDoneAt: z.string().nullable(),
   /** Values someone proofread and found right (one mark per value, the latest). */
   proofread: z.array(ProofreadMark),
   /** When anything in it last changed: approval sends it back (SignOffBody.asOf), so nobody approves what they didn't see. */
@@ -132,8 +134,8 @@ export type AuditEntryDto = z.infer<typeof AuditEntryDto>;
 
 /**
  * GET /audit?studyId=&q=&cursor=&limit=: one page of the log, newest first. `q` matches the person, the action (its
- * code or what it's called, ACTION_LABELS) or any text or number in the details, every word, case-insensitive; never
- * what's withheld or blanked. `cursor` is opaque.
+ * code or what it's called, ACTION_LABELS) or any text or number in the details, every word, case-insensitive; nothing
+ * is withheld (ADR-003). `cursor` is opaque.
  */
 export const AuditListQuery = z.object({
   studyId: z.string().min(1).optional(),
@@ -170,7 +172,7 @@ export const ConfirmStudyBody = z.object({
   protocol: z.string(),
   siteName: z.string(),
   investigator: z.string(),
-  by: z.string().trim(),
+  by: Person,
 });
 export const SetDocumentKindBody = z.object({ kind: DocumentKind, by: Person });
 export const CorrectValueBody = z.object({ path: z.string(), value: z.unknown(), note: z.string().min(1), by: Person });
@@ -187,5 +189,6 @@ export const SettingsDto = z.object({
 });
 export type SettingsDto = z.infer<typeof SettingsDto>;
 
-/** PATCH /settings — any subset of SettingsDto. */
-export const PatchSettingsBody = SettingsDto.partial().extend({ by: Person.optional() });
+/** PATCH /settings — any subset of SettingsDto, plus who changed it. */
+/** `by` is required: turning maker-checker off is logged under the name of whoever did it, never "system". */
+export const PatchSettingsBody = SettingsDto.partial().extend({ by: Person });

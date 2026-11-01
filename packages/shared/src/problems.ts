@@ -6,8 +6,8 @@ import { armKey, governingGrids, type Rulebook } from "./rulebook";
 
 /**
  * Contract problems as questions (ADR-001 §6): one per finding of the contract checks, held back while the numbers it's
- * about are being typed, and asked on the typed numbers once they are. Pure, so the API and the in-browser sample server
- * ask the same; each passes its own checks.
+ * about are being typed, and asked on the typed numbers once they are. Pure: the caller passes
+ * the contract checks.
  */
 
 const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as const;
@@ -26,14 +26,22 @@ export const PAGE_OPTIONS = [
 
 /**
  * A contract problem whose answer would change nothing in the master (ADR-003 C3): a grid header naming another
- * investigator or site, and wording flagged as unclear where no field holds the reading. Shown as a notice, beside the
- * questions and at approval, never asked: a question with one possible answer ("Go ahead as printed? Yes") checks nothing.
+ * investigator or site, and wording flagged as unclear where the master holds nothing (no path, or one it doesn't have).
+ * Shown as a notice, beside the questions and at approval, never asked: a question with one possible answer ("Go ahead
+ * as printed? Yes") checks nothing. Unclear wording about anything the master holds, a section or item included
+ * ("/invoiceables/0/cap", "/siteFees/1"), is asked: the interpretation fields under it are (interpretations), else its
+ * value (fromAnomalies). The read gives such paths, and a genuine ambiguity is never only a notice.
  */
 export const isNotice = (a: Pick<ContractAnomaly, "code" | "path">, rb: Rulebook) => {
   if (a.code === "HEADER_MISMATCH") return true;
-  if (a.code !== "AMBIGUOUS_TERM") return false;
-  const value = a.path ? at(rb, a.path) : undefined;
-  return value === undefined || !leaf(value);
+  return a.code === "AMBIGUOUS_TERM" && (!a.path || at(rb, a.path) === undefined);
+};
+
+/** A flag on a {value, prov} wrapper ("/payment/netDays") is about its value. */
+const valuePath = (rb: Rulebook, path: string | null) => {
+  if (!path || leaf(at(rb, path))) return path;
+  const inner = at(rb, `${path}/value`);
+  return inner !== undefined && leaf(inner) ? `${path}/value` : path;
 };
 
 export type Notice = { id: string; message: string; where: PageBox[] };
@@ -102,7 +110,8 @@ const ARITHMETIC_WORDS = (path: string) =>
  */
 export function fromAnomalies(anomalies: ContractAnomaly[], rb: Rulebook, asked: Set<string>): ReviewItem[] {
   const chosen = governingGrids(rb);
-  return anomalies.flatMap((a): ReviewItem[] => {
+  return anomalies.flatMap((found): ReviewItem[] => {
+    const a = found.code === "AMBIGUOUS_TERM" ? { ...found, path: valuePath(rb, found.path) } : found;
     if (SUPERSEDED.has(a.code) || isNotice(a, rb) || heldBack(a, asked)) return [];
     const base = {
       ...BLANK,
@@ -200,7 +209,7 @@ export function recheck(checks: (rb: Rulebook) => ContractAnomaly[], v: { rulebo
 
 /**
  * Two grids for one arm that price the same are billed once (billedGrids), so nothing asks which. A number written into
- * one of them later (a typed answer, a correction on the live version, a sample miss) can make them differ, and the arm
+ * one of them later (a typed answer, a correction on the live version) can make them differ, and the arm
  * would bill neither: its GRID_CONFLICT (the runtime's `checks`) is asked then, unless a grid is chosen for the arm
  * (fromAnomalies) or its question is open already.
  */

@@ -6,7 +6,6 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { askForPerson, askForPersonOnce, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
-import { MOCK } from "@/lib/api";
 import { useSettings, useStudyCounts } from "@/lib/queries";
 import { VIEWS, type ViewId } from "@/lib/review";
 import { AlertBell, AlertWatcher } from "./Alerts";
@@ -246,14 +245,6 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
       <div className="mt-auto flex flex-col gap-1">
         <NavButton label="How it works" icon={BookOpen} onClick={onGuide} />
         <NavLink href="/settings" label="Settings" icon={Settings} active={path.startsWith("/settings")} onNavigate={onNavigate} />
-        {MOCK && (
-          <p className="px-3 pt-2 text-caption text-faint">
-            Sample data only.{" "}
-            <Link href="/settings" onClick={onNavigate} className="text-accent hover:underline">
-              Reset it
-            </Link>
-          </p>
-        )}
         <div className="mt-2 border-t border-line-strong/70 pt-2">
           <PersonChip />
         </div>

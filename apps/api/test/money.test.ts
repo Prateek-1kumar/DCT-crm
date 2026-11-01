@@ -391,7 +391,7 @@ describe("10. lows", () => {
     const many = await Promise.all(Array.from({ length: 51 }, async (_, i) => ({ name: `f${i}.pdf`, data: await makePdf(`many-${i}`, 1) })));
     expect((await upload(app, many)).json()).toMatchObject({ statusCode: 413, message: "Upload at most 50 files at once." });
     const big = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(config.maxUploadBytes)]);
-    expect((await upload(app, [{ name: "big.pdf", data: big }])).json()).toMatchObject({ statusCode: 413, message: "This file is bigger than the 50 MB limit. Split it into smaller PDFs and upload those." });
+    expect((await upload(app, [{ name: "big.pdf", data: big }])).json()).toMatchObject({ statusCode: 413, message: "This file is bigger than the 50 MB limit. Send a smaller copy: a long PDF split into parts, or a spreadsheet with only its budget sheet." });
   });
 
   it("a weaker reading is said in plain words with the version, and logged in the reading's own words", async () => {

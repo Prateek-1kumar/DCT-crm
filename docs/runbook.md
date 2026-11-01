@@ -30,7 +30,7 @@ pnpm install --frozen-lockfile
 pnpm --filter @dct/api build                      # tsup → apps/api/dist (server.js, db/migrate.js)
 pnpm --filter @dct/api db:migrate:dist            # release step: node dist/db/migrate.js (back up first)
 pnpm --filter @dct/api start                      # node dist/server.js
-API_URL=http://127.0.0.1:4100 pnpm --filter web build   # always the real app, never sample data
+API_URL=http://127.0.0.1:4100 pnpm --filter web build   # API_URL is baked in at build time
 pnpm --filter web start                           # next start on 127.0.0.1:3100
 ```
 
@@ -138,7 +138,7 @@ In development, `pnpm dev` runs the API under `tsx watch`: saving an API file re
 | 400 | `<file> could not be read as a PDF` | mupdf, which counts its pages in a worker, can't open it (damaged) | Get a fresh copy |
 | 422 | `<file> took too long to open, so it wasn't uploaded. It may be damaged or unusually complex: save it again as a PDF, or upload a fresh copy.` | mupdf didn't open it and count its pages within 30 s | Save it again as a PDF (print to PDF), or get a fresh copy |
 | 422 | `<file> has <n> pages; the limit is 100 per document…` | Over 100 pages | Split it into smaller PDFs |
-| 413 | `This file is bigger than the 50 MB limit. Split it into smaller PDFs and upload those.` / `Upload at most 50 files at once.` / `This upload has too many parts…` / `This upload has too many fields…` | Over 50 MB, over 50 files, or over 60 parts or 10 fields in one request | Split the file; the web sends one file per request and refuses files over 50 MB before sending |
+| 413 | `This file is bigger than the 50 MB limit. Send a smaller copy: a long PDF split into parts, or a spreadsheet with only its budget sheet.` / `Upload at most 50 files at once.` / `This upload has too many parts…` / `This upload has too many fields…` | Over 50 MB, over 50 files, or over 60 parts or 10 fields in one request | Split the file; the web sends one file per request and refuses files over 50 MB before sending |
 | 403 | `Host not allowed` / `Origin not allowed` | The request came through a host or origin not in `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Use the app's own address, or add it to those settings |
 
 A password-protected or unusual PDF can pass the upload and fail at reading instead, with "This PDF couldn't be read…".
@@ -154,12 +154,6 @@ A password-protected or unusual PDF can pass the upload and fail at reading inst
 - **Symptom:** a read fails with "This read has spent $<x>, the $<cap> limit for one read, so it was stopped before the next AI call."
 - **Cause:** the read's tracked spend reached `EXTRACTION_MAX_USD` (default $20).
 - **Fix:** don't just retry: each retry pays again. Check why the read cost that much (page count, number of grids and tiles; the page and image limits are in `CONFIG`, `packages/extraction/src/extract.ts`). Raising the cap is the owner's decision; if they agree, set `EXTRACTION_MAX_USD`, restart the API, then "Read it again". Otherwise type the contract in by hand.
-
-### Approval refused after a random spot check missed
-
-- **Symptom:** approving says "A random spot check found a wrong number among the <kind of value>, so each of them has to be proofread before approval: <n> of <m> still to check." Everyone got the alert "<contract>: a random spot check found a wrong number", and the Activity log has "Spot check found a wrong number" (`sample.missed`).
-- **Cause:** one of the 10 values re-typed blind after the read was one the PDF check had confirmed, and the person kept a different value after looking again. That is an incident (ADR-001 §6): the check passed a wrong number, so every value of that kind is checked by a person.
-- **Fix:** proofread each value of that kind ("Proofread them" on the approve page), marking "Looks right" or reporting what's wrong, then approve. Once a sample has missed it stays missed. Tell the team: each miss is how silent errors are measured.
 
 ### "This contract changed since you opened it. Check it again."
 

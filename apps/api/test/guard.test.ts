@@ -26,9 +26,9 @@ describe("host and origin guard", () => {
 
   it("lets allowed requests through", async () => {
     expect((await app.inject({ url: "/api/v1/settings", headers: { host: "127.0.0.1:4100", origin: "https://evil.example" } })).statusCode).toBe(200);
-    const write = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { host: "127.0.0.1:4100", origin: "http://localhost:3100" }, payload: {} });
+    const write = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { host: "127.0.0.1:4100", origin: "http://localhost:3100" }, payload: { by: "Asha" } });
     expect(write.statusCode).toBe(200);
     // no Origin (curl, server-side proxy without one) is fine
-    expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { host: "127.0.0.1:4100" }, payload: {} })).statusCode).toBe(200);
+    expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { host: "127.0.0.1:4100" }, payload: { by: "Asha" } })).statusCode).toBe(200);
   });
 });

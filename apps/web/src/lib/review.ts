@@ -39,6 +39,8 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
       return "The kind of limit was changed, so this figure may mean something else now (an amount instead of a count, say). Type what the contract prints.";
     case "reported":
       return "Someone reported this as looking wrong.";
+    case "SAMPLE_MISS":
+      return "A spot check on this contract found a wrong number among values of this kind, so each of them needs a person's check before approval.";
     case "VALUE_CONFLICT":
     case "conflict":
       return "This number didn't match the PDF's own text, so a person needs to read it.";
@@ -122,13 +124,13 @@ export const VIEWS = [
 export type ViewId = (typeof VIEWS)[number]["id"];
 
 /** For a contract page: from its newest version, and the draft's questions once loaded. */
-export function versionStage(latest: Pick<VersionSummaryDto, "status"> | undefined, draft: Pick<RulebookVersionDto, "review" | "byHand"> | undefined): StageState {
+export function versionStage(latest: Pick<VersionSummaryDto, "status"> | undefined, draft: Pick<RulebookVersionDto, "review" | "byHand" | "typingDoneAt"> | undefined): StageState {
   if (!latest) return { stage: "Upload" };
   if (latest.status === "extracting") return { stage: "Reading" };
   if (latest.status === "failed") return { stage: "Reading", failed: true };
   if (latest.status !== "draft") return { stage: "Live" };
   const byHand = draft?.byHand || undefined;
-  if (byHand && !draft!.review.length) return { stage: "Reading", byHand }; // still being typed
+  if (byHand && !draft!.typingDoneAt) return { stage: "Reading", byHand }; // still being typed
   const n = draft ? needsYou(draft.review).length : 0;
   return n > 0 ? { stage: "Needs you", needs: n, byHand } : { stage: "Approve", byHand };
 }
@@ -170,7 +172,7 @@ export function pdfCheckLine(pdfCheck: RulebookVersionDto["pdfCheck"]): string {
  * what only the page knows: a name not picked yet. The API stays the source of truth.
  */
 export function approveState(
-  version: Pick<RulebookVersionDto, "version" | "status" | "review" | "editors" | "rulebook" | "byHand" | "evidence" | "proofread" | "updatedAt">,
+  version: Pick<RulebookVersionDto, "version" | "status" | "review" | "editors" | "rulebook" | "byHand" | "typingDoneAt" | "evidence" | "proofread" | "updatedAt">,
   settings: Pick<SettingsDto, "makerChecker"> | undefined,
   by: string | null,
 ): { allowed: boolean; reasons: string[] } {

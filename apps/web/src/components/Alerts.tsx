@@ -37,7 +37,8 @@ function alertText(a: AlertDto): { title: string; sub: string; href: string } {
     case "sample_missed":
       return {
         title: `${name}: a random spot check found a wrong number`,
-        sub: `${who ? `Found by ${who}. ` : ""}${a.count ?? "Some"} ${a.count === 1 ? "value" : "values"} of that kind to proofread before approval`,
+        // raised only before 2026-11-01, when spot checks were removed (ADR-003); approval no longer waits on it
+        sub: `${who ? `Found by ${who}. ` : ""}From before spot checks were removed: approval no longer waits on it, but you can still proofread those values`,
         href: `/studies/${a.studyId}/proofread`,
       };
   }

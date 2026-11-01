@@ -77,7 +77,8 @@ describe("readTextGrids", () => {
 
   it("a table with no unit price column is no grid: the model's read is kept", async () => {
     const noUnit = BUDGET.map((l) => (l === "sum" ? l : ([l[0], l[1], l[2], l[3], "", l[5]] as Line)));
-    expect(readTextGrids(await readTextLayer(budgetPdf(noUnit), "d"), "d")).toEqual([]);
+    // failed, not skipped: its page is then the model's, even when another grid on it closes
+    expect(readTextGrids(await readTextLayer(budgetPdf(noUnit), "d"), "d").map((g) => g.failed[0])).toEqual(["page 1: a table with no unit price column"]);
   });
 });
 

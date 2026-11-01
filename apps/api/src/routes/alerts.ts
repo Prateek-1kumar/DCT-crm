@@ -1,4 +1,4 @@
-import { AlertListQuery, type AlertPage, ReadAlertsBody } from "@dct/shared";
+import { AlertListQuery, type AlertPage, BODY_WORDS, bodyProblem, ReadAlertsBody } from "@dct/shared";
 import { count, desc, eq, inArray, not, type SQL, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
@@ -63,7 +63,9 @@ export const alertRoutes =
     });
 
     app.post("/alerts/read", async (req, reply) => {
-      const { by, ids } = parse(ReadAlertsBody, req.body);
+      const parsed = ReadAlertsBody.safeParse(req.body);
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.readAlerts));
+      const { by, ids } = parsed.data;
       // Unknown ids select nothing; already read is a no-op. Not audit-logged: reading alerts changes no contract.
       return write(db, req, reply, async (tx) => {
         await tx

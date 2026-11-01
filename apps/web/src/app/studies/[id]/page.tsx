@@ -310,7 +310,7 @@ function Master({ study, draft }: { study: StudyDetailDto; draft: RulebookVersio
 
   const meta = study.versions.find((x) => x.version === v);
   const rb = version.data?.rulebook;
-  const typing = !!version.data?.byHand && version.data.status === "draft" && !version.data.review.length;
+  const typing = !!version.data?.byHand && version.data.status === "draft" && !version.data.typingDoneAt;
   const rechecks = useMemo(() => rechecked(draft, version.data), [draft, version.data]);
   const tabs = typing ? [["overview", "Type it in"] as [Tab, string], ...TABS.slice(4)] : TABS;
   const shown = typing && PART[tab] ? "overview" : tab;

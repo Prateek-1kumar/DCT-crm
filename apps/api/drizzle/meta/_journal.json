@@ -85,6 +85,13 @@
       "when": 1793217085633,
       "tag": "0011_truncate_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793534683257,
+      "tag": "0012_typing_done_at",
+      "breakpoints": true
     }
   ]
 }

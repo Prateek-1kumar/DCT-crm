@@ -38,10 +38,10 @@ export const ValueEvidence = z.object({
 });
 export type ValueEvidence = z.infer<typeof ValueEvidence>;
 
-/** Backed by the PDF's text or the contract's own sums, not a person: what the blind sample draws and a sample miss makes proofread. */
+/** Backed by the PDF's text or the contract's own sums, not a person. */
 export const checkedByMachine = (status: ValueEvidence["status"]) => status === "confirmed" || status === "confirmed_by_math";
 
-/** Cells the read calls "invoiceable" in a table that prints them blank: one blind question per table (reason BLANK_INVOICEABLE, its id = `id`). */
+/** Cells the read calls "invoiceable" in a table that prints them blank: one question per table (reason BLANK_INVOICEABLE, its id = `id`). */
 export type BlankCheck = {
   id: string;
   grid: number;
@@ -66,7 +66,7 @@ export type TableCheck = {
 };
 
 /**
- * confirm_value: type what the page says (conflicts, values not found, spot checks) · unaccounted: found in the contract but not in the master ·
+ * confirm_value: type what the page says (conflicts, values not found, "This looks wrong") · unaccounted: found in the contract but not in the master ·
  * contract_problem: the document itself is inconsistent · interpretation: how a clause should be read · unclassified: a money term the master can't hold yet.
  */
 export const ReviewKind = z.enum(["confirm_value", "unaccounted", "contract_problem", "interpretation", "unclassified"]);
@@ -231,7 +231,8 @@ export const ReportValueBody = z.object({ path: z.string(), note: z.string().min
 
 /**
  * POST /studies/:id/versions/by-hand: blank draft for a contract that couldn't be read; every value typed is `attested`.
- * POST /studies/:id/versions/:v/by-hand/done (same body): typing finished; a different person re-types up to 10 random values blind.
+ * POST /studies/:id/versions/:v/by-hand/done (same body): typing finished; the contract's checks run and every value nobody
+ * typed or picked is asked (nothing is re-typed, ADR-003).
  */
 export const ByHandBody = z.object({ by: Person });
 
@@ -251,7 +252,7 @@ export const AnswerReviewBody = z.object({
   by: Person,
 });
 
-/** What each review body's fields need, in plain words: a 400 names what's wrong (bodyProblem), in the API and the sample server alike. */
+/** What each review body's fields need, in plain words: a 400 names what's wrong (bodyProblem), in the API, and shown as is by the web. */
 export const BODY_WORDS = {
   answer: { by: "Say who is answering.", optionId: "Pick one of the options.", cantTell: "Say whether you can tell.", note: "Write the note as text." },
   values: { path: "Say which value you're typing.", note: "Add a short note about the value.", by: "Say who is typing." },
@@ -259,6 +260,14 @@ export const BODY_WORDS = {
   proofread: { paths: "Say which values you proofread.", by: "Say who is proofreading." },
   sendBack: { itemIds: "Pick the answers to send back.", note: "Add a note saying what to look at again.", by: "Say who is sending them back." },
   byHand: { by: "Say who is typing." },
+  createStudy: { documentIds: "Pick the contract's files (up to 50).", by: "Say who is adding the contract." },
+  confirmStudy: { sponsor: "Fill in the sponsor.", protocol: "Fill in the protocol.", siteName: "Fill in the site.", investigator: "Fill in the investigator.", by: "Say who is confirming the details." },
+  extract: { documentIds: "Pick the files to add (up to 50).", by: "Say who is starting the read." },
+  documentKind: { kind: "Pick what kind of document this is.", by: "Say who is setting the document's kind." },
+  settings: { makerChecker: "Say whether maker-checker is on or off.", people: "List the people's names.", by: "Say who is changing the settings." },
+  readAlerts: { ids: "Pick the alerts to mark as read (up to 100).", by: "Say who is reading the alerts." },
+  signOff: { asOf: "Reload the page and approve again: it didn't say which version you saw.", note: "Write the note as text.", by: "Say who is approving." },
+  budgetCheck: { by: "Say who is checking." },
 } satisfies Record<string, { by: string } & Record<string, string>>;
 
 /** A body's first problem as BODY_WORDS says it; one that isn't a body at all asks who it's from, as every body needs that. */

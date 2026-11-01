@@ -45,7 +45,7 @@ const Env = z.object({
   REQUEST_TIMEOUT_MS: ms(1000, 3_600_000).default(120_000),
   KEEP_ALIVE_TIMEOUT_MS: ms(1000, 600_000).default(72_000),
   SHUTDOWN_TIMEOUT_MS: ms(1000, 600_000).default(30_000),
-  /** How the arithmetic referee confirms grid values (ADR-002 PR 2): `guide` = any one row or column that adds up; `strict` = every one, and both a row and a column. */
+  /** How the arithmetic referee confirms grid values (ADR-002 PR 2). Both need every identity a value is in to balance, and a row and a column for a visit cell; `guide` also accepts a price with overhead equal to its price ("no overhead applied"), `strict` doesn't (`solver.ts`). */
   EXTRACTION_SOLVER: z.enum(["guide", "strict"], { error: "must be guide or strict" }).default("strict"),
   CROSS_READ: z.string().regex(/^(haiku|openai|off)$/i, { error: "must be haiku, openai or off" }).optional(),
   EXTRACTION_MAX_USD: z.coerce.number({ error: "must be a number of dollars above 0" }).positive({ error: "must be a number of dollars above 0" }).optional(),

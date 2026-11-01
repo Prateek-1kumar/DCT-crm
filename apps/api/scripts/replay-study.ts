@@ -10,13 +10,15 @@
  * session refuses any write), and nothing here starts the server or the workers.
  *
  * Not replayed: the corrections an amendment carries forward from the live version (they need the live version's answers), and
- * the stored rulebook is what the people answering left it as, so a version that has answers can differ from what was read.
- * The blind sample is a fresh random draw each run, so SAMPLE is compared apart.
+ * what the model's read returned beside the rulebook but no version stores (the grid read's printed row totals and quantities,
+ * `printedRows`; the token map's `anchors` and `nonFee`, off by default). The stored rulebook is what the people answering
+ * left it as, so a version that has answers can differ from what was read. A table check draws its two columns at random,
+ * so which columns its questions point at can differ; the counts don't.
  */
 import { writeFileSync } from "node:fs";
 import { and, desc, eq, lt } from "drizzle-orm";
-import { bindEvidence, gateSweep, readTextLayer, reviewFromEvidence, runContractChecks, solveGrids, type TextPage } from "@dct/extraction";
-import { type ReviewItem, upgradeRulebook, type ValueEvidence } from "@dct/shared";
+import { besideOnLine, bindEvidence, gateSweep, readTextLayer, reviewFromEvidence, runContractChecks, solveGrids, type TextPage } from "@dct/extraction";
+import { isExcludedPage, type ReviewItem, upgradeRulebook, type ValueEvidence } from "@dct/shared";
 import { createDb } from "../src/db/index.js";
 import { config } from "../src/config.js";
 import { documents, rulebookVersions, studyDocuments } from "../src/db/schema.js";
@@ -45,10 +47,6 @@ export function counts(review: ReviewItem[], evidence: ValueEvidence[], docs: st
     unaccountedByPage: tally(review.filter((i) => i.reason === "UNACCOUNTED_TERM").map(page)),
   };
 }
-type Counts = ReturnType<typeof counts>;
-
-/** The same, with the blind sample (a new random draw every run) left out of the review counts. */
-const withoutSample = (c: Counts) => JSON.stringify({ ...c, review: { total: c.review.total - (c.review.byReason.SAMPLE ?? 0), k: Object.entries(c.review.byKindReasonBlocking).filter(([k]) => !k.includes(" / SAMPLE / ")) } });
 
 async function main() {
   const args = process.argv.slice(2);
@@ -78,12 +76,16 @@ async function main() {
     const anomalies = runContractChecks(rb, { crossRead: v.crossRead ? upgradeRulebook(v.crossRead) : null, pages: v.pages, notes: v.notes });
     const textByDoc = await Promise.all(docs.map((d) => readTextLayer(d.path, d.id, { ocr: true })));
     const pages: TextPage[] = textByDoc.flat();
-    const replayed = reviewDraft({ bindEvidence, reviewFromEvidence, solveGrids, gateSweep }, rb, anomalies, pages, docs, { amendment: !!earlier || docs.some((d) => d.kind === "amendment"), solver: config.extractionSolver });
+    // as jobs.ts wires it, less what no version stores (above)
+    const replayed = reviewDraft({ bindEvidence, reviewFromEvidence, solveGrids, gateSweep, besideOnLine }, rb, anomalies, pages, docs, {
+      amendment: !!earlier || docs.some((d) => d.kind === "amendment"),
+      excluded: v.pages.filter(isExcludedPage),
+      solver: config.extractionSolver,
+    });
     const ids = docs.map((d) => d.id);
     const now = counts(replayed.review, replayed.evidence, ids);
     const stored = counts(v.review, v.evidence, ids);
     const same = JSON.stringify(now) === JSON.stringify(stored);
-    const sameButSample = withoutSample(now) === withoutSample(stored);
     const report = {
       version: { number: v.version, status: v.status },
       documents: docs.length,
@@ -94,7 +96,6 @@ async function main() {
       replay: now,
       stored,
       replayEqualsStored: same,
-      replayEqualsStoredExceptSample: sameButSample,
     };
     console.log(`Version ${v.version} (${v.status}), ${docs.length} document(s); pages by text source: ${JSON.stringify(report.pagesBySource)}`);
     for (const [name, c] of [["REPLAY (code as it is now)", now], ["STORED (on the version)", stored]] as const) {
@@ -106,7 +107,7 @@ async function main() {
     }
     if (replayed.solver) console.log(`\nsolver (${replayed.solver.mode}): upgraded ${JSON.stringify(replayed.solver.upgraded)}, no page ${replayed.solver.noPage}, held would pass ${replayed.solver.heldWouldPass}, identities ${JSON.stringify(replayed.solver.identities)}`);
     if (replayed.sweep) console.log(`sweep gate: ${JSON.stringify(replayed.sweep)}`);
-    console.log(`\nReplay equals stored: ${same ? "YES" : "NO"}${same ? "" : sameButSample ? " (only the blind sample differs, as expected)" : " (they differ beyond the random sample: the code changed since the read, or answers changed the stored rulebook)"}`);
+    console.log(`\nReplay equals stored: ${same ? "YES" : "NO (the code changed since the read, answers changed the stored rulebook, or the read's unstored printed row totals mattered)"}`);
     if (jsonAt) writeFileSync(jsonAt, `${JSON.stringify(report, null, 1)}\n`);
   } finally {
     await pool.end();

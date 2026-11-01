@@ -33,9 +33,9 @@
 
 | Stage | What | Done when |
 |---|---|---|
-| C1 | Remove the blind sample and the by-hand re-type sample | all suites and `pnpm e2e` green |
-| C2 | Show our reading: remove withholding; each question shows our reading and recommendation; accept or correct | same |
-| C3 | Remove questions with one possible answer (they become notices), and the off-by-default experiments superseded by §3 (row bands, token map) | same |
+| C1 ✅ | Remove the blind sample and the by-hand re-type sample | all suites and `pnpm e2e` green |
+| C2 ✅ | Show our reading: remove withholding; each question shows our reading and recommendation; accept or correct | same |
+| C3 ✅ | Remove questions with one possible answer (they become notices), and the off-by-default row bands superseded by §3 (the token map goes with the vision grid read, P4) | same |
 | P1 ✅ | Intake: detect printed copies and ask for the signed original; leave out long manuals with no amounts (a lab manual); say what a spreadsheet or Word file is and what to upload. Reading the budget spreadsheet moves to P2, where it's checked against the signed PDF: accepting a file the app then ignores would mislead | same, plus a printed copy is detected on all four test contracts (done 2026-11-01, offline: all four flagged; the client's signed work order taken as native text; both lab manuals, 348 and 204 pages with no amounts, left out) |
 | P2 ✅ | Grid reader by code on native PDFs; unit-counting quantity identity; the budget spreadsheet accepted beside the signed PDF and checked against it cell by cell | COPD native: every grid cell confirmed with 0 questions about grid values, offline |
 | P3 | The same reader on OCR words for scans; the OCR returns the ruled lines it already finds | on new scanned test contracts (the four old ones were deleted, see below): 0 wrong confirmed, every planted error caught (column shifts included), questions per contract down |

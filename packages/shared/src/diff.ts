@@ -1,7 +1,7 @@
 import type { DiffEntry } from "./api";
 import { ENUM_LABELS } from "./labels";
 
-/** The labelled diff of two rulebooks and the labels that name a value, the same in the API and the sample server. */
+/** The labelled diff of two rulebooks and the labels that name a value, the same in the API and the web. */
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 

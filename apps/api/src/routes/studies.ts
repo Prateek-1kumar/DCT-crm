@@ -18,9 +18,10 @@ import {
 } from "@dct/shared";
 import { and, count, desc, eq, getTableColumns, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
-import { documents, jobs, listKey, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
+import { auditLog, documents, jobs, listKey, rulebookVersions, studies, studyDocuments } from "../db/schema.js";
 import type { Tx } from "../db/index.js";
 import { appliesFromOf, audit, documentDto, lockStudy, manualRulebook, refreshStudyStatus, studySummaryDto, versionDto, versionSummaryDto } from "../domain.js";
 import { queueJob } from "../jobs.js";
@@ -66,7 +67,9 @@ export const studyRoutes =
     }
 
     app.post("/studies", async (req, reply) => {
-      const body = parse(CreateStudyBody, req.body);
+      const parsed = CreateStudyBody.safeParse(req.body);
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.createStudy));
+      const body = parsed.data;
       const ids = [...new Set(body.documentIds)];
       await assertDocsExist(ids);
       return write(db, req, reply, async (tx) => {
@@ -177,30 +180,43 @@ export const studyRoutes =
     app.get<{ Params: { id: string } }>("/studies/:id", async (req) => detail(db, req.params.id));
 
     app.patch<{ Params: { id: string } }>("/studies/:id", async (req, reply) => {
-      const { by, ...fields } = parse(ConfirmStudyBody, req.body);
+      const parsed = ConfirmStudyBody.safeParse(req.body);
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.confirmStudy));
+      const { by, ...fields } = parsed.data;
       return write(db, req, reply, async (tx) => {
         const s = await lockStudy(tx, req.params.id);
+        const before = { sponsor: s.sponsor, protocol: s.protocol, siteName: s.siteName, investigator: s.investigator };
+        // Confirming the read's guess as it is is logged once (a person vouched for it); the same details again after
+        // that change nothing, so they write and log nothing.
+        if (isDeepStrictEqual(before, fields)) {
+          const [confirmed] = await tx.select({ id: auditLog.id }).from(auditLog).where(and(eq(auditLog.studyId, s.id), eq(auditLog.action, "study.confirmed"))).limit(1);
+          if (confirmed) return detail(tx, s.id);
+        }
         // Once a version is approved, these are what billing was approved under: an amendment changes them, an edit can't.
         const [live] = await tx.select({ version: rulebookVersions.version }).from(rulebookVersions).where(and(eq(rulebookVersions.studyId, s.id), inArray(rulebookVersions.status, ["signed", "superseded"]))).limit(1);
         if (live) throw new HttpError(409, "This contract has an approved version, so its sponsor, protocol, site and investigator can't be changed any more: they're part of what was approved.");
         await tx.update(studies).set({ ...fields, updatedAt: new Date() }).where(eq(studies.id, s.id));
-        const before = { sponsor: s.sponsor, protocol: s.protocol, siteName: s.siteName, investigator: s.investigator };
         await audit(tx, by, s.id, "study.confirmed", { before, after: fields });
         return detail(tx, s.id);
       });
     });
 
     app.post<{ Params: { id: string } }>("/studies/:id/extract", async (req, reply) => {
-      const body = parse(ExtractBody, req.body ?? {});
+      const parsed = ExtractBody.safeParse(req.body ?? {});
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.extract));
+      const body = parsed.data;
       const studyId = req.params.id;
       const newDocs = [...new Set(body.documentIds ?? [])];
       if (newDocs.length) await assertDocsExist(newDocs);
       return write(db, req, reply, async (tx) => {
         await lockStudy(tx, studyId); // serialises version creation
-        if (newDocs.length) await tx.insert(studyDocuments).values(newDocs.map((documentId) => ({ studyId, documentId }))).onConflictDoNothing();
         const [latest] = await tx.select().from(rulebookVersions).where(eq(rulebookVersions.studyId, studyId)).orderBy(desc(rulebookVersions.version)).limit(1);
+        const linked = newDocs.length ? await tx.select({ id: studyDocuments.documentId }).from(studyDocuments).where(and(eq(studyDocuments.studyId, studyId), inArray(studyDocuments.documentId, newDocs))) : [];
+        const adding = newDocs.filter((id) => !linked.some((l) => l.id === id));
 
         if (latest?.status === "extracting") {
+          // The running read listed the study's files when it started: a file linked now would be left out of it, silently.
+          if (adding.length) throw new HttpError(409, "This contract is being read right now, so a file added now would be left out of that read. Wait until the read finishes, then add the file.");
           // already running: idempotent, hand back the same job
           const [job] = await tx
             .select()
@@ -211,6 +227,7 @@ export const studyRoutes =
           if (job) return { jobId: job.id, version: latest.version };
         }
         if (latest?.status === "draft") throw new HttpError(409, `Version ${latest.version} is a draft under review; sign it off before extracting again`);
+        if (adding.length) await tx.insert(studyDocuments).values(adding.map((documentId) => ({ studyId, documentId })));
 
         let version: number;
         if (latest && (latest.status === "failed" || latest.status === "extracting")) {
@@ -223,7 +240,7 @@ export const studyRoutes =
         }
         await refreshStudyStatus(tx, studyId, body.by);
         const jobId = await queueJob(tx, boss, "extract", studyId, version);
-        await audit(tx, body.by ?? "system", studyId, "extraction.queued", { version, jobId, addedDocumentIds: newDocs });
+        await audit(tx, body.by ?? "system", studyId, "extraction.queued", { version, jobId, addedDocumentIds: adding });
         return { jobId, version };
       }, { status: 202 });
     });

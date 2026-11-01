@@ -1,26 +1,29 @@
-import { RulebookVersionDto, openPaths } from "@dct/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mockRequest, mockReset } from "./mock/server";
+import { interpretations, openPaths, type RulebookVersionDto } from "@dct/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { confirmed, rulebook, version as fixture } from "../test/fixtures";
 import { EVIDENCE } from "../components/review-context";
 import { proofUnits, reportWrong, unitStatus } from "./proofread";
 
-const version = async () => RulebookVersionDto.parse((await mockRequest("GET", "/studies/st-northwind/versions/1", undefined)).json);
+/** A draft read from a text PDF: every number confirmed, one visit total by the contract's own sums, the interpretations asked. */
+function version() {
+  const rb = rulebook();
+  const evidence = confirmed(rb);
+  Object.assign(evidence.find((e) => e.path === "/budgetGrids/0/visits/0/totalCents")!, { status: "confirmed_by_math" });
+  return fixture(rb, { evidence, review: interpretations(rb, { amendment: false }) });
+}
 
 describe("proofread units", () => {
-  beforeEach(() => mockReset());
-
-  it("proofreads a value the contract's own totals confirm, and says so in plain words", async () => {
-    const v = await version();
+  it("proofreads a value the contract's own totals confirm, and says so in plain words", () => {
+    const v = version();
     const [math] = v.evidence.filter((e) => e.status === "confirmed_by_math");
-    expect(math).toBeDefined();
     const unit = proofUnits(v).find((u) => u.cells.some((c) => c.path === math!.path));
     expect(unit?.byMath).toBe(true);
     expect(EVIDENCE.confirmed_by_math.label).toBe("Confirmed by the contract's own totals");
     expect(EVIDENCE.confirmed_by_math.label).not.toBe(EVIDENCE.confirmed.label);
   });
 
-  it("groups confirmed values into terms, visit totals and grid rows, biggest money first", async () => {
-    const v = await version();
+  it("groups confirmed values into terms, visit totals and grid rows, biggest money first", () => {
+    const v = version();
     const units = proofUnits(v);
     const order = units.map((u) => u.section);
     expect(order.indexOf("totals")).toBeGreaterThan(order.lastIndexOf("terms"));
@@ -30,8 +33,8 @@ describe("proofread units", () => {
     // cap's figures while its kind is asked
     const open = new Set(openPaths(v));
     expect(open.has("/screenFail/cap/ratio")).toBe(true);
-    const confirmed = v.evidence.filter((e) => (e.status === "confirmed" || e.status === "confirmed_by_math") && e.where[0] && !open.has(e.path)).map((e) => e.path);
-    expect(units.flatMap((u) => u.cells.map((c) => c.path)).sort()).toEqual([...confirmed].sort());
+    const confirmedPaths = v.evidence.filter((e) => (e.status === "confirmed" || e.status === "confirmed_by_math") && e.where[0] && !open.has(e.path)).map((e) => e.path);
+    expect(units.flatMap((u) => u.cells.map((c) => c.path)).sort()).toEqual([...confirmedPaths].sort());
 
     const rows = units.filter((u) => u.section === "rows");
     expect(rows[0]!.cells[0]!.label).toBe("Unit");
@@ -40,21 +43,12 @@ describe("proofread units", () => {
     expect(units[0]!.cells[0]!.path).not.toMatch(/Cents$/);
   });
 
-  it("a unit is done when all its values are marked, reported when any was sent to Needs you", async () => {
-    const u = proofUnits(await version()).find((x) => x.section === "rows")!;
+  it("a unit is done when all its values are marked, reported when any was sent to Needs you", () => {
+    const u = proofUnits(version()).find((x) => x.section === "rows")!;
     const marks = new Map(u.cells.map((c) => [c.path, { path: c.path, by: "Avery Chen", at: "2026-10-28T10:00:00Z" }]));
     expect(unitStatus(u, new Map(), new Set())).toBe("todo");
     expect(unitStatus(u, marks, new Set())).toBe("done");
     expect(unitStatus(u, marks, new Set([u.cells[1]!.path]))).toBe("reported");
-  });
-
-  it("marks survive on a live version without changing its numbers", async () => {
-    const before = RulebookVersionDto.parse((await mockRequest("GET", "/studies/st-meridian/versions/1", undefined)).json);
-    const u = proofUnits(before)[0]!;
-    const res = await mockRequest("POST", "/studies/st-meridian/versions/1/proofread", { paths: u.cells.map((c) => c.path), by: "Avery Chen" });
-    const after = RulebookVersionDto.parse(res.json);
-    expect(after.proofread.map((m) => m.path).sort()).toEqual(u.cells.map((c) => c.path).sort());
-    expect(after.rulebook).toEqual(before.rulebook);
   });
 });
 

@@ -71,7 +71,7 @@ function fresh(): AnswerDraft {
   return { version: 1, byHand: false, rulebook: rb, review: tableQuestions(rb, evidence, [check], noShuffle), evidence, editors: [] };
 }
 const ask = (d: AnswerDraft) => (p: string, id: string, reason: string) => askAbout(d.rulebook, d.evidence, p, id, reason);
-/** What the API and the sample server do for one answer. */
+/** What the API does for one answer. */
 function answerIt(d: AnswerDraft, itemId: string, optionId: string, by = "Asha") {
   const r = answerQuestion(d, itemId, { optionId, by }, { isoDate, now: "2026-01-01T00:00:00Z" });
   if ("refusal" in r) return r;

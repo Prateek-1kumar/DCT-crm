@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NeedsPerson } from "@/components/Sidebar";
 import { Button, Card, ErrorNote, LoadError, PageTitle, pageCls, Spinner, cx, inputCls } from "@/components/ui";
-import { MOCK, api } from "@/lib/api";
+import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { keys, useSettings } from "@/lib/queries";
 
@@ -15,7 +15,8 @@ export default function SettingsPage() {
   const me = useActingAs();
   const [name, setName] = useState("");
   const save = useMutation({
-    mutationFn: (patch: Partial<SettingsDto>) => api.patchSettings({ ...patch, ...(me ? { by: me } : {}) } as Partial<SettingsDto>),
+    // no name picked yet: the API refuses in words ("Say who is changing the settings."), beside the prompt to pick one
+    mutationFn: (patch: Partial<SettingsDto>) => api.patchSettings({ ...patch, by: me ?? "" }),
     onSuccess: (s) => qc.setQueryData(keys.settings, s),
   });
 
@@ -91,23 +92,6 @@ export default function SettingsPage() {
         </Card>
         {!me && <NeedsPerson />}
         <ErrorNote error={save.error} />
-
-        {MOCK && (
-          <Card className="p-5">
-            <h2 className="text-lg">Sample data</h2>
-            <p className="mb-3 text-sm text-muted">This build runs on made-up sample data kept in your browser. Reset it to the starting state.</p>
-            <Button
-              variant="danger"
-              onClick={async () => {
-                // The flag is checked here, not via MOCK: only an inlined `if (process.env…)` lets a real build drop the sample server.
-                if (process.env.NEXT_PUBLIC_API_MOCK === "1") (await import("@/lib/mock/server")).mockReset();
-                await qc.invalidateQueries();
-              }}
-            >
-              Reset sample data
-            </Button>
-          </Card>
-        )}
       </div>
     </div>
   );

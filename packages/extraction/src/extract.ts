@@ -298,11 +298,13 @@ export async function extractWith({ documents, onProgress, signal }: ReadInput, 
   const gridImages: Image[][] = [];
   // ADR-003 P2: a native PDF's grids read by code from its own text. One whose arithmetic closes (gridtext.ts) replaces the
   // model's read of its pages, and no image of them is sent; a grid page it doesn't cover whole keeps the model's read,
-  // and a text grid reaching into such a page is dropped, so no grid is read twice.
-  const keyOf = (x: { source: { documentId: string; page: number } | null }) => `${x.source!.documentId}#${x.source!.page}`;
-  const pagesOf = (t: TextGrid) => new Set([t.grid.prov, ...t.grid.visits.map((v) => v.prov), ...t.grid.procedures.map((q) => q.prov), ...t.grid.perPatientTotals.map((q) => q.prov)].map(keyOf));
-  let textGrids = layers.flatMap((l) => (l[0] ? readTextGrids(l, l[0].documentId) : [])).filter((t) => !t.failed.length);
-  const covered = new Set(textGrids.flatMap((t) => [...pagesOf(t)]));
+  // and a text grid reaching into such a page is dropped, so no grid is read twice. A page any failed text grid touches is
+  // never covered, even when another grid on it closes: the failed table is read by the model, with the rest of its page.
+  const pagesOf = (t: TextGrid) => new Set(t.pages.map((p) => `${t.grid.prov.source!.documentId}#${p}`));
+  const allText = layers.flatMap((l) => (l[0] ? readTextGrids(l, l[0].documentId) : []));
+  const unsure = new Set(allText.filter((t) => t.failed.length).flatMap((t) => [...pagesOf(t)]));
+  let textGrids = allText.filter((t) => !t.failed.length);
+  const covered = new Set(textGrids.flatMap((t) => [...pagesOf(t)]).filter((k) => !unsure.has(k)));
   for (let i = groups.length - 1; i >= 0; i--) {
     const keys = groups[i]!.map((p) => `${p.documentId}#${p.page}`);
     if (keys.every((k) => covered.has(k))) groups.splice(i, 1);

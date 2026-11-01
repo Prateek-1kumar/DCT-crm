@@ -5,22 +5,22 @@ import { deepEqual, diffRulebooks, itemIds } from "./diff";
 import { AnswerReviewBody, BODY_WORDS, bodyProblem, checkedByMachine, type ProofreadMark, type ReviewItem, samePerson, settled, type ValueEvidence } from "./evidence";
 import { parseCents, parsePercent } from "./money";
 import { at, leaf, parsePointer, setAt } from "./pointer";
-import { ARITHMETIC, fromAnomalies, gridConflicts, recheck, sumAt } from "./problems";
+import { ARITHMETIC, fromAnomalies, gridConflicts, isNotice, PAGE_OPTIONS, recheck, sumAt } from "./problems";
 import { amendmentDate, askAbout, BLANK_INVOICEABLE, BLANK_READ, rejectBlank, capFollowUps, decidedBy, empty, noLimit, placeholders, PROSPECTIVE, settleTable, TABLE_CHECK } from "./questions";
 import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
- * Answering a question and the approval it gates (ADR-001 §6, I1–I6). Pure, so the API and the in-browser sample server
- * check an answer, write it, log it and refuse approval exactly the same. A refusal is a value (`{ refusal }`): the API
- * makes it an HttpError, the sample server a response.
+ * Answering a question and the approval it gates (ADR-001 §6, I1–I6). Pure, so the API checks, writes and logs an answer and refuses
+ * approval by one rule, and the approve page explains with the same one. A refusal is a value (`{ refusal }`): the API
+ * makes it an HttpError.
  */
 
 export type Refusal = { refusal: { status: 400 | 404 | 409; message: string } };
 const refuse = (status: 400 | 404 | 409, message: string): Refusal => ({ refusal: { status, message } });
 
 /**
- * A draft as an answer reads and writes it. `proofread` says what a sample miss still holds back; `anomalies`, what the
- * read's checks found (a total's printed value, for a question asked before it was kept on the question).
+ * A draft as an answer reads and writes it. `anomalies`: what the read's checks found (a total's printed value, for a
+ * question asked before it was kept on the question).
  */
 export type AnswerDraft = { version: number; byHand: boolean; rulebook: Rulebook; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[]; proofread?: ProofreadMark[]; anomalies?: ContractAnomaly[] };
 
@@ -155,18 +155,20 @@ function answerBlank(v: AnswerDraft, item: ReviewItem, b: ReturnType<typeof Answ
   if (outcome !== "cant_tell" && !v.editors.some((e) => samePerson(e, b.by))) v.editors.push(b.by);
   const detail = { version: v.version, itemId: item.id, question: item.question, outcome: outcome.replace("_", " ") };
   const log = set ? { by: b.by, action: "review.blank_removed", detail: { ...detail, cells: cells.length } } : { by: b.by, action: "review.answered", detail };
-  return { item, outcome, changed: false, set, listed: undefined, missed: false, unchanged: false as const, log, incident: undefined, closed: undefined };
+  return { item, outcome, changed: false, set, listed: undefined, unchanged: false as const, log, closed: undefined };
 }
 
 /**
  * POST .../review/:itemId on a draft. Mutates `v` (callers pass a draft they own) and returns what it did, or a refusal,
  * before changing anything. A typed value is compared with the PDF's own text at its spot, or, where nothing is printed
- * there, with the value we hold: matched, or differs (then picking a value settles it as chosen). Settling a differs
+ * there, with the value we hold: matched, or differs (then the same value again, or the PDF's, settles it as chosen;
+ * any other is checked again). Where the PDF's text contradicts our reading but prints no one figure that parses, our
+ * reading is no truth: every answer differs first. Settling a differs
  * needs a note: keeping your own value over the PDF text says why the text is wrong; where the PDF's text prints nothing
  * (a scan, a value the check didn't find, a pick), either value says where the page prints it, and the answer is marked
  * `noPdfText` for the approver. Options are chosen; an option with a `note` needs one (a reason, ADR-001 §6). An
  * interpretation's pick is checked against the read's value like a typed one: one that differs is shown with it, and the
- * second pick settles it. A question with options and an input (the start date: typed, or "prospective only") takes
+ * same pick again (or the read's) settles it. A question with options and an input (the start date: typed, or "prospective only") takes
  * either; "prospective only" takes the amendment's own date typed blind too, checked against the read's. A typed date is
  * a calendar day. Can't tell is left for the approver, and doesn't clear anything. "Bill by hand" lists the term on the
  * master, and its note goes with it; answering it any other way takes it off again. No limit on a cap drops its
@@ -211,6 +213,13 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
   if (!b.cantTell && item.path && noLimit(v.rulebook, item.path))
     return refuse(409, "This cap was answered “No limit”, so there's no limit to type here. If the contract does set one, change that answer first.");
   const asPrinted = ARITHMETIC.has(item.reason) && item.path ? printedTotal(v, item) : undefined;
+  const printed = parsePrinted(item.input, ev?.printed ?? null, isoDate);
+  // The PDF's text contradicts our reading but prints no one figure that parses (several figures, none ours): our reading
+  // is what the page disagrees with, so it's no truth to match. Every answer there is given twice, with a note.
+  const unprinted = ev?.status === "conflict" && printed === undefined;
+  // After "differs", only the same answer again (typed twice) or the page's own value settles it; anything else is a new
+  // answer, checked again.
+  const first = item.outcome === "differs" ? item.answer : undefined;
   if (ARITHMETIC.has(item.reason) && b.optionId === "printed" && asPrinted === undefined)
     return refuse(
       409,
@@ -225,30 +234,37 @@ export function answerQuestion(v: AnswerDraft, itemId: string, raw: unknown, { i
     if (!option) return refuse(400, "Pick one of the options.");
     if (option.note && !note) return refuse(400, `Add a short note for this answer: ${option.note.replace(/^./, (c) => c.toLowerCase())}`);
     set = optionValue(v.rulebook, item, option.id, current, asPrinted);
-    // A yes/no or fixed-list value is checked like a typed one: against the value we hold (a re-type of a hand-typed
-    // value, "This looks wrong", an interpretation). A missing one has nothing to check against, nor does a read that
-    // says the contract doesn't state it; a second pick after "differs" settles it.
-    const checkable = set && (item.kind === "confirm_value" || item.kind === "interpretation") && item.reason !== "REQUIRED_MISSING" && !empty(current) && current !== "unspecified" && item.outcome !== "differs";
+    // A yes/no or fixed-list value is checked like a typed one: against the value we hold ("This looks wrong", an
+    // interpretation). A missing one has nothing to check against, nor does a read that says the contract doesn't state
+    // it. After "differs", the same pick again or the read's own settles it.
+    const checkable = set && (item.kind === "confirm_value" || item.kind === "interpretation") && item.reason !== "REQUIRED_MISSING" && !empty(current) && current !== "unspecified";
+    const again = !!first && (b.optionId === first.optionId || (!!checkable && !unprinted && same(set!.value, current)));
     // a pick is never in the PDF's text
-    if (item.outcome === "differs" && !note) return refuse(400, WHERE);
-    noPdfText = item.outcome === "differs";
+    if (again && !note) return refuse(400, WHERE);
+    noPdfText = again;
     // a table pick is compared with the visit the read gave the column; a wrong one isn't asked again (settleTable)
-    outcome = item.table ? (option.id === item.table.expect ? "matched" : "chosen") : checkable && !same(set!.value, current) ? "differs" : checkable ? "matched" : "chosen";
+    outcome =
+      item.table ? (option.id === item.table.expect ? "matched" : "chosen")
+      : again ? "chosen"
+      : checkable && (unprinted || !same(set!.value, current)) ? "differs"
+      : checkable ? "matched"
+      : "chosen";
     if (outcome === "differs") set = undefined;
   } else {
     if (prospective && (value === undefined || value === null || value === "")) return refuse(400, "Type the amendment's own date, as it's printed on the amendment.");
     if (value === undefined || value === null || value === "") return refuse(400, "Type a value, or say you can't tell.");
     if (item.input === "date" && !calendarDay(value)) return refuse(400, "That isn't a date. Pick the day the contract gives.");
     if (item.path && !fits(v.rulebook, item.path, value)) return refuse(400, "That value can't go in this field. Check what you typed.");
-    const printed = parsePrinted(item.input, ev?.printed ?? null, isoDate);
     // a missing value (or a placeholder of the blank form) holds nothing to compare with
-    const truth = amended ?? (printed ?? (empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current));
-    if (item.outcome === "differs") {
+    const truth = amended ?? (printed ?? (unprinted || empty(current) || item.reason === "REQUIRED_MISSING" ? undefined : current));
+    if (first && !same(value, first.value) && (truth === undefined || !same(value, truth))) outcome = "differs";
+    else if (first) {
       if (printed === undefined && !note) return refuse(400, WHERE);
       if (printed !== undefined && !same(value, printed) && !note) return refuse(400, WHY);
       noPdfText = printed === undefined;
       outcome = "chosen";
-    } else if (truth === undefined) outcome = "chosen";
+    } else if (unprinted && amended === undefined) outcome = "differs";
+    else if (truth === undefined) outcome = "chosen";
     else outcome = same(value, truth) ? "matched" : "differs";
     if (outcome !== "differs" && item.path) set = { path: item.path, value };
   }
@@ -348,18 +364,19 @@ export function followUps(
 }
 
 /**
- * POST …/by-hand/done, for the API and the sample server alike: typing is finished. The contract's checks (`checks`: the
- * API's real ones, the sample server's own) run on what was typed, as after a read, held back for the values asked; and
+ * POST …/by-hand/done: typing is finished. The contract's checks (`checks`, the
+ * API's) run on what was typed, as after a read, held back for the values asked; and
  * everything nobody typed or picked (placeholders: a number of the blank form, a yes/no or fixed-list default) is asked as
  * a missing value. Whoever typed can't approve (maker-checker). The questions, the checks' findings and the log entry's
- * details, or a refusal.
+ * details, or a refusal. Done is its own mark (`typingDoneAt`, set by the caller), never "has questions": a contract
+ * typed in full has none, and must still reach approval.
  */
 export function typingDone(
-  v: { version: number; status: string; byHand: boolean; rulebook: Rulebook | null; review: ReviewItem[]; evidence: ValueEvidence[] },
+  v: { version: number; status: string; byHand: boolean; typingDoneAt?: Date | string | null; rulebook: Rulebook | null; review: ReviewItem[]; evidence: ValueEvidence[] },
   { checks }: { checks: (rb: Rulebook) => ContractAnomaly[] },
 ): Refusal | { review: ReviewItem[]; anomalies: ContractAnomaly[]; detail: Record<string, unknown> } {
   if (v.status !== "draft" || !v.byHand || !v.rulebook) return refuse(409, "Only a contract typed by hand can be marked done.");
-  if (v.review.length) return refuse(409, "Typing is already marked done.");
+  if (v.typingDoneAt) return refuse(409, "Typing is already marked done.");
   const rb = v.rulebook;
   const typed = v.evidence.filter((e) => e.status === "attested" && leaf(at(rb, e.path)) && !empty(at(rb, e.path))).length;
   if (!typed) return refuse(400, "Type at least one value first.");
@@ -380,14 +397,14 @@ export function typingDone(
 export function signOffRefusal(
   v: {
     version: number; status: string; rulebook: (Pick<Rulebook, "budgetGrids" | "governingGridId"> & { governingGridIds?: string[] }) | null; updatedAt: string; byHand: boolean;
-    review: ReviewItem[]; evidence: ValueEvidence[]; proofread?: ProofreadMark[]; editors: string[];
+    typingDoneAt?: Date | string | null; review: ReviewItem[]; evidence: ValueEvidence[]; editors: string[];
   },
   { asOf, by, makerChecker }: { asOf: string; by: string; makerChecker: boolean },
 ): string | null {
   if (v.status === "signed" || v.status === "superseded") return `Version ${v.version} is ${v.status} and immutable; changes need a new version (amendment)`;
   if (v.status !== "draft" || !v.rulebook) return `Version ${v.version} is ${v.status}; only draft versions can be changed`;
   if (v.updatedAt !== asOf) return "This contract changed since you opened it. Check it again.";
-  if (v.byHand && !v.review.length) return "Typing isn't marked done yet. Mark it done when every value is typed.";
+  if (v.byHand && !v.typingDoneAt) return "Typing isn't marked done yet. Mark it done when every value is typed.";
   const open = v.review.filter((i) => !settled(i)).length;
   if (open) return `${open} ${open === 1 ? "question still needs" : "questions still need"} an answer before this can be approved.`;
   // an arm whose grids differ and that has none chosen bills nothing (billedGrids), however it got there
@@ -401,7 +418,7 @@ export function signOffRefusal(
 }
 
 /**
- * GET …/diff, for the API and the sample server alike: what changed from `before` to `after`. Refused when either has no
+ * GET …/diff: what changed from `before` to `after`. Refused when either has no
  * master.
  */
 export function versionDiff(before: { rulebook: Rulebook | null }, after: { rulebook: Rulebook | null }): Refusal | DiffEntry[] {
@@ -413,8 +430,8 @@ export function versionDiff(before: { rulebook: Rulebook | null }, after: { rule
 export type Suggestion = { value?: unknown; optionId?: string; why: string };
 
 /**
- * What we suggest for a question, shown beside it with our reading, for the API's and the sample server's versions
- * alike. A value the PDF's text prints differently from our reading: the printed text. A value no text checks (a scan,
+ * What we suggest for a question, shown beside it with our reading, for every version the
+ * API returns. A value the PDF's text prints differently from our reading: the printed text. A value no text checks (a scan,
  * no quote): our reading. A pick: the read's own (an interpretation, a yes/no), or the visit we matched a table's column
  * to. A total that doesn't add up: the total as printed, which is what was signed. Nothing where we have no reading
  * worth suggesting (a missing value, a money term, a blank check, which grid governs) or the question is settled. Taking
@@ -434,9 +451,59 @@ export function suggest(item: ReviewItem, v: { rulebook: Rulebook | null; eviden
   }
   const ev = v.evidence.find((e) => e.path === item.path);
   const printed = parsePrinted(item.input, ev?.printed ?? null, calendarDate);
+  // the PDF's text contradicts our reading with no one figure that parses: nothing to take in one click (answerQuestion
+  // asks every answer there twice)
+  if (ev?.status === "conflict" && printed === undefined) return null;
   if (printed !== undefined && !same(printed, current)) return { value: printed, why: "What the PDF's text prints at this spot. Our reading was different." };
   return {
     value: current,
     why: printed !== undefined ? "What we read, and what the PDF's text prints here." : "What we read on the page. The PDF has no text here to check it against, so compare it with the spot.",
   };
+}
+
+/** Kinds of value, as the old blind sample measured them (ADR-001 §10): a miss in one had every value of that kind checked. */
+const familyOf = (path: string) =>
+  /^\/budgetGrids\/\d+\/procedures\/\d+\/(?:cells\/|unitCents$)/.test(path) ? "cells"
+  : path.startsWith("/budgetGrids/") && !path.endsWith("/statedOverheadPct") ? "totals"
+  : /^\/(?:siteFees|invoiceables)\/\d+\/amount(?:WithOverhead)?Cents$|^\/screenFail\/amountCents$/.test(path) ? "fees"
+  : "rules";
+
+/** A question as a version saved before ADR-003 can hold it: the blind sample's marks. */
+type StoredItem = ReviewItem & { missed?: boolean; retyped?: boolean };
+/** The blind sample's questions: of a read's confirmed values, and of values typed by hand. */
+const OLD_SAMPLE = new Set(["SAMPLE", "spot_check"]);
+/** A value of a missed sample's kind, asked because the old rule had it proofread before approval. */
+export const SAMPLE_MISS = "SAMPLE_MISS";
+
+/**
+ * A draft's questions as today's rules ask them (ADR-003 C1, C3), for a draft saved before them. The API applies it where
+ * it loads a draft, as it does upgradeRulebook; a signed or superseded version is returned as it is.
+ * - The blind sample is gone: a sample question nobody answered differently (unanswered, can't tell) is dropped. Where a
+ *   person's answer differed from the value the PDF check had confirmed (a miss, or a first answer that differed), the old
+ *   rule held approval until every value of that kind was proofread or typed: each one still checked only by machine and
+ *   not proofread is asked (SAMPLE_MISS), and the differing question stays.
+ * - A page nothing could read is asked as today (PAGE_OPTIONS), unanswered: an old "go ahead" checked nothing.
+ * - A contract problem that's a notice now (isNotice) isn't asked: notices() shows it.
+ * The same draft gives the same questions on every load.
+ */
+export function upgradeReview(v: { status: string; rulebook: Rulebook | null; review: ReviewItem[]; evidence: ValueEvidence[]; proofread: ProofreadMark[] }): ReviewItem[] {
+  const rb = v.rulebook;
+  if (v.status !== "draft" || !rb) return v.review;
+  const differed = (i: StoredItem) => !!(i.missed || i.retyped || i.outcome === "differs");
+  const pageIds = PAGE_OPTIONS.map((o) => o.id).join();
+  const review = (v.review as StoredItem[]).flatMap((i): ReviewItem[] => {
+    if (OLD_SAMPLE.has(i.reason) && !settled(i) && !differed(i)) return [];
+    if (i.id.startsWith("anomaly:") && isNotice({ code: i.reason as ContractAnomaly["code"], path: i.path }, rb)) return [];
+    if (i.reason === "UNREADABLE_PAGE" && i.options.map((o) => o.id).join() !== pageIds) {
+      const page: ContractAnomaly = { id: i.id.replace(/^anomaly:/, ""), code: "UNREADABLE_PAGE", severity: i.blocking ? "blocker" : "warning", message: i.question, path: null, refs: i.where.map((w) => ({ documentId: w.documentId, page: w.page })), detail: {}, resolution: null };
+      return fromAnomalies([page], rb, new Set());
+    }
+    return [i];
+  });
+  const families = new Set((v.review as StoredItem[]).filter((i) => i.reason === "SAMPLE" && i.path && differed(i)).map((i) => familyOf(i.path!)));
+  if (!families.size) return review;
+  const asked = new Set(review.map((i) => i.path));
+  const proofread = new Set(v.proofread.map((m) => m.path));
+  const recheck = v.evidence.filter((e) => families.has(familyOf(e.path)) && checkedByMachine(e.status) && !proofread.has(e.path) && !asked.has(e.path) && at(rb, e.path) !== undefined && leaf(at(rb, e.path)));
+  return [...review, ...recheck.map((e) => askAbout(rb, v.evidence, e.path, `miss:${e.path}`, SAMPLE_MISS))];
 }

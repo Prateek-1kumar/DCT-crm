@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { type BudgetGrid, budgetCheck, budgetCheckWords, noBudgetWords, type Sheet } from "../src";
-import { readSheets } from "../src/xlsx";
+import { BUDGET_CHECK, type BudgetGrid, budgetCheck, budgetCheckWords, noBudgetWords, type Sheet, staleBudgetCheck } from "../src";
+import { MAX_SHEET_BYTES, readSheets, SpreadsheetTooLargeError } from "../src/xlsx";
 
 // ADR-003 P2: the sponsor's budget spreadsheet checked against the grid read from the signed contract. Synthetic only.
 
@@ -65,5 +65,54 @@ describe("budgetCheck", () => {
     const read = await readSheets(data as ArrayBuffer);
     expect(read[0]!.rows[3]![6]).toBe(162);
     expect(budgetCheck({ budgetGrids: [grid] }, read)!.differences).toEqual([]);
+  });
+
+  it("reads every amount through parseCents: never rounded into a match, a credit in brackets, a comma that isn't a thousands one", () => {
+    const one = (cell: string | number, unitCents: number) =>
+      budgetCheck({ budgetGrids: [{ ...grid, procedures: [proc(null, "Blood draw", unitCents, {})] }] }, [{ name: "USA", rows: [HEAD, [null, "Blood draw", 1, "x", cell, null, null]] }])!.differences;
+    // float math made each of these a match (1.005 * 100 = 100.49999…, 150.004 rounded to 15000, "1,23" read as 123)
+    for (const [cell, contract, printed] of [[1.005, 101, "1.005"], [1.005, 100, "1.005"], [0.285, 29, "0.285"], [0.285, 28, "0.285"], [150.004, 15000, "150.004"], ["1,23", 12300, "1,23"], ["$1.005", 101, "$1.005"]] as const)
+      expect(one(cell, contract)).toEqual([{ what: `Blood draw: unit price: the spreadsheet's ${printed} can't be read to the cent`, contract, spreadsheet: null }]);
+    expect(one("(500.00)", 50000)).toEqual([{ what: "Blood draw: unit price", contract: 50000, spreadsheet: -50000 }]);
+    // what matches: a formula's binary noise as Excel shows it (55 * 1.4), a price written as text
+    expect(one(55 * 1.4, 7700)).toEqual([]);
+    expect(one("$1,234.50", 123450)).toEqual([]);
+    expect(one(150.01, 15001)).toEqual([]);
+  });
+
+  it("a check made before the master changed no longer says it matched", () => {
+    const matched = budgetCheckWords("Ex A-1.xlsx", budgetCheck({ budgetGrids: [grid] }, sheet())!);
+    const stale = staleBudgetCheck(["Other notice", matched]);
+    expect(stale).toEqual(["Other notice", "The sponsor's budget spreadsheet was checked before the invoicing master changed, so that check no longer holds: check the spreadsheet again."]);
+    expect(stale[1]!.startsWith(BUDGET_CHECK)).toBe(true); // so the next check replaces it
+  });
+
+  it("refuses a spreadsheet that unpacks past the limit before ExcelJS inflates it, whatever size the zip states", async () => {
+    const zeros = new Blob([new Uint8Array(MAX_SHEET_BYTES + 1)]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+    const data = new Uint8Array(await new Response(zeros).arrayBuffer());
+    const name = new TextEncoder().encode("xl/worksheets/sheet1.xml");
+    // a local entry, the central directory's entry and its end record; the zip claims 100 bytes unpacked, as a zip bomb would
+    const local = 30 + name.length + data.length;
+    const central = 46 + name.length;
+    const zip = new Uint8Array(local + central + 22);
+    const v = new DataView(zip.buffer);
+    const entry = (at: number, sig: number, o: number) => {
+      v.setUint32(at, sig, true);
+      v.setUint16(at + 8 + o, 8, true); // deflated
+      v.setUint32(at + 18 + o, data.length, true);
+      v.setUint32(at + 22 + o, 100, true);
+      v.setUint16(at + 26 + o, name.length, true);
+    };
+    entry(0, 0x04034b50, 0);
+    zip.set(name, 30);
+    zip.set(data, 30 + name.length);
+    entry(local, 0x02014b50, 2); // "made by" comes first in a central entry
+    zip.set(name, local + 46);
+    v.setUint32(local + central, 0x06054b50, true);
+    v.setUint16(local + central + 8, 1, true);
+    v.setUint16(local + central + 10, 1, true);
+    v.setUint32(local + central + 12, central, true);
+    v.setUint32(local + central + 16, local, true);
+    await expect(readSheets(zip)).rejects.toBeInstanceOf(SpreadsheetTooLargeError);
   });
 });

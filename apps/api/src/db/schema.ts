@@ -99,6 +99,8 @@ export const rulebookVersions = pgTable(
     /** Money values checked against the PDF's own text; null for a scan. */
     pdfCheck: jsonb("pdf_check").$type<{ values: number; matched: number }>(),
     byHand: boolean("by_hand").notNull().default(false),
+    /** When typing by hand was marked done; null until then. Its own mark: a contract typed in full has no questions. */
+    typingDoneAt: timestamp("typing_done_at", { withTimezone: true }),
     /** "Looks right" marks; the one column a signed version still takes (see the immutability trigger). */
     proofread: jsonb("proofread").$type<ProofreadMark[]>().notNull().default([]),
     signedBy: text("signed_by"),

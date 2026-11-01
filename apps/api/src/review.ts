@@ -41,7 +41,7 @@ import { getAt, parsePointer } from "./lib/pointer.js";
  * The review queue (ADR-001): the questions a person answers before a draft can be approved after a read or after typing
  * by hand; each shows our reading and what we suggest (ADR-003). How an answer is checked, contract
  * problems as questions and the value questions are in @dct/shared (answer.ts, problems.ts, questions.ts), so the
- * in-browser sample server (apps/web/src/lib/mock/server.ts) runs the same code.
+ * web shows them by the same code.
  */
 
 type Checked = Pick<RulebookVersionDto, "evidence" | "review" | "pdfCheck">;
@@ -53,8 +53,8 @@ const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as 
 const box = (documentId: string, page: number): PageBox => ({ documentId, page, box: null });
 
 /** For studies.needs_you: a by-hand draft still being typed counts as one thing to do (the typing), as in the web. */
-export const needsYouOf = (v: { status: string; byHand: boolean; review: ReviewItem[] } | undefined) =>
-  v?.status !== "draft" ? 0 : v.byHand && !v.review.length ? 1 : openItems(v.review).length;
+export const needsYouOf = (v: { status: string; byHand: boolean; typingDoneAt: Date | null; review: ReviewItem[] } | undefined) =>
+  v?.status !== "draft" ? 0 : v.byHand && !v.typingDoneAt ? 1 : openItems(v.review).length;
 
 // ---------- questions at extraction ----------
 
@@ -167,8 +167,8 @@ export type Skipped = { path: string; before: unknown; after: unknown; by?: stri
 export type Carried = { from: number; live: Rulebook; skipped: Skipped[] };
 
 /**
- * Test seam: the randomness a table check's columns are drawn with. Cryptographic, so nobody can foresee which columns
- * are asked; tests pin it to see which ones are.
+ * Test seam: the randomness that draws which two of a table check's columns are asked, so any column may be checked.
+ * Hiding which visit a column is no longer matters (the question suggests it, ADR-003); tests pin it to see which are asked.
  */
 export const sampling: { random: () => number } = { random: cryptoRandom };
 
@@ -272,7 +272,7 @@ export function reviewDraft(
 
 /** What `reviewDraft` says of the solver: the referee's own tallies plus the upgrades the wiring refused. Pointers and counts only. */
 export type Solved = SolverReport & {
-  /** Entries the solver proved but that cite no page: left as they were (the proofread lane lists values by page, so a math-confirmed one without a page could hold a sample miss's sign-off with nothing to proofread). */
+  /** Entries the solver proved but that cite no page: left as they were (the proofread lane lists values by page, so a math-confirmed one without a page could ask to be proofread with nothing to show). */
   noPage: number;
 };
 

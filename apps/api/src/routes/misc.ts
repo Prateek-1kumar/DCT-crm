@@ -1,4 +1,4 @@
-import { ACTION_LABELS, type AuditEntryDto, AuditListQuery, type AuditPage, auditMatches, PatchSettingsBody, type SettingsDto } from "@dct/shared";
+import { ACTION_LABELS, type AuditEntryDto, BODY_WORDS, bodyProblem, AuditListQuery, type AuditPage, auditMatches, PatchSettingsBody, type SettingsDto } from "@dct/shared";
 import { and, desc, eq, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { isDeepStrictEqual } from "node:util";
@@ -21,7 +21,7 @@ function decodeCursor(c: string) {
   }
 }
 
-/** Batches of `limit + 1` entries one request reads at most while `q` matches only what's blanked (GET /audit). */
+/** Batches of `limit + 1` entries one request reads at most while `q` matches in SQL but not in what.s shown (GET /audit). */
 const SCAN_ROUNDS = 10;
 
 /** Every text and number in the details, keys left out (as @dct/shared detailText reads them). */
@@ -39,7 +39,7 @@ export const miscRoutes =
      * One page of the log, newest first. `q` is matched in SQL; an entry is returned only if what's shown matches too (its
      * action's label, say). Pages can then hold fewer than `limit` entries: at most
      * SCAN_ROUNDS batches are read per request, and the cursor goes on from the last entry read, so a `q` that only
-     * blanked entries match can't keep one request reading the whole log.
+     * entries match only in SQL can't keep one request reading the whole log.
      */
     app.get("/audit", async (req): Promise<AuditPage> => {
       const { studyId, q, cursor, limit } = parse(AuditListQuery, req.query);
@@ -80,9 +80,11 @@ export const miscRoutes =
 
     app.get("/settings", () => read());
 
-    /** PATCH accepts any subset of SettingsDto, plus who changed it. */
+    /** PATCH accepts any subset of SettingsDto, plus who changed it (required: maker-checker off is never "system"). */
     app.patch("/settings", async (req, reply) => {
-      const { by, ...patch } = parse(PatchSettingsBody, req.body);
+      const parsed = PatchSettingsBody.safeParse(req.body);
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.settings));
+      const { by, ...patch } = parsed.data;
       return write(db, req, reply, async (tx) => {
         // read under the row lock: two edits at once each see the other's
         const [row] = await tx.select().from(settings).where(eq(settings.id, 1)).for("no key update");
@@ -91,7 +93,7 @@ export const miscRoutes =
         // the same settings again change nothing, so they log nothing
         if (isDeepStrictEqual(before, after)) return before;
         await tx.insert(settings).values({ id: 1, ...after }).onConflictDoUpdate({ target: settings.id, set: after });
-        await audit(tx, by ?? "system", null, "settings.updated", { before, after });
+        await audit(tx, by, null, "settings.updated", { before, after });
         return read(tx);
       });
     });

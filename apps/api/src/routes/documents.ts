@@ -1,4 +1,4 @@
-import { type DocumentDto, notAContractWords, notAPdfWords, SetDocumentKindBody } from "@dct/shared";
+import { BODY_WORDS, bodyProblem, type DocumentDto, notAContractWords, notAPdfWords, SetDocumentKindBody } from "@dct/shared";
 import { eq, sql } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
@@ -8,9 +8,9 @@ import path from "node:path";
 import type { Ctx } from "../app.js";
 import { config } from "../config.js";
 import { documents, studyDocuments } from "../db/schema.js";
-import { audit, documentDto } from "../domain.js";
+import { audit, documentDto, lockStudy } from "../domain.js";
 import { getExtraction } from "../extraction/port.js";
-import { HttpError, notFound, parse } from "../lib/http.js";
+import { HttpError, notFound } from "../lib/http.js";
 import { fingerprintOf, write } from "../lib/idempotency.js";
 
 /** Write via temp file + rename so a crash never leaves a half-written file under its final name. */
@@ -173,16 +173,22 @@ export const documentRoutes =
     });
 
     app.patch<{ Params: { id: string } }>("/documents/:id", async (req, reply) => {
-      const body = parse(SetDocumentKindBody, req.body);
+      const parsed = SetDocumentKindBody.safeParse(req.body);
+      if (!parsed.success) throw new HttpError(400, bodyProblem(parsed.error, BODY_WORDS.documentKind));
+      const body = parsed.data;
       return write(db, req, reply, async (tx) => {
+        // A file can be shared (one master agreement for several studies): every study that uses it logs the change, so
+        // each contract's Activity shows it. Each study's lock first, in id order (the lock order: studies, then the
+        // document), so two of these on one shared file, or this beside an identify, queue up rather than deadlock.
+        // ponytail: a study linking this file between this read and its lock goes unlogged; it reads the new kind anyway.
+        const links = await tx.select({ studyId: studyDocuments.studyId }).from(studyDocuments).where(eq(studyDocuments.documentId, req.params.id)).orderBy(studyDocuments.studyId);
+        for (const l of links) await lockStudy(tx, l.studyId);
         const [doc] = await tx.select().from(documents).where(eq(documents.id, req.params.id)).for("no key update");
         if (!doc) throw notFound("Document");
         // the same kind again changes nothing, so it logs nothing
         if (doc.kind === body.kind) return documentDto(doc);
         const [row] = await tx.update(documents).set({ kind: body.kind }).where(eq(documents.id, doc.id)).returning();
-        // A file can be shared (one master agreement for several studies): every study that uses it logs the change, so
-        // each contract's Activity shows it. Approved versions keep the kind they were read with (their rulebook's documents).
-        const links = await tx.select({ studyId: studyDocuments.studyId }).from(studyDocuments).where(eq(studyDocuments.documentId, doc.id)).orderBy(studyDocuments.studyId);
+        // Approved versions keep the kind they were read with (their rulebook's documents).
         for (const studyId of links.length ? links.map((l) => l.studyId) : [null]) await audit(tx, body.by, studyId, "document.kind_set", { documentId: doc.id, from: doc.kind, to: body.kind });
         return documentDto(row!);
       });

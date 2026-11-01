@@ -79,7 +79,7 @@ describe("every write, sent twice with one key, writes once", () => {
     expect(doc!.duplicateOf).toBeNull(); // the replay says the same: not a duplicate of itself
     await twice({ method: "PATCH", url: `/documents/${doc!.id}`, payload: { kind: "work_order", by: "Asha" } });
     const { studyId } = (await twice({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id], by: "Asha" } }, 201)).json<{ studyId: string }>();
-    await twice({ method: "PATCH", url: `/studies/${studyId}`, payload: { sponsor: "Synthetic Pharma", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" } });
+    await twice({ method: "PATCH", url: `/studies/${studyId}`, payload: { sponsor: "Synthetic Pharma Inc", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" } });
     const read = (await twice({ method: "POST", url: `/studies/${studyId}/extract`, payload: { by: "Asha" } }, 202)).json<{ jobId: string }>();
     expect((await app.inject({ url: `/api/v1/jobs/${read.jobId}` })).json<JobDto>().state).toBe("succeeded");
 

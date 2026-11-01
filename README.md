@@ -25,22 +25,13 @@ pnpm dev                # Postgres + API + web, with real AI reads (costs money)
 
 Open http://127.0.0.1:3100. Ctrl-C stops the API and the web; Postgres keeps running until `pnpm db:stop`. After pulling a change that adds a migration, run `pnpm --filter @dct/api db:migrate` and restart.
 
-### Sample mode
-
-```sh
-pnpm dev:mock           # the web alone, with an in-browser sample server and invented data
-```
-
-No database or API is needed. The sample data lives in the browser; Settings → Reset demo data brings it back.
-
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `pnpm run setup` | Install, start Postgres, apply migrations to the dev database |
 | `pnpm dev` | Postgres, API on 127.0.0.1:4100 and web on 127.0.0.1:3100, with real AI reads (costs money) |
-| `pnpm dev:mock` | Web only, in sample mode |
-| `pnpm dev:api` / `pnpm dev:web` | One side on its own (`dev:web` talks to the real API) |
+| `pnpm dev:api` / `pnpm dev:web` | One side on its own (the web always talks to the real API) |
 | `pnpm db:start` / `pnpm db:stop` | Start or stop the Postgres container |
 | `pnpm --filter @dct/api db:migrate` | Apply new migrations to the database in `DATABASE_URL` |
 | `pnpm test` | Every package's unit tests (the API's need Postgres) |
@@ -56,7 +47,7 @@ Package commands are in each package's `AGENTS.md`. Running a production build: 
 | Path | What's there |
 |---|---|
 | `apps/api` | Fastify API under `/api/v1`, Postgres through Drizzle, background jobs with pg-boss |
-| `apps/web` | Next.js 16 app, and the in-browser sample server |
+| `apps/web` | Next.js 16 app |
 | `packages/shared` | zod schemas shared by everything: the rulebook, evidence, API bodies and responses |
 | `packages/extraction` | PDF text and page images (mupdf), the AI reads, the evidence binder, the contract checks |
 | `e2e/` | The Playwright journey (`playwright.config.ts` at the root) |
