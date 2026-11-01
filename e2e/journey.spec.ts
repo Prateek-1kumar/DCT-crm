@@ -243,6 +243,12 @@ test("add a contract → answer → proofread → approve → live → search �
   await test.step("start answering", async () => {
     await page.getByRole("link", { name: "Start answering" }).click();
     await page.waitForURL(/\/review/);
+    // One screen: the list, the close-up and the question each scroll on their own, never the page (hidden labels in
+    // the list once made it 2,500px tall, so scrolling over a question slid everything up). Short, so the list overflows.
+    await page.setViewportSize({ width: 1280, height: 400 });
+    await expect(page.getByRole("navigation", { name: "Questions" })).toBeVisible();
+    expect(await page.evaluate(() => document.scrollingElement!.scrollHeight - innerHeight)).toBe(0);
+    await page.setViewportSize({ width: 1280, height: 720 });
   });
 
   await test.step("answering, with a mismatch", async () => {

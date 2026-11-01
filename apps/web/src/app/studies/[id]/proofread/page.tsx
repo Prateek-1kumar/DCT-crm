@@ -205,7 +205,7 @@ function Proof({ study, version }: { study: StudyDetailDto; version: RulebookVer
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_400px] xl:grid-cols-[264px_minmax(0,1fr)_400px]">
-        <aside className="hidden min-h-0 overflow-y-auto border-r border-line bg-canvas/60 xl:block">{list}</aside>
+        <aside className="relative hidden min-h-0 overflow-y-auto border-r border-line bg-canvas/60 xl:block">{list}</aside>
 
         {!current ? (
           <section className="grid place-items-center p-8 lg:col-span-2">

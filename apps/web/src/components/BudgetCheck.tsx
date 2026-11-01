@@ -20,8 +20,9 @@ export function BudgetCheck({ studyId, version }: { studyId: string; version: Pi
   const check = useMutation({ mutationFn: (file: File) => api.budgetCheck(studyId, version.version, file, by!), onSuccess: () => invalidate(studyId) });
   if (version.status !== "draft") return null;
   const checked = version.warnings.some((w) => w.startsWith("The sponsor's budget spreadsheet"));
+  // relative: the hidden file box is placed inside this, not against the page, or it makes a one-screen page scroll
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative flex flex-col gap-2">
       <input
         ref={input}
         type="file"
