@@ -1,11 +1,13 @@
-import type { BudgetGrid, ContractAnomaly, ContractAnomalyCode, Provenance, Rulebook, SourceRef } from "@dct/shared";
+import { type BudgetGrid, type ContractAnomaly, type ContractAnomalyCode, gridPrices, parseCents, type Provenance, type Rulebook, type SourceRef } from "@dct/shared";
+import type { PageKind } from "./prompts";
 
 /** Pure, deterministic contract checks. No AI. */
 
 export type PageInfo = {
   documentId: string;
   page: number;
-  kind: "terms" | "budget_grid" | "invoiceables" | "signatures" | "boilerplate";
+  /** Stored pages from before the three exclusion kinds hold only the first five; every consumer still accepts them. */
+  kind: PageKind;
   readable: boolean;
   /** Money amounts (cents) printed in the page's embedded text; absent when the page has no text layer (a scan). */
   printed?: number[];
@@ -31,7 +33,9 @@ export type CheckOptions = {
   notes?: ExtractionNote[];
 };
 
-export const LOW_CONFIDENCE = 0.8;
+const LOW_CONFIDENCE = 0.8;
+/** The kinds of document an amendment amends. */
+const PARENT_KINDS: ReadonlySet<string> = new Set(["master_agreement", "work_order", "adoption"]);
 
 const SEVERITY: Record<ContractAnomalyCode, ContractAnomaly["severity"]> = {
   GRID_CONFLICT: "blocker",
@@ -146,34 +150,45 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
         study: study.siteName.value,
       });
 
-    // DUPLICATE_ITEM: priced inside a visit AND billable as an invoiceable.
+    // DUPLICATE_ITEM, within one table: the same procedure on two rows of this grid, both priced at a visit. A
+    // scheduled-visit price in the grid and an unscheduled or repeat price among the invoiceables is standard budgeting,
+    // never flagged; so are the same words on rows that price different visits (a procedure split across sections).
+    const rows = new Map<string, number[]>();
     g.procedures.forEach((p, pi) => {
-      const priced = Object.entries(p.cells).filter((e): e is [string, number] => typeof e[1] === "number");
-      // Grid marks some visits "invoiceable": the split is intended (Shah visual acuity), not a duplicate.
-      if (!priced.length || Object.values(p.cells).includes("invoiceable")) return;
-      rulebook.invoiceables.forEach((inv, ii) => {
-        // Billing codes alone are reused across different items (36415 = any blood draw, e.g. a separately
-        // billed TB draw), so the names must match: exactly, or one inside the other at the same price.
-        const nameMatch = norm(p.name) === norm(inv.name);
-        const samePrice = priced.some(([, c]) => c === inv.amountCents || c === inv.amountWithOverheadCents);
-        if (nameMatch || (sameName(p.name, inv.name) && samePrice))
-          add("DUPLICATE_ITEM", `${gp}/procedures/${pi}`, `"${p.name}" is paid inside ${g.label} visit(s) ${priced.map(([v]) => v).join(", ")} and also listed as invoiceable "${inv.name}"`, refsOf(p.prov, inv.prov), {
-            invoiceablePath: `/invoiceables/${ii}`,
-            visits: priced.map(([v]) => v),
-          });
-      });
+      if (norm(p.name)) rows.set(norm(p.name), [...(rows.get(norm(p.name)) ?? []), pi]);
     });
+    for (const idxs of rows.values()) {
+      const [first, ...rest] = idxs;
+      if (first === undefined) continue;
+      const priced = (pi: number) => Object.entries(g.procedures[pi]!.cells).flatMap(([v, c]) => (typeof c === "number" ? [[v, c] as const] : []));
+      for (const pi of rest) {
+        // each later row is compared with the earlier ones: a visit both price is a conflicting or a redundant rate
+        const shared = idxs.filter((o) => o < pi).flatMap((o) => priced(o).filter(([v]) => priced(pi).some(([w]) => w === v)).map(([v]) => v));
+        if (shared.length) {
+          const p = g.procedures[pi]!;
+          add("DUPLICATE_ITEM", `${gp}/procedures/${pi}`, `"${p.name}" is listed twice in ${g.label} and priced twice at visit(s) ${[...new Set(shared)].join(", ")}`, refsOf(p.prov, g.procedures[first]!.prov), { otherRows: idxs.filter((o) => o < pi).map((o) => `${gp}/procedures/${o}`), visits: [...new Set(shared)] });
+        }
+      }
+    }
   });
 
-  // GRID_CONFLICT: ≥2 grids for the same arm with different visit totals and no governing grid chosen.
+  // DUPLICATE_ITEM among the invoiceables: the same item listed twice, at the same or different amounts.
+  rulebook.invoiceables.forEach((inv, ii) => {
+    const first = rulebook.invoiceables.findIndex((o) => norm(o.name) === norm(inv.name));
+    if (norm(inv.name) && first !== ii)
+      add("DUPLICATE_ITEM", `/invoiceables/${ii}`, `Invoiceable "${inv.name}" is listed twice${rulebook.invoiceables[first]!.amountCents === inv.amountCents ? "" : " at different amounts"}`, refsOf(inv.prov, rulebook.invoiceables[first]!.prov), { otherInvoiceable: `/invoiceables/${first}` });
+  });
+
+  // GRID_CONFLICT: ≥2 grids for the same arm that price anything differently, a single cell included (two that agree on
+  // every total can still bill a visit's procedures differently), and no governing grid chosen. Grids that price the
+  // same are billed once (billedGrids), with nothing to ask.
   if (rulebook.governingGridId === null) {
     const byArm = new Map<string, number[]>();
     rulebook.budgetGrids.forEach((g, i) => byArm.set(norm(g.arm ?? ""), [...(byArm.get(norm(g.arm ?? "")) ?? []), i]));
     for (const idxs of byArm.values()) {
       if (idxs.length < 2) continue;
-      const sig = (g: BudgetGrid) => JSON.stringify([g.visits.map((v) => v.totalCents).sort((a, b) => a - b), g.perPatientTotals.map((t) => t.cents).sort((a, b) => a - b)]);
       const grids = idxs.map((i) => rulebook.budgetGrids[i]!);
-      if (new Set(grids.map(sig)).size > 1)
+      if (new Set(grids.map(gridPrices)).size > 1)
         add("GRID_CONFLICT", `/budgetGrids/${idxs[0]}`, `${grids.length} budget grids for ${grids[0]!.arm ?? "the study"} disagree (${grids.map((g) => g.label).join(" vs ")}); choose the governing grid`, refsOf(...grids.map((g) => g.prov)), {
           gridIds: grids.map((g) => g.id),
           perPatient: Object.fromEntries(grids.map((g) => [g.id, g.perPatientTotals.map((t) => t.cents)])),
@@ -181,14 +196,25 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
     }
   }
 
-  // MISSING_REFERENCED_DOC
-  rulebook.referencedDocuments.forEach((d, i) => {
-    if (!d.present)
+  // MISSING_REFERENCED_DOC. An amendment uploaded without the agreement it amends refers to documents that were never
+  // going to be there (the agreement, its own earlier amendments), so one question covers them all: not one per document.
+  const missing = rulebook.referencedDocuments.flatMap((d, i) => (d.present ? [] : [{ d, i }]));
+  const amendsOnly = rulebook.documents.some((d) => d.kind === "amendment") && !rulebook.documents.some((d) => PARENT_KINDS.has(d.kind));
+  if (amendsOnly) {
+    const listed = missing.map(({ d }) => `${d.description}${d.date ? ` (${d.date})` : ""}`);
+    add(
+      "MISSING_REFERENCED_DOC",
+      null,
+      `The agreement this amendment changes isn't uploaded${listed.length ? `, and neither ${listed.length === 1 ? "is" : "are"} the ${listed.length === 1 ? "document" : "documents"} it refers to: ${listed.join("; ")}` : ""}. Terms that depend on ${listed.length ? "them" : "it"} are unverified`,
+      refsOf(...missing.map(({ d }) => d.prov)),
+      { consolidated: true, referenced: missing.map(({ d }) => ({ description: d.description, date: d.date })) },
+    );
+  } else
+    for (const { d, i } of missing)
       add("MISSING_REFERENCED_DOC", `/referencedDocuments/${i}`, `Referenced document not uploaded: ${d.description}${d.date ? ` (${d.date})` : ""}. Terms that depend on it are unverified.`, refsOf(d.prov), {
         description: d.description,
         date: d.date,
       });
-  });
 
   // REQUIRED_MISSING
   for (const f of ["sponsor", "protocol", "siteName", "investigator"] as const) {
@@ -320,7 +346,8 @@ export const MIN_PAGE_TEXT = 200;
 
 /**
  * Money-like numbers in a page's text, in cents; undefined when the page has no real text layer.
- * Digit runs of 8+ without thousands separators (account, routing, phone numbers) are dropped, never kept.
+ * Digit runs of 8+ without thousands separators (account, routing, phone numbers) are dropped, never kept; so is a
+ * number with more than two decimals (parseCents: no amount is a fraction of a cent).
  */
 export function printedAmounts(text: string): number[] | undefined {
   if (text.replace(/\s/g, "").length < MIN_PAGE_TEXT) return undefined;
@@ -328,8 +355,8 @@ export function printedAmounts(text: string): number[] | undefined {
   for (const [m] of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
     const whole = m.split(".")[0]!;
     if (!whole.includes(",") && whole.length >= 8) continue;
-    const cents = Math.round(Number(m.replace(/,/g, "")) * 100);
-    if (Number.isSafeInteger(cents) && cents > 0) out.add(cents);
+    const cents = parseCents(m);
+    if (cents !== null && cents > 0) out.add(cents);
   }
   return [...out].sort((a, b) => a - b);
 }
@@ -388,7 +415,7 @@ export function sameName(a: string, b: string): boolean {
 // ---------- provenance walking ----------
 
 /** Every `prov` in the rulebook with the JSON pointer of the value it describes. */
-export function provenances(rb: Rulebook): { path: string; prov: Provenance }[] {
+function provenances(rb: Rulebook): { path: string; prov: Provenance }[] {
   const out: { path: string; prov: Provenance }[] = [];
   const walk = (v: unknown, path: string) => {
     if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}/${i}`));
@@ -418,7 +445,7 @@ export function provAt(rb: Rulebook, path: string): Provenance | null {
 
 // ---------- cross-read comparison ----------
 
-export type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
+type Comparison = { key: string; item: string; name: string; path: string; label: string; primary: unknown; cross: unknown; agree: boolean };
 
 type Field = { item: string; itemPath: string; path: string; label: string; value: unknown; name: string };
 

@@ -1,0 +1,92 @@
+# AGENTS.md
+
+DCT Finance turns signed clinical-trial sponsor contracts into an approved invoicing master (in code: the rulebook): every fee, cap and due day with its page reference. Users are non-technical accountants. The rule behind every design choice is **no silent errors**: a wrong number that gets approved costs the client real money.
+
+Start with [docs/architecture.md](docs/architecture.md). Each package has its own `AGENTS.md`: [apps/api](apps/api/AGENTS.md), [apps/web](apps/web/AGENTS.md), [packages/shared](packages/shared/AGENTS.md), [packages/extraction](packages/extraction/AGENTS.md). Docs index: [docs/README.md](docs/README.md).
+
+## Non-negotiables
+
+- Never commit, paste or log anything from `data/` (real contracts, answer keys, uploads) or `.env`. Tests and fixtures use synthetic PDFs only.
+- Patient data never goes to the AI. Only contracts do, and only through `packages/extraction/src/llm.ts`.
+- Never run anything that spends AI money without the owner's explicit approval: `pnpm eval`, `pnpm probe`, a real read (`pnpm dev` or `dev:api` with real keys, then reading a contract), or any script that builds a client from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. The synthetic reading (`EXTRACTION_FAKE=1`) is for the automated tests only: the server refuses it unless its database name ends in `_test` or `_e2e` (`readingProblem`), so the owner never sees made-up terms for a real contract.
+- Never stop the owner's dev servers (web 3100, API 4100) or their Postgres container. Use other ports, and never point a second API at the dev database `dct_finance`: its workers would take the owner's jobs (and complete a real read with a fake one under `EXTRACTION_FAKE=1`).
+- Never discard uncommitted changes you didn't make (`git checkout -- .`, `git reset --hard`, `git clean`, `git stash` of others' work).
+- The owner has overridden the invariants that [ADR-002](docs/phase-1/adr-002-pipeline-redesign.md) (its §2) and [ADR-003](docs/phase-1/adr-003-native-first.md) (its §2) list as superseded (below). Any other money invariant still needs the owner's approval to weaken: never weaken one to make a test or a screen pass; if one is in the way, stop and ask. ADR-002 is not built yet: the code enforces the old rules until each PR lands, so don't restore or violate any of them in the meantime.
+
+## Money invariants
+
+ADR-001 ([docs/phase-1/adr-001-extraction-evidence.md](docs/phase-1/adr-001-extraction-evidence.md)): a value is unconfirmed until the PDF's own text or a person confirms it, and the API, not the UI, refuses approval otherwise.
+
+**Partly superseded by [ADR-003](docs/phase-1/adr-003-native-first.md)** (owner, 2026-11-01: native first, no blind sample, questions show our reading; built in stages, its §4) **and by [ADR-002](docs/phase-1/adr-002-pipeline-redesign.md)** (owner, 2026-10-31), in stages. Each row below that ADR-002 changes is marked; the old rule is enforced by the code until the PR named lands:
+- evidence statuses (row 1): a third, `confirmed_by_math`, is **in force** (ADR-002 PR 2): the sign-off gate accepts it, and every read runs the solver (`solveGrids`, `packages/extraction/src/solver.ts`) in the mode `EXTRACTION_SOLVER=guide|strict` (default `strict` since 2026-10-31, after the measured numbers in ADR-002 §3(b); `guide` is the guide's own, looser form). It is arithmetic within a tolerance, not "to the cent": guide 5 cents, strict the rulebook's rounding (up to a dollar). It never overrides a conflict whose printed text is a whole price, never confirms a row from an unbacked unit price, and never confirms a per-patient total on anything but the sum of every visit;
+- the sweep of every page (and the sweep itself, row 2/I5): excluded non-financial pages (in force since PR 1, unverified on a real contract) and a zone-gated sweep (`gateSweep`, `sweep.ts`, **in force**, ADR-002 PR 2: a price is dropped as "consumed" only when it overlaps a confirmed value's own spot inside a drawn table, never merely because it sits on the same line as one; every drop is counted by reason in the `extraction.completed` audit entry);
+- the review lists' floors (ADR §6, ADR-002 §4, ADR-003): **no blind sample** (removed by the owner, [ADR-003](docs/phase-1/adr-003-native-first.md), 2026-11-01: the accountant rechecks the whole rulebook, and nothing typed by hand is re-typed); interpretations are asked **only for genuine ambiguity or silence**. A clause that states its figure outright and the binder confirmed from the page (a cap's kind told by a confirmed dollar or ratio figure, a start date printed in its quote, a site fee's trigger its table row prints beside its confirmed amount in a phrase naming one trigger, the read's: `triggerOf`, ADR-003) is not asked (`interpretations` in `packages/shared/src/questions.ts` holds the exact rule);
+
+| Rule | Enforced in |
+|---|---|
+| Every money value has evidence: `confirmed` (PDF text at its spot agrees; on scans, the contract's own totals agree to the cent), `attested` (a person typed, chose or accepted it), `conflict` or `ungrounded` | `ValueEvidence` in `packages/shared/src/evidence.ts`; set by `bindEvidence` (`packages/extraction/src/binder.ts`) and `reviewDraft` (`apps/api/src/review.ts`); an answer marks it `attested` in `answerQuestion` (`packages/shared/src/answer.ts`) |
+| Whatever isn't confirmed becomes a question. A blocker clears only by a typed value or a pick (I6); a Review question also by a fixed reason with a note; never free text alone. No question has one possible answer: a check whose answer would change nothing in the master is a notice listed beside the questions and at approval (`isNotice`, `notices`, ADR-003 C3), and a page nothing could read is asked like a scanned one. A total whose parts change, or an arm whose grids an answer makes differ, is asked (again) | `reviewFromEvidence` (binder.ts); `fromAnomalies`, `isNotice`, `recheck`, `gridConflicts` (`packages/shared/src/problems.ts`); the web's `Notices`; answering is `answerQuestion`, what it asks next `followUps` (`answer.ts`) |
+| The review lists (ADR §6): interpretations, for what is genuinely ambiguous or silent (not for a clause that states its figure and is confirmed from the page: ADR-002 §4); money terms the master can't hold listed to bill by hand (`unclassified`); a scanned table whose columns line up with the visits only by count and order is held (`ValueEvidence.held`, never confirmed meanwhile) for two picks of its columns (`TABLE_CHECK`): all right confirms its prices, any wrong one (or "can't tell") rejects the mapping for good and each price is asked (only a real pick answers; the picks are final, and can't be sent back; a held price waits like an asked one); the cells the read calls "invoiceable" where a drawn table prints nothing are one pick per table (`BLANK_INVOICEABLE`, `ValueEvidence.blank`, waiting while open): "only where printed" removes them from the grid (a correction, audited), "every scheduled visit" attests them, "can't tell" asks each; final, not sent back; on a table whose columns are held it waits for that table's check (409 until its picks are right, rejected with it) | `interpretations`, `askAbout`, `tableQuestions`, `settleTable`, `blankQuestions`, `rejectBlank` in `packages/shared/src/questions.ts`; `reviewDraft`; `answerQuestion` (`answerBlank`), `followUps` |
+| Sign-off gate, in this order: a draft; unchanged since the approver saw it (`asOf`); by-hand typing marked done; **every** question settled; every arm with grids bills one; every evidence entry `confirmed`, `confirmed_by_math` or `attested`; maker-checker | `signOffRefusal` in `packages/shared/src/answer.ts`: the sign-off route refuses with it (409) and the approve page explains with it |
+| Questions show our reading (ADR-003, owner 2026-11-01; replaces blind entry): nothing is withheld from any response, search, diff, audit entry or alert. Each open question shows our reading and what we suggest (`suggest`): on a conflict the PDF's printed text, otherwise our reading; on an interpretation or a yes/no the read's pick; on a table check the visit the read gave the column; on a total that doesn't add up the total as printed; nothing for a missing value, a money term, a blank check or which grid governs. Taking it answers exactly as typing or picking it would, so it's checked and logged the same; a value typed other than the PDF's text still asks once more with a note. A suggested pick is marked, never pre-picked. `openPaths` (values with an open question, and what it decides) marks them "needs you" and refuses "This looks wrong" on them | `suggest` in `packages/shared/src/answer.ts`; `openPaths` (`packages/shared/src/api.ts`); `versionDto` (`apps/api/src/domain.ts`) returns the row as it is; the question screen (`apps/web/src/app/studies/[id]/review/page.tsx`, `Suggested`) |
+| Maker-checker, on by default (a database already in use keeps its setting): nobody in `editors` may approve; names compared trimmed, ignoring case (`samePerson`). Whoever answers a question or types a value by hand is an editor | `signOffRefusal`; `answerQuestion`; the by-hand typing route |
+| Approved is immutable; the old live version is superseded in the same transaction | each version write route (409 unless a draft; proofreading aside); triggers in `apps/api/drizzle/0006_signed_versions_locked.sql` and, for TRUNCATE, `0011_truncate_guards.sql` |
+| The audit log is append-only and written in the same transaction as the change | triggers in `0001_guards.sql` and `0011_truncate_guards.sql`; `audit()` in `domain.ts` |
+| Money is integer cents everywhere, and every amount or percentage is read one way, never by float math | `parseCents`, `parsePercent` in `packages/shared/src/money.ts` (the binder's `centsOf`, search and the web's `parseDollars` wrap it); the schemas in `rulebook.ts` |
+
+The web has no copy of the API: every screen reads and writes through it (`apps/web/src/lib/api.ts`). Where a screen shows a rule (the approve page's gate, what we suggest, "needs you"), it calls the same `@dct/shared` function the API runs. A shared rule returns a refusal as a value (`{ refusal: { status, message } }`), which the API throws as an `HttpError`. The web's tests use small invented fixtures (`apps/web/src/test/fixtures.ts`), parsed with the shared schemas.
+
+## Adding or changing a write endpoint
+
+1. Define or change the body in `packages/shared` (zod), exported from `src/index.ts`.
+2. In `apps/api/src/routes/*.ts`, check the body with `safeParse` and refuse with `bodyProblem(error, BODY_WORDS.<body>)` (`packages/shared/src/evidence.ts`; add the body's words there): a 400 that names the first bad field in plain words. Not one fixed message for every field, and not `parse()` (`apps/api/src/lib/http.ts`), whose 400 is zod's `prettifyError` text (older routes still use it). Then `return write(db, req, reply, async (tx) => { … })` (`apps/api/src/lib/idempotency.ts`): one transaction, and the Idempotency-Key with its saved response in that same transaction.
+3. For a write to a study, the first statement inside is `lockStudy(tx, id)` or `loadVersion(tx, id, v, true)`. Lock order is study, then job, then versions; never the other way round.
+4. Refuse with `HttpError` in plain English: 400 for a bad request, 409 for a state that has moved on, saying what to do next. A repeat that changes nothing writes nothing and logs nothing.
+5. In the same transaction: the change, `refreshStudyStatus(tx, studyId, by)` if any version changed (the only place study status and `needs_you` are computed), `audit(tx, by, studyId, action, detail)`, and `queueJob(tx, boss, …)` for any job. Give a new audit action a label in `ACTION_LABELS` (`packages/shared/src/labels.ts`).
+6. Return versions through `versionDto`, never a raw row.
+7. A rule about money or questions goes in `@dct/shared` as a pure function that returns `{ refusal }` instead of throwing (as `answerQuestion`, `typingDone`, `signOffRefusal`, `versionDiff`, `noLimitTyped` do), called by the route (and by the web where a screen shows it). Add the call to `apps/web/src/lib/api.ts`. Invalidate through `apps/web/src/lib/queries.ts` (`keys`, `useInvalidateStudy`).
+8. Tests: the rule in `packages/shared/test`, the route's behavior, plus `apps/api/test/idempotency.test.ts` (twice with one key: replayed byte for byte, and every row of every table it writes unchanged) and `apps/api/test/atomicity.test.ts` (a failing last insert leaves nothing). The web's fixtures must still parse with the shared schemas (`pnpm --filter web test`).
+9. Update the routes and idempotency tables in [docs/phase-1/api.md](docs/phase-1/api.md).
+
+## Changing the database schema
+
+1. Edit `apps/api/src/db/schema.ts`, then `pnpm --filter @dct/api db:generate` (drizzle-kit). For triggers, data fixes or anything drizzle can't express, add SQL to the generated file before it is applied anywhere, or start one with `pnpm --filter @dct/api db:generate --custom --name=<what>`. Then `pnpm --filter @dct/api db:check` (no database needed): it fails if `schema.ts` and the migrations disagree. The `migrations` suite runs it too, and checks the journal is in order with one SQL file per entry.
+2. Never edit or reorder a migration that has been applied or committed. Drizzle applies only migrations newer than the last one applied (by journal timestamp) and never re-checks old ones: an edit is silently ignored, and a migration with an older timestamp (from another branch) is silently skipped. Regenerate after a rebase instead.
+3. Before migrating the dev database, check it has nothing to lose: `psql postgres://dct:dct@localhost:5434/dct_finance -tAc "SELECT count(*) FROM studies"`. If it isn't empty, ask the owner first. Then `pnpm --filter @dct/api db:migrate`. A running dev API fails on the new tables or columns until this runs.
+4. In production, migrations are a release step before the new build starts (`db:migrate:dist`), never on boot. See [docs/runbook.md](docs/runbook.md).
+
+## Testing
+
+| Suite | Command | Needs |
+|---|---|---|
+| API (vitest, real Postgres, `fastify.inject`, fake AI; the `migrations` suite runs `db:check`) | `pnpm --filter @dct/api test` | Postgres; database `dct_finance_test` (`TEST_DATABASE_URL` overrides it; global setup and `testApp` refuse a database whose name doesn't end in `_test`) |
+| Shared, extraction, web units | `pnpm --filter @dct/shared test`, `pnpm --filter @dct/extraction test`, `pnpm --filter web test` | the local OCR for extraction (`pnpm run setup`); the AI is mocked |
+| The native gate (ADR-003 P2): grids read by code, grid questions (must be 0), planted money errors caught (must be all) | `pnpm --filter @dct/extraction native` | `data/` (the signed native contract and its answer key); no AI |
+| Everything above | `pnpm test` | Postgres |
+| Browser journey (Playwright, production builds, fake AI) | `pnpm e2e` | Postgres, Google Chrome, ports 3301 / 4301 free |
+| Types | `pnpm -r typecheck` | — |
+| Lint: ESLint in every package (the web its own config; api, shared and extraction the root `eslint.config.mjs`: un-awaited promises and thenables, misused promises, `return await` in try) | `pnpm lint` | — |
+
+- API tests share `dct_finance_test` and truncate it. The e2e shares `dct_finance_e2e`, ports 3301 / 4301, `apps/web/.next-e2e` and `apps/api/dist`. **Never run two API test runs, or two e2e runs, at once**, including another agent's.
+- "Done" means: `pnpm -r typecheck` and `pnpm lint` clean, every suite green, and `pnpm e2e` green. Say which of these you ran.
+- To check one commit on its own, use a git worktree inside the repo (`git worktree add .claude/worktrees/<name> <commit>`; `.claude/` is git-ignored). In a worktree under `/private/tmp`, vitest found no test files. A worktree has no `.env` and no `data/`.
+
+## Conventions
+
+- Every user-facing word is plain English for an accountant: what happened and what to do. No codes, no stack traces, no jargon. This includes API error messages, which the web shows as they are.
+- Comments explain why, not what. Match the density and style of the code around you.
+- Light mode only.
+- Every API route is under `/api/v1`; `/livez` and `/readyz` sit outside it.
+- Conventional Commit messages (`feat(api): …`), with no `Co-Authored-By` or AI attribution lines. Commit only when the owner asks.
+
+## Gotchas
+
+- Next.js 16 differs from your training data. Read the guide in `apps/web/node_modules/next/dist/docs/` before writing web code.
+- Postgres runs in Apple `container` (`container ls`, `container exec`), not Docker: `apps/api/scripts/db.sh`.
+- Run the root setup script as `pnpm run setup`: `pnpm setup` is pnpm's own command.
+- Anything that imports `apps/api/src/config.ts` exits on a bad setting (`db:migrate`, `e2e-reset`, the API tests' global setup). Only starting the server (`src/server.ts`: `dev`, `start`) needs `ANTHROPIC_API_KEY` (or `EXTRACTION_FAKE=1` on a `_test` / `_e2e` database); migrations, tests and the e2e don't. Outside the repo, `DATABASE_URL` and `UPLOAD_DIR` are required.
+- Drizzle queries are thenables that run only when awaited: an un-awaited `audit(tx, …)` or `tx.update(…)` writes nothing, silently. `pnpm lint` catches it (`no-floating-promises` with `checkThenables`).
+- `db.sh` publishes Postgres on 127.0.0.1 only, but a `dct-postgres` container created before that change (`d496a1f`) keeps listening on every interface until it's recreated. That deletes its data: see the runbook ("Recreating the dev database container") and ask the owner first.
+- The API reads the repo-root `.env`; the web doesn't (Next reads `apps/web/.env*` and the shell).
+- Only one `next dev` can run in `apps/web` (it locks `.next/dev`). To see your web change while the owner's dev server runs, build it and serve it on another port: `pnpm --filter web build && pnpm --filter web exec next start -H 127.0.0.1 -p 3200`. It proxies to `API_URL` (default the owner's API on 4100), so what you do there changes the owner's data: look, don't write. To click through a change, use `pnpm e2e` (its own API and database).
+- Saving an API file restarts `tsx watch`, which fails any read in progress.

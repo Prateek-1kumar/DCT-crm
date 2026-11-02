@@ -13,7 +13,7 @@ export function HowItWorks({ open, onClose }: { open: boolean; onClose: () => vo
     {
       icon: Upload,
       title: "Upload",
-      happens: "You add the signed contract. The DocuSign copy is best: its numbers can be checked against the PDF's own text.",
+      happens: "You add the signed contract, scanned or the DocuSign copy. A DocuSign copy's numbers are checked against its own text, so fewer come to you.",
       you: "Drop the PDF and confirm the sponsor, study and site.",
       time: "2 min",
     },
@@ -35,7 +35,7 @@ export function HowItWorks({ open, onClose }: { open: boolean; onClose: () => vo
       icon: MessageCircleQuestion,
       title: "Needs you",
       happens: "A short list of questions, one at a time, next to the highlighted page.",
-      you: "Type what the page says. We don't show our reading first, so a wrong number can't slip past.",
+      you: "Check our reading against the highlighted spot: use it if it's right, type what the page says if it isn't.",
       time: "Usually 5–15 min",
     },
     {

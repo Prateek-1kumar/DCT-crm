@@ -54,24 +54,25 @@
   --shadow-card: 0 1px 2px #1616160a, 0 8px 24px #1616160f;
   --shadow-raised: 0 2px 6px #16161614, 0 24px 48px #1616161f;
   --shadow-button: 0 1px 2px #16161614;
+  --shadow-sheet: 0 1px 2px #16161608, 0 6px 20px #1616160a; /* the white work area on the off-white frame */
 
-  /* Type scale (comfortable: 15px body) */
-  --text-caption: 12px;
+  /* Type scale: 14px body (decided 2026-10-28; 15px read large on Windows display scaling). */
+  --text-caption: 11.5px;
   --text-caption--line-height: 16px;
-  --text-small: 13px;
-  --text-small--line-height: 20px;
-  --text-body: 15px;
-  --text-body--line-height: 24px;
-  --text-lead: 17px;
-  --text-lead--line-height: 26px;
-  --text-title: 20px;
-  --text-title--line-height: 28px;
-  --text-heading: 26px;
-  --text-heading--line-height: 32px;
-  --text-display: 32px;
-  --text-display--line-height: 40px;
-  --text-figure: 40px;
-  --text-figure--line-height: 44px;
+  --text-small: 12.5px;
+  --text-small--line-height: 18px;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-lead: 15.5px;
+  --text-lead--line-height: 24px;
+  --text-title: 17.5px;
+  --text-title--line-height: 25px;
+  --text-heading: 22px;
+  --text-heading--line-height: 28px;
+  --text-display: 28px;
+  --text-display--line-height: 34px;
+  --text-figure: 34px;
+  --text-figure--line-height: 40px;
 }
 
 /*
@@ -130,6 +131,14 @@ dialog::backdrop {
   animation: pulse-ring 0.9s ease-out 2;
 }
 
+/* Reduced motion: nothing slides, pulses or spins (a spinner keeps its "Loading…" words). */
 @media (prefers-reduced-motion: reduce) {
-  .pulse { animation: none; }
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

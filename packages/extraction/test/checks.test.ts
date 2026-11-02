@@ -43,13 +43,6 @@ describe("runContractChecks", () => {
     expect(codes(rb)).toContain("PER_PATIENT_TOTAL_MISMATCH");
   });
 
-  it("DUPLICATE_ITEM skips a procedure the grid itself marks invoiceable at some visits", () => {
-    const rb = makeRulebook();
-    rb.budgetGrids[0]!.procedures[2]!.cells.V1 = 5500; // visual acuity priced at V1, "invoiceable" at V2
-    rb.invoiceables.push({ code: "VA", name: "Visual acuity", amountCents: 5500, amountWithOverheadCents: null, basis: "fixed", frequency: "each", cap: { kind: "none", n: null, ratio: null }, requiresPreApproval: false, requiredDocs: [], prov });
-    expect(codes(rb)).not.toContain("DUPLICATE_ITEM");
-  });
-
   it("VISIT_TOTAL_MISMATCH: subtotal ≠ sum of grid cells", () => {
     const rb = makeRulebook();
     rb.budgetGrids[0]!.procedures[1]!.cells.V1 = 25000;
@@ -107,14 +100,32 @@ describe("runContractChecks", () => {
     expect(codes(rb)).not.toContain("GRID_CONFLICT");
   });
 
-  it("DUPLICATE_ITEM: priced in a visit and also invoiceable (not when the cell says invoiceable)", () => {
+  it("DUPLICATE_ITEM never flags a grid price that matches an invoiceable item (a scheduled-visit price and an unscheduled one)", () => {
     const rb = makeRulebook();
-    expect(codes(rb)).not.toContain("DUPLICATE_ITEM"); // Visual acuity cell is "invoiceable"
-    rb.invoiceables.push({ ...rb.invoiceables[0]!, code: null, name: "Central lab blood draw", amountCents: 20000 });
+    rb.invoiceables.push({ ...rb.invoiceables[0]!, code: null, name: "Central lab blood draw", amountCents: 20000 }); // the grid's blood draw row is priced at V1
+    rb.budgetGrids[0]!.procedures[2]!.cells.V1 = 5500;
+    expect(codes(rb)).not.toContain("DUPLICATE_ITEM");
+  });
+
+  it("DUPLICATE_ITEM: the same procedure on two rows of one grid, priced at the same visit (conflicting or redundant rates)", () => {
+    const rb = makeRulebook();
+    const g = rb.budgetGrids[0]!;
+    const row = g.procedures[1]!; // priced at V1
+    g.procedures.push({ ...row, name: row.name.toUpperCase(), cells: { V1: row.cells.V1 === 20000 ? 21000 : 20000 } });
     const a = runContractChecks(rb).filter((x) => x.code === "DUPLICATE_ITEM");
     expect(a).toHaveLength(1);
-    expect(a[0]!.path).toBe("/budgetGrids/0/procedures/1");
-    expect(a[0]!.detail).toEqual({ invoiceablePath: "/invoiceables/1", visits: ["V1"] });
+    expect(a[0]!.path).toBe(`/budgetGrids/0/procedures/${g.procedures.length - 1}`);
+    expect(a[0]!.detail).toMatchObject({ visits: ["V1"] });
+    // the same words on a row that prices other visits only: a procedure split across sections, not a duplicate
+    g.procedures[g.procedures.length - 1]!.cells = { V2: 20000 };
+    expect(codes(rb)).not.toContain("DUPLICATE_ITEM");
+  });
+
+  it("DUPLICATE_ITEM: the same invoiceable listed twice", () => {
+    const rb = makeRulebook();
+    rb.invoiceables.push({ ...rb.invoiceables[0]!, name: ` ${rb.invoiceables[0]!.name.toUpperCase()} ` });
+    const a = runContractChecks(rb).filter((x) => x.code === "DUPLICATE_ITEM");
+    expect(a.map((x) => x.path)).toEqual([`/invoiceables/${rb.invoiceables.length - 1}`]);
   });
 
   it("MISSING_REFERENCED_DOC", () => {
@@ -123,6 +134,28 @@ describe("runContractChecks", () => {
     rb.referencedDocuments.push({ description: "Budget", date: null, present: true, prov });
     const a = runContractChecks(rb).filter((x) => x.code === "MISSING_REFERENCED_DOC");
     expect(a.map((x) => x.path)).toEqual(["/referencedDocuments/0"]);
+  });
+
+  it("MISSING_REFERENCED_DOC: an amendment without its agreement raises one item for everything referenced, not one per document", () => {
+    const rb = makeRulebook();
+    rb.documents = [{ id: "d2", kind: "amendment", title: "Amendment 1", date: "2026-03-01" }];
+    rb.referencedDocuments.push({ description: "Master CTA", date: "2024-04-26", present: false, prov });
+    rb.referencedDocuments.push({ description: "Amendment 1 to the Master CTA", date: null, present: false, prov });
+    rb.referencedDocuments.push({ description: "Budget", date: null, present: true, prov });
+    const a = runContractChecks(rb).filter((x) => x.code === "MISSING_REFERENCED_DOC");
+    expect(a).toHaveLength(1);
+    expect(a[0]).toMatchObject({ severity: "warning", path: null, detail: { consolidated: true, referenced: [{ description: "Master CTA", date: "2024-04-26" }, { description: "Amendment 1 to the Master CTA", date: null }] } });
+    expect(a[0]!.message).toMatch(/^The agreement this amendment changes isn't uploaded, and neither are the documents it refers to: Master CTA \(2024-04-26\); Amendment 1 to the Master CTA\./);
+    // nothing referenced is listed: still one, about the agreement
+    rb.referencedDocuments = [];
+    expect(runContractChecks(rb).filter((x) => x.code === "MISSING_REFERENCED_DOC").map((x) => x.message)).toEqual(["The agreement this amendment changes isn't uploaded. Terms that depend on it are unverified"]);
+  });
+
+  it("MISSING_REFERENCED_DOC: with the agreement uploaded beside the amendment, or for any other document, each missing document keeps its own item", () => {
+    const rb = makeRulebook();
+    rb.documents.push({ id: "d2", kind: "amendment", title: "Amendment 1", date: "2026-03-01" });
+    rb.referencedDocuments.push({ description: "Master CTA", date: null, present: false, prov }, { description: "Other", date: null, present: false, prov });
+    expect(runContractChecks(rb).filter((x) => x.code === "MISSING_REFERENCED_DOC").map((x) => x.path)).toEqual(["/referencedDocuments/0", "/referencedDocuments/1"]);
   });
 
   it("HEADER_MISMATCH: grid header PI/site differ from the study", () => {
@@ -238,7 +271,8 @@ describe("TEXT_LAYER_MISMATCH (digital PDFs)", () => {
   it("printedAmounts: money-like numbers in cents; no text layer → undefined; long digit runs dropped", () => {
     expect(printedAmounts("Docusign Envelope ID: 1234")).toBeUndefined();
     const text = `${"x".repeat(200)} $7,455  $1,234.50  14.2666667  Account 123456789  Phone 2105551234  Total $12,000,000`;
-    expect(printedAmounts(text)).toEqual([1427, 123450, 745500, 1200000000].sort((a, b) => a - b));
+    // a number with more than two decimals isn't an amount (no amount is a fraction of a cent): dropped, never rounded
+    expect(printedAmounts(text)).toEqual([123450, 745500, 1200000000]);
   });
 
   it("silent when every amount is on its cited page, or the page has no text layer (scan)", () => {

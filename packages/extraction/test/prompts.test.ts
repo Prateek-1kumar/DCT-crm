@@ -1,6 +1,6 @@
 import { expandProv, modelSchema } from "../src/model-schema";
 import { describe, expect, it } from "vitest";
-import { AiGrids, AiIdentify, AiPages, AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, SYSTEM } from "../src/prompts";
+import { AiGrids, AiGridsAnchored, AiIdentify, AiPages, AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, SYSTEM } from "../src/prompts";
 
 /** Structured outputs: every object closed, no records, no numeric/string constraints. */
 function problems(schema: unknown, path = "#"): string[] {
@@ -18,7 +18,7 @@ function problems(schema: unknown, path = "#"): string[] {
 }
 
 describe("AI schemas", () => {
-  for (const [name, schema] of Object.entries({ AiPages, AiIdentify, AiTerms, AiGrids })) {
+  for (const [name, schema] of Object.entries({ AiPages, AiIdentify, AiTerms, AiGrids, AiGridsAnchored })) {
     it(`${name} converts to a structured-output-compatible JSON schema`, () => {
       expect(problems(modelSchema(schema))).toEqual([]);
     });
@@ -37,7 +37,7 @@ describe("structured-output limits", () => {
     const o = s as Record<string, unknown>;
     return (o.anyOf || Array.isArray(o.type) ? 1 : 0) + Object.values(o).reduce((n: number, v) => n + unions(v), 0);
   };
-  it.each(Object.entries({ AiPages, AiIdentify, AiTermsItems, AiTermsPayment, AiTermsStudy, AiGrids }))("%s has at most 16 union parameters", (_, schema) => {
+  it.each(Object.entries({ AiPages, AiIdentify, AiTermsItems, AiTermsPayment, AiTermsStudy, AiGrids, AiGridsAnchored }))("%s has at most 16 union parameters", (_, schema) => {
     expect(unions(modelSchema(schema))).toBeLessThanOrEqual(16);
   });
 });

@@ -4,7 +4,9 @@ import pg from "pg";
 import { config } from "../src/config.js";
 import { runMigrations } from "../src/db/migrate.js";
 
-if (!/_e2e(\?|$)/.test(config.databaseUrl)) throw new Error(`e2e-reset refuses to touch ${config.databaseUrl}: needs a *_e2e database`);
+// the database's own name, never the URL: it carries the password
+const dbName = new URL(config.databaseUrl).pathname.slice(1);
+if (!dbName.endsWith("_e2e")) throw new Error(`e2e-reset refuses to touch database "${dbName}": needs a *_e2e database`);
 if (!/dct-e2e/.test(config.uploadDir)) throw new Error(`e2e-reset refuses to delete ${config.uploadDir}`);
 const client = new pg.Client(config.databaseUrl);
 await client.connect();

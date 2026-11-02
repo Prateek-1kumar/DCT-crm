@@ -1,20 +1,22 @@
 "use client";
 
-import type { BudgetGrid, Rulebook, RulebookVersionDto, StudyDetailDto } from "@dct/shared";
+import { type BudgetGrid, choicesOf, parsePercent, type Rulebook, type RulebookVersionDto, type StudyDetailDto } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useActingAs } from "@/lib/acting-as";
 import { blankHoldback, blankInvoiceable, blankProcedure, blankScreenFail, blankSiteFee, blankVisit, nextVisitCode } from "@/lib/byhand";
-import { ENUM_OPTIONS, fieldKey, inferKind } from "@/lib/format";
+import { inferKind } from "@/lib/format";
 import { centsToInput, parseDollars } from "@/lib/money";
 import { getAt } from "@/lib/pointer";
 import { keys } from "@/lib/queries";
 import { NeedsPerson } from "./Sidebar";
 import { PageViewer } from "./PageViewer";
-import { Button, ErrorNote, cx, inputBase } from "./ui";
+import { Button, ErrorNote, cx, errorText, inputBase } from "./ui";
 
-type Form = { rb: Rulebook; typed: Set<string>; save: (path: string, value: unknown) => Promise<void>; disabled: boolean };
+/** `save` resolves to its error, null once saved: it never throws, so a button can fire it and forget. */
+type Save = (value: unknown) => Promise<unknown>;
+type Form = { rb: Rulebook; typed: Set<string>; save: (path: string, value: unknown) => Promise<unknown>; disabled: boolean };
 
 /**
  * The invoicing master as an entry form, for a contract that couldn't be read. Every field starts empty; each value is
@@ -32,8 +34,10 @@ export function ByHandForm({ study, version }: { study: StudyDetailDto; version:
       setError(null);
       try {
         qc.setQueryData(keys.version(study.id, version.version), await api.typeValue(study.id, version.version, { path, value, by: by! }));
+        return null;
       } catch (e) {
         setError(e);
+        return e;
       }
     },
   };
@@ -45,7 +49,6 @@ export function ByHandForm({ study, version }: { study: StudyDetailDto; version:
       </aside>
       <div className="flex min-w-0 flex-col gap-4">
         {!by && <NeedsPerson />}
-        <ErrorNote error={error} />
         <Section title="Study">
           <F form={form} label="Sponsor" path="/study/sponsor/value" empty="" />
           <F form={form} label="Paying agent / CRO" path="/study/payingAgent/value" />
@@ -81,6 +84,12 @@ export function ByHandForm({ study, version }: { study: StudyDetailDto; version:
         <Section title="Rounding">
           <F form={form} label="Rounding" path="/rounding/value" />
         </Section>
+        {/* Kept in view wherever you are in this long form: a row or visit that didn't add or go is said only here. */}
+        {!!error && (
+          <div className="sticky bottom-4 z-10 shadow-raised">
+            <ErrorNote>That change wasn&apos;t saved. {errorText(error)}</ErrorNote>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -117,29 +126,25 @@ function F({ form, label, path, empty }: { form: Form; label: string; path: stri
  * One empty-until-typed input, saved on leaving it. Numbers show only once typed (the blank master holds placeholders).
  * `empty`: what an emptied field saves ("" for names, otherwise null). `commit` overrides the save (grid cells).
  */
-function HandInput({ form, path, empty, label, commit }: { form: Form; path: string; empty?: string; label: string; commit?: (value: unknown) => Promise<void> }) {
+function HandInput({ form, path, empty, label, commit }: { form: Form; path: string; empty?: string; label: string; commit?: Save }) {
   const value = getAt(form.rb, path);
   // Remount when the value or its typed-ness changes, e.g. after a row above is removed.
   return <Input key={`${JSON.stringify(value) ?? ""}|${form.typed.has(path)}`} form={form} path={path} value={value} empty={empty} label={label} commit={commit} />;
 }
 
-function Input({ form, path, value, empty = undefined, label, commit }: { form: Form; path: string; value: unknown; empty?: string; label: string; commit?: (value: unknown) => Promise<void> }) {
+function Input({ form, path, value, empty = undefined, label, commit }: { form: Form; path: string; value: unknown; empty?: string; label: string; commit?: Save }) {
   const kind = inferKind(path, value);
   const shown = typeof value === "number" && !form.typed.has(path) ? null : value;
   const [raw, setRaw] = useState(() => (shown === null || shown === undefined ? "" : kind === "money" || kind === "cell" ? centsToInput(shown as number) : Array.isArray(shown) ? shown.join(", ") : String(shown)));
   const [err, setErr] = useState<string | null>(null);
-  const save = (v: unknown) => (commit ?? ((x: unknown) => form.save(path, x)))(v);
-
-  if (kind === "enum")
-    return (
-      <select aria-label={label} disabled={form.disabled} className={cx(inputBase, "w-auto py-1.5")} value={String(value)} onChange={(e) => void save(e.target.value)}>
-        {Object.entries(ENUM_OPTIONS[fieldKey(path)] ?? {}).map(([k, l]) => (
-          <option key={k} value={k}>
-            {l}
-          </option>
-        ))}
-      </select>
-    );
+  // The last save of this field that failed, and why. It stays, whatever is typed since, until a save goes through (a
+  // saved value remounts the field with it): until then what the box shows isn't what's saved.
+  const [unsaved, setUnsaved] = useState<{ error: unknown; value: unknown } | null>(null);
+  const note = useId();
+  const save = async (v: unknown) => {
+    const error = await (commit ?? ((x: unknown) => form.save(path, x)))(v);
+    setUnsaved(error ? { error, value: v } : null);
+  };
 
   function parse(t: string): { v: unknown } | { e: string } {
     if (t === "") return { v: kind === "cell" ? null : (empty ?? null) };
@@ -148,12 +153,61 @@ function Input({ form, path, value, empty = undefined, label, commit }: { form: 
       return c === null || Number.isNaN(c) ? { e: "Type a dollar amount, like 1,234.56" } : { v: c };
     }
     if (kind === "int" || kind === "number") {
-      const n = Number(t.replace(/[,%\s]/g, ""));
-      return Number.isFinite(n) && (kind === "number" || Number.isInteger(n)) ? { v: n } : { e: kind === "int" ? "Type a whole number" : "Type a number" };
+      const n = parsePercent(t);
+      return n !== null && (kind === "number" || Number.isInteger(n)) ? { v: n } : { e: kind === "int" ? "Type a whole number" : "Type a number" };
     }
     if (kind === "list") return { v: t.split(",").map((x) => x.trim()).filter(Boolean) };
     return { v: t };
   }
+  const commitTyped = () => {
+    const p = parse(raw.trim());
+    if ("e" in p) return setErr(p.e);
+    const before = shown === undefined ? (kind === "cell" ? null : undefined) : shown;
+    if (JSON.stringify(p.v) !== JSON.stringify(before ?? (empty ?? null))) void save(p.v);
+    else setUnsaved(null); // typed back to what's saved
+  };
+  const invalid = { "aria-invalid": !!unsaved || undefined, "aria-describedby": unsaved ? note : undefined };
+  const notSaved = unsaved && (
+    <span id={note} role="alert" className="text-xs text-danger">
+      Not saved. {errorText(unsaved.error)}{" "}
+      <button type="button" disabled={form.disabled} className="font-medium underline underline-offset-2" onClick={() => (kind === "enum" ? void save(unsaved.value) : commitTyped())}>
+        Try again
+      </button>
+    </span>
+  );
+
+  if (kind === "enum" || kind === "bool") {
+    // A choice nobody made shows as one to make: the blank master holds a default there, which is asked when typing is
+    // marked done unless someone picks it here.
+    const picked = form.typed.has(path);
+    const choices = kind === "bool" ? { true: "Yes", false: "No" } : (choicesOf(path) ?? {});
+    return (
+      <span className="flex flex-col gap-0.5">
+        {/* Shows what's saved: a choice that didn't save goes back to it, and says so below. */}
+        <select
+          aria-label={label}
+          {...invalid}
+          disabled={form.disabled}
+          className={cx(inputBase, "w-auto py-1.5", unsaved && "border-danger")}
+          value={picked ? String(value) : ""}
+          onChange={(e) => void save(kind === "bool" ? e.target.value === "true" : e.target.value)}
+        >
+          {!picked && (
+            <option value="" disabled>
+              Choose…
+            </option>
+          )}
+          {Object.entries(choices).map(([k, l]) => (
+            <option key={k} value={k}>
+              {l}
+            </option>
+          ))}
+        </select>
+        {notSaved}
+      </span>
+    );
+  }
+
   const money = kind === "money" || kind === "cell";
   return (
     <span className="flex flex-col gap-0.5">
@@ -161,22 +215,19 @@ function Input({ form, path, value, empty = undefined, label, commit }: { form: 
         {money && <span className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-xs text-muted">$</span>}
         <input
           aria-label={label}
+          {...invalid}
           type={kind === "date" ? "date" : "text"}
           inputMode={money || kind === "number" ? "decimal" : kind === "int" ? "numeric" : undefined}
           disabled={form.disabled}
           autoComplete="off"
           value={raw}
           onChange={(e) => (setRaw(e.target.value), setErr(null))}
-          onBlur={() => {
-            const p = parse(raw.trim());
-            if ("e" in p) return setErr(p.e);
-            const before = shown === undefined ? (kind === "cell" ? null : undefined) : shown;
-            if (JSON.stringify(p.v) !== JSON.stringify(before ?? (empty ?? null))) void save(p.v);
-          }}
-          className={cx(inputBase, "num w-full py-1.5", money && "pl-6", err && "border-danger")}
+          onBlur={commitTyped}
+          className={cx(inputBase, "num w-full py-1.5", money && "pl-6", (err || unsaved) && "border-danger")}
         />
       </span>
       {err && <span className="text-xs text-danger">{err}</span>}
+      {notSaved}
     </span>
   );
 }
@@ -229,8 +280,9 @@ function GridEditor({ form, gi }: { form: Form; gi: number }) {
   const g = form.rb.budgetGrids[gi]!;
   const base = `/budgetGrids/${gi}`;
   const visits = [...g.visits].sort((a, b) => a.order - b.order);
+  // Its cells go only once the visit has: a visit still there must keep what was typed for it.
   const removeVisit = async (code: string) => {
-    await form.save(`${base}/visits`, g.visits.filter((v) => v.code !== code));
+    if (await form.save(`${base}/visits`, g.visits.filter((v) => v.code !== code))) return;
     await form.save(`${base}/procedures`, g.procedures.map((p) => ({ ...p, cells: omit(p.cells, code) })));
   };
   return (
@@ -250,6 +302,9 @@ function GridEditor({ form, gi }: { form: Form; gi: number }) {
                     </Button>
                   </span>
                   <HandInput form={form} path={`${base}/visits/${g.visits.indexOf(v)}/name`} empty="" label={`Visit ${v.code} name`} />
+                  <span className="mt-1 block">
+                    <HandInput form={form} path={`${base}/visits/${g.visits.indexOf(v)}/autopay`} label={`Visit ${v.code} paid automatically`} />
+                  </span>
                 </th>
               ))}
               <th className="border-b border-line bg-sunken px-2 py-2">
@@ -264,6 +319,10 @@ function GridEditor({ form, gi }: { form: Form; gi: number }) {
               <tr key={pi}>
                 <td className="border-b border-line p-1.5">
                   <HandInput form={form} path={`${base}/procedures/${pi}/name`} empty="" label={`Procedure, row ${pi + 1}`} />
+                  <span className="mt-1 flex flex-wrap gap-1">
+                    <HandInput form={form} path={`${base}/procedures/${pi}/category`} label={`Kind of line, row ${pi + 1}`} />
+                    <HandInput form={form} path={`${base}/procedures/${pi}/overheadApplied`} label={`Overhead added, row ${pi + 1}`} />
+                  </span>
                 </td>
                 <td className="border-b border-line p-1.5">
                   <HandInput form={form} path={`${base}/procedures/${pi}/unitCents`} label={`Unit price, row ${pi + 1}`} />

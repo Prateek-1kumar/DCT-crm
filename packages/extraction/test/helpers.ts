@@ -1,7 +1,7 @@
 import { Rulebook } from "@dct/shared";
 
 export const prov = { source: { documentId: "d1", page: 3 }, confidence: 0.95, method: "ai", crossCheck: "not_checked" } as const;
-export const s = <T>(value: T) => ({ value, prov: { ...prov } });
+const s = <T>(value: T) => ({ value, prov: { ...prov } });
 
 /** Small synthetic rulebook (one arm, two visits) that passes every check. */
 export function makeRulebook(): Rulebook {

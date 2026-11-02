@@ -13,3 +13,7 @@ data/
 .claude/
 test-results/
 playwright-report/
+
+# local OCR: its Python environment and model files (installed by packages/extraction/ocr/setup.sh)
+packages/extraction/ocr/.venv/
+packages/extraction/ocr/models/

@@ -72,7 +72,7 @@ One rule at a time, as data arrives:
 |---|---|
 | Frontend | Next.js · Tailwind (`apps/web`) |
 | Backend | Fastify · Drizzle · Postgres · pg-boss (`apps/api`, added in Phase 1) |
-| AI | Claude Opus 5.5 via DCT's Anthropic key, all calls through one wrapper |
+| AI | Claude via DCT's Anthropic key, all calls through one wrapper (`packages/extraction/src/llm.ts`): Sonnet 5.5 reads, Haiku 5.5 sorts pages; no Opus (cost decision 2026-10-26) |
 | Language | TypeScript throughout |
 
 ## Rules we follow from day one

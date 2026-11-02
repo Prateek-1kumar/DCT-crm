@@ -83,10 +83,10 @@ def main():
     golden = json.load(open(golden_path))
     grid = next((g for g in golden["grids"] if g["visitTotals"] == totals), None)
     if grid is None:
-        sys.exit(f"No grid in {golden_path} has visit totals {totals}; refusing to write (draft budget?)")
+        sys.exit(f"No grid in {golden_path} has the sheet's {len(totals)} visit totals; refusing to write (draft budget?)")
     grid["rows"] = rows
     json.dump(golden, open(golden_path, "w"), indent=2)
-    print(f"{golden_path}: {len(rows)} rows x {len(visits)} visits ({', '.join(visits)}) written to grid '{grid['label']}'")
+    print(f"{golden_path}: {len(rows)} rows x {len(visits)} visits written to grid {golden['grids'].index(grid) + 1}")
 
 
 if __name__ == "__main__":
