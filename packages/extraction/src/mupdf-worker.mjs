@@ -214,9 +214,23 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   // only; white text on a dark picture or shape stays hidden. Upgrade: sample the render under the glyph).
   const onDark = new Set();
   const boxes = [];
-  // each glyph's origin and size (its em, from the text matrix), in page points
+  // each glyph's origin and frame in page points: its em box (descender to ascender, about one advance wide) through the full
+  // transform, so rotated or sheared text is framed where it really is
+  const EM = [
+    [0, -0.2],
+    [0.7, -0.2],
+    [0, 0.8],
+    [0.7, 0.8],
+  ];
   const glyphs = (text, m, fn) =>
-    text.walk({ showGlyph: (_f, t) => fn(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5], Math.hypot(t[2] * m[0] + t[3] * m[2], t[2] * m[1] + t[3] * m[3]) || 1) });
+    text.walk({
+      showGlyph: (_f, t) => {
+        const pts = EM.map(([gx, gy]) => tf(m, ...tf(t, gx, gy)));
+        const xs = pts.map((q) => q[0]);
+        const ys = pts.map((q) => q[1]);
+        fn(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5], [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
+      },
+    });
   // What a fill is drawn through: rectangular clips narrow it; any other clip, and a soft mask, make it unknown (null). A
   // see-through or blended group, or a tile, makes it unsure (`odd`). A mask's own content is never drawn on the page.
   const clips = [];
@@ -245,7 +259,8 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
     return !inMask && !odd && alpha >= 0.9 && !!c && x >= c[0] && x <= c[2] && y >= c[1] && y <= c[3] && l !== null && l <= 0.95;
   };
   // a glyph in a mask's own content, or all but see-through, is never seen
-  const unseen = (alpha) => inMask > 0 || alpha < 0.25;
+  // the opacity of the open groups multiplies a glyph's own
+  const unseen = (alpha) => inMask > 0 || groups.reduce((a, g) => a * g.alpha, 1) * alpha < 0.25;
   // The same run collects the page's rules and counts its filled paths: text turned to outlines is thousands of them.
   const rules = [];
   let fills = 0;
@@ -289,19 +304,21 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
     },
     beginGroup: (_area, _cs, _isolated, _knockout, blend, alpha) => {
       const strange = alpha < 0.9 || blend !== "Normal";
-      groups.push(strange);
+      groups.push({ strange, alpha: alpha ?? 1 });
       if (strange) odd++;
     },
-    endGroup: () => void (groups.pop() && odd--),
+    endGroup: () => void (groups.pop()?.strange && odd--),
     beginTile: () => (odd++, 0),
     endTile: () => void odd--,
     fillText: (text, m, cs, color, alpha) =>
-      glyphs(text, m, (x, y, s) => {
+      glyphs(text, m, (x, y, f) => {
         if (unseen(alpha)) return void invisible.add(key(x, y));
         if (paints(x, y, cs, color, alpha)) painted.add(key(x, y));
+        // white text in a group we can't judge, or through a clip we can't see, is never sure to show (fail closed)
+        if (odd || !clipNow()) return;
         for (let i = boxes.length - 1; i >= 0; i--) {
           const [x0, y0, x1, y1] = boxes[i].r;
-          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return void (boxes[i].dark && whites.push({ x, y, s, n: boxes.length }));
+          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return void (boxes[i].dark && whites.push({ x, y, f, n: boxes.length }));
         }
       }),
     ignoreText: (text, m) => glyphs(text, m, (x, y) => void invisible.add(key(x, y))),
@@ -309,12 +326,13 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   page.run(dev, mupdf.Matrix.identity);
   dev.close();
   dev.destroy();
-  // A box drawn later over at least 30% of a white glyph's frame hides it; a thin rule, such as an underline, doesn't. The frame is
-  // the glyph's em around its origin (ponytail: not its outline. Upgrade: sample the render).
-  const covers = ({ r: [x0, y0, x1, y1] }, { x, y, s }) => {
-    const w = Math.min(x1, x + 0.7 * s) - Math.max(x0, x - 0.1 * s);
-    const h = Math.min(y1, y + 0.2 * s) - Math.max(y0, y - 0.8 * s);
-    return w > 0 && h > 0 && w * h >= 0.3 * 0.8 * s * s;
+  // A box drawn later over at least 30% of a white glyph's frame hides it; a thin rule, such as an underline, doesn't; a glyph
+  // with no frame to speak of is hidden (ponytail: the em box, not its outline. Upgrade: sample the render).
+  const covers = ({ r: [x0, y0, x1, y1] }, { f: [g0, h0, g1, h1] }) => {
+    const area = (g1 - g0) * (h1 - h0);
+    const w = Math.min(x1, g1) - Math.max(x0, g0);
+    const h = Math.min(y1, h1) - Math.max(y0, h0);
+    return area < 1e-6 || (w > 0 && h > 0 && w * h >= 0.3 * area);
   };
   const later = boxes.flatMap((b, i) => (b.cover ? [{ b, i }] : []));
   for (const g of whites) if (!later.some(({ b, i }) => i >= g.n && covers(b, g))) onDark.add(key(g.x, g.y));

@@ -41,7 +41,17 @@ function pdf(): string {
     // black text all but see-through: hidden
     `q /Faint gs BT 0 Tr 0 g /F1 8 Tf 40 ${792 - 540} Td ($4,545.00) Tj ET Q\n` +
     at(40, 700, "Synthetic page: white figures on dark bars, some clipped or covered.").replace("1 1 1 rg", "0 g");
+  // page 2: a white figure set sideways on a dark box, then a white box over its glyphs (beside the origin, where upright glyphs
+  // would not be): hidden; and black text inside a group drawn at 5% opacity: hidden
+  const faded = doc.addStream("BT 0 g /F1 8 Tf 40 600 Td ($8,080.00) Tj ET", { Type: "XObject", Subtype: "Form", BBox: [0, 0, 612, 792], Group: { S: "Transparency" }, Resources: { Font: res.Font } });
+  const side =
+    "0.09 0.21 0.36 rg 250 380 100 80 re f 0 g\n" +
+    "BT 0 Tr 1 1 1 rg /F1 8 Tf 0 1 -1 0 300 400 Tm ($9,191.00) Tj ET 0 g\n" +
+    "1 1 1 rg 292 398 7.5 46 re f 0 g\n" +
+    "q /Faint gs /Fm0 Do Q\n" +
+    "BT 0 g /F1 8 Tf 40 700 Td (Synthetic page two.) Tj ET\n";
   doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, content));
+  doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, { ...res, XObject: { Fm0: faded } }, side));
   const path = join(mkdtempSync(join(tmpdir(), "dct-white-")), "white.pdf");
   writeFileSync(path, doc.saveToBuffer("").asUint8Array());
   return path;
@@ -49,7 +59,7 @@ function pdf(): string {
 
 describe("white text", () => {
   it("is visible on a dark box only when nothing clips the box away or covers the text", async () => {
-    const [p] = await readTextLayer(pdf(), "d1");
+    const [p, p2] = await readTextLayer(pdf(), "d1");
     const hidden = (t: string) => p!.words.find((w) => w.text === t)!.hidden;
     expect([" 1,111.00", hidden("$1,111.00")]).toEqual([" 1,111.00", false]);
     expect([" 2,222.00", hidden("$2,222.00")]).toEqual([" 2,222.00", true]);
@@ -65,5 +75,9 @@ describe("white text", () => {
     expect([" 3,434.00", hidden("$3,434.00")]).toEqual([" 3,434.00", true]);
     expect([" 5,656.00", hidden("$5,656.00")]).toEqual([" 5,656.00", true]);
     expect([" 4,545.00", hidden("$4,545.00")]).toEqual([" 4,545.00", true]);
+    const words2 = p2!.words.map((w) => `${w.text}:${w.hidden}`);
+    expect(words2.filter((w) => w.includes("9,191") || w.includes("9,1"))).toEqual(expect.arrayContaining([expect.stringMatching(/:true$/)]));
+    expect(words2.filter((w) => /9,1|9,191/.test(w) && w.endsWith(":false"))).toEqual([]);
+    expect(words2.filter((w) => /8,080/.test(w))).toEqual(["$8,080.00:true"]);
   });
 });
