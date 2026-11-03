@@ -132,21 +132,25 @@ function lightness(cs, c) {
  * see-through one, covers what is under it and is no dark background. Past the cap, `boxes.over` is set and nothing counts as dark.
  * `clip`: the rectangle the fill is drawn through (it's cut to it), or null when that's unknown (a shaped, text or image clip,
  * a soft mask); `sure`: no see-through or blended group or tile is open. A fill drawn through an unknown clip or inside such a
- * group is no dark background and covers nothing (fail closed: white text on it stays hidden).
+ * group is no dark background, but may still cover what it is drawn over (fail closed: white text under it stays hidden).
  */
 function addBoxes(boxes, path, ctm, cs, color, alpha, clip, sure) {
+  const l = lightness(cs, color);
   for (const sp of subpaths(path, ctm)) {
     const r = rectOf(sp);
-    if (r) addBox(boxes, r, clip, sure && lightness(cs, color) !== null && lightness(cs, color) < 0.5 && alpha >= 0.9, sure && alpha >= 0.9);
+    if (r) addBox(boxes, r, clip, sure && l !== null && l < 0.5 && alpha >= 0.9, alpha >= 0.1);
   }
 }
 
-/** One box cut to its clip; `opaque`: it hides a glyph drawn before it under it. */
-function addBox(boxes, r, clip, dark, opaque) {
+/**
+ * One box, cut to its clip when that is a known rectangle (through an unknown one, its whole frame). `cover`: it may hide a
+ * glyph drawn before it under it: anything not all but see-through, whatever clip or group it is drawn in.
+ */
+function addBox(boxes, r, clip, dark, cover) {
   if (boxes.length >= MAX_RULES) return void (boxes.over = true);
-  if (clip === null) return void boxes.push({ r, dark: false, opaque: false });
+  if (clip === null) return void boxes.push({ r, dark: false, cover });
   const c = [Math.max(r[0], clip[0]), Math.max(r[1], clip[1]), Math.min(r[2], clip[2]), Math.min(r[3], clip[3])];
-  if (c[0] < c[2] && c[1] < c[3]) boxes.push({ r: c, dark, opaque });
+  if (c[0] < c[2] && c[1] < c[3]) boxes.push({ r: c, dark, cover });
 }
 
 /** Positions of one direction's rules, within 1 pt merged, each kept only if its segments cover at least 30% of `extent`. */
@@ -210,7 +214,9 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   // only; white text on a dark picture or shape stays hidden. Upgrade: sample the render under the glyph).
   const onDark = new Set();
   const boxes = [];
-  const glyphs = (text, m, fn) => text.walk({ showGlyph: (_f, t) => fn(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5]) });
+  // each glyph's origin and size (its em, from the text matrix), in page points
+  const glyphs = (text, m, fn) =>
+    text.walk({ showGlyph: (_f, t) => fn(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5], Math.hypot(t[2] * m[0] + t[3] * m[2], t[2] * m[1] + t[3] * m[3]) || 1) });
   // What a fill is drawn through: rectangular clips narrow it; any other clip, and a soft mask, make it unknown (null). A
   // see-through or blended group, or a tile, makes it unsure (`odd`). A mask's own content is never drawn on the page.
   const clips = [];
@@ -230,8 +236,16 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   };
   // white glyphs on a dark box, with how many boxes were drawn before them: a box drawn later over one hides it
   const whites = [];
-  // Clip-only text (render mode 7) draws nothing: its glyphs are invisible unless the same glyph is also filled or stroked (modes 4-6)
+  // Clip-only text (render mode 7) draws nothing: its glyphs are invisible unless the same glyph is also filled or stroked (modes
+  // 4-6) for sure: not in a mask, opaque, inside a known clip, outside a group we can't judge, and not white (`painted`)
   const [clipOnly, painted] = [new Set(), new Set()];
+  const paints = (x, y, cs, color, alpha) => {
+    const c = clipNow();
+    const l = lightness(cs, color);
+    return !inMask && !odd && alpha >= 0.9 && !!c && x >= c[0] && x <= c[2] && y >= c[1] && y <= c[3] && l !== null && l <= 0.95;
+  };
+  // a glyph in a mask's own content, or all but see-through, is never seen
+  const unseen = (alpha) => inMask > 0 || alpha < 0.25;
   // The same run collects the page's rules and counts its filled paths: text turned to outlines is thousands of them.
   const rules = [];
   let fills = 0;
@@ -248,7 +262,7 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
       const pts = [tf(ctm, 0, 0), tf(ctm, 1, 0), tf(ctm, 0, 1), tf(ctm, 1, 1)];
       const xs = pts.map((p) => p[0]);
       const ys = pts.map((p) => p[1]);
-      addBox(boxes, [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], clipNow(), false, odd === 0 && alpha >= 0.9);
+      addBox(boxes, [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], clipNow(), false, alpha >= 0.1);
     },
     clipPath: (path, _eo, ctm) => clipBy(path, ctm),
     clipStrokePath: () => void clips.push(null),
@@ -260,7 +274,11 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
       clips.push(null);
       glyphs(text, m, (x, y) => void clipOnly.add(key(x, y)));
     },
-    strokeText: (text, _stroke, m) => glyphs(text, m, (x, y) => void painted.add(key(x, y))),
+    strokeText: (text, _stroke, m, cs, color, alpha) =>
+      glyphs(text, m, (x, y) => {
+        if (unseen(alpha)) invisible.add(key(x, y));
+        else if (paints(x, y, cs, color, alpha)) painted.add(key(x, y));
+      }),
     clipImageMask: () => void clips.push(null),
     popClip: () => void clips.pop(),
     beginMask: () => void inMask++,
@@ -277,12 +295,13 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
     endGroup: () => void (groups.pop() && odd--),
     beginTile: () => (odd++, 0),
     endTile: () => void odd--,
-    fillText: (text, m) =>
-      glyphs(text, m, (x, y) => {
-        painted.add(key(x, y));
+    fillText: (text, m, cs, color, alpha) =>
+      glyphs(text, m, (x, y, s) => {
+        if (unseen(alpha)) return void invisible.add(key(x, y));
+        if (paints(x, y, cs, color, alpha)) painted.add(key(x, y));
         for (let i = boxes.length - 1; i >= 0; i--) {
           const [x0, y0, x1, y1] = boxes[i].r;
-          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return void (boxes[i].dark && whites.push({ x, y, n: boxes.length }));
+          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return void (boxes[i].dark && whites.push({ x, y, s, n: boxes.length }));
         }
       }),
     ignoreText: (text, m) => glyphs(text, m, (x, y) => void invisible.add(key(x, y))),
@@ -290,10 +309,15 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   page.run(dev, mupdf.Matrix.identity);
   dev.close();
   dev.destroy();
-  // a box drawn later that covers the glyph's foot and the ink just above it hides it (a thin rule, such as an underline, doesn't)
-  const covers = ({ r: [x0, y0, x1, y1] }, x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1 && y - 2 >= y0;
-  const later = boxes.flatMap((b, i) => (b.opaque ? [{ b, i }] : []));
-  for (const g of whites) if (!later.some(({ b, i }) => i >= g.n && covers(b, g.x, g.y))) onDark.add(key(g.x, g.y));
+  // A box drawn later over at least 30% of a white glyph's frame hides it; a thin rule, such as an underline, doesn't. The frame is
+  // the glyph's em around its origin (ponytail: not its outline. Upgrade: sample the render).
+  const covers = ({ r: [x0, y0, x1, y1] }, { x, y, s }) => {
+    const w = Math.min(x1, x + 0.7 * s) - Math.max(x0, x - 0.1 * s);
+    const h = Math.min(y1, y + 0.2 * s) - Math.max(y0, y - 0.8 * s);
+    return w > 0 && h > 0 && w * h >= 0.3 * 0.8 * s * s;
+  };
+  const later = boxes.flatMap((b, i) => (b.cover ? [{ b, i }] : []));
+  for (const g of whites) if (!later.some(({ b, i }) => i >= g.n && covers(b, g))) onDark.add(key(g.x, g.y));
   for (const k of clipOnly) if (!painted.has(k)) invisible.add(k);
 
   const words = [];

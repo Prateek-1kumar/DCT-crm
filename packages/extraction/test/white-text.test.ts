@@ -14,7 +14,7 @@ const bar = (y: number) => `0.09 0.21 0.36 rg 36 ${792 - y - 4} 540 14 re f 0 g\
 
 function pdf(): string {
   const doc = new mupdf.PDFDocument();
-  const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) } };
+  const res = { Font: { F1: doc.addSimpleFont(new mupdf.Font("Helvetica")) }, ExtGState: { Faint: { ca: 0.05 }, Half: { ca: 0.5 } } };
   const content =
     // plain: a dark bar, white text on it (visible)
     bar(60) + at(40, 60, "$1,111.00") +
@@ -30,6 +30,16 @@ function pdf(): string {
     `q 300 ${792 - 270} 200 30 re W n ${bar(260)}Q ${at(40, 260, "$6,666.00")}` +
     // clip-only text (render mode 7) draws nothing, even on a dark bar; fill-and-clip text (mode 4) is drawn
     bar(300) + `q BT 7 Tr 0 g /F1 8 Tf 40 ${792 - 300} Td ($7,777.00) Tj ET Q\n` + `q BT 4 Tr 0 g /F1 8 Tf 300 ${792 - 340} Td ($8,888.00) Tj ET Q\n` +
+    // a clip-only glyph with a white one painted on the page at the same spot: still nothing drawn (hidden)
+    `q BT 7 Tr 0 g /F1 8 Tf 40 ${792 - 380} Td ($1,212.00) Tj ET Q\n` + at(40, 380, "$1,212.00") +
+    // a white box drawn over the text through a text clip we can't see through: may hide it (hidden)
+    bar(420) + at(40, 420, "$2,323.00") + `q BT 7 Tr /F1 30 Tf 30 ${792 - 430} Td (CLIPPED) Tj ET 1 1 1 rg 30 ${792 - 430} 200 20 re f Q\n` +
+    // a white box over most of the glyphs but not their baseline: hidden
+    bar(460) + at(40, 460, "$3,434.00") + `1 1 1 rg 30 ${792 - 460 + 1.5} 200 6 re f 0 g\n` +
+    // a half see-through white box over the text: hidden
+    bar(500) + at(40, 500, "$5,656.00") + `q /Half gs 1 1 1 rg 30 ${792 - 510} 200 20 re f Q\n` +
+    // black text all but see-through: hidden
+    `q /Faint gs BT 0 Tr 0 g /F1 8 Tf 40 ${792 - 540} Td ($4,545.00) Tj ET Q\n` +
     at(40, 700, "Synthetic page: white figures on dark bars, some clipped or covered.").replace("1 1 1 rg", "0 g");
   doc.insertPage(-1, doc.addPage([0, 0, 612, 792], 0, res, content));
   const path = join(mkdtempSync(join(tmpdir(), "dct-white-")), "white.pdf");
@@ -49,5 +59,11 @@ describe("white text", () => {
     expect([" 6,666.00", hidden("$6,666.00")]).toEqual([" 6,666.00", true]);
     expect([" 7,777.00", hidden("$7,777.00")]).toEqual([" 7,777.00", true]);
     expect([" 8,888.00", hidden("$8,888.00")]).toEqual([" 8,888.00", false]);
+    // every word printing this figure is hidden: the clip-only one and the white one on white
+    expect(p!.words.filter((w) => w.text.includes("1,212.00")).every((w) => w.hidden)).toBe(true);
+    expect([" 2,323.00", hidden("$2,323.00")]).toEqual([" 2,323.00", true]);
+    expect([" 3,434.00", hidden("$3,434.00")]).toEqual([" 3,434.00", true]);
+    expect([" 5,656.00", hidden("$5,656.00")]).toEqual([" 5,656.00", true]);
+    expect([" 4,545.00", hidden("$4,545.00")]).toEqual([" 4,545.00", true]);
   });
 });
