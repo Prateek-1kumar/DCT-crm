@@ -1,4 +1,4 @@
-import { type AnswerDraft, answerQuestion, askAbout, blankQuestions, interpretations, isoDate, type Rulebook, type RulebookVersionDto, suggest, tableQuestions, type ValueEvidence } from "@dct/shared";
+import { type AnswerDraft, answerQuestion, askAbout, blankQuestions, interpretations, isoDate, type ReviewItem, type Rulebook, type RulebookVersionDto, suggest, tableQuestions, type ValueEvidence } from "@dct/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,9 +19,9 @@ const START = "interpret:/appliesFrom/value";
  * The review page on one question of `v`, a draft held as the API holds it: an answer is applied by the shared rule the
  * API runs (answerQuestion) and the page refetches it. Returns what each answer sent, and the draft as it is now.
  */
-function renderPage(v: RulebookVersionDto, item: string) {
+function renderPage(v: RulebookVersionDto, item: string, over: Parameters<typeof study>[0] = {}) {
   nav.search = `item=${encodeURIComponent(item)}`;
-  vi.spyOn(api, "getStudy").mockResolvedValue(study({ needsYou: v.review.length }));
+  vi.spyOn(api, "getStudy").mockResolvedValue(study({ needsYou: v.review.length, ...over }));
   vi.spyOn(api, "getVersion").mockImplementation(async () => structuredClone(v));
   vi.spyOn(api, "pageSrc").mockResolvedValue("data:image/svg+xml,");
   const sent = vi.spyOn(api, "answerReview").mockImplementation(async (_s, _v, itemId, body) => {
@@ -110,6 +110,47 @@ describe("answering on the review page", () => {
     fireEvent.change(screen.getByLabelText("Where on the page is it printed?"), { target: { value: "§4.1, first line" } });
     fireEvent.click(screen.getByRole("button", { name: /Save and next/ }));
     await waitFor(() => expect(sent).toHaveBeenLastCalledWith("st-1", 1, id, expect.objectContaining({ optionId: "auto_edc", note: "§4.1, first line" })));
+  });
+
+  it("questions on one sentence are one card: its quote shown once, each question answered on its own", async () => {
+    const rb = rulebook();
+    const review = interpretations(rb, { amendment: false }).filter((i) => i.path?.startsWith("/screenFail/"));
+    expect(review.length).toBe(3);
+    const v = version(rb, { review });
+    const sent = renderPage(v, review[1]!.id);
+    expect(await screen.findByText("3 questions on one sentence of the contract")).toBeTruthy();
+    const pane = screen.getByRole("region", { name: "Question" });
+    expect(pane.textContent!.split("one screen failure per randomized subject").length - 1).toBe(1);
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(review.map((i) => i.question.replace(/ The contract says: .*$/, "")));
+    // the first question's own pick and its own button: only it is sent
+    const first = document.querySelector<HTMLInputElement>(`input[name="opt-${review[0]!.id}"]`)!;
+    fireEvent.click(first);
+    fireEvent.click(screen.getAllByRole("button", { name: /Save and next/ })[0]!);
+    await waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
+    expect(sent).toHaveBeenCalledWith("st-1", 1, review[0]!.id, expect.objectContaining({ optionId: first.value }));
+    expect(v.review.filter((i) => i.outcome !== null).map((i) => i.id)).toEqual([review[0]!.id]);
+    // the card stays open on its other questions
+    expect(await screen.findByText("3 questions on one sentence of the contract")).toBeTruthy();
+  });
+
+  it("one money-term sentence printed in two documents is one card, its places in both documents; each is answered on its own", async () => {
+    const rb = rulebook();
+    const P = "Payments are made quarterly within 45 days of receipt of invoice.";
+    const term = (id: string, documentId: string, page: number): ReviewItem => ({
+      id, kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, input: null, blocking: true, answer: null, outcome: null, compare: null, sentBack: null,
+      question: `Page ${page} has a payment term that the invoicing master doesn't have: "${P.slice(0, -1)}". How should it be handled?`,
+      options: [{ id: "not_payment", label: "It isn't a payment term" }], where: [{ documentId, page, box: null }], term: { quote: P, amounts: [] },
+    });
+    const review = [term("u1", DOC, 7), term("u2", "doc-2", 2)];
+    const sent = renderPage(version(rb, { review }), "u1", { documents: [...study().documents, { ...study().documents[0]!, id: "doc-2", filename: "Amendment 1.pdf" }] });
+    expect(await screen.findByText("2 questions on one sentence of the contract")).toBeTruthy();
+    const places = screen.getByRole("group", { name: "Places in the contract" });
+    expect([...places.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Page 7 of “ACM-101_work-order.pdf”", "Page 2 of “Amendment 1.pdf”"]);
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Page 7 has a payment term that the invoicing master doesn't have. How should it be handled?", "Page 2 has a payment term that the invoicing master doesn't have. How should it be handled?"]);
+    fireEvent.click(document.querySelector<HTMLInputElement>('input[name="opt-u2"]')!);
+    fireEvent.click(screen.getAllByRole("button", { name: /Save and next/ })[1]!);
+    await waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
+    expect(sent).toHaveBeenCalledWith("st-1", 1, "u2", expect.objectContaining({ optionId: "not_payment" }));
   });
 
   it("a value question shows our suggestion and why; “Use” answers with it and settles it (ADR-003)", async () => {

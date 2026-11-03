@@ -1,4 +1,4 @@
-import { openItems, parsePercent, signOffRefusal, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
+import { openCards, parsePercent, signOffRefusal, type ReviewItem, type RulebookVersionDto, type SettingsDto, type StudySummaryDto, type VersionSummaryDto } from "@dct/shared";
 import { formatDate } from "./format";
 import { formatCents, parseDollars } from "./money";
 
@@ -23,6 +23,8 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
       return "How the contract words this decides how it's billed. Read the spot and pick what it means.";
     case "AMBIGUOUS_TERM":
       return "The wording can be read more than one way. Read the spot and pick what the contract means.";
+    case "SIGNED_DATE_DIFFERS":
+      return "The contract gives two dates for when it takes effect: the one it prints, and the day it was last signed. Look at both pages and pick the one the contract means.";
     case "RETROACTIVE_NO_DATE":
       return "Without a start date, the new prices would be billed from the original contract's date. Type the date they apply from, or pick prospective only.";
     case "BLANK_REJECTED":
@@ -89,8 +91,11 @@ export function whyLine(i: Pick<ReviewItem, "reason" | "kind"> & Partial<Pick<Re
 export const itemStatus = (i: ReviewItem): "todo" | "done" | "differs" | "cant_tell" =>
   i.outcome === "matched" || i.outcome === "chosen" ? "done" : i.outcome === "differs" ? "differs" : i.outcome === "cant_tell" ? "cant_tell" : "todo";
 
-/** Still needs a person: anything not settled, a "Can't tell" too (the API's count and its approval gate, openItems). */
-export const needsYou = openItems;
+/**
+ * Still needs a person, as cards (openCards: questions on one quote are one card, each answered on its own): anything not
+ * settled, a "Can't tell" too. The API's needs-you count; its approval gate needs every question settled (openItems).
+ */
+export const needsYou = openCards;
 
 /** Blocking first, otherwise in the order the checks listed them. */
 export const queueOrder = (items: ReviewItem[]) => [...items].sort((a, b) => Number(b.blocking) - Number(a.blocking));

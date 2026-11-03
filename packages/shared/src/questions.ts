@@ -1,6 +1,6 @@
 import type { ContractAnomaly } from "./anomaly";
 import { labelFor } from "./diff";
-import { type BlankCheck, checkedByMachine, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
+import { type BlankCheck, checkedByMachine, openItems, type PageBox, type ProofreadMark, type ReviewItem, settled, type TableCheck, type ValueEvidence } from "./evidence";
 import { ENUM_LABELS } from "./labels";
 import { at, leaf, parsePointer } from "./pointer";
 import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail, SiteFee } from "./rulebook";
@@ -12,6 +12,12 @@ import { Cap, OverheadAppliesTo, Payment, type Provenance, Rulebook, ScreenFail,
  */
 
 export const INTERPRETATION = "INTERPRETATION";
+/**
+ * One term, two dates in one contract: the effective date the master holds, and the last signature its e-signature record
+ * prints, where the contract ties the date to signing. A pick of either date (its ISO date is the option's id) writes it;
+ * nothing is suggested, since page 1 may print a "dated as of" date that governs.
+ */
+export const SIGNED_DATE_DIFFERS = "SIGNED_DATE_DIFFERS";
 /** The option of the start-date question that means "from the amendment's own date". */
 export const PROSPECTIVE = "prospective";
 
@@ -29,10 +35,15 @@ const ISO = /^\d{4}-\d{2}-\d{2}$/;
 export const amendmentDate = (rb: Pick<Rulebook, "documents">): string | null =>
   rb.documents.flatMap((d) => (d.kind === "amendment" && d.date && ISO.test(d.date) ? [d.date] : [])).sort().at(-1) ?? null;
 
+/** The note of a value the binder placed by its row's own arithmetic: the row's quantity × unit price = its total (`rowMath`, binder.ts). */
+export const ROW_ARITHMETIC = "its row prints quantity × unit price = total, which tells which figure this is";
+
 type Field = {
   path: string; question: string; prov: Provenance | null | undefined; options?: { id: string; label: string }[]; input?: "text" | "date"; kind?: ReviewItem["kind"]; reason?: string;
   /** The value whose confirmation says the clause states this field outright (see `interpretations`); none: always asked. */
   stated?: string;
+  /** A cap's figure that states its kind when the binder placed it by its row's own arithmetic (ROW_ARITHMETIC), quote or not. */
+  byRow?: string;
 };
 
 /**
@@ -49,11 +60,13 @@ function fields(rb: Rulebook, amendment: boolean, retroactive: boolean): Field[]
   ];
   rb.siteFees.forEach((f, i) => out.push({ path: `/siteFees/${i}/trigger`, question: `When is the site fee ${named(f.name)} billed?`, options: listOf(SiteFee.shape.trigger.options, L.trigger), prov: f.prov }));
   rb.invoiceables.forEach((x, i) => {
-    // Only these two kinds are told by the figure: an amount limit is a dollar figure in the quote, a ratio limit a "1:3"
+    // Only these two kinds are told by the figure in the quote: an amount limit is a dollar figure there, a ratio limit a "1:3"
     // or "per … randomized" one, and the binder finds each only in that form. A count and "blocks" both read as a bare
-    // number, and a count can as well be a ratio, so those are always asked.
+    // number, and a count in a sentence can as well be a ratio, so those are asked; except an amount or a count that is the
+    // item's own table row's total or quantity, placed there by the row's quantity × unit price = total (`byRow`).
     const stated = x.cap.kind === "amount" ? `/invoiceables/${i}/cap/n` : x.cap.kind === "ratio_to_randomized" ? `/invoiceables/${i}/cap/ratio` : undefined;
-    if (x.cap.kind !== "none") out.push({ path: `/invoiceables/${i}/cap/kind`, question: `What limit does the contract put on billing ${named(x.name)}?`, options: listOf(Cap.shape.kind.options, L.capKind), prov: x.prov, stated });
+    const byRow = x.cap.kind === "amount" || x.cap.kind === "count" ? `/invoiceables/${i}/cap/n` : undefined;
+    if (x.cap.kind !== "none") out.push({ path: `/invoiceables/${i}/cap/kind`, question: `What limit does the contract put on billing ${named(x.name)}?`, options: listOf(Cap.shape.kind.options, L.capKind), prov: x.prov, stated, byRow });
   });
   const sf = rb.screenFail;
   if (sf) {
@@ -94,9 +107,10 @@ const pageOf = (r: { documentId: string; page: number }): PageBox => ({ document
 /**
  * Whether an anomaly is about the value at `path`: that value, or anything holding it. The read flags a {value, prov}
  * wrapper ("/overhead/appliesTo"), a cap ("/invoiceables/0/cap") or a whole fee ("/siteFees/1"), and the field under it
- * must still be asked as unclear, never taken as stated outright.
+ * must still be asked as unclear, never taken as stated outright. A whole list ("/siteFees": "IRB fees have no amount") is
+ * about the list, not each item in it (the path under it starts with an index): fromAnomalies asks it once, on its own.
  */
-const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a.path === path || path.startsWith(`${a.path}/`));
+const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a.path === path || (path.startsWith(`${a.path}/`) && !/^\d/.test(path.slice(a.path.length + 1))));
 
 /**
  * One pick per interpretation field, next to its quote, nothing preselected; the read's value is shown as our suggestion
@@ -109,20 +123,24 @@ const about = (a: Pick<ContractAnomaly, "path">, path: string) => !!a.path && (a
  * when all of these hold, and then it's an ordinary confirmed value: (1) the
  * read gives a value that isn't "not stated"; (2) the read cites the clause's exact words (`prov.source.quote`); (3) the
  * figure that decides the field (`Field.stated`) is confirmed (`confirmed` or `confirmed_by_math`) in `evidence`, which
- * the binder gives only for a figure found inside that quote on the cited page; or, for a fee's trigger, its row prints
+ * the binder gives for a figure found inside that quote on the cited page; or, for an invoiceable's amount or count cap,
+ * its figure is confirmed as its own row's total or quantity by the row's quantity × unit price = total (`Field.byRow`,
+ * note ROW_ARITHMETIC; quote or not, and never a count found in a sentence); or, for a fee's trigger, its row prints
  * words beside its confirmed amount (`opts.printed`) that name one trigger, the read's (`triggerOf`, ADR-003); (4) no
  * AMBIGUOUS_TERM or RETROACTIVE_NO_DATE is about it. Everything else keeps its question: a clause that is silent,
  * conditional or worded two ways, any field with no deciding figure (overhead scope, how visits are paid, a fee's trigger
- * with no such words, a count cap, the screen-fail terms, rounding, the holdback's scope), and any read made without
- * `evidence`.
+ * with no such words, a count cap not placed by its row, the screen-fail terms, rounding, the holdback's scope), and any read made without
+ * `evidence`. Rounding the contract never mentions (`roundingSaid` false, and no quote) isn't asked: it's a notice.
+ * Each question with a quote cites it (`cites`), so questions on one clause are one card (cards).
  */
 export function interpretations(
   rb: Rulebook,
-  opts: { amendment: boolean; anomalies?: Pick<ContractAnomaly, "code" | "path" | "message" | "refs">[]; evidence?: Pick<ValueEvidence, "path" | "status">[]; printed?: ReadonlyMap<string, string> },
+  opts: { amendment: boolean; anomalies?: Pick<ContractAnomaly, "code" | "path" | "message" | "refs">[]; evidence?: (Pick<ValueEvidence, "path" | "status"> & { note?: string | null })[]; printed?: ReadonlyMap<string, string>; roundingSaid?: boolean },
 ): ReviewItem[] {
   const anomalies = opts.anomalies ?? [];
   const retroactive = anomalies.some((a) => a.code === "RETROACTIVE_NO_DATE");
   const sure = new Set((opts.evidence ?? []).filter((e) => checkedByMachine(e.status)).map((e) => e.path));
+  const byRow = new Set((opts.evidence ?? []).filter((e) => e.status === "confirmed" && e.note === ROW_ARITHMETIC).map((e) => e.path));
   const unclear = (f: Field) => anomalies.some((a) => (a.code === "AMBIGUOUS_TERM" || a.code === "RETROACTIVE_NO_DATE") && about(a, f.path));
   // a fee's trigger the page prints beside its confirmed amount, in words that name one trigger, the read's (ADR-003)
   const fee = (f: Field) => /^\/siteFees\/(\d+)\/trigger$/.exec(f.path);
@@ -132,8 +150,12 @@ export function interpretations(
     return !!m && !!words && sure.has(`/siteFees/${m[1]}/amountCents`) && triggerOf(words) === rb.siteFees[Number(m[1])]?.trigger;
   };
   const explicit = (f: Field) =>
-    !unclear(f) && f.reason !== "RETROACTIVE_NO_DATE" && ((!!f.stated && sure.has(f.stated) && !!f.prov?.source?.quote?.trim()) || printedTrigger(f));
-  return fields(rb, opts.amendment || rb.documents.some((d) => d.kind === "amendment"), retroactive).filter((f) => !explicit(f)).map((f): ReviewItem => {
+    !unclear(f) && f.reason !== "RETROACTIVE_NO_DATE" && ((!!f.stated && sure.has(f.stated) && !!f.prov?.source?.quote?.trim()) || (!!f.byRow && byRow.has(f.byRow)) || printedTrigger(f));
+  // Rounding the contract is silent on (owner, 2026-11-02): the read quotes nothing about it and the contract's text never
+  // mentions rounding (`roundingSaid` false; not known: asked). Printed figures are billed to the cent, said as a notice
+  // (notices), not asked. Wording that mentions it anywhere, or that is flagged unclear, keeps the question.
+  const silent = (f: Field) => f.path === "/rounding/value" && opts.roundingSaid === false && !f.prov?.source?.quote?.trim() && !unclear(f);
+  return fields(rb, opts.amendment || rb.documents.some((d) => d.kind === "amendment"), retroactive).filter((f) => !explicit(f) && !silent(f)).map((f): ReviewItem => {
     const unclear = anomalies.find((a) => a.code === "AMBIGUOUS_TERM" && about(a, f.path));
     const refs = anomalies.filter((a) => a === unclear || (f.reason === "RETROACTIVE_NO_DATE" && a.code === "RETROACTIVE_NO_DATE")).flatMap((a) => a.refs);
     const spots = [...(f.prov?.source ? [f.prov.source] : []), ...refs];
@@ -148,10 +170,38 @@ export function interpretations(
       input: f.input ?? null,
       options: (f.options ?? []).filter((o) => !unclear || o.id !== "unspecified"),
       where: [...new Map(spots.map((r) => [`${r.documentId}#${r.page}`, pageOf(r)])).values()],
+      ...(quote && f.prov?.source ? { cites: { documentId: f.prov.source.documentId, page: f.prov.source.page, quote } } : {}),
       blocking: true,
     };
   });
 }
+
+/**
+ * Needs you as cards: questions that cite the identical quote on the same page (`cites`: a screen-fail clause's basis,
+ * cap and how it's paid; fees sharing one footnote) are one card, placed where its first question is. A money term's
+ * sentence (UNACCOUNTED_TERM, `term.quote`) joins the first card quoting it word for word on any page of any document (an
+ * amendment that repeats the base contract's payment paragraph). Any other question is a card of its own. Only the same
+ * words group (spacing aside), never wording that is merely alike or a field's name. Each question is still answered,
+ * checked and logged on its own (answerQuestion), and approval needs every one settled (signOffRefusal); the cards only
+ * count and show them.
+ */
+export function cards<T extends Pick<ReviewItem, "id" | "cites" | "reason" | "term">>(items: T[]): T[][] {
+  const norm = (q: string) => q.replace(/\s+/g, " ").trim();
+  const cited = (i: T) => (i.cites ? JSON.stringify([i.cites.documentId, i.cites.page, norm(i.cites.quote)]) : undefined);
+  // each quote's first card, for a money term's sentence to join (never two cited cards: those stay page by page)
+  const first = new Map<string, string>();
+  for (const i of items) if (i.cites && !first.has(norm(i.cites.quote))) first.set(norm(i.cites.quote), cited(i)!);
+  const out = new Map<string, T[]>();
+  for (const i of items) {
+    const term = i.reason === "UNACCOUNTED_TERM" && i.term?.quote.trim() ? norm(i.term.quote) : undefined;
+    const k = cited(i) ?? (term !== undefined ? (first.get(term) ?? JSON.stringify(["term", term])) : `item:${i.id}`);
+    out.set(k, [...(out.get(k) ?? []), i]);
+  }
+  return [...out.values()];
+}
+
+/** The cards with a question still open (openItems): what "needs you" counts, in the API and the web alike. */
+export const openCards = (items: ReviewItem[]) => cards(openItems(items));
 
 type Trigger = Rulebook["siteFees"][number]["trigger"];
 

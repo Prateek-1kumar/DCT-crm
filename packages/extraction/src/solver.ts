@@ -1,5 +1,6 @@
 import { parseCents, type BudgetGrid, type Rulebook, type ValueEvidence } from "@dct/shared";
 import type { RowBand } from "./binder";
+import { multiPatientTotals } from "./checks";
 
 /**
  * The guide's algebraic accounting solver (ADR-002 §1.2) over our rulebook. Pure: no I/O, no AI, never mutates its input,
@@ -205,8 +206,10 @@ function identitiesOf(rb: Rulebook, mode: SolverMode, rows: readonly RowBand[], 
     });
 
     const order = g.visits.map((v, vi) => ({ v, vi })).sort((a, b) => a.v.order - b.v.order);
+    // a total for several patients a saved read still holds here is no per-patient total (multiPatientTotals): in no identity
+    const several = new Set(multiPatientTotals(g).map((e) => e.index));
     g.perPatientTotals.forEach((t, ti) => {
-      if (!order.length) return;
+      if (!order.length || several.has(ti)) return;
       const totals = order.map((x) => x.v.totalCents);
       // each visit total printed in whole dollars was rounded on its own: the sum can be half a dollar off per visit
       const tol = rounding && t.cents % 100 === 0 && totals.every((c) => c % 100 === 0) ? addTol + 50 * totals.length : addTol;

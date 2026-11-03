@@ -1,9 +1,9 @@
-import { bindEvidence, reviewFromEvidence, runContractChecks } from "@dct/extraction";
-import { type AlertPage, type AuditPage, capFollowUps, type ContractAnomaly, type DocumentDto, type ReviewItem, type Rulebook, RulebookVersionDto } from "@dct/shared";
+import { bindEvidence, lastSigned, reviewFromEvidence, runContractChecks, type TextPage } from "@dct/extraction";
+import { type AlertPage, type AuditPage, capFollowUps, checkedByMachine, type ContractAnomaly, type DocumentDto, type ReviewItem, type Rulebook, RulebookVersionDto, suggest, type ValueEvidence } from "@dct/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { appliesFromOf, manualRulebook } from "../src/domain.js";
 import { fakeControls } from "../src/extraction/fake.js";
-import { answer as answerDraft, askAbout, at, reviewDraft } from "../src/review.js";
+import { answer as answerDraft, askAbout, at, needsYouOf, reviewDraft } from "../src/review.js";
 import { type App, type Built, extract, liveStudy, makePdf, newStudy, resetDb, settleAll, signOff, storedVersion, testApp, upload } from "./helpers.js";
 
 // The review lists that aren't flags (ADR-001 §6): interpretations, an amendment's start date, and corrections an
@@ -65,7 +65,6 @@ describe("interpretations (ADR-001 §6)", () => {
     expect((await post(`/studies/${studyId}/versions/1/review/${encodeURIComponent(id)}`, { optionId: "invoice", by: "Sam" })).json().message).toMatch(/^Add a short note saying where the page prints this value/);
     expect(await answer(studyId, id, { optionId: "invoice", note: "§4.1: visits are invoiced monthly" })).toMatchObject({ outcome: "chosen", answer: { optionId: "invoice", noPdfText: true } });
     expect(at((await version(studyId)).rulebook, "/payment/visitPayment/value")).toBe("invoice");
-    expect(await answer(studyId, "interpret:/rounding/value", { optionId: "printed_amounts" })).toMatchObject({ outcome: "matched" });
     // every interpretation is settled before approval
     await settleRest(studyId);
     const stored = await storedVersion(built, studyId, 1);
@@ -210,6 +209,171 @@ describe("an amendment's start date (RETROACTIVE_NO_DATE, ADR-001 §6)", () => {
     await settleRest(studyId, 2);
     expect((await signOff(app, studyId, 2, { by: "Ben" })).statusCode).toBe(200);
     expect((await version(studyId, 2)).appliesFrom).toBe("2026-01-01");
+  });
+});
+
+describe("a date the contract ties to its last signature: the e-signature record's latest date is suggested, never written (issue B)", () => {
+  /** A page of the PDF's own text, as words in reading order. */
+  const text = (documentId: string, page: number, words: string, source: TextPage["source"] = "text"): TextPage => ({
+    documentId, page, width: 600, height: 800, source, hidden: 0, largePicture: false,
+    words: words.split(" ").map((t, i) => ({ text: t, rect: [0, i, 10, i + 1], dir: 0, block: 0, line: i, hidden: false })),
+  });
+  const RECORD = "Certificate Of Completion Signer Events Sent: 2024-03-01 Signed: 2024-03-04 Signed: 2024-03-05 Viewed: 2024-03-09";
+  const signedOff = (documentId = "d1", page = 9) => [{ documentId, page, kind: "esign_certificate" }];
+  const docs = [{ id: "d1", filename: "CTA.pdf" }, { id: "d2", filename: "Amendment 1.pdf" }];
+  const port = { bindEvidence, reviewFromEvidence, lastSigned };
+  const contract = (): Rulebook => {
+    const rb = manualRulebook({ sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0], []);
+    rb.documents = [{ id: "d1", kind: "master_agreement", title: "CTA", date: null }];
+    rb.study.effectiveDate = { value: null, prov: { source: { documentId: "d1", page: 1 }, confidence: 0.3, method: "ai", crossCheck: "not_checked" } };
+    return rb;
+  };
+  const flag = (message: string): ContractAnomaly => ({ id: "AMBIGUOUS_TERM:/study/effectiveDate", code: "AMBIGUOUS_TERM", severity: "warning", message, path: "/study/effectiveDate", refs: [{ documentId: "d1", page: 1 }], detail: {}, resolution: null });
+  const TIED = flag("Effective date: the agreement is effective on the last signature date, but the signature page is not among the provided pages");
+  const dateQ = (out: ReturnType<typeof reviewDraft>, path = "/study/effectiveDate/value") => out.review.find((i) => i.path === path)!;
+
+  it("names the record in our own words and suggests its latest date of signature; taking it is typing it, and nothing is written or confirmed until then", () => {
+    const rb = contract();
+    const out = reviewDraft(port, rb, [TIED], [text("d1", 1, "Effective on the date of last signature."), text("d1", 9, RECORD)], docs, { excluded: signedOff() });
+    const q = dateQ(out);
+    expect(q.question).toBe("The contract takes effect on the date it was last signed. Its e-signature record is page 9 of “CTA.pdf”. What date does it take effect?");
+    expect(q.where).toEqual([{ documentId: "d1", page: 9, box: null }, { documentId: "d1", page: 1, box: null }]);
+    // the latest signing, not a later "viewed"
+    expect(q.signedOn).toEqual({ date: "2024-03-05", page: 9, printed: "2024-03-05" });
+    expect(suggest(q, { rulebook: rb, evidence: out.evidence })).toMatchObject({ value: "2024-03-05" });
+    // never auto-confirmed: the master holds no date and no evidence vouches for one
+    expect(rb.study.effectiveDate.value).toBeNull();
+    expect(out.evidence.filter((e) => e.path === "/study/effectiveDate/value" && (checkedByMachine(e.status) || e.status === "attested"))).toEqual([]);
+    const d = { version: 1, byHand: false, rulebook: rb, review: out.review, evidence: out.evidence, editors: [] };
+    expect(answerDraft(d, q.id, { value: "2024-03-05", by: "Sam" })).toMatchObject({ outcome: "chosen", set: { path: "/study/effectiveDate/value", after: "2024-03-05" } });
+    expect(d.evidence.find((e) => e.path === "/study/effectiveDate/value")).toMatchObject({ status: "attested", note: "Typed by Sam" });
+  });
+
+  it("suggests nothing where the record gives no one date, is a scan, or isn't there; the question stays as it was without a record or a tie", () => {
+    const rb = contract();
+    const run = (pages: TextPage[], anomalies = [TIED], excluded = signedOff()) => dateQ(reviewDraft(port, rb, anomalies, pages, docs, { excluded }));
+    // "3/4/2024" reads month first and day first alike, and nothing on the record says which
+    const twoWays = run([text("d1", 9, "Signer Events Signed: 3/4/2024 1:17:04 PM")]);
+    expect(twoWays).toMatchObject({ question: expect.stringMatching(/^The contract takes effect on the date it was last signed\. Its e-signature record is page 9/) });
+    expect(twoWays.signedOn).toBeUndefined();
+    expect(suggest(twoWays, { rulebook: rb, evidence: [] })).toBeNull();
+    // a scanned record: our OCR's digits are no date to offer
+    expect(run([text("d1", 9, RECORD, "ocr")]).signedOn).toBeUndefined();
+    // no e-signature record (signed in ink): as it was
+    const ink = run([text("d1", 9, "Signed: 2024-03-05")], [TIED], []);
+    expect(ink).toMatchObject({ question: `${TIED.message}. What does the contract mean?`, where: [{ documentId: "d1", page: 1, box: null }] });
+    expect(ink.signedOn).toBeUndefined();
+    // not tied to signing ("regardless of the date of signature"), or flagged about something else: as it was
+    for (const m of ["Effective date: two different dates are printed", "Effective as of January 1, regardless of the date of signature"]) expect(run([text("d1", 9, RECORD)], [flag(m)])).toMatchObject({ question: `${m}. What does the contract mean?` });
+    // without the reader (an older port): as it was
+    expect(dateQ(reviewDraft({ bindEvidence, reviewFromEvidence }, rb, [TIED], [text("d1", 9, RECORD)], docs, { excluded: signedOff() })).signedOn).toBeUndefined();
+  });
+
+  it("an effective date the master holds that the record's last signature contradicts: one question showing both, suggesting neither; only a pick writes", () => {
+    const DATE = "/study/effectiveDate/value";
+    const held = (value: string, quote: string, status: ValueEvidence["status"] = "confirmed") => {
+      const rb = contract();
+      rb.study.effectiveDate = { value, prov: { source: { documentId: "d1", page: 1, quote }, confidence: 0.96, method: "ai", crossCheck: "agree" } };
+      // the binder is stubbed: it says what it found for the date on page 1
+      const evidence: ValueEvidence[] = [{ path: DATE, status, where: [{ documentId: "d1", page: 1, box: [0.1, 0.2, 0.3, 0.02] }], printed: value, note: null }];
+      const stub = { bindEvidence: () => ({ evidence: structuredClone(evidence), unaccounted: [], tableChecks: [], blankChecks: [] }), reviewFromEvidence: () => [], lastSigned } as unknown as Parameters<typeof reviewDraft>[0];
+      return { rb, run: (pages = [text("d1", 9, RECORD)], excluded = signedOff()) => reviewDraft(stub, rb, [], pages, docs, { excluded }) };
+    };
+    const TIED = "This Agreement is effective on the date of last signature by the parties.";
+    const asked = (out: ReturnType<typeof reviewDraft>) => out.review.filter((i) => i.id === `signed:${DATE}`);
+    // the record's last signature (March 5) is later than the date held, or earlier: asked both ways
+    for (const value of ["2024-03-04", "2024-03-07"]) {
+      const { rb, run } = held(value, TIED);
+      const out = run();
+      const [q] = asked(out);
+      expect(asked(out)).toHaveLength(1);
+      expect(q).toMatchObject({ kind: "contract_problem", reason: "SIGNED_DATE_DIFFERS", path: DATE, blocking: true, input: null, where: [{ documentId: "d1", page: 1 }, { documentId: "d1", page: 9, box: null }] });
+      expect(q!.question).toMatch(/^The contract takes effect on the date it was last signed, but it gives two dates: March [47], 2024 on page 1, and March 5, 2024 for the last signature on its e-signature record \(page 9 of “CTA\.pdf”\)\. Which date does it take effect\?/);
+      expect(q!.options.map((o) => o.id)).toEqual([value, "2024-03-05"]);
+      // nothing suggested, nothing changed or downgraded by code
+      expect(suggest(q!, { rulebook: rb, evidence: out.evidence })).toBeNull();
+      expect(rb.study.effectiveDate.value).toBe(value);
+      expect(out.evidence.find((e) => e.path === DATE)!.status).toBe("confirmed");
+    }
+    // a person's pick writes the date they pick, attested to them
+    const { rb, run } = held("2024-03-04", TIED);
+    const out = run();
+    const d = { version: 1, byHand: false, rulebook: rb, review: out.review, evidence: out.evidence, editors: [] };
+    expect(answerDraft(d, `signed:${DATE}`, { optionId: "2024-03-05", by: "Sam" })).toMatchObject({ outcome: "chosen", set: { path: DATE, before: "2024-03-04", after: "2024-03-05" } });
+    expect(d.rulebook.study.effectiveDate.value).toBe("2024-03-05");
+    expect(d.evidence.find((e) => e.path === DATE)).toMatchObject({ status: "attested" });
+    // an open date is asked too, and left open
+    const open = held("2024-03-04", TIED, "ungrounded").run();
+    expect(asked(open)).toHaveLength(1);
+    expect(open.evidence.find((e) => e.path === DATE)!.status).toBe("ungrounded");
+  });
+
+  it("no question when the dates agree, the record gives no one date or none is there, or page 1's date governs (the clause doesn't tie it to signing)", () => {
+    const DATE = "/study/effectiveDate/value";
+    const run = (value: string, quote: string, pages: TextPage[], excluded = signedOff()) => {
+      const rb = contract();
+      rb.study.effectiveDate = { value, prov: { source: { documentId: "d1", page: 1, quote }, confidence: 0.96, method: "ai", crossCheck: "agree" } };
+      const stub = { bindEvidence: () => ({ evidence: [{ path: DATE, status: "confirmed", where: [{ documentId: "d1", page: 1, box: null }], printed: value, note: null }], unaccounted: [], tableChecks: [], blankChecks: [] }), reviewFromEvidence: () => [], lastSigned } as unknown as Parameters<typeof reviewDraft>[0];
+      return reviewDraft(stub, rb, [], pages, docs, { excluded }).review.filter((i) => i.reason === "SIGNED_DATE_DIFFERS").length;
+    };
+    const TIED = "This Agreement is effective on the date of last signature by the parties.";
+    expect(run("2024-03-05", TIED, [text("d1", 9, RECORD)])).toBe(0);
+    expect(run("2024-03-04", TIED, [text("d1", 9, "Signer Events Signed: 3/4/2024")])).toBe(0); // reads two ways
+    expect(run("2024-03-04", TIED, [text("d1", 9, RECORD, "ocr")])).toBe(0); // a scanned record
+    expect(run("2024-03-04", TIED, [text("d1", 9, RECORD)], [])).toBe(0); // signed in ink: no record
+    // a "dated as of" clause: page 1's date governs, whatever day the last party signed
+    expect(run("2024-03-04", "This Agreement is entered into as of March 4, 2024 (the Effective Date).", [text("d1", 9, RECORD)])).toBe(0);
+    expect(run("2024-03-04", TIED, [text("d1", 9, RECORD)])).toBe(1);
+  });
+
+  it("an amendment's start date: suggested when it starts on signature; never for a retroactive start, which is before any signature", () => {
+    const amended = (quote: string) => {
+      const rb = contract();
+      rb.documents.push({ id: "d2", kind: "amendment", title: "Amendment 1", date: null });
+      rb.appliesFrom = { value: null, prov: { source: { documentId: "d2", page: 1, quote }, confidence: 0.9, method: "ai", crossCheck: "not_checked" } };
+      return rb;
+    };
+    const pages = [text("d2", 1, "x"), text("d2", 8, RECORD)];
+    let rb = amended("This Amendment is effective upon full execution by both parties.");
+    let q = dateQ(reviewDraft(port, rb, runContractChecks(rb), pages, docs, { amendment: true, excluded: signedOff("d2", 8) }), "/appliesFrom/value");
+    expect(q.question).toBe("The amendment takes effect on the date it was last signed. Its e-signature record is page 8 of “Amendment 1.pdf”. From what date do its terms apply? The contract says: “This Amendment is effective upon full execution by both parties.”");
+    expect(q.signedOn).toMatchObject({ date: "2024-03-05", page: 8 });
+    rb = amended("Upon execution of this Amendment, the revised budget will be retroactive.");
+    q = dateQ(reviewDraft(port, rb, runContractChecks(rb), pages, docs, { amendment: true, excluded: signedOff("d2", 8) }), "/appliesFrom/value");
+    expect(q.question).toMatch(/^The amendment says its new prices apply retroactively, but gives no start date/);
+    expect(q.signedOn).toBeUndefined();
+  });
+});
+
+describe("rounding the contract never mentions is a notice (owner, 2026-11-02)", () => {
+  const page = (words: string, source: TextPage["source"] = "text", n = 1): TextPage => ({
+    documentId: "d1", page: n, width: 600, height: 800, source, hidden: 0, largePicture: false,
+    words: words.split(" ").map((t, i) => ({ text: t, rect: [0, i, 10, i + 1], dir: 0, block: 0, line: i, hidden: false })),
+  });
+  const asked = (pages: TextPage[], excluded: { documentId: string; page: number; kind: string }[] = []) => {
+    const rb = manualRulebook({ sponsor: "Acme", protocol: "P-1", siteName: "Site A", investigator: "Dr. A" } as Parameters<typeof manualRulebook>[0], []);
+    return reviewDraft({ bindEvidence, reviewFromEvidence }, rb, [], pages, [{ id: "d1", filename: "c.pdf" }], { excluded }).review.some((i) => i.path === "/rounding/value");
+  };
+  it("asked only where the contract's text says something about rounding, or a page nothing searched could", () => {
+    expect(asked([page("Payment is due within 45 days of invoice.")])).toBe(false);
+    expect(asked([page("Round-trip airfare is reimbursed at cost.")])).toBe(false);
+    expect(asked([page("Visit payments are rounded to the nearest whole dollar.")])).toBe(true);
+    expect(asked([page("Amounts are paid to the nearest cent.")])).toBe(true);
+    expect(asked([page("Payment is due within 45 days."), page("", "image_only", 2)])).toBe(true);
+    // a page the read excluded (an e-signature record) holds no terms
+    expect(asked([page("Payment is due within 45 days."), page("", "image_only", 2)], [{ documentId: "d1", page: 2, kind: "esign_certificate" }])).toBe(false);
+  });
+});
+
+describe("needs you counts cards: questions on one quote are one", () => {
+  it("one card for the questions citing the same quote on the same page, while any of them is open", () => {
+    const q = (id: string, quote: string | null, outcome: ReviewItem["outcome"] = null): ReviewItem => ({
+      id, kind: "interpretation", reason: "INTERPRETATION", path: `/${id}`, question: id, input: null, options: [], where: [], blocking: true, answer: null, outcome, compare: null, sentBack: null,
+      ...(quote ? { cites: { documentId: "d1", page: 3, quote } } : {}),
+    });
+    const v = (review: ReviewItem[]) => needsYouOf({ status: "draft", byHand: false, typingDoneAt: null, review });
+    expect(v([q("a", "Screen failures are paid $500."), q("b", "Screen failures are paid $500."), q("c", "Screen failures are paid $50."), q("d", null)])).toBe(3);
+    expect(v([q("a", "Screen failures are paid $500.", "matched"), q("b", "Screen failures are paid $500.")])).toBe(1);
   });
 });
 

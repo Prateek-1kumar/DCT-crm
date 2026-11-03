@@ -1,5 +1,5 @@
 import type { ContractAnomaly } from "./anomaly";
-import { openItems, type PageBox, type ReviewItem, settled } from "./evidence";
+import { openItems, type PageBox, type ReviewItem, settled, type ValueEvidence } from "./evidence";
 import { at, leaf } from "./pointer";
 import { askAbout } from "./questions";
 import { armKey, governingGrids, type Rulebook } from "./rulebook";
@@ -26,14 +26,15 @@ export const PAGE_OPTIONS = [
 
 /**
  * A contract problem whose answer would change nothing in the master (ADR-003 C3): a grid header naming another
- * investigator or site, and wording flagged as unclear where the master holds nothing (no path, or one it doesn't have).
+ * investigator or site, a grid's total for several patients (nothing is billed from it), and wording flagged as unclear
+ * where the master holds nothing (no path, or one it doesn't have).
  * Shown as a notice, beside the questions and at approval, never asked: a question with one possible answer ("Go ahead
  * as printed? Yes") checks nothing. Unclear wording about anything the master holds, a section or item included
  * ("/invoiceables/0/cap", "/siteFees/1"), is asked: the interpretation fields under it are (interpretations), else its
  * value (fromAnomalies). The read gives such paths, and a genuine ambiguity is never only a notice.
  */
 export const isNotice = (a: Pick<ContractAnomaly, "code" | "path">, rb: Rulebook) => {
-  if (a.code === "HEADER_MISMATCH") return true;
+  if (a.code === "HEADER_MISMATCH" || a.code === "MULTI_PATIENT_ESTIMATE") return true;
   return a.code === "AMBIGUOUS_TERM" && (!a.path || at(rb, a.path) === undefined);
 };
 
@@ -46,9 +47,22 @@ const valuePath = (rb: Rulebook, path: string | null) => {
 
 export type Notice = { id: string; message: string; where: PageBox[] };
 
-/** The notices of a version's checks (isNotice), in plain words, each with the pages it's about. */
-export const notices = (anomalies: ContractAnomaly[], rb: Rulebook | null): Notice[] =>
-  !rb ? [] : anomalies.filter((a) => isNotice(a, rb)).map((a) => ({ id: a.id, message: sentence(a.message), where: a.refs.map((r) => box(r.documentId, r.page)) }));
+/** Rounding the contract is silent on (owner, 2026-11-02): said, never asked (interpretations' `roundingSaid`). */
+export const ROUNDING_NOTICE = "The contract doesn't say how amounts are rounded, so printed figures are billed to the cent.";
+
+/**
+ * The notices of a version's checks (isNotice), in plain words, each with the pages it's about; with the version's
+ * questions and evidence (`v`), also rounding the contract is silent on: the read quotes nothing about it, and nothing
+ * asks or answered it (interpretations didn't ask it). Not on a contract typed by hand, which nobody read.
+ */
+export const notices = (anomalies: ContractAnomaly[], rb: Rulebook | null, v?: { review: Pick<ReviewItem, "path">[]; evidence: Pick<ValueEvidence, "path">[] }): Notice[] => {
+  if (!rb) return [];
+  const silent = !!v && rb.rounding.prov.method !== "manual" && !rb.rounding.prov.source?.quote?.trim() && ![...v.review, ...v.evidence].some((x) => x.path === "/rounding/value");
+  return [
+    ...anomalies.filter((a) => isNotice(a, rb)).map((a) => ({ id: a.id, message: sentence(a.message), where: a.refs.map((r) => box(r.documentId, r.page)) })),
+    ...(silent ? [{ id: "rounding", message: ROUNDING_NOTICE, where: [] }] : []),
+  ];
+};
 /** The contract itself is wrong here, so the site asks the sponsor: the note is that query. */
 const SPONSOR = "What should we ask the sponsor?";
 const ASK_SPONSOR = { id: "ask_sponsor", label: "Ask the sponsor; until they answer, bill it as printed", note: SPONSOR };

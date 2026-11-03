@@ -1,6 +1,6 @@
 import { type BudgetGrid, type DocumentKind, isExcludedPage, Rulebook } from "@dct/shared";
 import type { ZodType } from "zod";
-import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt } from "./checks";
+import { compareRulebooks, type ExtractionNote, type PageInfo, printedAmounts, provAt, splitEstimates } from "./checks";
 import { fakeExtract, fakeIdentify } from "./fake";
 import { clientsFromEnv, type CostEntry, type Image, type LlmClient, type LlmRequest, priceOf, tokenText } from "./llm";
 import { type AiGrid, AiGrids, AiGridsAnchored, AiIdentify, AiPages, type AiTerms, AiTermsItems, AiTermsPayment, AiTermsStudy, classifyPrompt, gridPrompt, identifyPrompt, SYSTEM, termsPrompt } from "./prompts";
@@ -463,6 +463,7 @@ function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDo
   };
   const ids = new Set(docs.map((d) => d.id));
   sanitize(raw, ids, docs.length === 1 ? docs[0]!.id : null);
+  sanitize(notes, ids, null); // a note's topic and quote become anomaly text, stored and shown
   const cleanNotes = notes.map((n) => ({ ...n, source: n.source && ids.has(n.source.documentId) ? n.source : null }));
   // what the model said each value was read from (already limited to the ids it was given; the rulebook itself doesn't hold them)
   const anchor = (id: string, rest: Omit<Anchor, "documentId" | "page" | "word">): Anchor[] => {
@@ -480,21 +481,45 @@ function assemble(terms: AiTerms, grids: AiGridsAnchored["grids"], docs: InputDo
     const doc = t && docs[t.doc];
     return t && doc ? [{ documentId: doc.id, page: t.page, word: t.word, why: m.why }] : [];
   });
-  return { rulebook: Rulebook.parse(raw), notes: cleanNotes, anchors, printedRows, nonFee };
+  // a total for several patients is no per-patient total: out of the grid, kept as a note the checks show as a notice
+  const { rulebook, notes: estimates } = splitEstimates(Rulebook.parse(raw));
+  return { rulebook, notes: [...cleanNotes, ...estimates], anchors, printedRows, nonFee };
 }
 
-const BANKISH = /\b(routing|aba|swift|iban|bic|account\s*(no|number|#)|acct|bank)\b/i;
+/** A string naming one of these that still carries an account or SWIFT code goes whole. */
+const BANKISH = /\b(routing|aba|swift|iban|bic|account\s*(no|number|#)|acct|bank|wire|ach|remit)\b/i;
+/** A quote naming bank details is dropped. Not for "wire", "ACH" or "remit" alone: a payment clause names them beside its own terms, and a dropped quote is asked. */
+const BANK_QUOTE = /\b(routing|aba|swift|iban|bic|account\s*(no|number|#)|acct|bank)\b/i;
+/** A string about bank or tax details: a bank label word, as the image masks find them (any "account" too), a tax id's, or an IBAN in it. */
+const bankOrTax = (s: string) => KEYWORDS.bankLabel.test(s) || /\b(?:remit|tax\s*id|tax\s+identification|tin|ssn|ein|social\s+security|taxpayer)\b/i.test(s) || s.search(IBAN) >= 0;
 /** An IBAN, printed whole or in groups of four. */
 const IBAN = /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?\b/g;
-/** 8+ digits, whole or grouped by single spaces or hyphens (account, routing), but not an ISO date. */
-const DIGIT_RUN = /\b(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){7,}\b/g;
+/** 8+ digits in one unbroken run: how account, routing and card numbers print (an amount has its comma or its cents). */
+const LONG_RUN = /\b\d{8,}\b/g;
+/**
+ * 8+ digits in groups joined by single spaces, dots or hyphens, not an ISO date: a protocol, trial, phone or fax number
+ * ("AB-1234-567-8901", "2024-500123-45", "+44 20 7946 0958"), or an account printed in groups. Only the words around it
+ * tell which, so it goes in a string about a bank or a tax id and stays everywhere else.
+ */
+const GROUPED_RUN = /\b(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ .-]?\d){7,}\b/g;
+/** A US tax id as printed (EIN 12-3456789, SSN 123-45-6789): no protocol or phone number has these groups. */
+const TAX_ID = /\b(?:\d{2}-\d{7}|\d{3}-\d{2}-\d{4})\b/g;
+/** A phone or fax number however its digits run: "+" and a country code, or a phone word before it; at most 15 digits (E.164). */
+const PHONE = /(?:\+|\b(?:tel(?:ephone)?|phone|fax|facsimile|mobile)\b\.?:?\s*)[(\d][\d\s().-]{6,}\d/gi;
 /** A SWIFT/BIC code: 4 bank letters, 2 country letters, 2 location characters, optional 3-character branch. */
 const BIC = /\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/;
+const R = "[redacted]";
 
-/** Long digit runs and IBANs go; a string about a bank that still carries an account or SWIFT code goes whole. */
-function scrub(s: string): string {
-  const t = s.replace(IBAN, "[redacted]").replace(DIGIT_RUN, "[redacted]");
-  return BANKISH.test(t) && (t.includes("[redacted]") || BIC.test(t)) ? "[redacted]" : t;
+/**
+ * IBANs, tax ids and unbroken runs go anywhere (but a phone number's digits, outside a string about a bank); grouped runs in a
+ * string about a bank or a tax id; a string naming bank details that still carries an account or SWIFT code goes whole.
+ */
+export function scrub(s: string): string {
+  const bank = bankOrTax(s);
+  const phones = bank ? [] : [...s.matchAll(PHONE)].filter((m) => m[0].replace(/\D/g, "").length <= 15).map((m) => [m.index, m.index + m[0].length]);
+  const t = s.replace(LONG_RUN, (run, at: number) => (phones.some(([a, b]) => at >= a! && at < b!) ? run : R)).replace(IBAN, R).replace(TAX_ID, R);
+  const u = bank ? t.replace(GROUPED_RUN, R) : t;
+  return BANKISH.test(u) && (u.includes(R) || BIC.test(u)) ? R : u;
 }
 
 /**
@@ -518,7 +543,7 @@ function sanitize(v: unknown, ids: Set<string>, onlyId: string | null): void {
       if (onlyId) src.documentId = onlyId;
       else o.source = null;
     }
-    if (src?.quote && BANKISH.test(src.quote)) delete src.quote;
+    if (src?.quote && BANK_QUOTE.test(src.quote)) delete src.quote;
   }
 }
 

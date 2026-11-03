@@ -15,7 +15,7 @@ export type Word = {
   dir: 0 | 1 | 2 | 3;
   block: number;
   line: number;
-  /** White, under MIN_VISIBLE_PT, off the page, or invisible render mode: no reader sees it. Never evidence. */
+  /** White (unless drawn on a dark box), under MIN_VISIBLE_PT, off the page, or invisible render mode: no reader sees it. Never evidence. */
   hidden: boolean;
   /** Our own OCR's confidence in this word (0–1); absent on a PDF's own text. */
   conf?: number;
@@ -132,13 +132,34 @@ export function besideOnLine(pages: TextPage[], at: { documentId: string; page: 
 // ---------- money-relevant inventory (ADR-001 §3) ----------
 
 /**
- * The sweep's keywords, ADR-001 §3. Prefixes on purpose: "pay" covers payment, payable. "cap" only as "cap of / capped at":
- * a medication list's "cap" (capsule) otherwise makes every dose line a money sentence.
+ * How a contract words a billable that prints no figure: its basis or its route ("at actual cost", "pass-through",
+ * "reimbursed", "shall be invoiced", "billable to Sponsor", "charged", an expense, "non-cancellable", a wire fee, costs
+ * "borne by" or a party "shall bear", a refund, "at the Site's standard rate"). Each is also a payment word. False hits a
+ * test pins down: "Bill of Rights" (any "bill of"), "in charge of", "charged with" or "charged, convicted" (a crime), "shipping
+ * charges prepaid" (a notice clause), a charging cable.
  */
+const BASIS = String.raw`at (?:actual )?costs?\b|actual costs?\b|pass[\s-]?through|reimburs|expens(?:e|es|ed)\b|invoic|bill(?:s|ed|ing|able)?\b(?!\s+of\b)|(?<!\bin\s)charg(?:e|es|ed|eable)\b(?!\s+(?:with|prepaid)\b|,?\s+(?:or\s+)?convicted\b)|non[\s-]?cancell?able|wire(?:s|d)?\b|borne\b|bears?\b|refund|prorat|unearned|deduct|offset|set[\s-]?off|(?:at|standard|hourly|flat|daily|usual|customary)(?:\s+\S+){0,3}?\s+rates?\b`;
+/**
+ * Words that say money changes hands, built from how contracts word money in general, never from one contract's sentences
+ * (ADR-001 §8), plus what is always about billing in a trial (a cap, a holdback, a screen failure). Prefixes on purpose:
+ * "pay" covers payment, payable, payee. "cap" only as "cap of / capped at": a medication list's "cap" (capsule) otherwise
+ * makes every dose line a money sentence. "Workers' compensation" is insurance, not a payment.
+ */
+const PAYMENT = String.raw`pay|paid|(?:re|pre|over|under)pa(?:y|id)|fees?\b|cost|pric(?:e|es|ed|ing)\b|sums?\b|amounts?\b(?!\s+of\s+time\b)|monies\b|moneys\b|dollars?\b|fund(?:s|ing|ed)?\b|(?<!\bworker(?:s['’]?|['’]s)\s)compensat|remunerat|remit|stipend|honorari|per[\s-]diem|budget|overhead|f\s?&\s?a\b|hold[\s-]?back|cap(?:ped)?\s(?:of|at|on)\b|screen[\s-]?fail|${BASIS}`;
+/** Conditions on a payment: a no-figure sentence with one of these and a payment word may be a term the master lacks ("no holdback"...). */
+const CONDITION = String.raw`holdback|hold[\s-]back|withh|retain|interest|late\b|escalat|increas|inflation|not to exceed|maximum|cap(?:ped)?\s(?:of|at|on)\b|screen[\s-]?fail|terminat`;
+
+/** The sweep's keywords, ADR-001 §3. */
 export const KEYWORDS = {
-  money: /\b(?:pay|paid|invoic|fees?\b|cost|reimburs|overhead|indirect|f\s?&\s?a\b|holdback|withh|retain|refund|offset|interest|late\b|cap(?:ped)?\s(?:of|at|on)\b|not to exceed|escalat|increas|stipend|screen[\s-]?fail|terminat|budget|compensat)/i,
-  /** A sentence with one of these is money-relevant even without a number: the sweep behind "no holdback", "no cap"... */
-  absence: /\b(?:holdback|withh|retain|interest|late\b|escalat|increas|inflation|not to exceed|maximum|cap(?:ped)?\s(?:of|at|on)\b|screen[\s-]?fail|terminat)/i,
+  /** A money sentence: its %, day, ratio and "up to N" figures are swept. */
+  money: new RegExp(String.raw`\b(?:${PAYMENT}|compensat|indirect|withh|retain|interest|late\b|not to exceed|escalat|increas|terminat)`, "i"),
+  /**
+   * A payment word. A figure-less span without one carries no money term: the sweep drops it, counted (`no_payment_word`;
+   * owner, 2026-11-02: "terminated", "retain" or "interest" alone made every term, records and confidentiality clause a question).
+   */
+  payment: new RegExp(String.raw`\b(?:${PAYMENT})`, "i"),
+  /** A sentence with one of these is swept as a whole even without a figure ("absence": "no holdback", "no cap", a fee billed at cost). */
+  absence: new RegExp(String.raw`\b(?:${CONDITION}|${BASIS})`, "i"),
   /** Bank or payment instructions: excluded from the inventory and never stored (§9), when they also carry a digit run. */
   bank: /\b(?:aba|routing|swift|iban|bic|account|acct|sort code)\b/i,
   /** A line naming bank details: its number may sit on the same line or the next one or two, in another text block. */
@@ -263,7 +284,8 @@ export const bankRects = (p: TextPage): Rect[] => bankWords(p).map((w) => w.rect
 
 /**
  * Every money-relevant span on the text pages (ADR-001 §3): currency amounts, numbers in table rows, and %, day,
- * ratio and "up to N" figures or absence keywords in a money sentence. Bank instructions are left out.
+ * ratio and "up to N" figures in a money sentence, and a sentence with no figure that has a condition or billing word
+ * (`KEYWORDS.absence`; the sweep asks it only with a payment word). Bank instructions are left out.
  */
 export function inventory(pages: TextPage[]): Span[] {
   const out: Span[] = [];

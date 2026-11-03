@@ -1,6 +1,6 @@
 "use client";
 
-import { PROSPECTIVE, type ReviewItem, type RulebookVersionDto, type StudyDetailDto, suggest, type Suggestion } from "@dct/shared";
+import { cards, PROSPECTIVE, type ReviewItem, type RulebookVersionDto, type StudyDetailDto, suggest, type Suggestion } from "@dct/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, CircleHelp, CornerDownLeft, Flag, Info, ListChecks, PartyPopper, Undo2, X } from "lucide-react";
 import Image from "next/image";
@@ -65,6 +65,22 @@ export default function ReviewPage() {
 /** For screen readers: what the icon beside a question in the list says. */
 const STATUS_TEXT = { todo: "To do", done: "Done", differs: "Pick the value the page shows", cant_tell: "Left for the approver" } as const;
 
+/**
+ * A card's place in the list: what still needs doing comes first, a mismatch before anything (one question of a card
+ * that differs is the card's to fix).
+ */
+const cardStatus = (c: ReviewItem[]) => {
+  const st = c.map(itemStatus);
+  return st.includes("differs") ? "differs" : st.includes("todo") ? "todo" : st.includes("cant_tell") ? "cant_tell" : "done";
+};
+/** The sentence a card's questions share: an interpretation's quote, or a money term's own words. */
+const quoteOf = (i: ReviewItem) => i.cites?.quote ?? i.term?.quote ?? "";
+/** A question on a card shown without the quote the card shows once (interpretations end with it, a money term quotes it). */
+const onCard = (i: ReviewItem): ReviewItem =>
+  i.cites ? { ...i, question: i.question.replace(` The contract says: “${i.cites.quote}”`, "") }
+  : i.term ? { ...i, question: i.question.replace(`: "${i.term.quote.replace(/[.;:,]$/, "")}"`, "") }
+  : i;
+
 const STATUS_ICON = {
   todo: <span className="size-3.5 rounded-full ring-[1.5px] ring-line-strong" />,
   done: (
@@ -89,6 +105,8 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
   const qc = useQueryClient();
   const answer = useAnswerReview(study.id, version.version);
   const order = useMemo(() => queueOrder(version.review), [version.review]);
+  // questions on one quote are one card (cards, @dct/shared): shown together, each still answered on its own
+  const deck = useMemo(() => cards(order), [order]);
   const [pick, setPick] = useState<string | null>(start);
   const [changing, setChanging] = useState<string | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -99,9 +117,14 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
 
   const open = (i: ReviewItem) => itemStatus(i) === "todo" || itemStatus(i) === "differs";
   const current = (pick ? order.find((i) => i.id === pick) : undefined) ?? order.find(open) ?? null;
-  const spotIdx = spotAt && spotAt.item === current?.id ? spotAt.i : 0;
-  const spot = current?.where[spotIdx];
-  const done = order.filter((i) => itemStatus(i) === "done").length;
+  const card = (current && deck.find((c) => c.includes(current))) || [];
+  // a card's places are every question's (one sentence can be printed in two documents)
+  const places = card.length > 1 ? [...new Map(card.flatMap((i) => i.where).map((w) => [JSON.stringify(w), w])).values()] : (current?.where ?? []);
+  const twoDocs = new Set(places.map((w) => w.documentId)).size > 1;
+  const spotKey = card[0]?.id ?? current?.id;
+  const spotIdx = spotAt && spotAt.item === spotKey ? spotAt.i : 0;
+  const spot = places[spotIdx];
+  const done = deck.filter((c) => cardStatus(c) === "done").length;
   const left = needsYou(order).length;
 
   const say = (msg: string) => {
@@ -126,10 +149,10 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
           setChanging(null);
           if (it.outcome === "differs") return setPick(it.id);
           say(it.outcome === "matched" ? "Saved · it matches the contract" : it.outcome === "cant_tell" ? "Left for the approver" : "Saved");
-          // Next open question after this one, wrapping round; then prefetch its page so it appears at once.
-          const q = queueOrder(dto.review);
-          const at = q.findIndex((i) => i.id === item.id);
-          const next = [...q.slice(at + 1), ...q.slice(0, at)].find(open) ?? null;
+          // The card's next open question, else the next card's, wrapping round; then prefetch its page so it appears at once.
+          const d = cards(queueOrder(dto.review));
+          const at = d.findIndex((c) => c.some((i) => i.id === item.id));
+          const next = [...d.slice(at), ...d.slice(0, at)].flat().find((i) => i.id !== item.id && open(i)) ?? null;
           setPick(next?.id ?? "__done");
           const w = next?.where[0];
           if (w) void qc.prefetchQuery(spotQuery(w.documentId, w.page));
@@ -138,23 +161,25 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
     );
 
   const finished = pick === "__done" || !current;
-  const groups = [...new Set(order.map((i) => i.kind))].map((k) => ({ kind: k, items: order.filter((i) => i.kind === k) }));
+  const groups = [...new Set(deck.map((c) => c[0]!.kind))].map((k) => ({ kind: k, cards: deck.filter((c) => c[0]!.kind === k) }));
 
   const list = (
     <nav aria-label="Questions" className="flex flex-col gap-5 p-4">
       <div className="flex items-center justify-between px-2">
         <p className="text-body font-semibold">Questions</p>
         <p className="num text-small text-muted">
-          {done} of {order.length} done
+          {done} of {deck.length} done
         </p>
       </div>
       {groups.map((g) => (
         <div key={g.kind} className="flex flex-col gap-0.5">
           <p className="eyebrow px-2 pb-1.5">
-            {KIND_LABEL[g.kind]} · {g.items.length}
+            {KIND_LABEL[g.kind]} · {g.cards.length}
           </p>
-          {g.items.map((i) => {
-            const active = !finished && i.id === current?.id;
+          {g.cards.map((c) => {
+            const i = c.find(open) ?? c[0]!;
+            const active = !finished && c.includes(current!);
+            const st = cardStatus(c);
             return (
               <button
                 key={i.id}
@@ -166,10 +191,10 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
                   active ? "bg-surface shadow-card ring-1 ring-ink/[0.06]" : "hover:bg-ink/[0.04]",
                 )}
               >
-                <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center">{STATUS_ICON[itemStatus(i)]}</span>
-                <span className={cx("line-clamp-2 text-small", active ? "font-medium text-ink" : itemStatus(i) === "done" ? "text-faint" : "text-ink-2")}>
-                  <span className="sr-only">{STATUS_TEXT[itemStatus(i)]}: </span>
-                  {i.question}
+                <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center">{STATUS_ICON[st]}</span>
+                <span className={cx("line-clamp-2 text-small", active ? "font-medium text-ink" : st === "done" ? "text-faint" : "text-ink-2")}>
+                  <span className="sr-only">{STATUS_TEXT[st]}: </span>
+                  {c.length > 1 ? `${c.length} questions on one sentence: ${onCard(c[0]!).question}` : i.question}
                 </span>
               </button>
             );
@@ -189,10 +214,10 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
         </Link>
         <div className="mx-auto hidden items-center gap-3 md:flex">
           <span className="num text-small text-ink-2">
-            {done} of {order.length} answered
+            {done} of {deck.length} answered
           </span>
           <span className="w-44">
-            <ProgressBar value={order.length ? (done / order.length) * 100 : 100} label="Questions answered" />
+            <ProgressBar value={deck.length ? (done / deck.length) * 100 : 100} label="Questions answered" />
           </span>
           {left > 0 && <span className="text-small text-faint">about {minutesFor(left)} min left</span>}
         </div>
@@ -214,17 +239,17 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
         ) : (
           <>
             <section aria-label="The spot in the contract" className="flex h-[48vh] min-h-0 flex-col gap-3 p-4 lg:h-auto lg:p-5">
-              {current.where.length > 1 && (
+              {places.length > 1 && (
                 <div role="group" aria-label="Places in the contract" className="flex flex-wrap gap-1.5">
-                  {current.where.map((w, i) => (
+                  {places.map((w, i) => (
                     <button
                       key={i}
                       type="button"
                       aria-pressed={i === spotIdx}
-                      onClick={() => setSpotAt({ item: current.id, i })}
+                      onClick={() => setSpotAt({ item: spotKey!, i })}
                       className={cx("h-8 rounded-full px-3 text-small font-medium transition-colors", i === spotIdx ? "bg-ink text-surface" : "bg-ink/[0.05] text-ink-2 hover:bg-ink/[0.08]")}
                     >
-                      {current.reason === "BLANK_INVOICEABLE" ? (i === 0 ? "The table" : `Row ${i}`) : `Page ${w.page}`}
+                      {current.reason === "BLANK_INVOICEABLE" ? (i === 0 ? "The table" : `Row ${i}`) : `Page ${w.page}${twoDocs ? ` of “${study.documents.find((d) => d.id === w.documentId)?.filename ?? "the contract"}”` : ""}`}
                     </button>
                   ))}
                 </div>
@@ -239,24 +264,48 @@ function Focus({ study, version, start, back }: { study: StudyDetailDto; version
             </section>
 
             <section aria-label="Question" className="min-h-0 overflow-y-auto border-t border-line px-6 py-6 lg:border-t-0 lg:border-l">
-              {itemStatus(current) === "differs" ? (
-                <Mismatch key={current.id} item={current} byHand={version.byHand} busy={answer.isPending} canAnswer={!!by} error={answer.error} onAnswer={(b) => send(current, b)} />
-              ) : (itemStatus(current) === "done" || itemStatus(current) === "cant_tell") && changing !== current.id ? (
-                <Answered item={current} onChange={() => setChanging(current.id)} onNext={() => go(order.find(open)?.id ?? "__done")} />
-              ) : (
-                <Question
-                  key={`${current.id}:${changing ?? ""}:${current.outcome ?? ""}`}
-                  item={current}
-                  suggestion={suggest(current, version)}
-                  index={order.indexOf(current)}
-                  total={order.length}
-                  busy={answer.isPending}
-                  canAnswer={!!by && !current.after}
-                  error={answer.error}
-                  onAnswer={(b) => send(current, b)}
-                  onCancel={changing === current.id ? () => setChanging(null) : undefined}
-                />
+              {card.length > 1 && (
+                <div className="mb-6 flex flex-col gap-2 rounded-tile bg-sunken px-4 py-3.5">
+                  <p className="flex items-center justify-between gap-3">
+                    <span className="eyebrow">{card.length} questions on one sentence of the contract</span>
+                    <span className="num text-small text-faint">
+                      {deck.indexOf(card) + 1} of {deck.length}
+                    </span>
+                  </p>
+                  <p className="text-body text-ink-2">“{quoteOf(card[0]!)}”</p>
+                  <p className="text-small text-muted">Answer each one. Each answer is saved and checked on its own.</p>
+                </div>
               )}
+              <div className={cx(card.length > 1 && "flex flex-col gap-10")}>
+                {(card.length > 1 ? card : [current]).map((it) => {
+                  const shown = card.length > 1 ? onCard(it) : it;
+                  // in a card, only the question you're on takes the keyboard focus
+                  const focus = it.id === current.id;
+                  return (
+                    <div key={it.id} className={cx(card.length > 1 && it !== card[0] && "border-t border-line pt-8")}>
+                      {itemStatus(it) === "differs" ? (
+                        <Mismatch key={it.id} item={shown} byHand={version.byHand} busy={answer.isPending} canAnswer={!!by} error={focus ? answer.error : null} focus={focus} onAnswer={(b) => send(it, b)} />
+                      ) : (itemStatus(it) === "done" || itemStatus(it) === "cant_tell") && changing !== it.id ? (
+                        <Answered item={shown} onChange={() => setChanging(it.id)} onNext={() => go(order.find(open)?.id ?? "__done")} />
+                      ) : (
+                        <Question
+                          key={`${it.id}:${changing ?? ""}:${it.outcome ?? ""}`}
+                          item={shown}
+                          suggestion={suggest(it, version)}
+                          {...(card.length > 1 ? {} : { index: deck.indexOf(card), total: deck.length })}
+                          focus={focus}
+                          busy={answer.isPending}
+                          canAnswer={!!by && !it.after}
+                          error={focus ? answer.error : null}
+                          // the question answered is the one you're on, so a refusal shows under it
+                          onAnswer={(b) => (setPick(it.id), send(it, b))}
+                          onCancel={changing === it.id ? () => setChanging(null) : undefined}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
               {current.after && <p className="mt-4 rounded-tile bg-warn-soft px-4 py-3 text-small text-warn">Confirm the table&apos;s columns first. This question opens once the questions about the columns are answered.</p>}
               {!by && (
                 <div className="mt-4">
@@ -338,9 +387,11 @@ const CANT_REASONS = ["The print is too faint", "It's not on this page", "I'm no
 const TYPED = "__typed";
 
 function Question(props: {
-  item: ReviewItem; suggestion: Suggestion | null; index: number; total: number; onAnswer: (b: Body) => void; onCancel?: () => void; busy: boolean; canAnswer: boolean; error: unknown;
+  item: ReviewItem; suggestion: Suggestion | null; index?: number; total?: number; onAnswer: (b: Body) => void; onCancel?: () => void; busy: boolean; canAnswer: boolean; error: unknown;
+  /** Takes the keyboard focus: the question you're on (a card shows several). */
+  focus?: boolean;
 }) {
-  const { item, suggestion, onAnswer, busy, canAnswer, error, onCancel } = props;
+  const { item, suggestion, onAnswer, busy, canAnswer, error, onCancel, focus = true } = props;
   const [raw, setRaw] = useState("");
   // a pick we suggest is marked, never pre-picked: a person still picks it, so Enter alone confirms nothing
   const [choice, setChoice] = useState<string | null>(null);
@@ -426,7 +477,7 @@ function Question(props: {
                 value={o.id}
                 checked={choice === o.id}
                 onChange={() => (setChoice(o.id), setMsg(null))}
-                autoFocus={suggestion?.optionId ? o.id === suggestion.optionId : i === 0}
+                autoFocus={focus && (suggestion?.optionId ? o.id === suggestion.optionId : i === 0)}
                 aria-label={o.label}
                 aria-describedby={o.id === suggestion?.optionId ? `ours-${item.id}` : undefined}
                 className="mt-1 accent-[var(--color-primary)]"
@@ -450,7 +501,7 @@ function Question(props: {
               <label htmlFor={`a-${item.id}`} className="text-small font-medium text-ink-2">
                 {choice === PROSPECTIVE ? "The amendment's own date, as printed on it" : "What the contract says"}
               </label>
-              <AnswerInput id={`a-${item.id}`} input={item.input!} value={raw} onChange={(v) => (setRaw(v), setMsg(null))} />
+              <AnswerInput id={`a-${item.id}`} input={item.input!} value={raw} focus={focus} onChange={(v) => (setRaw(v), setMsg(null))} />
             </div>
           )}
           {asks && (
@@ -468,7 +519,7 @@ function Question(props: {
           <label htmlFor={`a-${item.id}`} className="text-small font-medium text-ink-2">
             {suggestion ? "Or type what the contract says" : "What the contract says"}
           </label>
-          <AnswerInput id={`a-${item.id}`} input={item.input ?? "text"} value={raw} onChange={(v) => (setRaw(v), setMsg(null))} />
+          <AnswerInput id={`a-${item.id}`} input={item.input ?? "text"} value={raw} focus={focus} onChange={(v) => (setRaw(v), setMsg(null))} />
           <p className="text-small text-faint">{item.input === "money" ? "Type the amount exactly as it's printed." : "Type it exactly as it's printed."}</p>
         </div>
       )}
@@ -525,8 +576,8 @@ function Suggested({ item, suggestion, busy, canAnswer, onAnswer }: { item: Revi
  * own over it needs a note saying why. Where it doesn't (a scan, a number the check couldn't find, a pick), either one
  * needs a note saying where the page prints it: nothing else backs the answer, so the approver checks it against that.
  */
-function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body) => void; busy: boolean; canAnswer: boolean; error: unknown }) {
-  const { item, byHand, onAnswer, busy, canAnswer, error } = props;
+function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body) => void; busy: boolean; canAnswer: boolean; error: unknown; focus?: boolean }) {
+  const { item, byHand, onAnswer, busy, canAnswer, error, focus = true } = props;
   const c = item.compare!;
   const input = item.input ?? "text";
   // what was given was a pick (a question with options and an input takes a typed value too, and "prospective only"
@@ -602,7 +653,7 @@ function Mismatch(props: { item: ReviewItem; byHand: boolean; onAnswer: (b: Body
                 name={`pick-${item.id}`}
                 checked={pickedOwn === o.own}
                 onChange={() => (setPickedOwn(o.own), setMsg(null))}
-                autoFocus={i === 0}
+                autoFocus={focus && i === 0}
                 className="mt-1.5 accent-[var(--color-primary)]"
               />
               <span>
@@ -709,8 +760,8 @@ function Finished({ study, version, onRevisit }: { study: StudyDetailDto; versio
 }
 
 /** Empty input of the item's kind. Never pre-filled: the tool's reading stays hidden until you answer. */
-function AnswerInput({ id, input, value, onChange }: { id: string; input: NonNullable<ReviewItem["input"]>; value: string; onChange: (v: string) => void }) {
-  const common = { id, value, autoFocus: true, autoComplete: "off", onChange: (e: { target: { value: string } }) => onChange(e.target.value) };
+function AnswerInput({ id, input, value, focus = true, onChange }: { id: string; input: NonNullable<ReviewItem["input"]>; value: string; focus?: boolean; onChange: (v: string) => void }) {
+  const common = { id, value, autoFocus: focus, autoComplete: "off", onChange: (e: { target: { value: string } }) => onChange(e.target.value) };
   if (input === "date") return <input {...common} type="date" className={cx(inputBase, "w-56")} />;
   if (input === "text") return <input {...common} className={inputCls} />;
   const affix = input === "money" ? "$" : input === "percent" ? "%" : null;

@@ -91,24 +91,53 @@ function subpaths(path, ctm) {
   return out;
 }
 
+/** A subpath's box when it is an axis-aligned rectangle: four corners, closed back to the first (the last side drawn out or by closePath), corners to 0.1 pt; else null. */
+function rectOf(sp) {
+  let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const [x, y] of sp) [x0, x1, y0, y1] = [Math.min(x0, x), Math.max(x1, x), Math.min(y0, y), Math.max(y1, y)];
+  return sp.length <= 6 && sp.every(([x, y]) => (Math.abs(x - x0) < 0.1 || Math.abs(x - x1) < 0.1) && (Math.abs(y - y0) < 0.1 || Math.abs(y - y1) < 0.1)) ? [x0, y0, x1, y1] : null;
+}
+
 /** Rule segments of one drawn path: the straight sides of a stroke, or a thin filled rectangle (a rule drawn as a shape). */
 function addRules(rules, path, ctm, stroked) {
   // a crafted page can't grow this without bound: collecting stops past the cap (gridsOf then finds no table)
   if (rules.length > MAX_RULES) return;
   for (const sp of subpaths(path, ctm)) {
-    let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
-    for (const [x, y] of sp) [x0, x1, y0, y1] = [Math.min(x0, x), Math.max(x1, x), Math.min(y0, y), Math.max(y1, y)];
     if (stroked) {
       for (let i = 1; i < sp.length; i++) {
         const [[ax, ay], [bx, by]] = [sp[i - 1], sp[i]];
         if (Math.abs(ay - by) < 0.5 && Math.abs(ax - bx) > MIN_RULE) rules.push({ dir: "h", at: ay, from: Math.min(ax, bx), to: Math.max(ax, bx) });
         else if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) > MIN_RULE) rules.push({ dir: "v", at: ax, from: Math.min(ay, by), to: Math.max(ay, by) });
       }
-    } else if (sp.length <= 6 && sp.every(([x, y]) => (Math.abs(x - x0) < 0.1 || Math.abs(x - x1) < 0.1) && (Math.abs(y - y0) < 0.1 || Math.abs(y - y1) < 0.1))) {
-      // a rectangle: four corners, closed back to the first (the last side drawn out or by closePath), corners to 0.1 pt
-      if (y1 - y0 < 1.5 && x1 - x0 > MIN_RULE) rules.push({ dir: "h", at: (y0 + y1) / 2, from: x0, to: x1 });
-      else if (x1 - x0 < 1.5 && y1 - y0 > MIN_RULE) rules.push({ dir: "v", at: (x0 + x1) / 2, from: y0, to: y1 });
+      continue;
     }
+    const r = rectOf(sp);
+    if (r && r[3] - r[1] < 1.5 && r[2] - r[0] > MIN_RULE) rules.push({ dir: "h", at: (r[1] + r[3]) / 2, from: r[0], to: r[2] });
+    else if (r && r[2] - r[0] < 1.5 && r[3] - r[1] > MIN_RULE) rules.push({ dir: "v", at: (r[0] + r[2]) / 2, from: r[1], to: r[3] });
+  }
+}
+
+/** A fill colour's lightness, 0 (black) to 1 (white); null in a colour space not read here (a pattern, a spot colour). */
+function lightness(cs, c) {
+  if (!cs || !c?.length) return null;
+  if (cs.isGray()) return c[0];
+  if (cs.isRGB()) return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+  if (cs.isCMYK()) return (0.299 * (1 - c[0]) + 0.587 * (1 - c[1]) + 0.114 * (1 - c[2])) * (1 - c[3]);
+  return null;
+}
+
+/**
+ * Filled rectangles in drawing order, each dark or not: what a glyph is drawn on. Dark: an opaque fill of lightness under a half
+ * (a table's header bar, which prints its labels and figures in white). Any other rectangle, a light or unread colour or a
+ * see-through one, covers what is under it and is no dark background. Past the cap, `boxes.over` is set and nothing counts as dark.
+ */
+function addBoxes(boxes, path, ctm, cs, color, alpha) {
+  for (const sp of subpaths(path, ctm)) {
+    const r = rectOf(sp);
+    if (!r) continue;
+    if (boxes.length >= MAX_RULES) return void (boxes.over = true);
+    const l = lightness(cs, color);
+    boxes.push({ r, dark: l !== null && l < 0.5 && alpha >= 0.9 });
   }
 }
 
@@ -168,16 +197,29 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
   // ponytail: glyphs matched to chars by origin on a 0.5 pt grid. Upgrade: compare the render under each word.
   const key = (x, y) => `${Math.round(x * 2)},${Math.round(y * 2)}`;
   const invisible = new Set();
+  // White text is visible on a dark box: the glyphs whose origin lies on a dark rectangle, the last one filled under it before
+  // the text was drawn (ponytail: rectangles only, unclipped; white text on a dark picture or shape stays hidden. Upgrade: sample the render under the glyph).
+  const onDark = new Set();
+  const boxes = [];
+  const glyphs = (text, m, fn) => text.walk({ showGlyph: (_f, t) => fn(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5]) });
   // The same run collects the page's rules and counts its filled paths: text turned to outlines is thousands of them.
   const rules = [];
   let fills = 0;
   const dev = new mupdf.Device({
-    fillPath: (path, _eo, ctm) => {
+    fillPath: (path, _eo, ctm, cs, color, alpha) => {
       fills++;
       addRules(rules, path, ctm, false);
+      addBoxes(boxes, path, ctm, cs, color, alpha);
     },
     strokePath: (path, _stroke, ctm) => addRules(rules, path, ctm, true),
-    ignoreText: (text, m) => text.walk({ showGlyph: (_f, t) => void invisible.add(key(t[4] * m[0] + t[5] * m[2] + m[4], t[4] * m[1] + t[5] * m[3] + m[5])) }),
+    fillText: (text, m) =>
+      glyphs(text, m, (x, y) => {
+        for (let i = boxes.length - 1; i >= 0; i--) {
+          const [x0, y0, x1, y1] = boxes[i].r;
+          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return void (boxes[i].dark && onDark.add(key(x, y)));
+        }
+      }),
+    ignoreText: (text, m) => glyphs(text, m, (x, y) => void invisible.add(key(x, y))),
   });
   page.run(dev, mupdf.Matrix.identity);
   dev.close();
@@ -207,8 +249,9 @@ function textPage(page, documentId, n, minVisiblePt, minPageText) {
       if (!c.trim()) return flush();
       chars++;
       const r = [Math.min(q[0], q[2], q[4], q[6]), Math.min(q[1], q[3], q[5], q[7]), Math.max(q[0], q[2], q[4], q[6]), Math.max(q[1], q[3], q[5], q[7])];
-      // ponytail: white means white fill; white text on a dark box is visible but flagged. Upgrade: sample the render under the glyph.
-      const hidden = size < minVisiblePt || color.every((v) => v > 0.95) || ox < px0 || ox > px1 || oy < py0 || oy > py1 || invisible.has(key(ox, oy));
+      // white is hidden unless drawn on a dark box (onDark)
+      const white = color.every((v) => v > 0.95) && (boxes.over || !onDark.has(key(ox, oy)));
+      const hidden = size < minVisiblePt || white || ox < px0 || ox > px1 || oy < py0 || oy > py1 || invisible.has(key(ox, oy));
       if (!hidden) seen.push(r);
       cur ??= { text: "", rect: r, hidden: false };
       cur.text += c;

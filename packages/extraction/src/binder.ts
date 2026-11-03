@@ -1,5 +1,6 @@
-import { type BlankCheck, type BudgetGrid, datesIn, type PageBox, type Provenance, type ReviewItem, type Rulebook, type ValueEvidence } from "@dct/shared";
+import { type BlankCheck, type BudgetGrid, datesIn, type PageBox, type Provenance, type ReviewItem, ROW_ARITHMETIC, type Rulebook, type ValueEvidence } from "@dct/shared";
 import { ocrCandidates } from "./candidates";
+import { patientCounts, patientsTimes } from "./checks";
 import { amounts, bare, boxOf, centsOf, frame, inventory, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
 /**
@@ -146,10 +147,19 @@ function runs(l: Line, labels: [string, boolean][]): Word[][] {
 
 const span = (ws: Word[]): [number, number] => [Math.min(...ws.map((w) => frame(w)[0])), Math.max(...ws.map((w) => frame(w)[2]))];
 
+/** A line's words cut into cells at gaps wider than the text is tall: a table's columns, as printed. */
+const cellsOf = (ws: Word[]) =>
+  ws.reduce<Word[][]>((cs, w, i) => {
+    const prev = ws[i - 1];
+    if (prev && frame(w)[0] - frame(prev)[2] < frame(w)[3] - frame(w)[1]) cs.at(-1)!.push(w);
+    else cs.push([w]);
+    return cs;
+  }, []);
+
 /**
  * Header cells stacked over two or three lines ("Visit 1" above "Day 1"), with their top on line `l`: each line's words
- * are cut into cells at gaps wider than the text is tall, and cells on `l` and the lines just below it that overlap along
- * the text are one column. Read top to bottom.
+ * are cut into cells (cellsOf), and cells on `l` and the lines just below it that overlap along the text are one column.
+ * Read top to bottom.
  */
 function stacked(pg: Page, l: Line): Word[][] {
   // the header ends where the table's prices start
@@ -157,14 +167,7 @@ function stacked(pg: Page, l: Line): Word[][] {
   const end = below.findIndex((x) => x.words.some(priceLike));
   const lines = end < 0 ? below : below.slice(0, end);
   if (lines.length < 2) return [];
-  const cells = lines.flatMap((x) =>
-    x.words.reduce<Word[][]>((cs, w, i) => {
-      const prev = x.words[i - 1];
-      if (prev && frame(w)[0] - frame(prev)[2] < frame(w)[3] - frame(w)[1]) cs.at(-1)!.push(w);
-      else cs.push([w]);
-      return cs;
-    }, []),
-  );
+  const cells = lines.flatMap((x) => cellsOf(x.words));
   const cols: Word[][][] = [];
   for (const c of cells) {
     const [u0, u1] = span(c);
@@ -825,9 +828,49 @@ function byCosts(pg: Page, pct: number | null, things: { name: string; base: num
   });
 }
 
+// ---------- a row's own arithmetic ----------
+
+/** A quantity as a table may print it: a number with no currency sign, to the hundredth ("22", "22.00", "1.50"); in hundredths. */
+const QTY = /^\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$/;
+type Amount = { words: Word[]; cents: number };
+/** A row's quantity × unit price = total; `n`: the quantity, null when it isn't a whole count. */
+type RowMath = { qty: Word; n: number | null; unit: Amount; total: Amount };
+type Limit = Rulebook["invoiceables"][number]["cap"];
+
+/**
+ * What a printed row's own arithmetic says its figures are: the one way three of its cells (cellsOf) give quantity × unit
+ * price = total, exactly, in integer cents. A unit price and a total are each a cell holding one positive amount (`amounts`:
+ * a "$", cents or a thousands comma); a quantity, a cell holding one number with no currency sign ("400", "400.00", "1.50");
+ * three different cells and, on a scan, every word sure. The page's plain figures only, never the read's, a header or the
+ * columns' order. Null when no product fits, or more than one: then the row says nothing and its values are judged as before.
+ * So "25 | 75.00 | 1,875.00" says 25 × 75.00 (a plain 25 is no price), while "1.50 | 35.00 | 52.50" fits both ways round
+ * (either could be the quantity) and "1 | 500.00 | 500.00" two ways: neither says which figure is the price.
+ */
+export function rowMath(ws: Word[], before: Page["before"] = () => undefined): RowMath | null {
+  const found = rowIdentities(ws, before);
+  return found.length === 1 ? found[0]! : null;
+}
+
+/** Every way three cells of a row give quantity × unit price = total (rowMath's candidates, "1 × X = X" both ways round included). */
+export function rowIdentities(ws: Word[], before: Page["before"] = () => undefined): RowMath[] {
+  const cells = cellsOf(ws).filter((c) => c.every((w) => (w.conf ?? 1) >= MIN_OCR_CONF));
+  const counts = cells.flatMap((c) => {
+    const t = c.length === 1 ? bare(c[0]!.text) : "";
+    const h = QTY.test(t) ? Math.round(Number(t.replace(/,/g, "")) * 100) : 0;
+    return h > 0 ? [{ w: c[0]!, h }] : [];
+  });
+  const money = cells.flatMap((c): Amount[] => {
+    const a = amounts(c, false, before);
+    return a.length === 1 && a[0]!.words.length === c.length && a[0]!.cents !== null && a[0]!.cents > 0 ? [{ words: c, cents: a[0]!.cents }] : [];
+  });
+  return counts.flatMap((q) =>
+    money.flatMap((u) => money.flatMap((t) => (u !== t && !u.words.includes(q.w) && !t.words.includes(q.w) && q.h * u.cents === t.cents * 100 ? [{ qty: q.w, n: q.h % 100 ? null : q.h / 100, unit: u, total: t }] : []))),
+  );
+}
+
 // ---------- quotes ----------
 
-const QUOTE_WORD = (s: string) =>
+export const QUOTE_WORD = (s: string) =>
   s
     .normalize("NFKC")
     .toLowerCase()
@@ -966,7 +1009,17 @@ export type TableCheck = {
   /** The read's rows placed on the grid's rows by order, not by what they print (`procedure`: index into the grid's procedures); absent: none. */
   rows?: { box: PageBox; procedure: number }[];
 };
-type Bound = { evidence: ValueEvidence[]; unaccounted: Span[]; tableChecks: TableCheck[]; blankChecks: BlankCheck[]; rows: RowBand[] };
+type Bound = { evidence: ValueEvidence[]; unaccounted: Span[]; tableChecks: TableCheck[]; blankChecks: BlankCheck[]; rows: RowBand[]; itemRows: ItemRow[] };
+
+/**
+ * A fee's or an invoiceable's row, found by its label (`item`: the value's path, "/invoiceables/2"), whose figures give quantity
+ * × unit price = total with one set of three (`figures`: quantity, unit price and total boxes; "1 × X = X", which reads both ways
+ * round, too; a row where the ways use different figures, as a grid row repeating one price does, has none). The sweep reads it
+ * (`gateSweep`): beside a bound value of the item, the other figures are that item's own arithmetic, not a term the master lacks.
+ */
+export type ItemRow = { item: string; documentId: string; page: number; row: Frac; figures: Frac[] };
+/** A box in page fractions, as PageBox holds it. */
+type Frac = NonNullable<PageBox["box"]>;
 
 /**
  * A rulebook row lined up with its row of a drawn table (ADR-002: the solver's row identity and the sweep's row bands both read
@@ -1184,6 +1237,9 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
   const tableChecks: TableCheck[] = [];
   const blankChecks: BlankCheck[] = [];
   const rowBands: RowBand[] = [];
+  // an item's row by its label and that row's own arithmetic, when every value of the item agrees with it (item(); its cap reads it)
+  const rowMaths = new Map<string, { m: RowMath; p: TextPage }>();
+  const itemRows: ItemRow[] = [];
   // a held table's visit columns' rules (reading frame), to tell whether a continuation page's columns are the same ones
   const ruling = new Map<string, { dir: Word["dir"]; rules: [number, number][] }>();
   const ALIGNED = 3;
@@ -1476,7 +1532,13 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
         else put(path, "ungrounded", nowhere(v.prov.source), null, rows.length > 1 ? "several rows carry this label" : null);
       }
     });
-    g.perPatientTotals.forEach((t, ti) => item(`${gp}/perPatientTotals/${ti}`, null, t.label, t.prov, [["cents", t.cents]], ctx(t.prov.source)?.band));
+    // a line printing this total times the patients its page states is their total (multiPatientTotals), never this one's row
+    g.perPatientTotals.forEach((t, ti) => {
+      const band = ctx(t.prov.source)?.band;
+      const counts = patientCounts(pageAt(t.prov.source)?.lines.map((l) => txt(l.words)).join("\n") ?? "");
+      const several = (l: Line) => amounts(l.words).some((a) => a.cents !== null && !!patientsTimes(a.cents, [t.cents], counts));
+      item(`${gp}/perPatientTotals/${ti}`, null, t.label, t.prov, [["cents", t.cents]], (l) => (!band || band(l)) && !several(l));
+    });
 
     // What the label path left unconfirmed (and didn't see conflict) in a held table is held; the rest stays as it judged it.
     for (const { path, j, check, row } of queued) {
@@ -1632,9 +1694,10 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
 
   /**
    * Label + amount on one row of the cited page, or the amount inside the quote; else a wrong page reference. `within`:
-   * the lines the row may be on (a grid's band, when another grid shares the page).
+   * the lines the row may be on (a grid's band, when another grid shares the page). `cap`: the item's cap, which its row's
+   * own arithmetic (rowMath) must agree with too before it tells anything.
    */
-  function item(base: string, code: string | null, name: string, prov: Provenance, fields: [string, number | null][], within: (l: Line) => boolean = () => true, hit: CostHit | null = null) {
+  function item(base: string, code: string | null, name: string, prov: Provenance, fields: [string, number | null][], within: (l: Line) => boolean = () => true, hit: CostHit | null = null, cap: Limit | null = null) {
     const src = prov.source;
     const pg = pageAt(src);
     const lineAmounts = (pg: Page) => pg.lines.filter((l) => within(l) && amounts(l.words).length);
@@ -1660,6 +1723,19 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
     // only the ones `amounts` calls amounts, so a bare "185,00" with no "$" is no amount here, as before
     const ocr = pg?.p.source === "ocr";
     const alone = (as: { words: Word[]; cents: number | null }[], value: number, i: number, ocr: boolean) => (want.length === 2 && as.length >= 2 ? saysAmount(as[i]!, value, ocr) !== null : as.every((a) => saysAmount(a, value, ocr) !== null));
+    // The row's own arithmetic, when the item's values all agree with it: its price is the unit price (either of the two the
+    // read has), an amount cap is the total and a count cap the quantity. Any value that disagrees and the row tells nothing.
+    const ways = found ? rowIdentities(found.row.words, pg!.before) : [];
+    const math = ways.length === 1 ? ways[0] : undefined;
+    const agrees =
+      !!math &&
+      (!want.length || want.some(([, v]) => v === math.unit.cents)) &&
+      (!cap || cap.n === null || (cap.kind === "amount" ? cap.n === math.total.cents : cap.kind !== "count" || cap.n === math.n));
+    if (math && agrees && !hit) rowMaths.set(base, { m: math, p: pg!.p });
+    // the sweep's: the row's three figures, when every way it multiplies uses the same three ("1 × X = X" read both ways round)
+    const figures = ways.length && !hit ? [[ways[0]!.qty], ways[0]!.unit.words, ways[0]!.total.words] : [];
+    const same = (w: RowMath) => [w.qty, ...w.unit.words, ...w.total.words].every((x) => figures.flat().includes(x));
+    if (figures.length && ways.every(same)) itemRows.push({ item: base, documentId: pg!.p.documentId, page: pg!.p.page, row: boxOf(pg!.p, found!.row.words).box!, figures: figures.map((ws) => boxOf(pg!.p, ws).box!) });
     want.forEach(([field, value], i) => {
       const path = `${base}/${field}`;
       // the cell at its cost column in the row of a drawn table (byCosts) says it: confirmed, with the row's other numbers (quantity,
@@ -1673,6 +1749,9 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
       const spot = positional ? onRow[i] : onRow.find((a) => saysAmount(a, value, ocr));
       const used = found?.code ? [found.code] : [];
       const how = spot ? saysAmount(spot, value, ocr) : null;
+      // several amounts on the row: its quantity × unit price = total tells which is the price, its quantity is its own (the total is left to a cap)
+      if (how && !alone(onRow, value, i, ocr) && want.length === 1 && agrees && math.unit.cents === value)
+        return put(path, "confirmed", [boxOf(pg!.p, math.unit.words)], txt(math.unit.words), ROW_ARITHMETIC, [...math.unit.words, math.qty, ...used, ...rowNumbers(found!.row)]);
       if (how && !alone(onRow, value, i, ocr))
         return put(path, "ungrounded", [boxOf(pg!.p, found!.row.words)], null, "printed with another amount on the same line, so which one it is can't be told", [...onRow.filter((a) => saysAmount(a, value, ocr)).flatMap((a) => a.words), ...used, ...rowNumbers(found!.row)]);
       if (how) return put(path, "confirmed", [boxOf(pg!.p, spot!.words)], txt(spot!.words), how === "noisy" ? NOISY : null, [...spot!.words, ...used, ...rowNumbers(found!.row)]);
@@ -1718,9 +1797,9 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
       if (pg?.p.grids?.length) byCosts(pg, overheadPct(rulebook.budgetGrids[0]), things).forEach((h, n) => h && costHits.set(things[n]!.key, h));
     }
   }
-  rulebook.invoiceables.forEach((x, i) => item(`/invoiceables/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents], ["amountWithOverheadCents", x.amountWithOverheadCents]], undefined, costHits.get(`/invoiceables/${i}`)));
+  rulebook.invoiceables.forEach((x, i) => item(`/invoiceables/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents], ["amountWithOverheadCents", x.amountWithOverheadCents]], undefined, costHits.get(`/invoiceables/${i}`), x.cap));
   rulebook.siteFees.forEach((x, i) => item(`/siteFees/${i}`, x.code, x.name, x.prov, [["amountCents", x.amountCents]], undefined, costHits.get(`/siteFees/${i}`)));
-  if (rulebook.screenFail) item("/screenFail", null, "screen failure", rulebook.screenFail.prov, [["amountCents", rulebook.screenFail.amountCents]]);
+  if (rulebook.screenFail) item("/screenFail", null, "screen failure", rulebook.screenFail.prov, [["amountCents", rulebook.screenFail.amountCents]], undefined, null, rulebook.screenFail.cap);
 
   /**
    * Rules (%, days, caps, dates): the value must be the figure of its kind inside a quote that matches the cited page word
@@ -1739,8 +1818,17 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
     if (all.length && !figs.length) return put(path, "ungrounded", nowhere(prov.source), null, "the quote isn't from a sentence about this term");
     settle(path, value, figs, [boxOf(pg.p, quote)]);
   };
-  const cap = (base: string, c: Rulebook["invoiceables"][number]["cap"], prov: Provenance, about?: RegExp) => {
+  const cap = (base: string, c: Limit, prov: Provenance, about?: RegExp) => {
     rule(`${base}/cap/n`, c.n, prov, c.kind === "amount" ? "cents" : "count", about);
+    // what its quote leaves unfound (never a conflict: the quote then states another limit), the item's row may print: an amount
+    // cap as the row's total, a count cap as its quantity, by the row's own arithmetic that every value of the item agrees with
+    const row = rowMaths.get(base);
+    const at = evidence.findIndex((e) => e.path === `${base}/cap/n`);
+    if (row && at >= 0 && evidence[at]!.status === "ungrounded" && (c.kind === "amount" || c.kind === "count")) {
+      const ws = c.kind === "amount" ? row.m.total.words : [row.m.qty];
+      evidence.splice(at, 1);
+      put(`${base}/cap/n`, "confirmed", [boxOf(row.p, ws)], txt(ws), ROW_ARITHMETIC, ws);
+    }
     rule(`${base}/cap/ratio`, c.ratio, prov, "ratio", about);
   };
   rule("/study/effectiveDate/value", rulebook.study.effectiveDate.value, rulebook.study.effectiveDate.prov, "date");
@@ -1755,7 +1843,7 @@ export function bindEvidence(rulebook: Rulebook, pages: TextPage[], printedRows:
   if (rulebook.screenFail) cap("/screenFail", rulebook.screenFail.cap, rulebook.screenFail.prov, ABOUT.screenFail);
 
   const unaccounted = inventory(pages).filter((s) => !s.words.some((w) => bound.has(w)));
-  return { evidence, unaccounted, tableChecks, blankChecks, rows: rowBands };
+  return { evidence, unaccounted, tableChecks, blankChecks, rows: rowBands, itemRows };
 }
 
 // ---------- review queue ----------

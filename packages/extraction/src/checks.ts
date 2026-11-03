@@ -18,12 +18,59 @@ export type PageInfo = {
  * "Proposed shared-schema changes"). Carried on ExtractionOutput.notes.
  */
 export type ExtractionNote = {
-  kind: "ambiguous" | "retroactive_no_date";
+  /** `estimate`: never the model's; a total for several patients the read took out of a grid's per-patient totals (splitEstimates). */
+  kind: "ambiguous" | "retroactive_no_date" | "estimate";
   topic: string;
-  /** JSON pointer of the affected rulebook value, if any. */
+  /** JSON pointer of the affected rulebook value, if any (an estimate: its grid). */
   path: string | null;
   source: SourceRef | null;
+  estimate?: Estimate;
 };
+
+/** A printed total for several patients: `patients` × `perPatientCents` = `cents`, to the cent. */
+type Estimate = { cents: number; patients: number; perPatientCents: number };
+
+/**
+ * The patient counts a text states: "50 patients", "(50) subjects", "50-patient", "100 enrolled participants", "N = 50".
+ * A number that is money ("$50 per patient"), a rate ("50 per patient") or before a compound ("50 patient-reported") states none.
+ */
+const PATIENTS =
+  /(?<![\w$€£.,])(\d{1,3}(?:,\d{3})+|\d+)\)?[\s-]*(?:(?:evaluable|enrolled|randomi[sz]ed|completed|treated|screened|total|planned|expected|estimated|additional)\s+)?(?:patients?|subjects?|participants?|pts)\b(?!-)|\bn\s*=\s*(\d{1,3}(?:,\d{3})+|\d+)(?![\d.,]*\d)/gi;
+export const patientCounts = (text: string): Set<number> => new Set([...text.matchAll(PATIENTS)].map((m) => Number((m[1] ?? m[2])!.replace(/,/g, ""))));
+
+/**
+ * The patients `cents` is the total for: exactly k times one of `bases` (integer cents, k ≥ 2), where `counts` (what the
+ * text beside it states) holds k. An estimate that adds, rounds or leaves out anything doesn't match, and stays what it was.
+ */
+export function patientsTimes(cents: number, bases: readonly number[], counts: ReadonlySet<number>): { patients: number; perPatientCents: number } | null {
+  for (const b of bases) if (b > 0 && cents % b === 0 && cents / b >= 2 && counts.has(cents / b)) return { patients: cents / b, perPatientCents: b };
+  return null;
+}
+
+/**
+ * A grid's printed totals for several patients ("estimated total, 50 patients"): its label states the count, and its amount
+ * is exactly that many times the sum of every visit or another of the grid's per-patient totals. Never a per-patient total:
+ * it isn't billed, and checking it against the visits only raises a false mismatch. Anything less sure stays a per-patient
+ * total, checked and asked as one.
+ */
+export function multiPatientTotals(g: BudgetGrid): (Estimate & { index: number })[] {
+  const visits = sum(g.visits.map((v) => v.totalCents));
+  return g.perPatientTotals.flatMap((t, index) => {
+    const m = patientsTimes(t.cents, [visits, ...g.perPatientTotals.filter((_, i) => i !== index).map((o) => o.cents)], patientCounts(t.label));
+    return m ? [{ index, cents: t.cents, ...m }] : [];
+  });
+}
+
+/** The read with each grid's multi-patient totals taken out of perPatientTotals, each kept as an `estimate` note (a notice). */
+export function splitEstimates(rb: Rulebook): { rulebook: Rulebook; notes: ExtractionNote[] } {
+  const notes: ExtractionNote[] = [];
+  const budgetGrids = rb.budgetGrids.map((g, gi) => {
+    const found = multiPatientTotals(g);
+    for (const { index, ...estimate } of found) notes.push({ kind: "estimate", topic: g.perPatientTotals[index]!.label, path: `/budgetGrids/${gi}`, source: g.perPatientTotals[index]!.prov.source, estimate });
+    return found.length ? { ...g, perPatientTotals: g.perPatientTotals.filter((_, i) => !found.some((e) => e.index === i)) } : g;
+  });
+  return { rulebook: { ...rb, budgetGrids }, notes };
+}
 
 export type CheckOptions = {
   crossRead?: Rulebook | null;
@@ -52,14 +99,19 @@ const SEVERITY: Record<ContractAnomalyCode, ContractAnomaly["severity"]> = {
   AI_DISAGREEMENT: "warning",
   AMBIGUOUS_TERM: "warning",
   LOW_CONFIDENCE: "info",
+  MULTI_PATIENT_ESTIMATE: "info",
 };
 
 const dollars = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const refsOf = (...provs: (Provenance | null | undefined)[]) =>
   provs.flatMap((p) => (p?.source ? [p.source] : [])).filter((r, i, a) => a.findIndex((x) => x.documentId === r.documentId && x.page === r.page) === i);
 
-/** Allowed difference in cents: the contract rounds to whole dollars → ±$1, else ±1 cent of float noise. */
-export const tolerance = (rb: Rulebook) => (rb.rounding.value === "printed_amounts" ? 100 : 1);
+/**
+ * Allowed difference in cents: ±$1 only where the contract says it rounds to whole dollars (the read's "printed amounts"
+ * with the words it read it from); a read that says so with no quote, or a contract silent on rounding, is billed to the
+ * cent (the owner, 2026-11-02): ±1 cent of float noise.
+ */
+export const tolerance = (rb: Rulebook) => (rb.rounding.value === "printed_amounts" && rb.rounding.prov.source?.quote?.trim() ? 100 : 1);
 
 export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): ContractAnomaly[] {
   const out: ContractAnomaly[] = [];
@@ -69,6 +121,12 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
     out.push({ id, code, severity: SEVERITY[code], message, path, refs, detail, resolution: null });
   };
   const tol = tolerance(rulebook);
+  // MULTI_PATIENT_ESTIMATE: shown beside the questions, never asked (isNotice); the master holds nothing it could change
+  const estimate = (gi: number, label: string, e: Estimate, refs: SourceRef[]) => {
+    const g = rulebook.budgetGrids[gi];
+    add("MULTI_PATIENT_ESTIMATE", `/budgetGrids/${gi}`, `${g ? `${g.label}: ` : ""}"${label}" (${dollars(e.cents)}) is the total for ${e.patients} patients (${e.patients} × ${dollars(e.perPatientCents)}), not a per-patient total, so nothing is billed from it`, refs, { label, ...e });
+  };
+  for (const n of opts.notes ?? []) if (n.kind === "estimate" && n.estimate) estimate(Number(n.path?.split("/")[2]), n.topic, n.estimate, n.source ? [n.source] : []);
 
   rulebook.budgetGrids.forEach((g, gi) => {
     const gp = `/budgetGrids/${gi}`;
@@ -108,7 +166,11 @@ export function runContractChecks(rulebook: Rulebook, opts: CheckOptions = {}): 
       ...(["procedureSubtotalCents", "overheadCents", "nonProcedureCents"] as const).map((f) => sum(g.visits.map((v) => v[f] ?? 0))),
       ...g.procedures.map((p) => sum(Object.values(p.cells).filter((c): c is number => typeof c === "number"))),
     ];
+    // a saved read may still hold a total for several patients here (the read now takes it out: splitEstimates): a notice, never compared
+    const several = multiPatientTotals(g);
+    for (const { index, ...e } of several) estimate(gi, g.perPatientTotals[index]!.label, e, refsOf(g.perPatientTotals[index]!.prov, g.prov));
     g.perPatientTotals.forEach((t, ti) => {
+      if (several.some((e) => e.index === ti)) return;
       const best = closestBlockExclusion(totals, t.cents);
       const isColumnTotal = columnSums.some((s) => s > 0 && Math.abs(s - t.cents) <= tol * totals.length);
       if (best.diff > tol * totals.length && !isColumnTotal)

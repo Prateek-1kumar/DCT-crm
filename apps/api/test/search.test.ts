@@ -129,9 +129,10 @@ describe("stored stage follows the workflow", () => {
     const id = await newStudy("flow");
     expect((await list()).items[0]).toMatchObject({ id, status: "setting_up", needsYou: 0 });
     await extract(id);
-    // 8 for what didn't check out, 6 interpretations (the fee's trigger is printed beside it) (no blind sample: ADR-003)
-    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 14 });
-    await settleAll(built, id, 1, "Asha", 13);
+    // 13 questions (8 for what didn't check out, 5 interpretations; no blind sample: ADR-003), on 11 cards: the three
+    // screen-fail questions quote one sentence
+    expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 11 });
+    await settleAll(built, id, 1, "Asha", 12);
     expect((await list("?view=needs-you")).items[0]).toMatchObject({ id, needsYou: 1 });
     await settleAll(built, id, 1);
     expect(protocols(await list("?view=approval"))).toEqual(["SYN-001"]);

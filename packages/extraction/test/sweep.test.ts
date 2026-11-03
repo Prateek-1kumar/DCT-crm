@@ -170,6 +170,118 @@ describe("insurance clause", async () => {
   });
 });
 
+describe("per occurrence: a fee line, not an insurance limit", async () => {
+  const pages = await read([
+    [
+      at(40, 60, "SAE report, $350.00 per occurrence."),
+      at(40, 80, "Institution shall maintain professional liability coverage of $1,000,000 per occurrence."),
+      at(40, 100, "Site shall maintain insurance of $2,000,000 per occurrence."),
+    ].join(""),
+  ]);
+  const { kept, dropped } = gateSweep(inventory(pages), { evidence: [], pages });
+  const insurance = textOf(dropped.filter((d) => d.reason === "insurance_clause").map((d) => d.span));
+
+  it("keeps a fee priced per occurrence", () => expect(textOf(kept)).toContain("$350.00"));
+  it("still drops a limit whose sentence names insurance or liability", () => expect(insurance).toEqual(expect.arrayContaining(["$1,000,000", "$2,000,000"])));
+});
+
+// ---------- figure-less sentences (owner, 2026-11-02) ----------
+// wordings of no contract we have: each names money (or names none) in a way the payment words must tell apart
+const PAYS = [
+  "Upon termination, Sponsor shall pay Institution for all work performed through the termination date.",
+  "Sponsor will compensate the Site for visits completed before early termination.",
+  "Sponsor shall bear the shipping of samples to the central laboratory.",
+  "Additional imaging shall be invoiced to Sponsor monthly.",
+  "Local laboratory tests are billable to Sponsor.",
+  "Unscheduled procedures: at the Site's standard rate.",
+  "Courier shipments will be reimbursed at actual cost upon receipt.",
+  "Monitor-requested local labs are pass-through items.",
+  "Non-cancellable commitments made before notice are honoured.",
+  "Bank wire fees are the Sponsor's responsibility.",
+  "Supplies the Site buys are charged to Sponsor on receipt.",
+  "After seven screen failures the Site is evaluated for more.",
+];
+const NO_MONEY = [
+  "This Agreement may be terminated by either party upon written notice.",
+  "Institution shall retain all Study records as required by law.",
+  "Sponsor shall own all right, title and interest in the Inventions.",
+  "The Patient Bill of Rights survives termination of this Agreement.",
+  "The Investigator in charge of the Study may terminate enrollment.",
+  "A person charged with a felony may not be retained.",
+  "Site warrants no staff member has been charged, convicted or debarred, or retained after it.",
+  "Neither party is responsible for workers' compensation or withholding taxes of the other's staff.",
+  "Return the charging cable at termination.",
+];
+
+describe("figure-less sentences: asked only with a payment word", async () => {
+  const lines = [...PAYS, ...NO_MONEY].map((t, i) => at(40, 60 + 16 * i, t));
+  lines.push(at(40, 60 + 16 * (PAYS.length + NO_MONEY.length), "Notices go by courier, shipping charges prepaid, to the address below."));
+  const pages = await read([lines.join("")]);
+  const all = inventory(pages);
+  const { kept, dropped, report } = gateSweep(all, { evidence: [], pages });
+  const sentence = (s: Span) => s.words.map((w) => w.text).join(" ");
+
+  it("asks each money sentence, however it words the money", () => {
+    const asked = kept.filter((s) => s.kind === "absence").map(sentence);
+    for (const t of PAYS) expect(asked).toContain(t);
+  });
+
+  it("drops a sentence with no payment word, counted with its reason and box", () => {
+    const gone = dropped.filter((d) => d.reason === "no_payment_word");
+    expect(gone.map((d) => sentence(d.span)).sort()).toEqual([...NO_MONEY].sort());
+    expect(report.noPayment).toBe(NO_MONEY.length);
+    for (const d of gone) expect(d.where.box).not.toBeNull();
+  });
+
+  it("takes no notice clause's courier charges for money", () => {
+    expect(all.some((s) => sentence(s).startsWith("Notices go by courier"))).toBe(false);
+  });
+});
+
+describe("the same money words find figures, and keep a bare number on a narrative page", async () => {
+  const pages = await read([[at(40, 60, "Pass-through items are billed within 30 days of receipt."), at(40, 80, "Courier        250.00        325.00        billed to Sponsor as used.")].join("")]);
+  const all = inventory(pages);
+  const { kept } = gateSweep(all, { evidence: [], pages });
+
+  it("sweeps a day count whose sentence's only money word is a billing one", () => expect(textOf(all)).toContain("30 days"));
+  it("keeps bare prices beside a billing word (the trigger is the inventory's money words)", () => expect(textOf(kept)).toEqual(expect.arrayContaining(["250.00", "325.00"])));
+});
+
+describe("quoted by the master: a figure-less sentence a value cites is the master's", async () => {
+  const QUOTED = "Screen failures will be paid upon receipt of an invoice with the screen failure log.";
+  const HALF = "Screen failures are paid quarterly, upon receipt of the visit log and the monitor's sign-off.";
+  const LONG = "Courier costs are reimbursed upon receipt, and archiving is invoiced at close-out, with receipts.";
+  const FIGURE = "A start-up fee of $5,000.00 is paid upon receipt of the IRB approval letter.";
+  const pages = await read([[QUOTED, HALF, LONG, FIGURE].map((t, i) => at(40, 60 + 20 * i, t)).join("")]);
+  const rb = makeRulebook();
+  const cite = (quote: string, page = 1) => ({ ...rb.screenFail!.prov, source: { documentId: "d1", page, quote } });
+  rb.screenFail!.prov = cite(QUOTED);
+  rb.siteFees[0]!.prov = cite(FIGURE);
+  rb.payment.netDaysFrom.prov = cite("paid quarterly, upon receipt of the visit log"); // 8 of 15 words
+  rb.invoiceables[0]!.prov = cite("upon receipt"); // two words of a longer sentence: not that sentence's value
+  const run = (r = rb) => gateSweep(inventory(pages), { evidence: [], pages, rb: r });
+  const sentence = (s: Span) => s.words.map((w) => w.text).join(" ");
+
+  it("drops a sentence a value quotes whole, or at least half of, with its own reason", () => {
+    const { dropped, report } = run();
+    const quoted = dropped.filter((d) => d.reason === "quoted_by_master").map((d) => sentence(d.span));
+    expect(quoted.sort()).toEqual([HALF, QUOTED].sort());
+    expect(report.quoted).toBe(2);
+  });
+
+  it("keeps a sentence a short quote only touches, and a quoted sentence with a figure", () => {
+    const { kept } = run();
+    expect(kept.map(sentence)).toContain(LONG);
+    expect(textOf(kept)).toContain("$5,000.00");
+  });
+
+  it("needs the quote on the sentence's own page", () => {
+    const moved = makeRulebook();
+    moved.screenFail!.prov = cite(QUOTED, 2);
+    expect(run(moved).report.quoted).toBe(0);
+  });
+});
+
 describe("currency cue on a narrative page", async () => {
   const pages = await narrative();
   const { kept, dropped } = gateSweep(inventory(pages), { evidence: [], pages });
@@ -209,9 +321,9 @@ describe("the report", async () => {
 
   it("counts every span once", () => {
     const { kept, dropped, report } = gateSweep(all, { evidence: [], pages });
-    expect(report.kept + report.consumed + report.insurance + report.explained + report.noCue).toBe(all.length);
+    expect(report.kept + report.noPayment + report.quoted + report.consumed + report.arithmetic + report.insurance + report.explained + report.noCue).toBe(all.length);
     expect(report.kept).toBe(kept.length);
-    expect(report.consumed + report.insurance + report.explained + report.noCue).toBe(dropped.length);
+    expect(report.noPayment + report.quoted + report.consumed + report.arithmetic + report.insurance + report.explained + report.noCue).toBe(dropped.length);
   });
 
   it("changes nothing it was given", () => {
@@ -226,7 +338,7 @@ describe("the report", async () => {
   });
 
   it("is quiet on nothing", () => {
-    expect(gateSweep([], { evidence: [], pages: [] })).toEqual({ kept: [], dropped: [], report: { consumed: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {}, modelNonFee: {}, modelKept: 0 } });
+    expect(gateSweep([], { evidence: [], pages: [] })).toEqual({ kept: [], dropped: [], report: { noPayment: 0, quoted: 0, consumed: 0, arithmetic: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {}, modelNonFee: {}, modelKept: 0 } });
   });
 
   it("keeps a span whose page it doesn't know (nothing to say it is narrative)", () => {

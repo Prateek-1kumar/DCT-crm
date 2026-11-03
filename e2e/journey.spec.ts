@@ -95,6 +95,8 @@ const ANSWERS: [RegExp, { type: string } | { pick: RegExp; note?: string }][] = 
   [/"Administrative fee" due/, { type: "45" }],
   [/Master CTA/, { pick: /doesn't affect billing/, note: "The master agreement sets no prices for this work order." }],
   [/bill from/, { pick: /Exhibit A \(revised\)/ }],
+  // the work order's own invoicing sentence ("The Institution invoices the Sponsor …") carries a billing word but no figure, so it is asked
+  [/mentions a payment condition/, { pick: /^Not a payment term$/ }],
   // the interpretations every read asks, picked as the contract words them (ADR-001 §6)
   [/Which lines does the overhead apply to/, { pick: /^All per-patient lines$/ }],
   [/When is the site fee “Administrative fee” billed/, { pick: /^On study initiation$/ }],
@@ -123,9 +125,11 @@ const ANSWERS: [RegExp, { type: string } | { pick: RegExp; note?: string }][] = 
 ];
 
 /** Clicks a button that sends an answer, and waits until the API has taken it. */
+// A card shows every question on one sentence at once (each answered on its own), so the controls below are the first open
+// question's: answered ones show no radios, fields or save button, and open ones come in the card's order.
 async function send(page: Page, name: string) {
   const saved = page.waitForResponse((r) => r.request().method() === "POST" && /\/versions\/\d+\/review\/[^/]+$/.test(new URL(r.url()).pathname));
-  await page.getByRole("button", { name }).click();
+  await page.getByRole("button", { name }).first().click();
   expect((await saved).ok()).toBe(true);
 }
 
@@ -133,16 +137,16 @@ async function send(page: Page, name: string) {
 async function answer(page: Page, question: string) {
   const a = ANSWERS.find(([q]) => q.test(question))?.[1];
   if (!a) throw new Error(`No answer in the test for: ${question}`);
-  if ("type" in a) await page.getByLabel("What the contract says").fill(a.type);
+  if ("type" in a) await page.getByLabel("What the contract says").first().fill(a.type);
   else {
-    await page.getByRole("radio", { name: a.pick }).check();
+    await page.getByRole("radio", { name: a.pick }).first().check();
     // a pick that needs saying why (what to ask the sponsor, why it doesn't matter) shows its required note
-    if (a.note) await page.getByLabel(/\(required\)$/).fill(a.note);
+    if (a.note) await page.getByLabel(/\(required\)$/).first().fill(a.note);
   }
   await send(page, "Save and next");
 }
 
-const questionHeading = (page: Page) => page.getByRole("region", { name: "Question" }).getByRole("heading", { level: 1 });
+const questionHeading = (page: Page) => page.getByRole("region", { name: "Question" }).getByRole("heading", { level: 1 }).first();
 
 /**
  * Answers every open question on the review page with `reply`, one at a time, until the finished screen. `reply` gets the
@@ -155,7 +159,15 @@ async function answerAll(page: Page, reply: (question: string, id: string) => Pr
   for (let n = 0; n < 60 && !(await finished.isVisible()); n++) {
     // Two questions can read the same (one per grid), so "moved on" is judged by the whole panel, its "n of m" included.
     const before = await region.textContent();
-    const [question, id] = await questionHeading(page).evaluate((h) => [h.textContent ?? "", h.id.replace(/^q-/, "")]);
+    // the first question still open: its own block (the nearest one around its heading holding a button or form) has no "Change answer" or "Next question"
+    const [question, id] = await region.evaluate((r) => {
+      const open = [...r.querySelectorAll("h1")].find((h) => {
+        let n = h.parentElement;
+        while (n && !n.querySelector("button, form")) n = n.parentElement;
+        return !/Change answer|Answer it now|Next question/.test(n?.textContent ?? "");
+      });
+      return [open?.textContent ?? "", open?.id.replace(/^q-/, "") ?? ""];
+    });
     await reply(question, id);
     await expect
       .poll(async () => {
@@ -267,21 +279,21 @@ test("add a contract → answer → proofread → approve → live → search �
       }
       if (/How are visits paid/.test(q)) {
         // An interpretation: a pick other than our reading shows both, and asks where the page says so.
-        await page.getByRole("radio", { name: /^By invoice$/ }).check();
+        await page.getByRole("radio", { name: /^By invoice$/ }).first().check();
         await send(page, "Save and next");
         await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
-        await page.getByRole("radio", { name: /We read.*Automatic \(from EDC\)/ }).click();
-        await page.getByLabel("Where on the page is it printed?").fill("Exhibit A, first paragraph: paid automatically from the EDC system");
+        await page.getByRole("radio", { name: /We read.*Automatic \(from EDC\)/ }).first().click();
+        await page.getByLabel("Where on the page is it printed?").first().fill("Exhibit A, first paragraph: paid automatically from the EDC system");
         await send(page, "Save and next");
         picked = true;
         return;
       }
       if (!/Week 0 total/.test(q)) return answer(page, q);
       // Type the AI's figure; the PDF's own text says otherwise, so the page asks which one it shows.
-      await page.getByLabel("What the contract says").fill("8,489.00");
+      await page.getByLabel("What the contract says").first().fill("8,489.00");
       await send(page, "Save and next");
       await expect(page.getByText(/^Look at the close-up again\./)).toBeVisible();
-      await page.getByRole("radio", { name: /PDF text says.*\$8,488\.00/ }).click();
+      await page.getByRole("radio", { name: /PDF text says.*\$8,488\.00/ }).first().click();
       await send(page, "Save and next");
       mismatch = true;
     });
@@ -441,11 +453,11 @@ test("add a contract → answer → proofread → approve → live → search �
       if (/how many days must an invoice be paid/.test(q)) return answer(page, q);
       if (/printed for "Total"/.test(q)) {
         // The value reported above, typed.
-        await page.getByLabel("What the contract says").fill("15,943.00");
+        await page.getByLabel("What the contract says").first().fill("15,943.00");
         return send(page, "Save and next");
       }
       // Whatever else the amendment asks is left for the approver.
-      await page.getByRole("button", { name: "Can't tell" }).click();
+      await page.getByRole("button", { name: "Can't tell" }).first().click();
       await send(page, "Leave it for the approver");
     });
     await page.goto(`${studyUrl}/approve`);

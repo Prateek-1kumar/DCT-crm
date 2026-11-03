@@ -25,7 +25,7 @@ The only UI: Next.js 16 (App Router, `cacheComponents` with partial prerendering
 | `src/lib/acting-as.ts` · `notify.ts` | The picked name sent as `by` (no login); desktop notifications |
 | `src/components/ui.tsx` | Primitives: `Button` (variants and sizes), `Badge`, `Stepper`, `Dialog` and `Sheet` (native `<dialog>`), `errorText`, `ErrorNote`, `LoadError`, `PageTitle` |
 | `src/components/` | `Workspace` and `RulebookView` (the master and its drawer), `Rechecked` (live values the newest draft asks again), `PageViewer` and `SpotView` (contract pages and close-ups), `GridTable`, `Sidebar`, `Alerts`, `CommandPalette` (⌘K), `UploadDocs`, `ByHandForm` (a failed save marked on its own field; each visit's "paid automatically", each row's kind of line and "overhead added"; a yes/no or list nobody picked shows "Choose…", and is asked when typing is marked done) |
-| `src/app/studies/[id]/review/page.tsx` | Needs you. "Prospective only" opens a box for the amendment's own date |
+| `src/app/studies/[id]/review/page.tsx` | Needs you. "Prospective only" opens a box for the amendment's own date. Questions on one quote are one card (`cards`): the quote once, every question's places (with the file's name when they span documents), each question with its own pick and its own save; the list and the counts are cards (`needsYou` is `openCards`) |
 | `next.config.ts` | CSP and security headers, the `/api` rewrite to `API_URL`, `distDir` for the e2e build |
 | `src/instrumentation-client.ts` | zod `jitless`, so the CSP needs no `eval` |
 
@@ -44,7 +44,7 @@ The only UI: Next.js 16 (App Router, `cacheComponents` with partial prerendering
 - Every API call goes through `src/lib/api.ts`. One user action is one write with one key: never retry a write with a new key.
 - Every write carries `by`, the name picked in "Who's working today?" (`src/lib/acting-as.ts`; no login yet). Where an action needs a name and none is picked, show `NeedsPerson` (`src/components/Sidebar.tsx`) next to it, as the other screens do.
 - `components/BudgetCheck.tsx`: after a read and beside the questions, "Check against the sponsor's budget spreadsheet" (`api.budgetCheck`, POST …/budget-check): its result is a notice in "Worth knowing", never a change to the master.
-- `components/Notices.tsx` ("Worth knowing") lists the reading's warnings and the checks' notices (`notices` from `@dct/shared`: what would only be a one-answer question) beside the questions, after a read and at approval.
+- `components/Notices.tsx` ("Worth knowing") lists the reading's warnings and the checks' notices (`notices` from `@dct/shared`, given the version's questions and evidence: what would only be a one-answer question, and rounding the contract is silent on) beside the questions, after a read and at approval.
 - Questions show our reading and what we suggest (`suggest` from `@dct/shared`, ADR-003); a suggested pick is marked "Our reading", never pre-picked. A value with an open question is shown with a "needs you" mark (`openPaths`).
 - Approval sends `asOf: version.updatedAt`, the version as shown; the approve page refetches it, and the API refuses (409) if it changed since.
 - Money is integer cents: use `src/lib/money.ts` to format and parse, `formatValue` in `src/lib/format.ts` to display. No float math on amounts.

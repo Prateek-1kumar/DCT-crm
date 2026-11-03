@@ -1,4 +1,4 @@
-import type { Anchor, besideOnLine, bindEvidence, gateSweep, NonFee, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
+import type { Anchor, besideOnLine, bindEvidence, gateSweep, lastSigned, NonFee, pageCount, PageInfo, PrintedRow, ReadWarning, readTextLayer, reviewFromEvidence, solveGrids } from "@dct/extraction";
 import type { ContractAnomaly, DocumentKind, Rulebook, SourceRef } from "@dct/shared";
 import { config } from "../config.js";
 
@@ -12,7 +12,7 @@ export type ExtractionOutput = {
   crossRead: Rulebook | null;
   pages: { documentId: string; page: number; kind: PageInfo["kind"]; readable: boolean; printed?: number[] }[];
   cost: { provider: "anthropic" | "openai"; model: string; inputTokens: number; outputTokens: number; usd: number }[];
-  /** Ambiguity / retroactive notes the rulebook schema can't hold; stored on the version and passed back to the checks. */
+  /** Ambiguity / retroactive notes the rulebook schema can't hold, and a grid's totals for several patients; stored on the version and passed back to the checks. */
   notes?: ExtractionNote[];
   /** What made the reading weaker than usual (a skipped or failed re-read, a failed cross-read), by kind; worded in jobs.ts. */
   warnings?: ReadWarning[];
@@ -26,10 +26,12 @@ export type ExtractionOutput = {
 };
 
 export type ExtractionNote = {
-  kind: "ambiguous" | "retroactive_no_date";
+  kind: "ambiguous" | "retroactive_no_date" | "estimate";
   topic: string;
   path: string | null;
   source: SourceRef | null;
+  /** kind "estimate": a printed total for several patients, taken out of the grid's per-patient totals (a notice). */
+  estimate?: { cents: number; patients: number; perPatientCents: number };
 };
 
 type CheckOptions = { crossRead?: Rulebook | null; pages?: ExtractionOutput["pages"]; notes?: ExtractionNote[] };
@@ -51,10 +53,12 @@ export interface ExtractionPort {
   /** ADR-002 PR 2: the document's own arithmetic as a referee (`confirmed_by_math`), and the zone gate on the leftover-money sweep. Pure, no AI. */
   solveGrids: typeof solveGrids;
   gateSweep: typeof gateSweep;
+  /** The latest date of signature an e-signature record prints (pages the read excluded), suggested for a date tied to signing. No AI. */
+  lastSigned: typeof lastSigned;
 }
 
 /** The parts of the port with no AI in them: fake mode uses the real ones. */
-export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "besideOnLine" | "bindEvidence" | "reviewFromEvidence" | "solveGrids" | "gateSweep";
+export type NoAi = "renderPage" | "pageCount" | "readTextLayer" | "besideOnLine" | "bindEvidence" | "reviewFromEvidence" | "solveGrids" | "gateSweep" | "lastSigned";
 
 let cached: Promise<ExtractionPort> | undefined;
 
@@ -66,8 +70,8 @@ export function getExtraction(): Promise<ExtractionPort> {
 
 /** Fake mode fakes only the AI: page images and the PDF's text come from the real PDF, so the viewer and the checks are real. */
 async function loadFake(): Promise<ExtractionPort> {
-  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, besideOnLine, bindEvidence, reviewFromEvidence, solveGrids, gateSweep }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
-  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, besideOnLine, bindEvidence, reviewFromEvidence, solveGrids, gateSweep };
+  const [{ fakeExtraction }, { renderPage, pageCount, readTextLayer, besideOnLine, bindEvidence, reviewFromEvidence, solveGrids, gateSweep, lastSigned }] = await Promise.all([import("./fake.js"), import("@dct/extraction")]);
+  return { ...fakeExtraction, renderPage, pageCount, readTextLayer, besideOnLine, bindEvidence, reviewFromEvidence, solveGrids, gateSweep, lastSigned };
 }
 
 async function loadReal(): Promise<ExtractionPort> {

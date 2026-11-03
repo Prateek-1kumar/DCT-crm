@@ -197,6 +197,17 @@ export const ReviewItem = z.object({
    * Not answerable (409) while set; cleared when the table's picks are all right, and the question closed when they aren't.
    */
   after: z.string().optional(),
+  /**
+   * The clause the question shows (an interpretation's quote) and its page: questions citing the identical quote on the
+   * same page are one card (`cards`), each still answered on its own. Absent: the question is a card of its own.
+   */
+  cites: z.object({ documentId: z.string(), page: z.number().int(), quote: z.string() }).optional(),
+  /**
+   * A date the contract ties to its last signature (the effective date, an amendment's start date): the latest date of
+   * signature its e-signature record prints, and where, which we suggest (suggest). Never written by itself: a person
+   * types or takes it, checked against the record's page in `where`.
+   */
+  signedOn: z.object({ date: z.string(), page: z.number().int(), printed: z.string() }).optional(),
 });
 export type ReviewItem = z.infer<typeof ReviewItem>;
 

@@ -17,7 +17,7 @@
  */
 import { writeFileSync } from "node:fs";
 import { and, desc, eq, lt } from "drizzle-orm";
-import { besideOnLine, bindEvidence, gateSweep, readTextLayer, reviewFromEvidence, runContractChecks, solveGrids, type TextPage } from "@dct/extraction";
+import { besideOnLine, bindEvidence, gateSweep, lastSigned, readTextLayer, reviewFromEvidence, runContractChecks, solveGrids, type TextPage } from "@dct/extraction";
 import { isExcludedPage, type ReviewItem, upgradeRulebook, type ValueEvidence } from "@dct/shared";
 import { createDb } from "../src/db/index.js";
 import { config } from "../src/config.js";
@@ -77,7 +77,7 @@ async function main() {
     const textByDoc = await Promise.all(docs.map((d) => readTextLayer(d.path, d.id, { ocr: true })));
     const pages: TextPage[] = textByDoc.flat();
     // as jobs.ts wires it, less what no version stores (above)
-    const replayed = reviewDraft({ bindEvidence, reviewFromEvidence, solveGrids, gateSweep, besideOnLine }, rb, anomalies, pages, docs, {
+    const replayed = reviewDraft({ bindEvidence, reviewFromEvidence, solveGrids, gateSweep, besideOnLine, lastSigned }, rb, anomalies, pages, docs, {
       amendment: !!earlier || docs.some((d) => d.kind === "amendment"),
       excluded: v.pages.filter(isExcludedPage),
       solver: config.extractionSolver,

@@ -15,6 +15,14 @@ import {
   type ValueEvidence,
   ValueEvidence as ValueEvidenceSchema,
   openPaths,
+  ROW_ARITHMETIC,
+  cards,
+  openCards,
+  ROUNDING_NOTICE,
+  suggest,
+  answerQuestion,
+  isoDate,
+  SIGNED_DATE_DIFFERS,
 } from "../src";
 
 // The review lists that aren't flags (ADR-001 §6): interpretations, asked only for genuine ambiguity or silence (a clause that
@@ -131,6 +139,25 @@ describe("interpretations the clause states outright (ADR-002 §4)", () => {
     expect(paths(rulebook(), { amendment: false, evidence: everything })).toEqual(paths(rulebook(), { amendment: false }));
   });
 
+  it("an amount or count limit placed by its own row's quantity × unit price = total isn't asked, quote or not; a count found in a sentence is", () => {
+    const rb = rulebook(); // the read cites no quote
+    const row = (status: ValueEvidence["status"], note: string | null = ROW_ARITHMETIC) => ({ amendment: false, evidence: [{ path: "/invoiceables/0/cap/n", status, note }] });
+    for (const kind of ["amount", "count"] as const) {
+      rb.invoiceables[0]!.cap = cap(kind, 25);
+      expect(paths(rb, row("confirmed"))).not.toContain("/invoiceables/0/cap/kind");
+      // confirmed some other way (a count in a sentence can be a ratio), or the row's figure not confirmed: asked, as before
+      expect(paths(rb, row("confirmed", null))).toContain("/invoiceables/0/cap/kind");
+      for (const status of ["attested", "conflict", "ungrounded", "confirmed_by_math"] as const) expect(paths(rb, row(status))).toContain("/invoiceables/0/cap/kind");
+      const unclear = [{ code: "AMBIGUOUS_TERM" as const, path: "/invoiceables/0/cap", message: "Ambiguous", refs: [] }];
+      expect(paths(rb, { ...row("confirmed"), anomalies: unclear })).toContain("/invoiceables/0/cap/kind");
+    }
+    // blocks and ratios have no row figure, and a screen failure's limit is always asked
+    rb.invoiceables[0]!.cap = cap("blocks_with_reauth", 25);
+    expect(paths(rb, row("confirmed"))).toContain("/invoiceables/0/cap/kind");
+    rb.screenFail!.cap = cap("count", 25);
+    expect(paths(rb, { amendment: false, evidence: [{ path: "/screenFail/cap/n", status: "confirmed", note: ROW_ARITHMETIC }] })).toContain("/screenFail/cap/kind");
+  });
+
   it("a ratio limit is told by its confirmed ratio", () => {
     const rb = quoted();
     rb.invoiceables[0]!.cap = { kind: "ratio_to_randomized", n: null, ratio: 0.5 };
@@ -207,14 +234,14 @@ describe("unclear wording about anything the master holds is asked, never only a
     return rb;
   };
 
-  it("a flag on a cap, a fee or a section asks the interpretation fields under it, even where the figure is confirmed", () => {
+  it("a flag on a cap or a fee asks the interpretation fields under it, even where the figure is confirmed", () => {
     const rb = quoted();
     const sure = [{ path: "/invoiceables/0/cap/n", status: "confirmed" as const }, { path: "/siteFees/0/amountCents", status: "confirmed" as const }];
     rb.siteFees[0]!.trigger = "one_time";
     const printed = new Map([["/siteFees/0/trigger", "one-time payment"]]);
     // stated outright and confirmed: not asked
     expect(interpretations(rb, { amendment: false, evidence: sure, printed }).map((i) => i.path)).not.toEqual(expect.arrayContaining(["/invoiceables/0/cap/kind"]));
-    for (const [path, field] of [["/invoiceables/0/cap", "/invoiceables/0/cap/kind"], ["/invoiceables/0", "/invoiceables/0/cap/kind"], ["/siteFees/0", "/siteFees/0/trigger"], ["/siteFees", "/siteFees/0/trigger"]] as const) {
+    for (const [path, field] of [["/invoiceables/0/cap", "/invoiceables/0/cap/kind"], ["/invoiceables/0", "/invoiceables/0/cap/kind"], ["/siteFees/0", "/siteFees/0/trigger"]] as const) {
       const a = flag(path);
       expect(isNotice(a, rb), path).toBe(false);
       expect(notices([a], rb), path).toEqual([]);
@@ -226,6 +253,29 @@ describe("unclear wording about anything the master holds is asked, never only a
     }
     // a sibling's path isn't a parent's: "/siteFees/1" says nothing about "/siteFees/10"
     expect(askedAsInterpretation(flag("/siteFees/1"), new Set(["/siteFees/10/trigger"]))).toBe(false);
+  });
+
+  it("a flag on a whole list is asked once, on its own, never folded into each item's question", () => {
+    const rb = quoted();
+    rb.siteFees[0]!.trigger = "one_time";
+    const sure = [{ path: "/siteFees/0/amountCents", status: "confirmed" as const }];
+    const printed = new Map([["/siteFees/0/trigger", "one-time payment"]]);
+    const a = flag("/siteFees"); // "IRB fees have no amount": about the list, not about each fee's trigger
+    const items = interpretations(rb, { amendment: false, anomalies: [a] });
+    for (const i of items.filter((x) => x.path?.startsWith("/siteFees/"))) {
+      expect(i.reason, i.path!).toBe("INTERPRETATION");
+      expect(i.question.startsWith("Ambiguous"), i.path!).toBe(false);
+    }
+    // a trigger printed beside its confirmed amount still goes unasked: the list's flag doesn't make each fee unclear
+    expect(interpretations(rb, { amendment: false, evidence: sure, printed, anomalies: [a] }).map((i) => i.path)).not.toContain("/siteFees/0/trigger");
+    expect(askedAsInterpretation(a, new Set(items.map((i) => i.path!)))).toBe(false);
+    // never lost: the contract problem asks it once, blocking, with its message
+    const asked = fromAnomalies([a], rb, new Set());
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ reason: "AMBIGUOUS_TERM", path: "/siteFees", blocking: true });
+    expect(asked[0]!.question.startsWith("Ambiguous: per subject or for the whole study.")).toBe(true);
+    // a flag on one fee is still that fee's question
+    expect(askedAsInterpretation(flag("/siteFees/0"), new Set(["/siteFees/0/trigger"]))).toBe(true);
   });
 
   it("a flag on a {value, prov} wrapper with no interpretation field asks its value", () => {
@@ -249,5 +299,131 @@ describe("unclear wording about anything the master holds is asked, never only a
       expect(isNotice(flag(path), rb), String(path)).toBe(true);
       expect(fromAnomalies([flag(path)], rb, new Set()), String(path)).toEqual([]);
     }
+  });
+});
+
+describe("rounding the contract is silent on is a notice, not a question (owner, 2026-11-02)", () => {
+  const roundingAsked = (rb: Rulebook, roundingSaid?: boolean, anomalies: ContractAnomaly[] = []) => interpretations(rb, { amendment: false, roundingSaid, anomalies }).some((i) => i.path === "/rounding/value");
+  it("not asked when the read quotes nothing about it and the contract's text never mentions it", () => {
+    expect(roundingAsked(rulebook(), false)).toBe(false);
+  });
+  it("asked when the read quotes a clause, the text mentions rounding anywhere, nothing says which, or the wording is flagged", () => {
+    const quoted = rulebook();
+    quoted.rounding = s("printed_amounts", "Amounts are rounded to the nearest whole dollar");
+    expect(roundingAsked(quoted, false)).toBe(true);
+    expect(roundingAsked(rulebook(), true)).toBe(true);
+    expect(roundingAsked(rulebook(), undefined)).toBe(true);
+    const flag: ContractAnomaly = { id: "AMBIGUOUS_TERM:/rounding", code: "AMBIGUOUS_TERM", severity: "warning", message: "Unclear rounding", path: "/rounding", refs: [], detail: {}, resolution: null };
+    expect(roundingAsked(rulebook(), false, [flag])).toBe(true);
+  });
+  it("the notice says printed figures are billed to the cent, only while nothing asks or answered it, on a read contract with no quote", () => {
+    const rb = rulebook();
+    const none = { review: [], evidence: [] };
+    expect(notices([], rb, none)).toEqual([{ id: "rounding", message: ROUNDING_NOTICE, where: [] }]);
+    expect(ROUNDING_NOTICE).toMatch(/printed figures are billed to the cent/);
+    expect(notices([], rb, { review: [{ path: "/rounding/value" }], evidence: [] })).toEqual([]);
+    expect(notices([], rb, { review: [], evidence: [{ path: "/rounding/value" }] })).toEqual([]);
+    expect(notices([], rb)).toEqual([]); // no questions given: not known
+    const quoted = rulebook();
+    quoted.rounding = s("cents", "rounded to the cent");
+    expect(notices([], quoted, none)).toEqual([]);
+    const typed = rulebook();
+    typed.rounding = { value: "unspecified", prov: { source: null, confidence: 1, method: "manual", crossCheck: "not_checked" } };
+    expect(notices([], typed, none)).toEqual([]);
+  });
+});
+
+describe("cards: questions citing the identical quote on the same page are one card", () => {
+  const q = (id: string, cites?: { page: number; quote: string }, outcome: ReviewItem["outcome"] = null): ReviewItem => ({
+    id, kind: "interpretation", reason: "INTERPRETATION", path: `/${id}`, question: id, input: null, options: [], where: [], blocking: true, answer: null, outcome, compare: null, sentBack: null,
+    ...(cites ? { cites: { documentId: "d1", ...cites } } : {}),
+  });
+  const ids = (cs: ReviewItem[][]) => cs.map((c) => c.map((i) => i.id));
+  it("the screen-fail basis, cap and how it's paid, on one sentence, are one card; each keeps its own question", () => {
+    const rb = rulebook();
+    rb.screenFail = { ...rb.screenFail!, cap: cap("count", 5), prov: prov("Screen failures are paid $500 each, up to 5, by invoice.") };
+    const items = interpretations(rb, { amendment: false });
+    const card = cards(items).find((c) => c.length > 1)!;
+    expect(card.map((i) => i.path)).toEqual(["/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia"]);
+    expect(new Set(card.map((i) => i.id)).size).toBe(3);
+    expect(cards(items)).toHaveLength(items.length - 2);
+  });
+  it("never by field name or alike wording: two clauses, the same words on another page, or no quote stay apart", () => {
+    const items = [
+      q("a", { page: 3, quote: "Screen failures are paid $500 each." }),
+      q("b", { page: 3, quote: "Screen failures are paid $500 each, up to 5." }),
+      q("c", { page: 4, quote: "Screen failures are paid $500 each." }),
+      q("d", { page: 3, quote: "screen failures are paid $500 each." }),
+      q("e"),
+      q("f"),
+      q("g", { page: 3, quote: "Screen failures  are paid\n$500 each." }),
+    ];
+    expect(ids(cards(items))).toEqual([["a", "g"], ["b"], ["c"], ["d"], ["e"], ["f"]]);
+  });
+  it("a money term's sentence joins the identical sentence's card in another document or on another page; a different sentence never", () => {
+    const term = (id: string, documentId: string, page: number, quote: string): ReviewItem => ({ ...q(id), kind: "unaccounted", reason: "UNACCOUNTED_TERM", path: null, where: [{ documentId, page, box: null }], term: { quote, amounts: [] } });
+    const P = "Payments are made quarterly within 45 days of receipt of invoice.";
+    const SF = "Screen failures are paid $500 each.";
+    const items = [
+      term("a", "base", 7, P),
+      term("b", "amendment", 2, P), // the amendment repeats the base contract's paragraph word for word
+      term("c", "amendment", 3, "Payments are made monthly within 45 days of receipt of invoice."),
+      term("d", "amendment", 4, `  ${P.replace("within", "within\n")}`),
+      q("e", { page: 3, quote: SF }),
+      term("f", "amendment", 5, SF),
+      q("g", { page: 4, quote: SF }), // the same clause cited on another page stays its own card
+    ];
+    expect(ids(cards(items))).toEqual([["a", "b", "d"], ["c"], ["e", "f"], ["g"]]);
+  });
+
+  it("two fees whose triggers sit in one footnote are one card; two whose own rows are quoted are two", () => {
+    const rb = rulebook();
+    const fee = rb.siteFees[0]!;
+    rb.siteFees = [fee, { ...fee, name: "Close-out" }, { ...fee, name: "Archiving", prov: prov("Archiving fee, payable at close-out") }];
+    rb.invoiceables = [];
+    const byFee = cards(interpretations(rb, { amendment: false }).filter((i) => /^\/siteFees\//.test(i.path ?? "")));
+    expect(byFee.map((c) => c.map((i) => i.path))).toEqual([["/siteFees/0/trigger", "/siteFees/1/trigger"], ["/siteFees/2/trigger"]]);
+  });
+  it("needs you counts the cards with a question open; every question is still answered on its own", () => {
+    const one = { page: 3, quote: "One clause." };
+    const items = [q("a", one), q("b", one, "matched"), q("c", one, "cant_tell"), q("d", { page: 3, quote: "Another." }, "chosen")];
+    expect(ids(openCards(items))).toEqual([["a", "c"]]);
+    // answering one question of a card leaves the other open
+    const rb = rulebook();
+    rb.screenFail = { ...rb.screenFail!, prov: prov("Screen failures are paid $500 each, by invoice.") };
+    const review = interpretations(rb, { amendment: false });
+    const d = { version: 1, byHand: false, rulebook: rb, review, evidence: [], editors: [] };
+    const r = answerQuestion(d, "interpret:/screenFail/basis", { optionId: "fixed", by: "Sam" }, { isoDate, now: "2026-11-02T00:00:00Z" });
+    expect(r).toMatchObject({ outcome: "matched" });
+    expect(openCards(d.review).find((c) => c.some((i) => i.path === "/screenFail/paidVia"))!.map((i) => i.path)).toEqual(["/screenFail/paidVia"]);
+  });
+});
+
+describe("a date tied to the last signature: the e-signature record's latest date is suggested, never written", () => {
+  const item = (over: Partial<ReviewItem> = {}): ReviewItem => ({
+    id: "anomaly:AMBIGUOUS_TERM:/study/effectiveDate", kind: "interpretation", reason: "AMBIGUOUS_TERM", path: "/study/effectiveDate/value", question: "q", input: "date", options: [],
+    where: [{ documentId: "d1", page: 21, box: null }], blocking: true, answer: null, outcome: null, compare: null, sentBack: null,
+    signedOn: { date: "2023-08-16", page: 21, printed: "2023-08-16" }, ...over,
+  });
+  it("two dates for one term (SIGNED_DATE_DIFFERS): nothing suggested, and the pick writes the date picked", () => {
+    const rb = rulebook();
+    const q = item({ id: "signed:/study/effectiveDate/value", kind: "contract_problem", reason: SIGNED_DATE_DIFFERS, input: null, signedOn: undefined, options: [{ id: "2025-01-10", label: "a" }, { id: "2025-01-11", label: "b" }] });
+    expect(suggest(q, { rulebook: rb, evidence: [] })).toBeNull();
+    const d = { version: 1, byHand: false, rulebook: rb, review: [q], evidence: [] as ValueEvidence[], editors: [] as string[] };
+    expect(answerQuestion(d, q.id, { optionId: "2025-01-11", by: "Sam" }, { isoDate, now: "2026-11-02T00:00:00Z" })).toMatchObject({ outcome: "chosen", set: { path: "/study/effectiveDate/value", before: "2025-01-10", after: "2025-01-11" } });
+    expect(d.rulebook.study.effectiveDate.value).toBe("2025-01-11");
+  });
+
+  it("suggested on an open date question, with the record's page, even with no value read; nothing once settled or without a record", () => {
+    const rb = rulebook();
+    rb.study.effectiveDate = s(null);
+    expect(suggest(item(), { rulebook: rb, evidence: [] })).toMatchObject({ value: "2023-08-16", why: expect.stringMatching(/e-signature record \(page 21\)/) });
+    expect(suggest(item({ outcome: "chosen" }), { rulebook: rb, evidence: [] })).toBeNull();
+    expect(suggest(item({ signedOn: undefined }), { rulebook: rb, evidence: [] })).toBeNull();
+    // taking it is typing it: chosen by the person, attested, and the master holds nothing until then
+    const d = { version: 1, byHand: false, rulebook: rb, review: [item()], evidence: [] as ValueEvidence[], editors: [] as string[] };
+    expect(answerQuestion(d, item().id, { value: "2023-08-16", by: "Sam" }, { isoDate, now: "2026-11-02T00:00:00Z" })).toMatchObject({ outcome: "chosen" });
+    expect(d.rulebook.study.effectiveDate.value).toBe("2023-08-16");
+    expect(d.evidence).toEqual([expect.objectContaining({ path: "/study/effectiveDate/value", status: "attested" })]);
   });
 });

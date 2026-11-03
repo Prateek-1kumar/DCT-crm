@@ -17,7 +17,7 @@ import {
   itemIds,
   labelFor,
   leaf,
-  openItems,
+  openCards,
   PAGE_OPTIONS,
   type PageBox,
   parseCents,
@@ -26,6 +26,8 @@ import {
   rejectBlank,
   rejectTable,
   type ReviewItem,
+  settled,
+  SIGNED_DATE_DIFFERS,
   type Rulebook,
   type RulebookVersionDto,
   TABLE_CHECK,
@@ -52,9 +54,12 @@ export { askAbout, at, empty, leaf, recheck } from "@dct/shared";
 const BLANK = { answer: null, outcome: null, compare: null, sentBack: null } as const;
 const box = (documentId: string, page: number): PageBox => ({ documentId, page, box: null });
 
-/** For studies.needs_you: a by-hand draft still being typed counts as one thing to do (the typing), as in the web. */
+/**
+ * For studies.needs_you: the cards with a question open (openCards: questions on one quote are one card), as in the web; a
+ * by-hand draft still being typed counts as one thing to do (the typing).
+ */
 export const needsYouOf = (v: { status: string; byHand: boolean; typingDoneAt: Date | null; review: ReviewItem[] } | undefined) =>
-  v?.status !== "draft" ? 0 : v.byHand && !v.typingDoneAt ? 1 : openItems(v.review).length;
+  v?.status !== "draft" ? 0 : v.byHand && !v.typingDoneAt ? 1 : openCards(v.review).length;
 
 // ---------- questions at extraction ----------
 
@@ -137,6 +142,89 @@ const hiddenWarnings = (pages: TextPage[], docs: { id: string; filename: string 
   );
 
 const whereKey = (w: PageBox) => JSON.stringify([w.documentId, w.page, w.box]);
+const pageText = (p: TextPage) => p.words.filter((w) => !w.hidden).map((w) => w.text).join(" ");
+
+/** Words that say something about rounding (owner, 2026-11-02: a contract that mentions it anywhere is asked how it rounds). */
+const ROUNDING = /\bround(?:ed|ing)\b|\bround(?:s)?\s+(?:up|down|off|to)\b|\bnearest\s+(?:whole\s+)?(?:dollar|cent|penny)s?\b|\bwhole\s+dollars?\b/i;
+
+/** Words that tie a date to the last signature ("the date of last signature", "effective upon execution", "fully executed"). */
+const SIGNING = /\b(?:last|final|latest|later|full|fully)\b[^.;]{0,30}\b(?:signature|signed|signing|execution|executed)\b|\b(?:date\s+of|upon|on|when|once)\b[^.;]{0,20}\b(?:signature|signed|execution|executed)\b/i;
+/** …unless the words date it otherwise: a retroactive start is before any signature, "regardless of the date of signature" is no tie. */
+const NOT_SIGNING = /\bretroactiv|\bregardless\b|\birrespective\b|\bnotwithstanding\b/i;
+
+type Records = ReadonlyMap<string, { page: number; last: ReturnType<ExtractionPort["lastSigned"]> }>;
+
+/** Whether the date at `path` is tied to the last signature: by its own quote, or the read's flag about it. */
+const tiedToSigning = (rb: Rulebook, path: string, anomalies: Pick<ContractAnomaly, "path" | "message">[]) => {
+  const words = [provOf(rb, path)?.source?.quote?.trim(), ...anomalies.filter((a) => a.path && (path === a.path || path.startsWith(`${a.path}/`))).map((a) => a.message)].filter(Boolean).join(" ");
+  return SIGNING.test(words) && !NOT_SIGNING.test(words);
+};
+const longDate = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+
+/**
+ * A date the contract ties to its last signature, asked with none read (the effective date, an amendment's start): the
+ * question names the document's e-signature record (a page the read excludes, ADR-002, read here and nowhere else) in
+ * our own words, never "the signature page isn't provided", and suggests the latest date of signature the record prints
+ * (`signedOn`, lastSigned), when one reads one way. The tie is in the field's own quote or the read's flag about it, and
+ * not with a retroactive start. Never written or confirmed by itself: a person types or takes it (the record and a
+ * colleague's invoice can differ by a day). Mutates `review`.
+ */
+function signedDates(review: ReviewItem[], rb: Rulebook, anomalies: Pick<ContractAnomaly, "code" | "path" | "message">[], records: Records, docs: { id: string; filename: string }[]) {
+  const retroactive = anomalies.some((a) => a.code === "RETROACTIVE_NO_DATE");
+  for (const i of review) {
+    const path = i.path;
+    if (settled(i) || i.input !== "date" || (path !== "/study/effectiveDate/value" && path !== "/appliesFrom/value") || (path === "/appliesFrom/value" && retroactive)) continue;
+    // a date the read gave is checked against the page like any value (the PDF's text at its spot, else our reading)
+    if (at(rb, path) !== null) continue;
+    const quote = provOf(rb, path)?.source?.quote?.trim();
+    if (!tiedToSigning(rb, path, anomalies)) continue;
+    const documentId = [...i.where.map((w) => w.documentId), provOf(rb, path)?.source?.documentId].find((d) => !!d && records.has(d));
+    const record = documentId ? records.get(documentId) : undefined;
+    if (!documentId || !record) continue;
+    const who = rb.documents.find((d) => d.id === documentId)?.kind === "amendment" ? "The amendment" : "The contract";
+    const name = docs.find((d) => d.id === documentId)?.filename ?? "the contract";
+    const ask = path === "/appliesFrom/value" ? "From what date do its terms apply?" : "What date does it take effect?";
+    const page = record.last?.page ?? record.page;
+    Object.assign(i, {
+      question: [`${who} takes effect on the date it was last signed. Its e-signature record is page ${page} of “${name}”. ${ask}`, quote && `The contract says: “${quote}”`].filter(Boolean).join(" "),
+      where: [box(documentId, page), ...i.where.filter((w) => !(w.documentId === documentId && w.page === page))],
+      ...(record.last ? { signedOn: { date: record.last.date, page: record.last.page, printed: record.last.printed } } : {}),
+    });
+  }
+}
+
+/**
+ * A consistency check, beside signedDates: the master holds an effective date the contract ties to its last signature,
+ * and the document's e-signature record prints a latest date of signature (lastSigned) that differs: one term, two dates
+ * in one contract. One question shows both, with their pages, and suggests neither: page 1 may print a "dated as of" date
+ * that governs. Asked whatever the date's evidence (confirmed, or open), which code never changes or downgrades; a person's
+ * pick writes the date (SIGNED_DATE_DIFFERS). No record, a record giving no one date, equal dates, or a date not tied to
+ * signing: nothing.
+ */
+function signedDiffers(rb: Rulebook, evidence: ValueEvidence[], anomalies: Pick<ContractAnomaly, "path" | "message">[], records: Records, docs: { id: string; filename: string }[]): ReviewItem[] {
+  const path = "/study/effectiveDate/value";
+  const value = rb.study.effectiveDate.value;
+  const src = provOf(rb, path)?.source;
+  const spot = evidence.find((e) => e.path === path)?.where[0] ?? (src ? box(src.documentId, src.page) : undefined);
+  const documentId = [spot?.documentId, src?.documentId].find((d) => !!d && records.has(d));
+  const last = documentId ? records.get(documentId)?.last : null;
+  if (!value || !last || last.date === value || !tiedToSigning(rb, path, anomalies)) return [];
+  const name = docs.find((d) => d.id === last.documentId)?.filename ?? "the contract";
+  const printedAt = spot ? ` on page ${spot.page}` : "";
+  const quote = src?.quote?.trim();
+  return [{
+    ...BLANK, id: `signed:${path}`, kind: "contract_problem", reason: SIGNED_DATE_DIFFERS, path, blocking: true, input: null,
+    question: [
+      `The contract takes effect on the date it was last signed, but it gives two dates: ${longDate(value)}${printedAt}, and ${longDate(last.date)} for the last signature on its e-signature record (page ${last.page} of “${name}”). Which date does it take effect?`,
+      quote && `The contract says: “${quote}”`,
+    ].filter(Boolean).join(" "),
+    options: [
+      { id: value, label: `${longDate(value)}${spot ? `, as page ${spot.page} gives it` : ", as we read it"}` },
+      { id: last.date, label: `${longDate(last.date)}, the last signature on the e-signature record (page ${last.page})` },
+    ],
+    where: [...(spot ? [spot] : []), box(last.documentId, last.page)],
+  }];
+}
 
 /**
  * The words and figures of a money term the master doesn't hold, from the PDF's text: what a "bill by hand" answer lists.
@@ -182,16 +270,17 @@ const capWaits = (path: string, asking: ReadonlySet<string>) => /\/cap\/(?:n|rat
  * read couldn't carry over. `amendment`:
  * the read includes an amendment. `excluded`: pages the read classed as an e-signature record or notice or a reference list
  * (ADR-002): they're not swept, so their leftover money terms and scan questions are dropped here, and `excluded` in the
- * result says how many spans each had (counts only, never amounts). Returns what to say on the draft (`warnings`) and the
+ * result says how many spans each had (counts only, never amounts); an e-signature record's (`kind` esign_certificate)
+ * dates of signature are read for a date the contract ties to its last signature (signedDates). Returns what to say on the draft (`warnings`) and the
  * skipped corrections with where each is asked now (`skipped`, for the log).
  */
 export function reviewDraft(
-  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence"> & Partial<Pick<ExtractionPort, "solveGrids" | "gateSweep" | "besideOnLine">>,
+  port: Pick<ExtractionPort, "bindEvidence" | "reviewFromEvidence"> & Partial<Pick<ExtractionPort, "solveGrids" | "gateSweep" | "besideOnLine" | "lastSigned">>,
   rb: Rulebook,
   anomalies: ContractAnomaly[],
   pages: TextPage[],
   docs: { id: string; filename: string }[],
-  opts: { amendment?: boolean; carried?: Carried | null; excluded?: { documentId: string; page: number }[]; solver?: SolverMode; rounding?: boolean; printedRows?: PrintedRow[]; anchors?: Anchor[]; nonFee?: NonFee[] } = {},
+  opts: { amendment?: boolean; carried?: Carried | null; excluded?: { documentId: string; page: number; kind?: string }[]; solver?: SolverMode; rounding?: boolean; printedRows?: PrintedRow[]; anchors?: Anchor[]; nonFee?: NonFee[] } = {},
 ): Checked & {
   warnings: string[];
   skipped: (Skipped & { askedAt?: string })[];
@@ -215,7 +304,7 @@ export function reviewDraft(
   const solved = solve(port.solveGrids, rb, scanned, opts.solver ?? "guide", bound.rows, opts.rounding, new Set(pages.filter((p) => p.source === "ocr").map((p) => `${p.documentId}#${p.page}`)));
   const evidence = solved.evidence;
   // the leftover-money sweep, zone-gated on the solved evidence (a math-confirmed cell is bound like a printed one); dropped spans are counted, never silent
-  const gated = port.gateSweep ? port.gateSweep(bound.unaccounted.filter((s) => !off.has(key(s.where))), { evidence, pages, rb, rows: bound.rows, vouched: solved.report?.vouched, nonFee: opts.nonFee }) : null;
+  const gated = port.gateSweep ? port.gateSweep(bound.unaccounted.filter((s) => !off.has(key(s.where))), { evidence, pages, rb, rows: bound.rows, vouched: solved.report?.vouched, nonFee: opts.nonFee, itemRows: bound.itemRows }) : null;
   const swept = gated ? gated.kept : bound.unaccounted.filter((s) => !off.has(key(s.where)));
   const scan = new Set(evidence.filter(onScan).map((e) => e.path));
   // each money-term question is about the spans at its spots (reviewFromEvidence groups them by line or sentence)
@@ -240,7 +329,11 @@ export function reviewDraft(
       return words ? [[`/siteFees/${i}/trigger`, words] as const] : [];
     }),
   );
-  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence, printed });
+  // Rounding is asked only where the contract says something about it (owner, 2026-11-02): the read's quote, or the word
+  // anywhere in its text. A page nothing searched (a scan with no reading) leaves that unknown, so it's asked.
+  const unsearched = pages.some((p) => !off.has(key(p)) && p.source !== "text" && p.source !== "ocr");
+  const roundingSaid = pages.some((p) => ROUNDING.test(pageText(p))) || (unsearched ? undefined : false);
+  const interp = interpretations(rb, { amendment: !!opts.amendment, anomalies, evidence, printed, roundingSaid });
   const asking = new Set(interp.map((i) => i.path!));
   const review = [
     // a value asked as an interpretation is asked once, there (the start date: typed, or "prospective only")
@@ -256,6 +349,16 @@ export function reviewDraft(
     if (!review.some((i) => i.table?.id === id)) rejectTable({ review, evidence }, id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
   // a blank group whose table has no picks to wait for (no columns to pick from) is typed cell by cell, as that table's held prices are
   for (const c of bound.blankChecks) if (c.after && !review.some((i) => i.table?.id === c.after)) rejectBlank({ review, evidence }, c.id, (p, qid, reason) => askAbout(rb, evidence, p, qid, reason));
+  // each document's e-signature record (its excluded certificate pages), for a date the contract ties to its last signature
+  if (port.lastSigned) {
+    const records = new Map<string, { page: number; last: ReturnType<ExtractionPort["lastSigned"]> }>();
+    for (const id of new Set((opts.excluded ?? []).filter((x) => x.kind === "esign_certificate").map((x) => x.documentId))) {
+      const these = (opts.excluded ?? []).filter((x) => x.kind === "esign_certificate" && x.documentId === id).map((x) => x.page).sort((a, b) => a - b);
+      records.set(id, { page: these[0]!, last: port.lastSigned(pages.filter((p) => p.documentId === id && these.includes(p.page))) });
+    }
+    signedDates(review, rb, anomalies, records, docs);
+    review.push(...signedDiffers(rb, evidence, anomalies, records, docs));
+  }
   const lost = opts.carried ? uncarried(rb, evidence, opts.carried, new Set(review.flatMap((i) => (i.path ? [i.path] : []))), asking) : { items: [], warnings: [], skipped: [] };
   review.push(...lost.items);
   return {

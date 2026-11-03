@@ -32,8 +32,13 @@ const answer = async (id: string, item: string, body: object, v = 1) => {
 const G2_TOTAL = "/budgetGrids/1/visits/1/totalCents"; // read 8,488.00, printed 8,489.00
 const NET_DAYS = "/payment/netDays/value"; // read 45, no quote
 const UNGROUNDED = ["/overhead/pct/value", NET_DAYS, "/deadlines/0/value"];
-/** What every read of the fake work order asks a person to pick blind (ADR-001 §6), in the order it asks. */
-const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value", "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia", "/rounding/value"];
+/**
+ * What every read of the fake work order asks a person to pick (ADR-001 §6), in the order it asks. Not rounding: the work
+ * order never mentions it, so it's a notice (owner, 2026-11-02).
+ */
+const INTERPRETED = ["/overhead/appliesTo/value", "/payment/visitPayment/value", "/screenFail/basis", "/screenFail/cap/kind", "/screenFail/paidVia"];
+/** The screen-fail basis, cap and how it's paid quote one sentence: one card in needs you (cards). */
+const ONE_CARD = 2;
 
 async function draft(seed = "s") {
   const { studyId, doc } = await newStudy(app, seed);
@@ -66,7 +71,7 @@ describe("reading checks every number against the PDF's own text", () => {
       { id: "printed", label: "The visit total as printed", note: "What should we ask the sponsor?" },
       { id: "sum", label: "Its subtotal, overhead and non-procedure amounts added up", note: "What should we ask the sponsor?" },
     ]);
-    expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 + INTERPRETED.length });
+    expect(await summary(studyId)).toMatchObject({ status: "needs_review", needsYou: 8 + INTERPRETED.length - ONE_CARD });
     expect((await get<StudyDetailDto>(`/studies/${studyId}`)).documents[0]!.text).toBe("text");
   });
 

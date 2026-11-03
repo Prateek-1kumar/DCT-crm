@@ -1,6 +1,6 @@
 "use client";
 
-import type { MasterSection, ReviewItem, RulebookVersionDto, StudyDetailDto, VersionSummaryDto } from "@dct/shared";
+import { cards, type MasterSection, type ReviewItem, type RulebookVersionDto, type StudyDetailDto, type VersionSummaryDto } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, BadgeCheck, ChevronDown, Download, FileSpreadsheet, Printer, Search, X } from "lucide-react";
 import Link from "next/link";
@@ -135,7 +135,7 @@ function StageCard({ study, stage, draft }: { study: StudyDetailDto; stage: Stag
   if (stage.stage === "Approve") return <ApproveCard study={study} draft={draft} />;
   const open = needsYou(draft.review);
   const kinds = new Map<ReviewItem["kind"], number>();
-  for (const i of open) kinds.set(i.kind, (kinds.get(i.kind) ?? 0) + 1);
+  for (const [i] of open) kinds.set(i!.kind, (kinds.get(i!.kind) ?? 0) + 1);
   return (
     <Card className="flex flex-col gap-4 p-6">
       <CheckLine draft={draft} />
@@ -154,7 +154,7 @@ function StageCard({ study, stage, draft }: { study: StudyDetailDto; stage: Stag
           </p>
         </div>
         <Link href={`/studies/${study.id}/review`} className={btnCls("primary")}>
-          {open.length < draft.review.length ? "Continue answering →" : "Start answering →"}
+          {open.length < cards(draft.review).length ? "Continue answering →" : "Start answering →"}
         </Link>
       </div>
     </Card>

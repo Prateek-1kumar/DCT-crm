@@ -1,11 +1,13 @@
 import type { PageBox, Rulebook, ValueEvidence } from "@dct/shared";
-import type { RowBand } from "./binder";
-import { bare, centsOf, frame, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
+import { type ItemRow, QUOTE_WORD, type RowBand } from "./binder";
+import { patientCounts, patientsTimes } from "./checks";
+import { bare, centsOf, frame, KEYWORDS, NUMBER, sentences, type Span, type TextPage, visualLines, type Word } from "./textlayer";
 
 /**
  * The leftover-money sweep's gate (ADR-002 §1.4, the guide's Step 5): which unaccounted spans are still worth a question.
  * Pure: reads its input, returns new lists, prints nothing. Every drop keeps its reason and box, so a page can say
- * "N amounts were not asked because ...". Order: consumed (row band, then zone), insurance, explained by the master, currency cue
+ * "N amounts were not asked because ...". Order: a figure-less span with no payment word, or one a master value quotes; consumed
+ * (row band, then zone), insurance, explained by the master, currency cue
  * (a span is counted once). No rule keeps the sweep to grid pages: terms pages hold the holdback, the net days and the start-up
  * fees, and "there is no holdback" is found by sweeping them and finding nothing, so they stay swept (only the insurance and
  * currency-cue filters apply to them).
@@ -21,6 +23,11 @@ export const SWEEP = {
   triggerTokens: 10,
   /** "Near a payment verb" for the insurance exclusion: a clause's own amount sits within a few words of "reimburse". */
   verbTokens: 8,
+  /**
+   * A figure-less sentence is the master's when a master value's quote on its page says it whole, or says at least this share
+   * of its words inside it (the rest is that clause's own wording, not a second term).
+   */
+  quotedShare: 0.5,
   /** The zone grows by one cell, never more than this fraction of the page (a row-wide box would otherwise swallow it). */
   maxMargin: 0.1,
   /**
@@ -51,14 +58,16 @@ export type SweepCtx = {
    * a rule of ours agrees (`ownRule`); the rest stay asked, counted in the report as `modelKept`.
    */
   nonFee?: readonly { documentId: string; page: number; word: number; why: string }[];
+  /** Fee and invoiceable rows by their label, with the one set of figures that give quantity × unit price = total (`bindEvidence(...).itemRows`). */
+  itemRows?: readonly ItemRow[];
 };
 
-export type DropReason = "consumed" | "insurance_clause" | "explained_by_master" | "no_currency_cue" | "model_non_fee";
+export type DropReason = "no_payment_word" | "quoted_by_master" | "consumed" | "row_arithmetic" | "insurance_clause" | "explained_by_master" | "no_currency_cue" | "model_non_fee";
 /** `as`: for an explained drop, which master value the amount equals (a count per kind shows what the filter hid). */
 export type Dropped = { reason: DropReason; where: PageBox; span: Span; as?: string };
 /** `explainedBy`: the explained drops counted by the kind of master amount they equal. */
 /** `modelNonFee`: spans dropped on the read's say-so and a rule of ours, by its reason; `modelKept`: spans the read called no fee that no rule of ours backed (still asked). */
-export type SweepReport = { consumed: number; insurance: number; explained: number; noCue: number; kept: number; explainedBy: Record<string, number>; modelNonFee: Record<string, number>; modelKept: number };
+export type SweepReport = { noPayment: number; quoted: number; consumed: number; arithmetic: number; insurance: number; explained: number; noCue: number; kept: number; explainedBy: Record<string, number>; modelNonFee: Record<string, number>; modelKept: number };
 
 type B = readonly [number, number, number, number];
 const EPS = 1e-6;
@@ -128,9 +137,10 @@ function zonesOf(evidence: readonly ValueEvidence[]) {
   return out;
 }
 
-// Duplicated from the inventory's KEYWORDS (textlayer.ts keeps them private) plus the guide's own triggers.
-const TRIGGER = /\b(?:pay|paid|invoic|fees?\b|cost|reimburs|overhead|indirect|f\s?&\s?a\b|holdback|hold back|withh|retain|refund|offset|interest|late\b|caps?\b|capped|maximum|not to exceed|escalat|increas|stipend|screen[\s-]?fail|terminat|budget|compensat|start[\s-]?up|per chart|per mile)/i;
-const INSURANCE = /(?:commercial general liability|insurance|per occurrence|annual aggregate|indemnif)/i;
+// The inventory's money words plus the guide's own triggers.
+const TRIGGER = new RegExp(String.raw`${KEYWORDS.money.source}|\b(?:hold back|caps?\b|capped|maximum|start[\s-]?up|per chart|per mile)`, "i");
+/** Not "per occurrence": fee lines print it too ("SAE report, $350 per occurrence"); an insurance limit names insurance or liability. */
+const INSURANCE = /(?:insurance|liabilit|annual aggregate|indemnif)/i;
 /**
  * Words that move money: the fee clause that merely mentions insurance ("Sponsor will reimburse the premium, up to
  * $5,000") has one next to its amount, and an insurance LIMIT ("$1,000,000 per occurrence") never does. "withhold",
@@ -229,8 +239,8 @@ const isMoney = (w: Word) => NUMBER.test(bare(w.text)) && /\$|\.\d{2}\b|\d,\d{3}
 /** The span's cents: an amount carries them; a bare table number is read as the contract's amounts are (centsOf). */
 const centsFor = (s: Span) => s.cents ?? centsOf(bare(s.words.map((w) => w.text).join("")));
 
-type Layout = { line: Map<Word, Word[]>; money: Word[]; setOff: (w: Word) => boolean };
-/** A page's lines (as the inventory reads rows) and the money cells that are set off by a column gap, as a table's cells are. */
+type Layout = { line: Map<Word, Word[]>; money: Word[]; setOff: (w: Word) => boolean; patients: Set<number> };
+/** A page's lines (as the inventory reads rows), the money cells that are set off by a column gap, as a table's cells are, and the patient counts it states. */
 function layout(p: TextPage): Layout {
   const line = new Map<Word, Word[]>();
   const money: Word[] = [];
@@ -239,9 +249,10 @@ function layout(p: TextPage): Layout {
     const i = l.indexOf(w);
     return i === 0 || frame(w)[0] - frame(l[i - 1]!)[2] >= frame(w)[3] - frame(w)[1];
   };
-  for (const l of visualLines(p.words.filter((w) => !w.hidden))) for (const w of l) line.set(w, l);
+  const lines = visualLines(p.words.filter((w) => !w.hidden));
+  for (const l of lines) for (const w of l) line.set(w, l);
   for (const w of line.keys()) if (isMoney(w) && setOff(w)) money.push(w);
-  return { line, money, setOff };
+  return { line, money, setOff, patients: patientCounts(lines.map((l) => l.map((w) => w.text).join(" ")).join("\n")) };
 }
 
 /**
@@ -266,13 +277,18 @@ function tableLike(w: Word, lay: Layout) {
  */
 function explained(span: Span, page: TextPage, master: { amounts: Map<number, string>; words: Set<string> }, layouts: Map<string, Layout>) {
   const cents = centsFor(span);
-  const as = cents === null ? undefined : master.amounts.get(cents);
-  if (!as) return undefined;
+  if (cents === null) return undefined;
   const lay = layouts.get(`${page.documentId}#${page.page}`) ?? layout(page);
   layouts.set(`${page.documentId}#${page.page}`, lay);
+  // a total for as many patients as the page states, that many times a per-patient total the master holds (multiPatientTotals)
+  const perPatient = () => [...master.amounts].flatMap(([c, k]) => (k === "patient_total" ? [c] : []));
+  const as = master.amounts.get(cents) ?? (lay.patients.size && patientsTimes(cents, perPatient(), lay.patients) ? "patient_estimate" : undefined);
+  if (!as) return undefined;
   const w = span.words[0]!;
   const line = lay.line.get(w);
-  if (!line || !tableLike(w, lay) || PAYS.test(line.map((x) => x.text).join(" "))) return undefined;
+  // such a total often stands alone in its ruled cell, its label stacked beside it: the ruled table is its table
+  const ruled = as === "patient_estimate" && (page.grids ?? []).some(({ box: [x0, y0, x1, y1] }) => w.rect[0] >= x0 && w.rect[1] >= y0 && w.rect[2] <= x1 && w.rect[3] <= y1);
+  if (!line || !(ruled || tableLike(w, lay)) || PAYS.test(line.map((x) => x.text).join(" "))) return undefined;
   const label = line.map((x) => x.text.toLowerCase()).filter((t) => !/\d/.test(t)).map((t) => t.replace(/[^a-z]/g, "")).filter((t) => t.length >= 3);
   return label.every((t) => master.words.has(t)) ? as : undefined;
 }
@@ -298,12 +314,46 @@ function pairExplained(span: Span, page: TextPage, master: { amounts: Map<number
   })));
 }
 
+// ---------- quoted by the master ----------
+
+const quoteWords = (ws: string[]) => ws.map(QUOTE_WORD).filter(Boolean);
+/** `inner` said word for word inside `outer`, whole words only; hyphens and spaces aside, as the binder finds a quote. */
+function saysWithin(outer: string[], inner: string[]) {
+  const q = inner.join("");
+  const starts: number[] = [];
+  const ends = new Set<number>();
+  const s = outer.reduce((acc, t) => (starts.push(acc.length), ends.add(acc.length + t.length), acc + t), "");
+  for (let i = q ? s.indexOf(q) : -1; i >= 0; i = s.indexOf(q, i + 1)) if (starts.includes(i) && ends.has(i + q.length)) return true;
+  return false;
+}
+/** Every quote the master cites, by page: any value's `prov.source.quote`, read as words. */
+function quotesOf(rb: Rulebook | undefined) {
+  const out = new Map<string, string[][]>();
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (!n || typeof n !== "object") return;
+    const src = (n as { prov?: { source?: { documentId: string; page: number; quote?: string } | null } }).prov?.source;
+    const q = quoteWords((src?.quote ?? "").split(/\s+/));
+    if (src && q.length) out.set(pageKey(src), [...(out.get(pageKey(src)) ?? []), q]);
+    Object.values(n).forEach(walk);
+  };
+  walk(rb);
+  return out;
+}
+
 /** A price as opposed to a visit number in a header: a sign, cents, a thousands comma, or three digits or more. */
 const priceLike = (s: Span) => s.words.some((w) => /[$]|\.\d{2}\b|\d,\d{3}|\d{3}/.test(w.text));
 
 /**
  * Splits the binder's unaccounted spans into those still asked (`kept`) and those not, each with its reason.
  *
+ * Figure-less spans (`absence`, a whole sentence) first: never a cell, so only these two rules and the insurance one apply.
+ * - no_payment_word: no payment word in it (`KEYWORDS.payment`: pay, fee, cost, invoice, reimburse, expense, charge, bill,
+ *   at cost, pass-through, a cap, a holdback, a screen failure…). A sentence that only says "terminated", "retain" or
+ *   "interest" carries no money term (owner, 2026-11-02); counted, as every drop is, in the read's audit entry.
+ * - quoted_by_master: a master value's quote on its page says the sentence whole, or is said inside it and is at least
+ *   `quotedShare` of its words: the value was read from it, so it isn't a term the master lacks. Only figure-less spans: a
+ *   sentence with a figure stays the binder's to bind, since a quoted sentence can hold a second fee.
  * 0. consumed by row band (ADR-002, the senior engineer's structural rule): once a drawn table's row is lined up with a rulebook
  *    row (`ctx.rows`, from the binder's own table geometry), every amount or table number whose centre is in that row's band,
  *    across the table's width, is consumed, even where the row's label was garbled. Kept anyway: a price in a visit cell the
@@ -316,12 +366,18 @@ const priceLike = (s: Span) => s.words.some((w) => /[$]|\.\d{2}\b|\d,\d{3}|\d{3}
  *    number). A price no entry claims is kept, even on a line full of bound cells: a column or row the read missed is
  *    exactly what the sweep is for. Kept too when it overlaps a conflicting or missing value's spot (that value is asked,
  *    with its printed amounts). Percentages, days and "up to N" figures are never consumed: they aren't cells.
+ *    row_arithmetic: on a fee's or an invoiceable's row by its label (`ctx.itemRows`, the binder's), whose figures give quantity ×
+ *    unit price = total with one set of three ("1 × X = X" too), a figure of the three beside another that holds a bound value of
+ *    that item: its quantity or total beside its price. Never on another item's row, a row a conflict points at, a row whose
+ *    products use different figures (a grid row repeating one price), or a figure in no product (a second fee on the line).
  * 2. insurance_clause: the span's OWN sentence names insurance, liability limits or indemnity, and no word that moves
  *    money is within `verbTokens` of the span. A neighbouring sentence or bullet never excludes it.
  * 3. explained_by_master: an amount or table number in a table (`tableLike`), on a line with no fee or payment word and no
  *    name the master doesn't know, whose cents equal an amount the master holds (`masterAmounts`): a summary table or a
- *    Totals column printing the grid again. Never prose: a fee clause that equals a cell's price is asked. Residual risk:
- *    a different fee in a table that equals a master value to the cent, under a label made of known words, is hidden.
+ *    Totals column printing the grid again; or exactly k times a per-patient total the master holds, on a page stating k
+ *    patients (`patient_estimate`: the total for k patients, never billed; for it, inside a ruled table is in a table).
+ *    Never prose: a fee clause that equals a cell's price is asked. Residual risk: a different fee in a table that equals a
+ *    master value to the cent, under a label made of known words, is hidden.
  * 4. no_currency_cue: only on a narrative page (a text or OCR page with no zone and no ruled table), and only for a
  *    span without a currency mark: dropped unless a trigger word is within `triggerTokens`. Amounts with a mark always stay.
  */
@@ -340,8 +396,8 @@ export function gateSweep(unaccounted: readonly Span[], ctx: SweepCtx): { kept: 
 
   const kept: Span[] = [];
   const dropped: Dropped[] = [];
-  const report: SweepReport = { consumed: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {}, modelNonFee: {}, modelKept: 0 };
-  const drop = (reason: DropReason, span: Span, counter: "consumed" | "insurance" | "explained" | "noCue" | "modelNonFee", as?: string) => {
+  const report: SweepReport = { noPayment: 0, quoted: 0, consumed: 0, arithmetic: 0, insurance: 0, explained: 0, noCue: 0, kept: 0, explainedBy: {}, modelNonFee: {}, modelKept: 0 };
+  const drop = (reason: DropReason, span: Span, counter: "noPayment" | "quoted" | "consumed" | "arithmetic" | "insurance" | "explained" | "noCue" | "modelNonFee", as?: string) => {
     dropped.push({ reason, where: span.where, span, ...(as ? { as } : {}) });
     if (counter === "modelNonFee") report.modelNonFee[as!] = (report.modelNonFee[as!] ?? 0) + 1;
     else report[counter]++;
@@ -408,10 +464,34 @@ export function gateSweep(unaccounted: readonly Span[], ctx: SweepCtx): { kept: 
     return vi < 0 || !vouched.has(`/budgetGrids/${r.grid}/visits/${vi}`);
   };
 
+  /**
+   * Whether `b` is one of the figures of the item's quantity × unit price = total row and another of them holds a value of that very
+   * item (bound: confirmed, by math, or attested), on a row no conflict points at.
+   */
+  const ownFigure = (r: ItemRow, key: string, b: B) => {
+    const i = r.figures.findIndex((f) => meets(b, f));
+    const its = (f: B) => ctx.evidence.some((e) => BOUND.has(e.status) && e.path.startsWith(`${r.item}/`) && e.where.some((w) => w.box && pageKey(w) === key && meets(w.box, f)));
+    return pageKey(r) === key && i >= 0 && r.figures.some((f, j) => j !== i && its(f)) && !ctx.evidence.some((e) => e.status === "conflict" && e.where.some((w) => w.box && pageKey(w) === key && meets(w.box, r.row)));
+  };
+
+  const quotes = quotesOf(ctx.rb);
   for (const span of unaccounted) {
     const key = pageKey(span.where);
     const b = span.where.box;
     const here = zones.get(key) ?? [];
+
+    if (span.kind === "absence") {
+      const words = span.words.map((w) => w.text);
+      if (!KEYWORDS.payment.test(words.join(" "))) {
+        drop("no_payment_word", span, "noPayment");
+        continue;
+      }
+      const said = quoteWords(words);
+      if ((quotes.get(key) ?? []).some((q) => saysWithin(q, said) || (saysWithin(said, q) && q.length >= SWEEP.quotedShare * said.length))) {
+        drop("quoted_by_master", span, "quoted");
+        continue;
+      }
+    }
 
     // Inside a mapped row's band, across the table's width, every number is that row's (its code, count, unit price, a printed
     // total, a price whose cell the read has an entry for), even where the row's label was garbled. What stays asked: a price in a
@@ -425,6 +505,12 @@ export function gateSweep(unaccounted: readonly Span[], ctx: SweepCtx): { kept: 
     const zone = b && (span.kind === "amount" || span.kind === "grid_number") ? here.find((z) => inside(b, z.box)) : undefined;
     if (zone && b && !(open.get(key) ?? []).some((o) => meets(b, o)) && ((claimed.get(key) ?? []).some((c) => meets(b, c)) || !priceLike(span))) {
       drop("consumed", span, "consumed");
+      continue;
+    }
+
+    // a fee's own arithmetic: on its row (by label), a figure of a quantity × unit price = total whose other figures hold its bound value
+    if (b && (span.kind === "amount" || span.kind === "grid_number") && (ctx.itemRows ?? []).some((r) => ownFigure(r, key, b))) {
+      drop("row_arithmetic", span, "arithmetic");
       continue;
     }
 

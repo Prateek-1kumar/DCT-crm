@@ -6,7 +6,7 @@ import { AnswerReviewBody, BODY_WORDS, bodyProblem, checkedByMachine, type Proof
 import { parseCents, parsePercent } from "./money";
 import { at, leaf, parsePointer, setAt } from "./pointer";
 import { ARITHMETIC, fromAnomalies, gridConflicts, isNotice, PAGE_OPTIONS, recheck, sumAt } from "./problems";
-import { amendmentDate, askAbout, BLANK_INVOICEABLE, BLANK_READ, rejectBlank, capFollowUps, decidedBy, empty, noLimit, placeholders, PROSPECTIVE, settleTable, TABLE_CHECK } from "./questions";
+import { amendmentDate, askAbout, BLANK_INVOICEABLE, BLANK_READ, rejectBlank, capFollowUps, decidedBy, empty, noLimit, placeholders, PROSPECTIVE, settleTable, SIGNED_DATE_DIFFERS, TABLE_CHECK } from "./questions";
 import { armKey, billedGrids, Rulebook, type Unclassified, upgradeRulebook } from "./rulebook";
 
 /**
@@ -47,7 +47,8 @@ function parsePrinted(input: ReviewItem["input"], printed: string | null, isoDat
 export const calendarDay = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && calendarDate(v) === v;
 
 /**
- * What picking an option writes: the arm's governing grid (the other arms' picks stay); for a total that doesn't add up,
+ * What picking an option writes: the arm's governing grid (the other arms' picks stay); the date a contract that gives two
+ * takes effect on (SIGNED_DATE_DIFFERS); for a total that doesn't add up,
  * the sum of its parts, or the total as printed (`printed`, printedTotal), so either answer, picked after the other, puts
  * its own number back; or the value itself for a yes/no or fixed-list question.
  */
@@ -56,6 +57,8 @@ function optionValue(rb: Rulebook, item: ReviewItem, optionId: string, current: 
     const arm = new Set(item.options.map((o) => o.id));
     return { path: "/governingGridIds", value: [...(rb.governingGridIds ?? []).filter((id) => !arm.has(id)), optionId] };
   }
+  // which of the contract's two dates it takes effect on: the pick is the date
+  if (item.reason === SIGNED_DATE_DIFFERS) return item.path ? { path: item.path, value: optionId } : undefined;
   if (ARITHMETIC.has(item.reason)) {
     const value = !item.path ? undefined : optionId === "sum" ? sumAt(rb, item.path) : optionId === "printed" ? printed : undefined;
     return value === undefined ? undefined : { path: item.path!, value };
@@ -433,7 +436,8 @@ export type Suggestion = { value?: unknown; optionId?: string; why: string };
  * What we suggest for a question, shown beside it with our reading, for every version the
  * API returns. A value the PDF's text prints differently from our reading: the printed text. A value no text checks (a scan,
  * no quote): our reading. A pick: the read's own (an interpretation, a yes/no), or the visit we matched a table's column
- * to. A total that doesn't add up: the total as printed, which is what was signed. Nothing where we have no reading
+ * to. A total that doesn't add up: the total as printed, which is what was signed. A date tied to the last signature: the
+ * latest date of signature its e-signature record prints (`signedOn`), missing or not. Nothing where we have no reading
  * worth suggesting (a missing value, a money term, a blank check, which grid governs) or the question is settled. Taking
  * it answers the question as typing or picking it would (answerQuestion), so the gate is unchanged.
  */
@@ -442,6 +446,10 @@ export function suggest(item: ReviewItem, v: { rulebook: Rulebook | null; eviden
   const has = (id: string) => item.options.some((o) => o.id === id);
   if (item.table) return has(item.table.expect) ? { optionId: item.table.expect, why: "The visit we matched this column to." } : null;
   if (ARITHMETIC.has(item.reason)) return has("printed") ? { optionId: "printed", why: "The total as the contract prints it is what was signed. Ask the sponsor about the difference." } : null;
+  // a date the contract ties to its last signature (the effective date, an amendment's start): the record's latest, a
+  // reading of a page nobody checked it against, so it's only suggested, and typed or taken like any date
+  if (item.signedOn && item.input === "date")
+    return { value: item.signedOn.date, why: `The latest date of signature on the e-signature record (page ${item.signedOn.page}), printed there as “${item.signedOn.printed}”.` };
   if (!item.path || item.reason === "REQUIRED_MISSING" || (item.kind !== "confirm_value" && item.kind !== "interpretation")) return null;
   const current = at(v.rulebook, item.path);
   if (current === undefined || empty(current) || !leaf(current)) return null;

@@ -5,7 +5,7 @@ import { Rulebook } from "@dct/shared";
 import * as mupdf from "mupdf";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runContractChecks } from "../src/checks";
-import { type Clients, CONFIG, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc, isNonContent } from "../src/extract";
+import { type Clients, CONFIG, extractStudy, extractWith, gridMismatches, identifyDocuments, identifyWith, type InputDoc, isNonContent, scrub } from "../src/extract";
 import { renderPage } from "../src/index";
 import type { CostEntry, LlmClient, LlmRequest } from "../src/llm";
 import { AiPages, type AiGrid, type AiTerms } from "../src/prompts";
@@ -239,6 +239,43 @@ describe("extractWith (mocked AI)", () => {
     const guess = { sponsor: "Acme Bio, account 123456789012", protocol: "ACM-100", siteName: "Pay to IBAN GB82 WEST 1234 5698 7654 32", investigator: null };
     c.call = async (req) => req.schema.parse({ documents: [{ id: "d1", kind: "work_order", title: "WO", date: null }], studyGuess: guess });
     expect((await identifyWith(docs, c)).studyGuess).toEqual({ sponsor: "Acme Bio, account [redacted]", protocol: "ACM-100", siteName: "[redacted]", investigator: null });
+  });
+
+  it("takes a grid's total for several patients out of its per-patient totals, into a note the checks show", async () => {
+    const rb = makeRulebook();
+    rb.budgetGrids[0]!.perPatientTotals.push({ label: "Estimated total (50 patients)", cents: 50 * 140000, prov: rb.budgetGrids[0]!.prov });
+    const out = await extractWith({ documents: docs }, { primary: mockClient("anthropic", rb), cross: mockClient("anthropic", rb) });
+    expect(out.rulebook.budgetGrids[0]!.perPatientTotals.map((t) => t.cents)).toEqual([140000]);
+    expect(out.crossRead!.budgetGrids[0]!.perPatientTotals.map((t) => t.cents)).toEqual([140000]);
+    expect(out.notes.filter((n) => n.kind === "estimate")).toEqual([{ kind: "estimate", topic: "Estimated total (50 patients)", path: "/budgetGrids/0", source: { documentId: "d1", page: 3 }, estimate: { cents: 7000000, patients: 50, perPatientCents: 140000 } }]);
+    expect(runContractChecks(out.rulebook, { notes: out.notes }).filter((a) => /PER_PATIENT|ESTIMATE/.test(a.code)).map((a) => `${a.code} ${a.path}`)).toEqual(["MULTI_PATIENT_ESTIMATE /budgetGrids/0"]);
+  });
+
+  it("identifyWith keeps a protocol number printed in hyphenated digit groups (the confirm screen's guess)", async () => {
+    const c = mockClient("anthropic", makeRulebook());
+    const guess = { sponsor: "Acme Bio", protocol: "AB-1234-567-8901", siteName: "Site, Tel: 919-555-0142", investigator: null };
+    c.call = async (req) => req.schema.parse({ documents: [{ id: "d1", kind: "work_order", title: "WO", date: null }], studyGuess: guess });
+    expect((await identifyWith(docs, c)).studyGuess).toEqual(guess);
+  });
+
+  it("keeps protocol and phone numbers in every string of the read, and scrubs the notes too", async () => {
+    const rb = makeRulebook();
+    rb.study.protocol.value = "AB-1234-567-8901";
+    rb.referencedDocuments = [{ description: "Exhibit A - Protocol AB-1234-567-8901", date: null, present: false, prov: rb.study.protocol.prov }];
+    rb.payment.netDays.prov.source = { documentId: "d1", page: 1, quote: "Questions about invoices: call 919-555-0142 or fax +44 20 7946 0958" };
+    const c = mockClient("anthropic", rb);
+    const call = c.call.bind(c);
+    // a note is the model's text too: it becomes an anomaly's message, stored and shown
+    c.call = async (req) => {
+      const out = (await call(req)) as { notes?: unknown[] };
+      if (req.name === "terms") out.notes = [{ kind: "ambiguous", topic: "refunds to account 123456789012", path: null, source: { documentId: "d1", page: 1, quote: "wire to 1234-5678-9012" } }];
+      return out as never;
+    };
+    const out = await extractWith({ documents: docs }, { primary: c, cross: null });
+    expect(out.rulebook.study.protocol.value).toBe("AB-1234-567-8901");
+    expect(out.rulebook.referencedDocuments[0]!.description).toBe("Exhibit A - Protocol AB-1234-567-8901");
+    expect(out.rulebook.payment.netDays.prov.source!.quote).toBe("Questions about invoices: call 919-555-0142 or fax +44 20 7946 0958");
+    expect(out.notes).toEqual([{ kind: "ambiguous", topic: "refunds to account [redacted]", path: null, source: { documentId: "d1", page: 1, quote: "[redacted]" } }]);
   });
 
   it("identifyWith keeps known kinds and fills the rest", async () => {
@@ -505,5 +542,79 @@ describe("a page with nothing to read (a blank separator or cover sheet), told f
     expect(out.pages.map((p) => p.kind)).toEqual(["terms", "non_content"]);
     const w = out.warnings.find((x) => x.kind === "pages_excluded")!;
     expect(w.kind === "pages_excluded" && w.pages.map((p) => [p.page, p.kind, p.money])).toEqual([[2, "non_content", false]]);
+  });
+});
+
+describe("scrub", () => {
+  it("keeps protocol, trial and phone numbers, dates and amounts outside a string about a bank", () => {
+    const kept = [
+      // protocol and study ids: hyphens, letters and digits, slashes, dots, underscores
+      "AB-1234-567-8901",
+      "Exhibit A - Protocol AB-1234-567-8901",
+      "ABC-1234-5678-901",
+      "CTRI/2020/01/012345",
+      "NL12345.078.18",
+      "STUDY_2023_00001234",
+      "XY12345678Z",
+      "2402T1432, BHV3000-315, J2A-MC-GZGI, CA209-8HW",
+      "NCT05123456 and IND 123456",
+      // trial registry numbers: EU CT (yyyy-nnnnnn-nn and its CTIS form), EudraCT
+      "EU CT number 2024-500123-45",
+      "2023-503456-12-00",
+      "EudraCT 2019-001234-56",
+      // phone and fax numbers, national and international
+      "Tel: 555-014-2011",
+      "Fax (555) 014-2011",
+      "1-800-555-1234",
+      "+1 555 014 2011",
+      "+44 20 7946 0958",
+      "+33 1 23 45 67 89",
+      "+49 30 12345678",
+      "+91 98765 43210",
+      "+86 13812345678",
+      "Phone: 5550142011",
+      "Tel. +61 2 5550 1234",
+      "555.014.2011",
+      // amounts and dates
+      "US$ 123,450.00",
+      "Estimated total $1,234,500.00",
+      "EUR 1.234.567,00 and 12 345 678,90",
+      "Visits 1 2 3 4 5 6 7 8 9 10",
+      "eCRFs complete by 2025-08-22",
+      "Wire transfers received by 2025-08-22 are applied that month",
+    ];
+    for (const s of kept) expect(scrub(s)).toBe(s);
+  });
+
+  it("redacts unbroken runs and IBANs anywhere, grouped runs in a string about a bank, and a bank string whole", () => {
+    // unbroken: how account, routing and card numbers print, bank word or not
+    expect(scrub("021000021")).toBe("[redacted]");
+    expect(scrub("Reference 123456789012")).toBe("Reference [redacted]");
+    expect(scrub("Pay to account 123456789012")).toBe("Pay to account [redacted]");
+    expect(scrub("ABA routing 021000021")).toBe("[redacted]");
+    // a phone label doesn't keep a run longer than a phone number can be, nor one printed after it
+    expect(scrub("Phone 1234567890123456")).toBe("Phone [redacted]");
+    expect(scrub("Tel +1 555 014 2011 123456789")).toBe("Tel +1 555 014 2011 [redacted]");
+    // IBANs, whole or grouped, and a grouped run beside one
+    expect(scrub("GB82 WEST 1234 5698 7654 32")).toBe("[redacted]");
+    expect(scrub("DE89370400440532013000")).toBe("[redacted]");
+    expect(scrub("refunds to GB82 WEST 1234 5698 7654 32 or 1234-5678-9012")).toBe("refunds to [redacted] or [redacted]");
+    // grouped as banks print them, beside a bank word
+    expect(scrub("Account: 1234-5678-9012")).toBe("Account: [redacted]");
+    expect(scrub("Account 1234 5678 9012")).toBe("Account [redacted]");
+    expect(scrub("Sort code 12-34-56, account 12345678")).toBe("Sort code 12-34-56, account [redacted]");
+    expect(scrub("Wire to 1234 5678 9012")).toBe("[redacted]");
+    expect(scrub("ACH 12-3456-7890123-00")).toBe("[redacted]");
+    expect(scrub("Remit to 0210-0002-1 / 1234.5678.90")).toBe("[redacted]");
+    expect(scrub("Bank account no. 12-345-678-9")).toBe("[redacted]");
+    // a tax id, as today: an investigator's may be a social security number
+    expect(scrub("Tax ID#: 12-3456789")).toBe("Tax ID#: [redacted]");
+    expect(scrub("Tax ID/VAT or GST Registration/TIN/SSN 123-45-6789")).toBe("Tax ID/VAT or GST Registration/TIN/SSN [redacted]");
+    expect(scrub("The Institution's tax identification number is: 12-3456789.")).toBe("The Institution's tax identification number is: [redacted].");
+    expect(scrub("12-3456789")).toBe("[redacted]"); // printed under its label, on a line of its own
+    expect(scrub("123-45-6789")).toBe("[redacted]");
+    // a phone number in a string about a bank is not kept: the string is the bank's
+    expect(scrub("Bank of Example, tel +1 555 014 2011")).toBe("[redacted]");
+    expect(scrub("Wire via Deutsche Bank, SWIFT DEUTDEFF")).toBe("[redacted]");
   });
 });

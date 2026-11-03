@@ -17,6 +17,7 @@ export const ContractAnomalyCode = z.enum([
   "UNREADABLE_PAGE", // page could not be read
   "AMBIGUOUS_TERM", // contract wording is ambiguous (e.g. overhead on site costs)
   "TEXT_LAYER_MISMATCH", // digital PDF: an amount the AI read isn't printed in the PDF's own text
+  "MULTI_PATIENT_ESTIMATE", // a grid's total for several patients (N × the per-patient total): a notice, not a per-patient total
 ]);
 export type ContractAnomalyCode = z.infer<typeof ContractAnomalyCode>;
 

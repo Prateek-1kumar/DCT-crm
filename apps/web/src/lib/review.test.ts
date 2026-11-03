@@ -14,7 +14,12 @@ describe("queue", () => {
   it("counts what still needs a person", () => {
     const items = [q("1", true, "matched"), q("2", true, "differs"), q("3", true, "cant_tell"), q("4", false, "cant_tell"), q("5", false), q("6", true, "chosen")];
     // a "can't tell" on a question not needed to approve too: approval waits for it (openItems)
-    expect(needsYou(items).map((i) => i.id)).toEqual(["2", "3", "4", "5"]);
+    expect(needsYou(items).map((c) => c.map((i) => i.id))).toEqual([["2"], ["3"], ["4"], ["5"]]);
+  });
+  it("counts questions on one quote as one card, and only the same quote on the same page", () => {
+    const cites = (quote: string, page = 3) => ({ cites: { documentId: "d", page, quote } });
+    const items = [{ ...q("a", true), ...cites("Screen failures are paid at $500.") }, { ...q("b", true), ...cites("Screen  failures are paid at $500.") }, { ...q("c", true), ...cites("Screen failures are paid at $500.", 4) }, { ...q("e", true), ...cites("Screen failures are paid at $50.") }, { ...q("f", true, "chosen"), ...cites("Screen failures are paid at $500.") }];
+    expect(needsYou(items).map((c) => c.map((i) => i.id))).toEqual([["a", "b"], ["c"], ["e"]]);
   });
 });
 

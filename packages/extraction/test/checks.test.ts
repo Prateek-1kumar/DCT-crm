@@ -13,10 +13,22 @@ describe("runContractChecks", () => {
     for (const a of runContractChecks(rb)) expect(ContractAnomaly.parse(a)).toEqual(a);
   });
 
-  it("VISIT_TOTAL_MISMATCH: components, with ±$1 tolerance only when the contract rounds", () => {
+  it("VISIT_TOTAL_MISMATCH: components, with ±$1 tolerance only when the contract says it rounds", () => {
     const rb = makeRulebook();
     rb.budgetGrids[0]!.visits[0]!.totalCents = 84100; // off by $1
+    rb.rounding = { value: "printed_amounts", prov: { ...prov, source: { documentId: "d1", page: 3, quote: "Amounts are rounded to the nearest whole dollar" } } };
     expect(codes(rb)).not.toContain("VISIT_TOTAL_MISMATCH");
+    // "printed amounts" with no words it was read from is no contract saying it rounds: billed to the cent (the owner, 2026-11-02)
+    rb.rounding = { value: "printed_amounts", prov };
+    expect(codes(rb)).toContain("VISIT_TOTAL_MISMATCH");
+    rb.rounding = { value: "unspecified", prov };
+    expect(codes(rb)).toContain("VISIT_TOTAL_MISMATCH");
+    // the per-patient total likewise: $1 off is a mismatch unless the contract says it rounds
+    const pp = makeRulebook();
+    pp.budgetGrids[0]!.perPatientTotals[0]!.cents = 140100;
+    expect(codes(pp)).toContain("PER_PATIENT_TOTAL_MISMATCH");
+    pp.rounding.prov = { ...prov, source: { documentId: "d1", page: 3, quote: "Amounts are rounded to the nearest whole dollar" } };
+    expect(codes(pp)).not.toContain("PER_PATIENT_TOTAL_MISMATCH");
     rb.rounding.value = "cents";
     const a = runContractChecks(rb).filter((x) => x.code === "VISIT_TOTAL_MISMATCH");
     expect(a.map((x) => x.path)).toContain("/budgetGrids/0/visits/0/totalCents");
