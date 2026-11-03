@@ -509,16 +509,28 @@ const PHONE = /(?:\+|\b(?:tel(?:ephone)?|phone|fax|facsimile|mobile)\b\.?:?\s*)[
 /** A SWIFT/BIC code: 4 bank letters, 2 country letters, 2 location characters, optional 3-character branch. */
 const BIC = /\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/;
 const R = "[redacted]";
+/** A payment card number however it's grouped: 13 to 19 digits passing the Luhn check. It goes anywhere, whatever words surround it. */
+const card = (run: string) => {
+  const d = run.replace(/\D/g, "");
+  if (d.length < 13 || d.length > 19) return false;
+  let sum = 0;
+  for (let i = 0; i < d.length; i++) {
+    let n = Number(d[d.length - 1 - i]);
+    if (i % 2) n = n * 2 > 9 ? n * 2 - 9 : n * 2;
+    sum += n;
+  }
+  return sum % 10 === 0;
+};
 
 /**
- * IBANs, tax ids and unbroken runs go anywhere (but a phone number's digits, outside a string about a bank); grouped runs in a
+ * IBANs, tax ids, card numbers and unbroken runs go anywhere (but a phone number's digits, outside a string about a bank); grouped runs in a
  * string about a bank or a tax id; a string naming bank details that still carries an account or SWIFT code goes whole.
  */
 export function scrub(s: string): string {
   const bank = bankOrTax(s);
   const phones = bank ? [] : [...s.matchAll(PHONE)].filter((m) => m[0].replace(/\D/g, "").length <= 15).map((m) => [m.index, m.index + m[0].length]);
   const t = s.replace(LONG_RUN, (run, at: number) => (phones.some(([a, b]) => at >= a! && at < b!) ? run : R)).replace(IBAN, R).replace(TAX_ID, R);
-  const u = bank ? t.replace(GROUPED_RUN, R) : t;
+  const u = bank ? t.replace(GROUPED_RUN, R) : t.replace(GROUPED_RUN, (run, at: number) => (card(run) && !phones.some(([a, b]) => at >= a! && at < b!) ? R : run));
   return BANKISH.test(u) && (u.includes(R) || BIC.test(u)) ? R : u;
 }
 

@@ -595,6 +595,12 @@ describe("scrub", () => {
     // a phone label doesn't keep a run longer than a phone number can be, nor one printed after it
     expect(scrub("Phone 1234567890123456")).toBe("Phone [redacted]");
     expect(scrub("Tel +1 555 014 2011 123456789")).toBe("Tel +1 555 014 2011 [redacted]");
+    // a card number, grouped by spaces or hyphens, goes with no bank word near it (13 to 19 digits passing Luhn)
+    expect(scrub("Card 4111 1111 1111 1111 on file")).toBe("Card [redacted] on file");
+    expect(scrub("Paid with 5500-0000-0000-0004")).toBe("Paid with [redacted]");
+    expect(scrub("Ref 3782 822463 10005")).toBe("Ref [redacted]");
+    // the same length failing Luhn is a reference number, kept like a protocol id outside a bank string
+    expect(scrub("Ref 4111 1111 1111 1112")).toBe("Ref 4111 1111 1111 1112");
     // IBANs, whole or grouped, and a grouped run beside one
     expect(scrub("GB82 WEST 1234 5698 7654 32")).toBe("[redacted]");
     expect(scrub("DE89370400440532013000")).toBe("[redacted]");
