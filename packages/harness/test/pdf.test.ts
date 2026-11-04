@@ -49,6 +49,8 @@ const bankPage = () =>
     page.drawText("SWIFT: TESTUS33", { x: 50, y: 560, size: 11, font });
     page.drawText("Acct: 246,813,579", { x: 50, y: 540, size: 11, font });
     page.drawText("Bank fee $25.00 per wire, account review in 12 months", { x: 50, y: 520, size: 11, font });
+    page.drawText("Acct#900765432 and ABA/Routing:000333444", { x: 50, y: 500, size: 11, font });
+    page.drawText("Bank Account Number for ACH wire transfers: 900555666", { x: 50, y: 480, size: 11, font });
   });
 
 describe("load", () => {
@@ -142,7 +144,7 @@ describe("bank masking", () => {
 
   it("masks digits digit-for-digit in layout, raw and words", () => {
     const page = doc.pages[0]!;
-    for (const text of [page.layout, page.raw, page.words.map((w) => w.text).join(" ")]) {
+    for (const text of [page.layout, page.raw, page.words.map((w) => w.text).join(" ")].map((t) => t.replace(/ +/g, " "))) {
       expect(text).toContain("Account Number: #########");
       expect(text).toContain("ABA Routing #########");
       expect(text).not.toMatch(/123456789|000111222/);
@@ -155,6 +157,7 @@ describe("bank masking", () => {
     expect(raw).not.toMatch(/900123456|GB29|NWBK|6016|TESTUS33|246,813,579/);
     expect(raw).toContain("IBAN: #### #### #### #### #### ##");
     expect(raw).toContain("SWIFT: ########");
+    expect(raw).not.toMatch(/900765432|000333444|900555666/);
   });
 
   it("leaves amounts and short numbers near a bank word alone", () => {
