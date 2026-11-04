@@ -1,10 +1,9 @@
 "use client";
 
-import { AlertTriangle, Check } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from "react";
 import { ApiError } from "@/lib/api";
-import { stageLabel, stageWords, stepsFor, type StageState } from "@/lib/review";
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
 
@@ -59,115 +58,6 @@ export function Badge({ tone = "neutral", children, className, title, dot }: { t
   );
 }
 
-const STAGE_TONE: Record<StageState["stage"], Tone> = { Upload: "neutral", Reading: "info", Checking: "info", "Needs you": "warn", Approve: "accent", Live: "ok" };
-export function StagePill({ state }: { state: StageState }) {
-  return (
-    <Badge tone={state.failed ? "danger" : STAGE_TONE[state.stage]} dot>
-      {stageLabel(state)}
-    </Badge>
-  );
-}
-
-/** What the current step says under its name. */
-const NOW: Record<StageState["stage"], string> = {
-  Upload: "Add the files",
-  Reading: "In progress",
-  Checking: "In progress",
-  "Needs you": "Your turn",
-  Approve: "Ready to approve",
-  Live: "In use",
-};
-
-/**
- * Upload → Reading → Checking → Needs you → Approve → Live ("Typed by hand" replaces Reading and Checking).
- * Done steps get a check, the current one is filled; narrow screens get the compact dot track.
- */
-export function Stepper({ state, className, now }: { state: StageState; className?: string; now?: string }) {
-  const steps = stepsFor(state);
-  const live = state.stage === "Live";
-  const at = live ? steps.length - 1 : steps.findIndex((x) => x.stage === state.stage);
-  return (
-    <div className={className}>
-      <div className="sm:hidden">
-        <StepTrack state={state} label={now} />
-      </div>
-      <ol aria-label="Where this contract is" className="hidden sm:flex">
-        {steps.map(({ stage: s, label }, i) => {
-          const done = i < at || live;
-          const current = i === at && !live;
-          const failed = current && state.failed;
-          const sub = failed ? "Couldn't read" : current ? (s === "Needs you" && state.needs ? `${state.needs} to answer` : NOW[s]) : done ? "Done" : "";
-          return (
-            <li key={s} aria-current={current ? "step" : undefined} className="flex min-w-0 flex-1 flex-col gap-2.5 last:flex-none">
-              <div className="flex items-center">
-                <span
-                  className={cx(
-                    "grid size-7 shrink-0 place-items-center rounded-full text-small font-semibold transition-colors",
-                    failed
-                      ? "bg-danger text-on-primary ring-4 ring-danger/15"
-                      : current
-                        ? "bg-primary text-on-primary ring-4 ring-primary/15"
-                        : done
-                          ? "bg-ok-soft text-ok"
-                          : "bg-surface text-faint ring-1 ring-line-strong",
-                  )}
-                >
-                  {failed ? <AlertTriangle className="size-3.5" strokeWidth={2.25} /> : done ? <Check className="size-3.5" strokeWidth={2.5} /> : i + 1}
-                </span>
-                {i < steps.length - 1 && <span aria-hidden className={cx("mx-2.5 h-0.5 flex-1 rounded-full", i < at || live ? "bg-ok/40" : "bg-line-strong")} />}
-              </div>
-              <div className="min-w-0 pr-3">
-                <p className={cx("truncate text-small font-medium", current ? "text-ink" : done ? "text-ink-2" : "text-faint")}>{label}</p>
-                {sub && <p className={cx("truncate text-caption", failed ? "text-danger" : current ? "text-accent" : "text-faint")}>{sub}</p>}
-                <span className="sr-only">{done ? " (done)" : current ? " (now)" : " (to do)"}</span>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
-  );
-}
-
-/** The current step's dot, halo and label color: needs you amber, approval blue, live green, couldn't read red. */
-const stepTone = (s: StageState): [string, string] =>
-  s.failed
-    ? ["bg-danger ring-danger/15", "text-danger"]
-    : s.stage === "Live"
-      ? ["bg-ok ring-ok/15", "text-ok"]
-      : s.stage === "Needs you"
-        ? ["bg-warn ring-warn/15", "text-warn"]
-        : s.stage === "Approve"
-          ? ["bg-primary ring-primary/15", "text-accent"]
-          : ["bg-brand ring-brand/20", "text-ink-2"];
-
-/** Six dots (done · current · to do) and the step in words: "Needs you · step 4 of 6". */
-/** `label` overrides the step's words, e.g. "Add the files" while uploading. */
-export function StepTrack({ state, label: override }: { state: StageState; label?: string }) {
-  const steps = stepsFor(state);
-  const words = stageWords(state);
-  const { step, of } = words;
-  const label = override ?? words.label;
-  const live = state.stage === "Live";
-  const [dot, text] = stepTone(state);
-  return (
-    <div className="flex flex-col gap-1.5">
-      <span aria-hidden className="flex items-center gap-1.5">
-        {steps.map((x, i) => (
-          <span
-            key={x.stage}
-            className={cx("rounded-full", !live && i === step - 1 ? cx("size-2.5 ring-4", dot) : cx("size-2", live ? "bg-ok" : i < step - 1 ? "bg-ink/45" : "bg-ink/12"))}
-          />
-        ))}
-      </span>
-      <span className="text-small">
-        <span className={cx("font-medium", text)}>{label}</span>
-        <span className="text-faint">{live ? " · all steps done" : ` · step ${step} of ${of}`}</span>
-      </span>
-    </div>
-  );
-}
-
 export function Spinner({ label = "Loading" }: { label?: string }) {
   return (
     <span role="status" className="inline-flex items-center gap-2.5 text-body text-muted">
@@ -187,7 +77,7 @@ export function errorText(error: unknown): string {
   if (typeof error === "string") return error;
   if (!(error instanceof ApiError)) return "Something went wrong on this page. Reload it and try again.";
   if (error.status === 0) return "Can't reach DCT Finance right now. Check your connection, then try again.";
-  if (error.status >= 500) return error.message.startsWith("Something went wrong") ? error.message : SERVER_TROUBLE;
+  if (error.status >= 500) return error.message.startsWith("Something went wrong") ? error.message : error.requestId ? `${SERVER_TROUBLE} (ref ${error.requestId})` : SERVER_TROUBLE;
   if (error.status === 404) return "We couldn't find this. It may have been removed, or the link is out of date.";
   // A schema error's prettified issues ("✖ … → at note") come from a malformed request, not from anything typed.
   if (/✖|→ at|\n/.test(error.message)) return "That didn't go through. Check what you entered, then try again.";
@@ -326,7 +216,7 @@ export function Dialog({ open, onClose, title, children, wide, width }: { open: 
   );
 }
 
-/** A panel sliding over the left edge on small screens (the menu, a list of questions): a modal <dialog> like Dialog. */
+/** A panel sliding over the left edge on small screens (the menu): a modal <dialog> like Dialog. */
 export function Sheet({ open, onClose, label, children, width = "w-[320px] max-w-[88vw]" }: { open: boolean; onClose: () => void; label: string; children: ReactNode; width?: string }) {
   const ref = useModal(open);
   return (

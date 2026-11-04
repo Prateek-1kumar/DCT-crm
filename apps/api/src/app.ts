@@ -1,18 +1,13 @@
 import multipart from "@fastify/multipart";
 import { sql } from "drizzle-orm";
-import Fastify, { type FastifyBaseLogger } from "fastify";
+import Fastify, { type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import type { PgBoss } from "pg-boss";
 import { config } from "./config.js";
 import { apiPoolOptions, createDb, type Db, pendingMigrations } from "./db/index.js";
-import { startBoss } from "./jobs.js";
+import { startBoss } from "./boss.js";
 import { HttpError } from "./lib/http.js";
-import { alertRoutes } from "./routes/alerts.js";
-import { documentRoutes } from "./routes/documents.js";
-import { miscRoutes } from "./routes/misc.js";
-import { studyRoutes } from "./routes/studies.js";
-import { versionRoutes } from "./routes/versions.js";
 
 export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger };
 
@@ -32,8 +27,7 @@ const CONCURRENT: Record<string, string> = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** @fastify/multipart's limits, by its error codes, in plain words (its own say "request file too large"). */
 const UPLOAD_LIMITS: Record<string, string> = {
-  // said for every route that takes a file: a contract's PDFs and the budget spreadsheet alike
-  FST_REQ_FILE_TOO_LARGE: `This file is bigger than the ${config.maxUploadBytes / 1024 / 1024} MB limit. Send a smaller copy: a long PDF split into parts, or a spreadsheet with only its budget sheet.`,
+  FST_REQ_FILE_TOO_LARGE: `This file is bigger than the ${config.maxUploadBytes / 1024 / 1024} MB limit. Send a smaller copy, such as a long PDF split into parts.`,
   FST_FILES_LIMIT: "Upload at most 50 files at once.",
   FST_PARTS_LIMIT: "This upload has too many parts. Upload at most 50 files at once.",
   FST_FIELDS_LIMIT: "This upload has too many fields. Send the files alone.",
@@ -43,14 +37,15 @@ const UPLOAD_LIMITS: Record<string, string> = {
 const within = <T>(ms: number, p: Promise<T>) =>
   Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms).unref())]);
 
-export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {}) {
+/** `routes` registers a plugin's routes under /api/v1, behind its id/version check: the way a test adds its own. */
+export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyInstance, ctx: Ctx) => void | Promise<void> } = {}) {
   const app = Fastify({
     // JSON lines (pino). Request logging is the method and the route pattern only: never bodies, ids or query strings
     // (search terms, names); errors are logged by the handler below, without values.
     logger: opts.logger ? { level: config.logLevel, serializers: { req: (r: { method: string; routeOptions?: { url?: string } }) => ({ method: r.method, url: r.routeOptions?.url }) } } : false,
     // a UUID per request, in every log line (reqId), the x-request-id header and a 5xx message's "ref"
     genReqId: () => randomUUID(),
-    // 1 MB: no request carries a rulebook; uploads are multipart, with their own limit.
+    // 1 MB: JSON bodies are small; uploads are multipart, with their own limit.
     bodyLimit: 1024 * 1024,
     // A slow or stalled client can't hold a connection: the whole request (a 50 MB upload included) within this, and no
     // socket idle longer. Idle keep-alive connections close after their own timeout.
@@ -63,7 +58,7 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
   pool.on("error", (err) => app.log.error({ err: err.message }, "idle database connection failed"));
   const behind = await pendingMigrations(db);
   if (behind) app.log.error({ pending: behind }, "the database is behind this build: run the migrations (pnpm --filter @dct/api db:migrate), then restart");
-  const boss = await startBoss({ db, log: app.log, work: opts.workers ?? true, schemaBehind: behind > 0 });
+  const boss = await startBoss({ log: app.log });
   const ctx: Ctx = { db, boss, log: app.log };
   let stopped = false;
   boss.once("stopped", () => (stopped = true));
@@ -79,7 +74,7 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
     if (status < 500)
       return reply.status(status).send({ statusCode: status, error: STATUS_CODES[status] ?? "Error", message: bad ?? (clash ? "Someone else was changing this at the same moment, so nothing was saved. Try again." : err.message) });
     // Never the error itself to the browser: a database error's message is the SQL and every value bound to it
-    // (contract amounts, a whole rulebook). The log gets the query and the cause, not the values.
+    // (contract amounts). The log gets the query and the cause, not the values.
     req.log.error(err.query !== undefined ? { code, cause: err.cause?.message, query: err.query } : { err }, "request failed");
     reply.status(status).send({ statusCode: status, error: "Internal Server Error", message: `Something went wrong on the server. Try again; if it keeps happening, tell the team (ref ${req.id}).` });
   });
@@ -122,17 +117,12 @@ export async function buildApp(opts: { logger?: boolean; workers?: boolean } = {
         if (p.id !== undefined && !UUID.test(p.id)) throw new HttpError(400, "Malformed id");
         if (p.v !== undefined && !/^[1-9]\d{0,8}$/.test(p.v)) throw new HttpError(400, `Invalid version "${p.v}"`);
       });
-      await api.register(documentRoutes(ctx));
-      await api.register(studyRoutes(ctx));
-      await api.register(versionRoutes(ctx));
-      await api.register(miscRoutes(ctx));
-      await api.register(alertRoutes(ctx));
+      await opts.routes?.(api, ctx);
     },
     { prefix: "/api/v1" },
   );
 
-  // After the last in-flight request (Fastify's close waits for them): jobs get to finish, up to a limit (a read still
-  // going then is failed by pg-boss and marked so at the next start), then the pool closes.
+  // After the last in-flight request (Fastify's close waits for them): jobs get to finish, up to a limit, then the pool closes.
   app.addHook("onClose", async () => {
     await boss.stop({ graceful: true, timeout: Math.min(10_000, config.shutdownTimeoutMs / 2) });
     await pool.end();

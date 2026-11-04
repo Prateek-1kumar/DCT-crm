@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "setup": "pnpm install && apps/api/scripts/db.sh start && pnpm --filter @dct/api db:migrate && packages/extraction/ocr/setup.sh",
+    "setup": "pnpm install && apps/api/scripts/db.sh start && pnpm --filter @dct/api db:migrate",
     "db:start": "apps/api/scripts/db.sh start",
     "db:stop": "apps/api/scripts/db.sh stop",
     "dev": "apps/api/scripts/db.sh start && (pnpm dev:api & pnpm dev:web; wait)",
@@ -11,9 +11,7 @@
     "dev:web": "pnpm --filter web dev",
     "test": "pnpm -r test",
     "e2e": "playwright test",
-    "lint": "pnpm -r lint",
-    "eval": "pnpm --filter @dct/extraction eval",
-    "probe": "pnpm --filter @dct/extraction probe"
+    "lint": "pnpm -r lint"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

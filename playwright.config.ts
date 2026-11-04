@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
 
-// e2e: the real API (fake AI only) and a production build of the web in real-API mode, on a throwaway database and upload
+// e2e: the real API and a production build of the web in real-API mode, on a throwaway database and upload
 // dir, on their own ports so the dev servers on 3100 / 4100 keep running untouched.
 const WEB = 3301;
 const API = 4301;
@@ -12,8 +12,6 @@ const api = {
   PORT: String(API),
   DATABASE_URL: "postgres://dct:dct@localhost:5434/dct_finance_e2e",
   UPLOAD_DIR: path.join(os.tmpdir(), "dct-e2e-uploads"),
-  EXTRACTION_FAKE: "1",
-  SCAN_OCR: "0",
   // The web proxy forwards the browser's Host and Origin, which are the e2e web port's.
   ALLOWED_HOSTS: [...hosts(API), ...hosts(WEB)].join(","),
   ALLOWED_ORIGINS: hosts(WEB).map((h) => `http://${h}`).join(","),

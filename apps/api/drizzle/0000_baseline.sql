@@ -1,0 +1,1 @@
+-- baseline: no tables yet; the contract harness's schema arrives in later migrations

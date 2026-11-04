@@ -6,8 +6,6 @@ export default defineConfig({
   test: {
     env: {
       DATABASE_URL: process.env.TEST_DATABASE_URL ?? "postgres://dct:dct@localhost:5434/dct_finance_test",
-      EXTRACTION_FAKE: "1",
-      SCAN_OCR: "0",
       // fastify.inject sends Host: localhost:80
       ALLOWED_HOSTS: "localhost:80,127.0.0.1:4100",
       UPLOAD_DIR: path.join(os.tmpdir(), `dct-api-test-${process.pid}`),

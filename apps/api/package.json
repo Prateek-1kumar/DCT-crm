@@ -12,7 +12,6 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:check": "tsx scripts/db-check.ts",
-    "replay": "tsx scripts/replay-study.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate:dist": "node dist/db/migrate.js",
     "db:start": "./scripts/db.sh start",
@@ -20,7 +19,6 @@
     "db:reset": "./scripts/db.sh reset"
   },
   "dependencies": {
-    "@dct/extraction": "workspace:*",
     "@dct/shared": "workspace:*",
     "@fastify/multipart": "^10.1.6",
     "drizzle-orm": "^0.45.4",
@@ -33,7 +31,6 @@
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.11",
-    "exceljs": "^4.4.0",
     "pdf-lib": "^1.17.1",
     "tsup": "^9.0.0",
     "tsx": "^4.23.15",

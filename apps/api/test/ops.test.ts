@@ -3,16 +3,17 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ConfigError, parseConfig, readingProblem } from "../src/config.js";
-import { startBoss } from "../src/jobs.js";
+import { startBoss } from "../src/boss.js";
+import { ConfigError, config, parseConfig } from "../src/config.js";
+import { apiPoolOptions, createDb } from "../src/db/index.js";
 import { type App, type Built, testApp } from "./helpers.js";
 
-// Production basics: probes, settings checked at startup, request ids.
+// Production basics: probes, settings checked at startup, the jobs queue, the pool's limits.
 
 let app: App;
 let built: Built;
 beforeAll(async () => {
-  built = await testApp({ workers: false });
+  built = await testApp();
   app = built.app;
 });
 afterAll(() => app.close());
@@ -39,7 +40,7 @@ describe("probes", () => {
   });
 
   it("not ready once the jobs have stopped (shutting down)", async () => {
-    const other = await testApp({ workers: false });
+    const other = await testApp();
     await other.ctx.boss.stop({ graceful: false, close: false });
     const res = await other.app.inject({ url: "/readyz" });
     expect([res.statusCode, res.json().jobs]).toEqual([503, "stopped"]);
@@ -47,39 +48,34 @@ describe("probes", () => {
   });
 });
 
-describe("every response carries its request id", () => {
-  it("as x-request-id, the same as a server error's ref", async () => {
-    await built.ctx.db.execute(sql`ALTER TABLE settings RENAME TO settings_away`);
+describe("the jobs queue", () => {
+  it("starts with no queues and no workers", async () => {
+    const quiet = () => {};
+    const boss = await startBoss({ log: { error: quiet, warn: quiet } as unknown as Parameters<typeof startBoss>[0]["log"] });
     try {
-      const res = await app.inject({ url: "/api/v1/settings" });
-      expect(res.statusCode).toBe(500);
-      expect(res.json().message).toContain(`(ref ${res.headers["x-request-id"]})`);
-      expect(String(res.headers["x-request-id"])).toMatch(/^[0-9a-f-]{36}$/);
+      // pg-boss keeps an internal queue of its own, named __pgboss__…
+      expect((await boss.getQueues()).filter((q) => !q.name.startsWith("__pgboss__"))).toEqual([]);
+      expect(boss.getWipData()).toEqual([]);
     } finally {
-      await built.ctx.db.execute(sql`ALTER TABLE settings_away RENAME TO settings`);
+      await boss.stop({ graceful: false });
     }
   });
 });
 
-describe("a database behind this build", () => {
-  it("starts no job worker on it; one that's up to date does", async () => {
-    const quiet = () => {};
-    const log = { error: quiet, warn: quiet, info: quiet } as unknown as Parameters<typeof startBoss>[0]["log"];
-    const workers = async (schemaBehind: boolean) => {
-      const boss = await startBoss({ db: built.ctx.db, log, work: true, schemaBehind });
-      try {
-        return boss.getWipData().map((w) => w.name).sort();
-      } finally {
-        await boss.stop({ graceful: false });
-      }
-    };
-    expect(await workers(true)).toEqual([]);
-    expect(await workers(false)).toEqual(["extract", "identify", "maintenance", "stranded"]);
+describe("the pool's limits", () => {
+  it("every connection gets the statement and lock timeouts from the settings", async () => {
+    const { db, pool } = createDb(config.databaseUrl, apiPoolOptions());
+    try {
+      const { rows } = await db.execute<{ s: string; l: string }>(sql`SELECT current_setting('statement_timeout') AS s, current_setting('lock_timeout') AS l`);
+      expect(rows[0]).toEqual({ s: "30s", l: "10s" });
+    } finally {
+      await pool.end();
+    }
   });
 });
 
 describe("settings, checked at startup", () => {
-  const base = { DATABASE_URL: "postgres://dct:dct@localhost:5434/dct_finance_test", EXTRACTION_FAKE: "1" };
+  const base = { DATABASE_URL: "postgres://dct:dct@localhost:5434/dct_finance_test" };
   const problems = (env: Record<string, string>) => {
     try {
       parseConfig(env);
@@ -92,46 +88,37 @@ describe("settings, checked at startup", () => {
 
   it("defaults the rest; an empty value counts as unset", () => {
     const c = parseConfig({ ...base, PORT: "" });
-    expect(c).toMatchObject({ port: 4100, logLevel: "info", listenHost: "127.0.0.1", extractionFake: true, db: { max: 10, statementTimeoutMs: 30_000, lockTimeoutMs: 10_000 } });
+    expect(c).toMatchObject({
+      port: 4100,
+      logLevel: "info",
+      listenHost: "127.0.0.1",
+      db: { max: 10, statementTimeoutMs: 30_000, lockTimeoutMs: 10_000 },
+      requestTimeoutMs: 120_000,
+      keepAliveTimeoutMs: 72_000,
+      shutdownTimeoutMs: 30_000,
+    });
     expect(c.allowedHosts).toEqual(["localhost:4100", "127.0.0.1:4100", "localhost:3100", "127.0.0.1:3100"]);
   });
 
   it("names every bad setting and what it must be, never its value", () => {
     const secret = "s3cr3t-pa55";
-    const msg = problems({ DATABASE_URL: `mysql://dct:${secret}@db/x`, PORT: "eighty", UPLOAD_DIR: "data/uploads", LOG_LEVEL: "loud", EXTRACTION_MAX_USD: "2O", ANTHROPIC_API_KEY: "" });
+    const msg = problems({ DATABASE_URL: `mysql://dct:${secret}@db/x`, PORT: "eighty", UPLOAD_DIR: "data/uploads", LOG_LEVEL: "loud", REQUEST_TIMEOUT_MS: "5" });
     expect(msg).toContain("- DATABASE_URL must be a postgres:// connection URL");
     expect(msg).toContain("- PORT must be a port number from 1 to 65535");
     expect(msg).toContain("- UPLOAD_DIR must be an absolute path");
     expect(msg).toContain("- LOG_LEVEL must be one of fatal, error, warn, info, debug, trace, silent");
-    expect(msg).toContain("- EXTRACTION_MAX_USD must be a number of dollars above 0");
-    for (const value of [secret, "mysql", "eighty", "loud", "2O"]) expect(msg).not.toContain(value);
+    expect(msg).toContain("- REQUEST_TIMEOUT_MS must be a number of milliseconds from 1000 to 3600000");
+    for (const value of [secret, "mysql", "eighty", "loud"]) expect(msg).not.toContain(value);
   });
 
-  it("only a server that reads contracts needs the AI key; the migrator never does", async () => {
-    expect(problems({ DATABASE_URL: base.DATABASE_URL })).toBeNull();
-    expect(readingProblem({})).toContain("- ANTHROPIC_API_KEY is needed to read contracts");
-    expect(readingProblem({ ANTHROPIC_API_KEY: "k" })).toBeNull();
-    // the synthetic reading never starts on a real database, the dev default included, key or not
-    const fakeOnly = "- EXTRACTION_FAKE=1 is only for the automated tests";
-    expect(readingProblem({ EXTRACTION_FAKE: "1" })).toContain(fakeOnly);
-    expect(readingProblem({ EXTRACTION_FAKE: "1", ANTHROPIC_API_KEY: "k", DATABASE_URL: "postgres://u:p@db:5432/dct_finance" })).toContain(fakeOnly);
-    expect(readingProblem({ EXTRACTION_FAKE: "1", DATABASE_URL: "postgres://u:p@db:5432/dct_test_copy" })).toContain(fakeOnly);
-    expect(readingProblem({ EXTRACTION_FAKE: "1", DATABASE_URL: "postgres://u:p@db:5432/dct_finance_test" })).toBeNull();
-    expect(readingProblem({ EXTRACTION_FAKE: "1", DATABASE_URL: "postgres://u:p@db:5432/dct_finance_e2e" })).toBeNull();
-    // the release step itself: no key, no fake reading (set but empty, so .env can't fill them in)
+  it("needs no AI key to start; the migrator never does either", async () => {
+    expect(problems(base)).toBeNull();
     const api = path.resolve(import.meta.dirname, "..");
+    // set but empty, so .env can't fill them in
     const { stdout } = await promisify(execFile)(path.join(api, "node_modules/.bin/tsx"), ["src/db/migrate.ts"], {
       cwd: api,
-      env: { ...process.env, DATABASE_URL: base.DATABASE_URL, ANTHROPIC_API_KEY: "", EXTRACTION_FAKE: "" },
+      env: { ...process.env, DATABASE_URL: base.DATABASE_URL, ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
     });
     expect(stdout).toContain("migrations applied");
-  });
-
-  it("an OpenAI cross-read needs its key and model, and a price as two numbers", () => {
-    const msg = problems({ ...base, CROSS_READ: "OpenAI", OPENAI_PRICE_PER_MTOK: "$2/$10" });
-    expect(msg).toContain("- OPENAI_API_KEY is needed when CROSS_READ=openai");
-    expect(msg).toContain("- OPENAI_MODEL is needed when CROSS_READ=openai");
-    expect(msg).toContain('- OPENAI_PRICE_PER_MTOK must be "input,output" dollars per million tokens');
-    expect(problems({ ...base, CROSS_READ: "haiku", OPENAI_PRICE_PER_MTOK: "anything" })).toBeNull(); // unused then
   });
 });
