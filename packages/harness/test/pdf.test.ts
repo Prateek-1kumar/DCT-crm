@@ -41,8 +41,14 @@ const budgetPage = () =>
 const bankPage = () =>
   pdfFile("bank.pdf", (page, font) => {
     page.drawText("Account Number: 123456789", { x: 50, y: 700, size: 11, font });
-    page.drawText("ABA Routing 111000614", { x: 50, y: 680, size: 11, font });
+    page.drawText("ABA Routing 000111222", { x: 50, y: 680, size: 11, font });
     page.drawText("Startup fee $1,234.56", { x: 50, y: 660, size: 11, font });
+    page.drawText("Bank Account Number", { x: 50, y: 620, size: 11, font });
+    page.drawText("900123456", { x: 50, y: 605, size: 11, font });
+    page.drawText("IBAN: GB29 NWBK 6016 1331 9268 19", { x: 50, y: 580, size: 11, font });
+    page.drawText("SWIFT: TESTUS33", { x: 50, y: 560, size: 11, font });
+    page.drawText("Acct: 246,813,579", { x: 50, y: 540, size: 11, font });
+    page.drawText("Bank fee $25.00 per wire, account review in 12 months", { x: 50, y: 520, size: 11, font });
   });
 
 describe("load", () => {
@@ -139,13 +145,21 @@ describe("bank masking", () => {
     for (const text of [page.layout, page.raw, page.words.map((w) => w.text).join(" ")]) {
       expect(text).toContain("Account Number: #########");
       expect(text).toContain("ABA Routing #########");
-      expect(text).not.toMatch(/123456789|111000614/);
+      expect(text).not.toMatch(/123456789|000111222/);
     }
     expect(page.maskBoxes.length).toBeGreaterThan(0);
   });
 
-  it("leaves amounts alone", () => {
+  it("masks a number on the line below its label, IBANs, SWIFT codes and comma-grouped digits", () => {
+    const raw = doc.pages[0]!.raw;
+    expect(raw).not.toMatch(/900123456|GB29|NWBK|6016|TESTUS33|246,813,579/);
+    expect(raw).toContain("IBAN: #### #### #### #### #### ##");
+    expect(raw).toContain("SWIFT: ########");
+  });
+
+  it("leaves amounts and short numbers near a bank word alone", () => {
     expect(doc.pages[0]!.raw).toContain("Startup fee $1,234.56");
+    expect(doc.pages[0]!.raw).toContain("Bank fee $25.00 per wire, account review in 12 months");
   });
 });
 

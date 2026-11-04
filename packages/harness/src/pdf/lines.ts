@@ -3,12 +3,15 @@ import type { Word } from "../types";
 
 const LINE_TOLERANCE = 0.5;
 const MASK_PAD = 0.004;
-// Account numbers sit right after their label ("Account Number: 123…"); further away the digits are probably something else.
-const LABEL_REACH = 40;
+// A label's value sits after it on the same line or, in remittance tables, opens the next line.
+const LOOKAHEAD_WORDS = 8;
+const MAX_SKIPPED = 3;
 const MIN_BANK_DIGITS = 5;
-const BANK_LABEL = /\b(?:account|acct|a\/c|aba|routing|swift|iban|bank|sort code)\b/gi;
-// Not preceded by $ . , so the tail of an amount like $1,234,567 is never read as an account number.
-const DIGIT_RUN = /(?<![\d$.,])\d(?:[ -]?\d)*/g;
+const BANK_LABEL = /^(?:account|acct|a\/c|aba|routing|swift|bic|iban|bank|transit)$/;
+const AMOUNT = /^\(?(?:US)?\$|^\(?\d{1,3}(?:,\d{3})*\.\d{2}\)?[.,;:]?$/;
+const BIC = /^[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$/;
+// IBANs print in groups of four, some all letters ("GB29 NWBK 6016 …").
+const IBAN_GROUP = /^[A-Z]{4}$/;
 
 const median = (xs: number[]) => {
   const s = [...xs].sort((p, q) => p - q);
@@ -32,41 +35,41 @@ export function groupLines(words: Word[]): Word[][] {
 
 export const rawLine = (line: Word[]) => line.map((w) => w.text).join(" ");
 
-export function maskBankDetails(lines: Word[][]): Region[] {
-  const boxes: Region[] = [];
-  for (const line of lines) {
-    const raw = rawLine(line);
-    const hit: boolean[] = [];
-    for (const label of raw.matchAll(BANK_LABEL)) {
-      const from = label.index + label[0].length;
-      for (const run of raw.matchAll(DIGIT_RUN)) {
-        if (run.index < from || run.index - from > LABEL_REACH || run[0].replace(/\D/g, "").length < MIN_BANK_DIGITS) continue;
-        for (let i = 0; i < run[0].length; i++) hit[run.index + i] = true;
-      }
-    }
-    let offset = 0;
-    let group: Word[] = [];
-    const closeGroup = () => {
-      if (!group.length) return;
-      boxes.push([
-        Math.max(0, Math.min(...group.map((w) => w.x0)) - MASK_PAD),
-        Math.max(0, Math.min(...group.map((w) => w.y0)) - MASK_PAD),
-        Math.min(1, Math.max(...group.map((w) => w.x1)) + MASK_PAD),
-        Math.min(1, Math.max(...group.map((w) => w.y1)) + MASK_PAD),
-      ]);
-      group = [];
-    };
-    for (const w of line) {
-      const masked = [...w.text].map((ch, i) => (hit[offset + i] && /\d/.test(ch) ? "#" : ch)).join("");
-      if (masked !== w.text) {
-        w.text = masked;
-        group.push(w);
-      } else closeGroup();
-      offset += w.text.length + 1;
-    }
-    closeGroup();
+const bare = (t: string | undefined) => (t ?? "").toLowerCase().replace(/[^a-z/]/g, "");
+const digitCount = (t: string) => t.replace(/\D/g, "").length;
+const alnum = (t: string) => t.replace(/[^A-Za-z0-9]/g, "");
+
+function isLabel(line: Word[], i: number) {
+  const t = bare(line[i]!.text);
+  return BANK_LABEL.test(t) || (t === "sort" && bare(line[i + 1]?.text) === "code");
+}
+
+function valueAfter(window: Word[]): Word[] {
+  const run: Word[] = [];
+  let skipped = 0;
+  for (const w of window) {
+    const t = w.text;
+    const part = !AMOUNT.test(t) && (digitCount(t) > 0 || BIC.test(alnum(t)) || (run.length > 0 && IBAN_GROUP.test(alnum(t))));
+    if (part) run.push(w);
+    else if (run.length || ++skipped > MAX_SKIPPED) break;
   }
-  return boxes;
+  const digits = run.reduce((n, w) => n + digitCount(w.text), 0);
+  return digits >= MIN_BANK_DIGITS || (run.length === 1 && BIC.test(alnum(run[0]!.text))) ? run : [];
+}
+
+export function maskBankDetails(lines: Word[][]): Region[] {
+  const masked = new Set<Word>();
+  lines.forEach((line, li) => {
+    line.forEach((_, wi) => {
+      if (!isLabel(line, wi)) return;
+      const window = [...line.slice(wi + 1), ...(lines[li + 1] ?? [])].slice(0, LOOKAHEAD_WORDS);
+      for (const w of valueAfter(window)) masked.add(w);
+    });
+  });
+  return [...masked].map((w) => {
+    w.text = w.text.replace(/[A-Za-z0-9]/g, "#");
+    return [Math.max(0, w.x0 - MASK_PAD), Math.max(0, w.y0 - MASK_PAD), Math.min(1, w.x1 + MASK_PAD), Math.min(1, w.y1 + MASK_PAD)] satisfies Region;
+  });
 }
 
 export function layoutText(lines: Word[][]): string {
