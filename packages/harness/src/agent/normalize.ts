@@ -1,0 +1,90 @@
+import { Accounted, Grid, Question, Study, Term, parseCents, parsePercent } from "@dct/shared";
+import type { z } from "zod";
+
+type Raw = Record<string, unknown>;
+export type Parsed<T> = { ok: true; value: T } | { ok: false; issues: string[] };
+
+const isObject = (v: unknown): v is Raw => typeof v === "object" && v !== null && !Array.isArray(v);
+const list = (v: unknown, each: (item: unknown, i: number) => unknown, fallback: unknown) => (Array.isArray(v) ? v.map(each) : (v ?? fallback));
+
+function cents(v: unknown, where: string, issues: string[]): number | null {
+  if (v === undefined || v === null || v === "") return null;
+  const c = parseCents(String(v));
+  if (c === null) issues.push(`${where}: "${String(v)}" is not a dollar amount`);
+  return c;
+}
+
+// An amount becomes cents; anything else printed in the cell ("Invoice", "Inc in PE", "N/A") stays as printed.
+function cell(v: unknown, where: string, issues: string[]): unknown {
+  if (typeof v === "string") return v.trim() ? (parseCents(v) ?? v) : null;
+  if (typeof v === "number") return cents(v, where, issues);
+  return v ?? null;
+}
+
+const cells = (v: unknown, where: string, issues: string[]) => list(v, (c, i) => cell(c, `${where} #${i + 1}`, issues), null);
+
+function parse<T>(schema: z.ZodType<T>, value: unknown, issues: string[]): Parsed<T> {
+  const result = schema.safeParse(value);
+  if (!result.success) issues.push(...result.error.issues.map((i) => `${i.path.join(".") || "this item"}: ${i.message}`));
+  return result.success && !issues.length ? { ok: true, value: result.data } : { ok: false, issues };
+}
+
+const notAnObject: Parsed<never> = { ok: false, issues: ["this item must be an object"] };
+
+export function normalizeStudy(raw: unknown): Parsed<Study> {
+  if (!isObject(raw)) return notAnObject;
+  const documents = list(raw.documents, (d) => (isObject(d) ? { hasMoney: true, supersedes: [], effectiveFrom: null, retroactive: false, notes: null, ...d } : d), undefined);
+  return parse(Study, { payer: null, siteNumber: null, pi: null, effectiveDate: null, ...raw, documents }, []);
+}
+
+export function normalizeTerm(raw: unknown): Parsed<Term> {
+  if (!isObject(raw)) return notAnObject;
+  const issues: string[] = [];
+  const cap = isObject(raw.cap)
+    ? { value: null, period: null, text: "", ...raw.cap, ...(raw.cap.kind === "amount" && { value: cents(raw.cap.value, "cap.value", issues) }) }
+    : (raw.cap ?? null);
+  const term = {
+    unit: null, trigger: null, formula: null, conditions: null, holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, houseRuleIds: [], notes: null,
+    ...raw, cap, amountCents: cents(raw.amount, "amount", issues), evidence: "none",
+  };
+  return parse(Term, term, issues);
+}
+
+export function normalizeGrid(raw: unknown): Parsed<Grid> {
+  if (!isObject(raw)) return notAnObject;
+  const issues: string[] = [];
+  const line = (k: string) => (raw[k] == null ? null : cells(raw[k], k, issues));
+  const rows = list(
+    raw.rows,
+    (r, i) => {
+      if (!isObject(r)) return r;
+      const where = `row '${typeof r.name === "string" ? r.name : i + 1}'`;
+      return { code: null, ...r, unitCostCents: cents(r.unitCost, `${where} unitCost`, issues), printedRowTotalCents: cents(r.printedRowTotal, `${where} printedRowTotal`, issues), cells: cells(r.cells, where, issues) };
+    },
+    undefined,
+  );
+  const additions = list(raw.additions, (a) => (isObject(a) ? { ...a, cells: cells(a.cells, `added line '${String(a.name)}'`, issues) } : a), []);
+  const pct = typeof raw.overheadPct === "string" ? parsePercent(raw.overheadPct) : (raw.overheadPct ?? null);
+  if (pct === null && raw.overheadPct != null) issues.push(`overheadPct: "${String(raw.overheadPct)}" is not a percentage`);
+  const grid = {
+    arm: null, ...raw, overheadPct: pct, rows, subtotal: line("subtotal"), overhead: line("overhead"), total: line("total"), additions,
+    grandTotalCents: cents(raw.grandTotal, "grandTotal", issues),
+  };
+  return parse(Grid, grid, issues);
+}
+
+export function normalizeAccounted(raw: unknown): Parsed<Accounted> {
+  if (!isObject(raw)) return notAnObject;
+  const issues: string[] = [];
+  return parse(Accounted, { ...raw, amountCents: raw.amount == null ? undefined : cents(raw.amount, "amount", issues) }, issues);
+}
+
+export function normalizeQuestion(raw: unknown): Parsed<Question> {
+  if (!isObject(raw)) return notAnObject;
+  const options = list(raw.options, (o) => {
+    if (!isObject(o)) return o;
+    const { patch, ...rest } = o;
+    return { patches: patch ? [patch] : [], ...rest };
+  }, []);
+  return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open" }, []);
+}
