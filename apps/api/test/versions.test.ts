@@ -1,0 +1,336 @@
+import type { Question, Rulebook } from "@dct/shared";
+import { and, eq, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "../src/app.js";
+import { answers, auditLog, documents, parties, reads, studies, versions } from "../src/db/schema.js";
+import { savePdf } from "../src/lib/storage.js";
+import type { App, Built } from "./helpers.js";
+
+let built: Built;
+let app: App;
+let docId: string;
+
+beforeAll(async () => {
+  built = await buildApp({
+    routes: (api, { db }) => {
+      api.post("/test/rewrite/:id", async (req) => {
+        await db.update(versions).set({ rulebook: null }).where(eq(versions.id, (req.params as { id: string }).id));
+        return { ok: true };
+      });
+    },
+  });
+  app = built.app;
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([612, 792]);
+  // a page needs a real amount of text to count as text rather than a scan
+  ["Startup fee $1,500.00 due on signing.", "The sponsor pays the institution within forty-five days of an itemized invoice for work done.", "Payments are made by wire transfer to the account named in the notice given by the institution.", "Either party may end this agreement by written notice if the other fails to correct a breach within thirty days.", "Records are kept for the period the law requires and the sponsor may audit them during business hours."].forEach((line, i) =>
+    page.drawText(line, { x: 40, y: 700 - i * 20, size: 9, font }),
+  );
+  const sha256 = await savePdf(Buffer.from(await pdf.save()));
+  const [doc] = await built.ctx.db
+    .insert(documents)
+    .values({ sha256, name: "contract.pdf", bytes: 1, pages: [{ page: 1, kind: "text", chars: 250, firstLine: "Startup fee" }], createdBy: "test" })
+    .onConflictDoUpdate({ target: documents.sha256, set: { name: "contract.pdf" } })
+    .returning();
+  docId = doc!.id;
+});
+afterAll(() => app.close());
+
+const db = () => built.ctx.db;
+const source = { doc: "contract.pdf", page: 1, quote: "Startup fee $1,500.00" };
+
+const term = (id: string, over: Partial<Rulebook["terms"][number]> = {}): Rulebook["terms"][number] => ({
+  id, category: "site_fee", name: `Fee ${id}`, amountCents: null, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null,
+  conditions: null, holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source, evidence: "quote", houseRuleIds: [], notes: null, ...over,
+});
+
+const question = (id: string, over: Partial<Question> = {}): Question => ({
+  id, kind: "decision", origin: "compile", about: null, question: `Question ${id}?`, context: "", source,
+  options: [{ label: "Yes", patches: [{ target: "term", id: "t1", set: { notes: "Confirmed" } }] }, { label: "Nothing changes", patches: [] }],
+  suggestion: null, state: "open", blocking: true, readings: [], resolution: null, ...over,
+});
+
+const rulebook = (over: Partial<Rulebook> = {}): Rulebook => ({
+  study: { protocol: "P", sponsor: "S", payer: null, siteEntity: "E", siteNumber: null, pi: null, effectiveDate: null, documents: [] },
+  terms: [term("t1", { amountCents: 150000 })], grids: [], accounted: [], questions: [], ...over,
+});
+
+const badQuote = { check: "quote", id: "t2", doc: "contract.pdf", page: 1, message: "quote not found on p.1 of contract.pdf" };
+const withBadQuote = (over: Partial<Rulebook> = {}) =>
+  rulebook({
+    terms: [term("t1", { amountCents: 150000 }), term("t2", { source: { ...source, quote: "Closeout fee" } })],
+    questions: [question("q-fix", { blocking: false, options: [{ label: "It is the signing clause", patches: [{ target: "term", id: "t2", set: { source: { ...source, quote: "due on signing" } } }] }, { label: "Leave it", patches: [] }] })],
+    ...over,
+  });
+
+async function study() {
+  const [sponsor, site] = await db()
+    .insert(parties)
+    .values([{ kind: "sponsor", name: `Sponsor ${randomUUID()}`, createdBy: "test" }, { kind: "site", name: `Site ${randomUUID()}`, createdBy: "test" }])
+    .returning();
+  const [s] = await db().insert(studies).values({ protocol: `P-${randomUUID()}`, sponsorId: sponsor!.id, siteId: site!.id, createdBy: "test" }).returning();
+  return s!.id;
+}
+
+async function seed(opts: { rulebook?: Rulebook; status?: (typeof versions.$inferInsert)["status"]; problems?: (typeof versions.$inferInsert)["problems"]; studyId?: string; number?: number } = {}) {
+  const studyId = opts.studyId ?? (await study());
+  const status = opts.status ?? "draft";
+  const [v] = await db()
+    .insert(versions)
+    .values({
+      studyId, number: opts.number ?? 1, status, documentIds: [docId], rulebook: opts.rulebook ?? rulebook(), problems: opts.problems ?? [], createdBy: "test",
+      ...(status === "approved" || status === "superseded" ? { approvedAt: new Date(), approvedBy: "Old Approver" } : {}),
+    })
+    .returning();
+  return { studyId, id: v!.id };
+}
+
+const answer = (id: string, questionId: string, body: unknown) => app.inject({ method: "POST", url: `/api/v1/versions/${id}/questions/${encodeURIComponent(questionId)}/answer`, payload: body as object });
+const approve = (id: string, body: unknown) => app.inject({ method: "POST", url: `/api/v1/versions/${id}/approve`, payload: body as object });
+const stored = async (id: string) => (await db().select().from(versions).where(eq(versions.id, id)))[0]!;
+const audits = (entityId: string) => db().select().from(auditLog).where(eq(auditLog.entityId, entityId)).orderBy(auditLog.id);
+const refusal = async (p: PromiseLike<unknown>) => ((await p.then(() => null, (e: { cause?: { message?: string } }) => e)) as { cause?: { message?: string } } | null)?.cause?.message;
+
+describe("GET /versions/:id", () => {
+  it("returns the version with its answers and read", async () => {
+    const { id, studyId } = await seed({ rulebook: rulebook({ questions: [question("q1")] }), problems: [badQuote] });
+    expect((await db().insert(reads).values({ versionId: id, budgetUsd: 3 }).returning())[0]).toBeDefined();
+    await answer(id, "q1", { option: 0, by: "Ana" });
+    const res = await app.inject({ url: `/api/v1/versions/${id}` });
+    const body = res.json();
+    expect(res.statusCode).toBe(200);
+    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "id", "number", "problems", "read", "rulebook", "status", "studyId"]);
+    expect(body).toMatchObject({ id, studyId, number: 1, status: "draft", documentIds: [docId], createdBy: "test", approvedAt: null, approvedBy: null });
+    expect(body.answers).toEqual([{ questionId: "q1", option: 0, by: "Ana", at: expect.any(String) }]);
+    expect(body.read).toEqual({ id: expect.any(String), status: "queued" });
+  });
+
+  it("has no read when none was started; unknown and malformed ids are refused", async () => {
+    const { id } = await seed();
+    expect((await app.inject({ url: `/api/v1/versions/${id}` })).json().read).toBeNull();
+    const missing = await app.inject({ url: `/api/v1/versions/${randomUUID()}` });
+    expect([missing.statusCode, missing.json().message]).toEqual([404, "There is no such version."]);
+    expect((await app.inject({ url: "/api/v1/versions/nope" })).statusCode).toBe(400);
+  });
+});
+
+describe("answering a question", () => {
+  it("applies the option's patches, marks the term as a person's decision, and records who and when", async () => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1")] }) });
+    const res = await answer(id, "q1", { option: 0, by: "Ana" });
+    const body = res.json();
+    expect(res.statusCode).toBe(200);
+    expect(body.rulebook.terms[0]).toMatchObject({ id: "t1", notes: "Confirmed", evidence: "person" });
+    expect(body.rulebook.questions[0].state).toBe("answered");
+    expect(body.answers).toEqual([{ questionId: "q1", option: 0, by: "Ana", at: expect.any(String) }]);
+    expect((await stored(id)).rulebook).toEqual(body.rulebook);
+    expect(await db().select().from(answers).where(eq(answers.versionId, id))).toHaveLength(1);
+  });
+
+  it("leaves other terms' evidence alone, and an answer with no patches changes only the question", async () => {
+    const rb = rulebook({ terms: [term("t1", { amountCents: 150000 }), term("t2", { source: { ...source, quote: "due on signing" } })], questions: [question("q1")] });
+    const { id } = await seed({ rulebook: rb });
+    expect((await answer(id, "q1", { option: 1, by: "Ana" })).json().rulebook).toEqual({ ...rb, questions: [{ ...rb.questions[0], state: "answered" }] });
+    const { id: other } = await seed({ rulebook: rb });
+    const terms = (await answer(other, "q1", { option: 0, by: "Ana" })).json().rulebook.terms;
+    expect(terms.map((t: { evidence: string }) => t.evidence)).toEqual(["person", "quote"]);
+  });
+
+  it("re-runs the checks: an answer that fixes a quote clears the problem, one that doesn't leaves it", async () => {
+    const { id } = await seed({ rulebook: withBadQuote(), problems: [badQuote] });
+    const kept = (await answer(id, "q-fix", { option: 1, by: "Ana" })).json();
+    expect(kept.problems).toEqual([badQuote]);
+    const { id: other } = await seed({ rulebook: withBadQuote(), problems: [badQuote] });
+    const fixed = (await answer(other, "q-fix", { option: 0, by: "Ana" })).json();
+    expect(fixed.problems).toEqual([]);
+    expect((await stored(other)).problems).toEqual([]);
+  });
+
+  it("adds a required decision the answer makes necessary, once", async () => {
+    const rb = rulebook({ terms: [term("t1", { amountCents: 150000, billing: "unknown" })], questions: [question("q1"), question("q2")] });
+    const { id } = await seed({ rulebook: rb });
+    const first = (await answer(id, "q1", { option: 1, by: "Ana" })).json();
+    expect(first.rulebook.questions.map((q: Question) => [q.id, q.state, q.blocking])).toEqual([["q1", "answered", true], ["q2", "open", true], ["rule:billing", "open", true]]);
+    const second = (await answer(id, "q2", { option: 1, by: "Ana" })).json();
+    expect(second.rulebook.questions.filter((q: Question) => q.id === "rule:billing")).toHaveLength(1);
+  });
+
+  it("refuses a second answer to the same question", async () => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1")] }) });
+    await answer(id, "q1", { option: 0, by: "Ana" });
+    const again = await answer(id, "q1", { option: 1, by: "Ben" });
+    expect([again.statusCode, again.json().message]).toEqual([409, "This question has already been answered"]);
+    expect(await db().select().from(answers).where(eq(answers.versionId, id))).toHaveLength(1);
+  });
+
+  it.each(["reading", "failed", "approved", "superseded"] as const)("refuses to answer a %s version", async (status) => {
+    const { id } = await seed({ status, rulebook: rulebook({ questions: [question("q1")] }) });
+    const res = await answer(id, "q1", { option: 0, by: "Ana" });
+    expect([res.statusCode, res.json().message]).toEqual([409, `This version is ${status}, so it can't be answered. Only a draft can.`]);
+    expect(await db().select().from(answers).where(eq(answers.versionId, id))).toHaveLength(0);
+  });
+
+  it("404s an unknown version or question", async () => {
+    const { id } = await seed();
+    const noQuestion = await answer(id, "nope", { option: 0, by: "Ana" });
+    expect([noQuestion.statusCode, noQuestion.json().message]).toEqual([404, "This version has no such question."]);
+    expect((await answer(randomUUID(), "q1", { option: 0, by: "Ana" })).statusCode).toBe(404);
+  });
+
+  it.each([
+    [{ option: 2, by: "Ana" }, "This question has 2 options: pick one of them."],
+    [{ option: -1, by: "Ana" }, "Pick one of the options."],
+    [{ option: 0.5, by: "Ana" }, "Pick one of the options."],
+    [{ by: "Ana" }, "Pick one of the options."],
+    [{ option: 0 }, "Say who is doing this: pick your name first."],
+    [{ option: 0, by: "  " }, "Say who is doing this: pick your name first."],
+    [undefined, "The request is missing its details."],
+  ])("refuses a bad answer %j", async (body, message) => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1")] }) });
+    const res = await answer(id, "q1", body);
+    expect([res.statusCode, res.json().message]).toEqual([400, message]);
+    expect(await db().select().from(answers).where(eq(answers.versionId, id))).toHaveLength(0);
+    expect(await audits(id)).toHaveLength(0);
+  });
+
+  it("refuses an answer whose patches don't fit, and saves nothing", async () => {
+    const rb = rulebook({ questions: [question("q1", { options: [{ label: "Broken", patches: [{ target: "term", id: "t1", set: { nosuch: 1 } }] }] })] });
+    const { id } = await seed({ rulebook: rb });
+    const res = await answer(id, "q1", { option: 0, by: "Ana" });
+    expect([res.statusCode, res.json().message]).toEqual([409, "A term has no field called 'nosuch', so term 't1' can't be changed that way."]);
+    expect((await stored(id)).rulebook).toEqual(rb);
+    expect(await db().select().from(answers).where(eq(answers.versionId, id))).toHaveLength(0);
+    expect(await audits(id)).toHaveLength(0);
+  });
+
+  it("refuses an answer that would leave the rulebook invalid", async () => {
+    const rb = rulebook({ questions: [question("q1", { options: [{ label: "Bad", patches: [{ target: "term", id: "t1", set: { amountCents: "lots" } }] }] })] });
+    const { id } = await seed({ rulebook: rb });
+    const res = await answer(id, "q1", { option: 0, by: "Ana" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/^That change would leave the rulebook invalid/);
+    expect((await stored(id)).rulebook).toEqual(rb);
+  });
+
+  it("writes one audit entry, in the same transaction", async () => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1")] }) });
+    await answer(id, "q1", { option: 0, by: "Ana" });
+    const log = await audits(id);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ by: "Ana", action: "version.answered", entity: "version", detail: { questionId: "q1", option: 0, label: "Yes" } });
+  });
+});
+
+describe("approving a version", () => {
+  it("approves a clean draft and supersedes the study's previous live version", async () => {
+    const studyId = await study();
+    const old = await seed({ studyId, number: 1, status: "approved" });
+    const draft = await seed({ studyId, number: 2 });
+    const res = await approve(draft.id, { by: "Dana" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: draft.id, status: "approved", approvedBy: "Dana", approvedAt: expect.any(String) });
+    expect(await stored(old.id)).toMatchObject({ status: "superseded", approvedBy: "Old Approver" });
+    expect((await audits(draft.id)).map((a) => [a.by, a.action, a.detail])).toEqual([["Dana", "version.approved", { number: 2, supersedes: old.id }]]);
+    expect((await audits(old.id)).map((a) => [a.by, a.action, a.detail])).toEqual([["Dana", "version.superseded", { number: 1, supersededBy: draft.id }]]);
+  });
+
+  it("approves a first version with nothing to supersede", async () => {
+    const { id } = await seed();
+    expect((await approve(id, { by: "Dana" })).json().status).toBe("approved");
+    expect((await audits(id))[0]!.detail).toEqual({ number: 1, supersedes: null });
+  });
+
+  it("only approves a draft", async () => {
+    for (const status of ["reading", "failed", "approved", "superseded"] as const) {
+      const { id } = await seed({ status });
+      const res = await approve(id, { by: "Dana" });
+      expect([res.statusCode, res.json().message]).toEqual([409, `This version is ${status}, so it can't be approved. Only a draft can.`]);
+    }
+  });
+
+  it("waits for open blocking questions, but not for non-blocking ones", async () => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1"), question("q2", { question: "Is the fee waived?" }), question("q3", { blocking: false })] }) });
+    const res = await approve(id, { by: "Dana" });
+    expect([res.statusCode, res.json().message]).toEqual([409, '2 questions still need an answer before this can be approved. First: "Question q1?"']);
+    await answer(id, "q1", { option: 1, by: "Ana" });
+    expect((await approve(id, { by: "Dana" })).json().message).toBe('1 question still needs an answer before this can be approved. First: "Is the fee waived?"');
+    await answer(id, "q2", { option: 1, by: "Ana" });
+    expect((await approve(id, { by: "Dana" })).statusCode).toBe(200);
+  });
+
+  it("waits for the checks to find nothing wrong", async () => {
+    const { id } = await seed({ rulebook: withBadQuote(), problems: [badQuote, { ...badQuote, id: "t3" }] });
+    const res = await approve(id, { by: "Dana" });
+    expect([res.statusCode, res.json().message]).toEqual([409, "2 problems still to fix before this can be approved. First: quote not found on p.1 of contract.pdf"]);
+    expect((await stored(id)).status).toBe("draft");
+  });
+
+  it("won't let someone who answered a question approve, whatever the letter case", async () => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1")] }) });
+    await answer(id, "q1", { option: 1, by: "Ana" });
+    for (const by of ["Ana", "ana"]) {
+      const res = await approve(id, { by });
+      expect([res.statusCode, res.json().message]).toEqual([409, "Someone who answered this version's questions can't also approve it: ask a colleague."]);
+    }
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+    expect((await audits(id)).map((a) => a.action)).toEqual(["version.answered", "version.approved"]);
+  });
+
+  it("refuses a body with no name", async () => {
+    const { id } = await seed();
+    const res = await approve(id, {});
+    expect([res.statusCode, res.json().message]).toEqual([400, "Say who is doing this: pick your name first."]);
+  });
+
+  it("leaves the previous live version alone when the approval is refused", async () => {
+    const studyId = await study();
+    const old = await seed({ studyId, number: 1, status: "approved" });
+    const draft = await seed({ studyId, number: 2, problems: [badQuote] });
+    expect((await approve(draft.id, { by: "Dana" })).statusCode).toBe(409);
+    expect((await stored(old.id)).status).toBe("approved");
+    expect(await audits(old.id)).toHaveLength(0);
+  });
+});
+
+describe("the database refuses to change what is live", () => {
+  const rejected = "A live rulebook can't be changed: make a new version instead.";
+
+  it("an approved version's rulebook, problems, documents and approval", async () => {
+    const { id } = await seed({ status: "approved" });
+    const update = (set: Record<string, unknown>) => refusal(db().update(versions).set(set).where(eq(versions.id, id)));
+    expect(await update({ rulebook: rulebook({ accounted: [{ doc: "contract.pdf", pages: [1], reason: "x" }] }) })).toBe(rejected);
+    expect(await update({ problems: [badQuote] })).toBe(rejected);
+    expect(await update({ documentIds: [] })).toBe(rejected);
+    expect(await update({ approvedBy: "Someone" })).toBe(rejected);
+    expect(await update({ approvedAt: new Date(0) })).toBe(rejected);
+    expect(await update({ status: "draft" })).toBe(rejected);
+    expect(await refusal(db().delete(versions).where(eq(versions.id, id)))).toBe("An approved rulebook can't be deleted.");
+  });
+
+  it("an approved version can still move on to superseded; a superseded one can't change at all", async () => {
+    const { id } = await seed({ status: "approved" });
+    await db().update(versions).set({ status: "superseded" }).where(eq(versions.id, id));
+    expect(await refusal(db().update(versions).set({ rulebook: rulebook() }).where(eq(versions.id, id)))).toBe("A superseded rulebook can't be changed.");
+    expect(await refusal(db().delete(versions).where(eq(versions.id, id)))).toBe("An approved rulebook can't be deleted.");
+  });
+
+  it("reaches the API as a 409 with the same plain message", async () => {
+    const { id } = await seed({ status: "approved" });
+    const res = await app.inject({ method: "POST", url: `/api/v1/test/rewrite/${id}` });
+    expect([res.statusCode, res.json().message]).toEqual([409, rejected]);
+    expect((await stored(id)).rulebook).not.toBeNull();
+  });
+
+  it("the audit log refuses updates, deletes and truncation", async () => {
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1")] }) });
+    await answer(id, "q1", { option: 0, by: "Ana" });
+    const message = "The audit log can't be changed or deleted.";
+    expect(await refusal(db().update(auditLog).set({ by: "Mallory" }).where(eq(auditLog.entityId, id)))).toBe(message);
+    expect(await refusal(db().delete(auditLog).where(and(eq(auditLog.entityId, id))))).toBe(message);
+    expect(await refusal(db().execute(sql`TRUNCATE audit_log`))).toBe(message);
+    expect(await audits(id)).toHaveLength(1);
+  });
+});

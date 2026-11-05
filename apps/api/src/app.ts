@@ -7,9 +7,12 @@ import type { PgBoss } from "pg-boss";
 import { config } from "./config.js";
 import { apiPoolOptions, createDb, type Db, pendingMigrations } from "./db/index.js";
 import { startBoss } from "./boss.js";
+import { startReadJob } from "./jobs/read.js";
+import { type Models, modelsFromConfig } from "./jobs/models.js";
 import { HttpError } from "./lib/http.js";
+import { routes } from "./routes/index.js";
 
-export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger };
+export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger; models: () => Models };
 
 /** Postgres errors a request causes (a malformed id, a number out of range): the request's fault, so 400. */
 const BAD_INPUT: Record<string, string> = {
@@ -37,8 +40,11 @@ const UPLOAD_LIMITS: Record<string, string> = {
 const within = <T>(ms: number, p: Promise<T>) =>
   Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms).unref())]);
 
-/** `routes` registers a plugin's routes under /api/v1, behind its id/version check: the way a test adds its own. */
-export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyInstance, ctx: Ctx) => void | Promise<void> } = {}) {
+/**
+ * `routes` adds routes under /api/v1 beside the real ones, behind the same id/version check: the way a test adds its own.
+ * `models` builds the model clients a read uses (called when a read starts and again by the job); tests hand in fakes.
+ */
+export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyInstance, ctx: Ctx) => void | Promise<void>; models?: () => Models } = {}) {
   const app = Fastify({
     // JSON lines (pino). Request logging is the method and the route pattern only: never bodies, ids or query strings
     // (search terms, names); errors are logged by the handler below, without values.
@@ -59,7 +65,8 @@ export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyI
   const behind = await pendingMigrations(db);
   if (behind) app.log.error({ pending: behind }, "the database is behind this build: run the migrations (pnpm --filter @dct/api db:migrate), then restart");
   const boss = await startBoss({ log: app.log });
-  const ctx: Ctx = { db, boss, log: app.log };
+  const ctx: Ctx = { db, boss, log: app.log, models: opts.models ?? modelsFromConfig };
+  await startReadJob(ctx);
   let stopped = false;
   boss.once("stopped", () => (stopped = true));
 
@@ -67,11 +74,13 @@ export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyI
     const limit = err.code ? UPLOAD_LIMITS[err.code] : undefined;
     if (limit) return reply.status(413).send({ statusCode: 413, error: STATUS_CODES[413], message: limit });
     const code = err.cause?.code;
+    // our own triggers (migration 0002) refuse with a plain-English message: changing a live rulebook, editing the audit log
+    if (code === "P0001") return reply.status(409).send({ statusCode: 409, error: STATUS_CODES[409], message: err.cause?.message });
     const bad = code ? BAD_INPUT[code] : undefined;
     const clash = code ? CONCURRENT[code] : undefined;
     const status = err instanceof HttpError ? err.statusCode : bad ? 400 : clash ? 409 : (err.statusCode ?? 500);
     if (clash) req.log.warn({ code, reason: clash }, "write rolled back by a concurrent one");
-    if (status < 500)
+    if (status < 500 || err instanceof HttpError)
       return reply.status(status).send({ statusCode: status, error: STATUS_CODES[status] ?? "Error", message: bad ?? (clash ? "Someone else was changing this at the same moment, so nothing was saved. Try again." : err.message) });
     // Never the error itself to the browser: a database error's message is the SQL and every value bound to it
     // (contract amounts). The log gets the query and the cause, not the values.
@@ -117,6 +126,7 @@ export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyI
         if (p.id !== undefined && !UUID.test(p.id)) throw new HttpError(400, "Malformed id");
         if (p.v !== undefined && !/^[1-9]\d{0,8}$/.test(p.v)) throw new HttpError(400, `Invalid version "${p.v}"`);
       });
+      await routes(api, ctx);
       await opts.routes?.(api, ctx);
     },
     { prefix: "/api/v1" },

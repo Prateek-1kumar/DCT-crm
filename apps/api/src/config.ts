@@ -23,7 +23,8 @@ const list = z.string().transform((v) => v.split(",").map((s) => s.trim().toLowe
 
 /**
  * Every setting the API reads, checked once at startup. Messages name the setting and what it must be, never its value:
- * DATABASE_URL is a secret (zod leaves the input out of its issues). The AI keys aren't read here: nothing needs them yet.
+ * DATABASE_URL and the AI keys are secrets (zod leaves the input out of its issues). The keys are optional so the API
+ * starts without them; starting a read then says what's missing.
  */
 const Env = z.object({
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/, error: "must be a postgres:// connection URL" }).default(DEV_DATABASE_URL),
@@ -39,6 +40,12 @@ const Env = z.object({
   REQUEST_TIMEOUT_MS: ms(1000, 3_600_000).default(120_000),
   KEEP_ALIVE_TIMEOUT_MS: ms(1000, 600_000).default(72_000),
   SHUTDOWN_TIMEOUT_MS: ms(1000, 600_000).default(30_000),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+  HARNESS_MODEL: z.string().default("claude-sonnet-5-5"),
+  OPENAI_MODEL: z.string().optional(),
+  OPENAI_PRICE_PER_MTOK: z.string().optional(),
+  READ_BUDGET_USD: z.coerce.number({ error: "must be a positive number of US dollars" }).positive({ error: "must be a positive number of US dollars" }).default(3),
 });
 
 /** What one setting needs from another; checked on the raw values, so they're reported along with any others. */
@@ -81,6 +88,8 @@ export function parseConfig(env: NodeJS.ProcessEnv) {
     keepAliveTimeoutMs: e.KEEP_ALIVE_TIMEOUT_MS,
     shutdownTimeoutMs: e.SHUTDOWN_TIMEOUT_MS,
     maxUploadBytes: 50 * 1024 * 1024,
+    ai: { anthropicKey: e.ANTHROPIC_API_KEY, openaiKey: e.OPENAI_API_KEY, claudeModel: e.HARNESS_MODEL, openaiModel: e.OPENAI_MODEL, openaiPrice: e.OPENAI_PRICE_PER_MTOK },
+    readBudgetUsd: e.READ_BUDGET_USD,
   };
 }
 

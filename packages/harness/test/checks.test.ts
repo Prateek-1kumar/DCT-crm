@@ -188,6 +188,14 @@ describe("requiredDecisions", () => {
     expect(q!.options.at(-1)).toEqual({ label: "It differs: I'll say for each", patches: [] });
   });
 
+  it("asks item by item once the group was answered \"It differs\"", () => {
+    const terms = [term({ billing: "unknown" }), term({ id: "t2", name: "Archiving", billing: "unknown" })];
+    const group = checks.requiredDecisions(rulebook({ terms }))[0]!;
+    const qs = checks.requiredDecisions(rulebook({ terms, questions: [{ ...group, state: "answered" }] }));
+    expect(qs.map((q) => [q.id, q.about?.id])).toEqual([["rule:billing:t1", "t1"], ["rule:billing:t2", "t2"]]);
+    expect(qs.every((q) => q.options.every((o) => o.patches.length === 1))).toBe(true);
+  });
+
   it("never asks about contract rules that aren't payments", () => {
     const rules = [term({ category: "other", billing: "unknown", overheadApplies: "unclear" }), term({ id: "t2", category: "payment_terms", billing: "unknown" })];
     expect(checks.requiredDecisions(rulebook({ terms: rules }))).toEqual([]);

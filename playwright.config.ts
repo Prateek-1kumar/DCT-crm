@@ -15,6 +15,9 @@ const api = {
   // The web proxy forwards the browser's Host and Origin, which are the e2e web port's.
   ALLOWED_HOSTS: [...hosts(API), ...hosts(WEB)].join(","),
   ALLOWED_ORIGINS: hosts(WEB).map((h) => `http://${h}`).join(","),
+  // blank, so an e2e run can never spend money on a real model
+  ANTHROPIC_API_KEY: "",
+  OPENAI_API_KEY: "",
 };
 
 export default defineConfig({

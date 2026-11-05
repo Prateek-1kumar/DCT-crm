@@ -4,7 +4,7 @@ import { buildApp } from "../src/app.js";
 export type Built = Awaited<ReturnType<typeof buildApp>>;
 export type App = Built["app"];
 
-/** Routes only tests need, under /api/v1: the real ones don't exist yet. */
+/** Routes only tests need, under /api/v1, beside the real ones. */
 const testRoutes: NonNullable<Parameters<typeof buildApp>[0]>["routes"] = (api, { db }) => {
   api.get("/ping", async () => ({ ok: true }));
   api.post("/ping", async () => ({ ok: true }));

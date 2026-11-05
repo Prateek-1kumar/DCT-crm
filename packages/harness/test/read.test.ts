@@ -7,7 +7,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { ModelClient } from "../src/agent/client";
 import type { Ask, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
-import { read } from "../src/read";
+import { ReadFailed, read } from "../src/read";
 import type { LoadedDoc } from "../src/types";
 
 const CLAUSE = "Screen failures are paid at the full visit rate of $500.00 per subject.";
@@ -79,4 +79,17 @@ it("refuses a contract with scanned pages before any model is called", async () 
   const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "image" as const })) };
   const never = fake("x", {}, 1);
   await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/CTA.pdf p.1.*scans/);
+});
+
+it("reports what was spent when a read breaks part way, with a plain message", async () => {
+  const elsewhere = {
+    id: "q1", kind: "elsewhere" as const, origin: "compile" as const, about: null, question: "Is it pro-rated?", context: "",
+    source: { doc: "CTA.pdf", page: 1, quote: "" }, options: sfOptions, suggestion: null, state: "open" as const, blocking: true, readings: [], resolution: null,
+  };
+  const openai = fake("gpt", { review: { findings: [] } }, 0.4);
+  const broken = fake("claude", { find_answers: {} }, 0.1);
+  const failure = await read(docs, { anthropic: {} as ModelClient, claude: broken, openai, maxUsd: 3, rulebook: { ...rulebook, questions: [elsewhere] } }).catch((e: unknown) => e);
+  expect(failure).toBeInstanceOf(ReadFailed);
+  expect((failure as ReadFailed).message).toMatch(/problem on the server/);
+  expect((failure as ReadFailed).usd).toBeCloseTo(0.5);
 });

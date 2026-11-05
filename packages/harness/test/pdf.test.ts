@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { amountsIn } from "../src/checks/text";
 import { pdfReader } from "../src/pdf";
 import type { LoadedDoc } from "../src/types";
 
@@ -163,6 +164,83 @@ describe("bank masking", () => {
   it("leaves amounts and short numbers near a bank word alone", () => {
     expect(doc.pages[0]!.raw).toContain("Startup fee $1,234.56");
     expect(doc.pages[0]!.raw).toContain("Bank fee $25.00 per wire, account review in 12 months");
+  });
+});
+
+describe("footnote markers", () => {
+  const marked = async (name: string, lines: [string, string, number?][]) => {
+    const path = await pdfFile(name, (page, font) => {
+      lines.forEach(([text, note, dy = 4], i) => {
+        const y = 700 - i * 30;
+        const gap = font.widthOfTextAtSize(text, 10) + 1;
+        page.drawText(text, { x: 50, y, size: 10, font });
+        page.drawText(note, { x: 50 + gap, y: y + dy, size: 6, font });
+      });
+    });
+    return (await pdfReader.load(path)).pages[0]!;
+  };
+
+  it("keeps a raised marker after a number from lengthening the number", async () => {
+    const page = await marked("fee.pdf", [["Startup fee $500", "1"]]);
+    for (const text of [page.layout, page.raw, page.words.map((w) => w.text).join(" ")]) {
+      expect(text.replace(/ +/g, " ").trim()).toBe("Startup fee $500 [1]");
+      expect(text).not.toContain("5001");
+    }
+    expect(amountsIn(page.layout)).toEqual([50000]);
+    expect(page.words.map((w) => w.text)).toEqual(["Startup", "fee", "$500", "[1]"]);
+  });
+
+  it("keeps a marker after a bare number and after a word", async () => {
+    const page = await marked("terms.pdf", [["Payment within 30", "1"], ["Fee", "a"]]);
+    expect(page.raw.split("\n")).toEqual(["Payment within 30 [1]", "Fee [a]"]);
+  });
+
+  it("keeps a lowered marker apart too", async () => {
+    const page = await marked("sub.pdf", [["Total $75", "2", -2]]);
+    expect(page.raw).toBe("Total $75 [2]");
+    expect(amountsIn(page.layout)).toEqual([7500]);
+  });
+
+  it("keeps a marker apart from the word that follows it", async () => {
+    const path = await pdfFile("mid.pdf", (page, font) => {
+      page.drawText("within 30", { x: 50, y: 700, size: 10, font });
+      page.drawText("1", { x: 50 + font.widthOfTextAtSize("within 30", 10), y: 704, size: 6, font });
+      page.drawText("days", { x: 50 + font.widthOfTextAtSize("within 30", 10) + 4, y: 700, size: 10, font });
+    });
+    expect((await pdfReader.load(path)).pages[0]!.raw).toBe("within 30 [1] days");
+  });
+
+  it("catches a marker raised so little that the word grouping alone would glue it on", async () => {
+    const page = await marked("shallow.pdf", [["Startup fee $500", "1", 1.1]]);
+    expect(page.raw).toBe("Startup fee $500 [1]");
+    expect(amountsIn(page.layout)).toEqual([50000]);
+  });
+
+  it("does not mark a raised ordinal suffix", async () => {
+    const page = await marked("ordinal.pdf", [["on the 15", "th"]]);
+    expect(page.raw).not.toContain("[");
+  });
+
+  it("leaves text of different sizes on separate lines or one shared baseline unmarked", async () => {
+    const path = await pdfFile("sizes.pdf", (page, font) => {
+      page.drawText("ARTICLE 5", { x: 50, y: 700, size: 18, font });
+      page.drawText("Fees", { x: 50 + font.widthOfTextAtSize("ARTICLE 5", 18) + 6, y: 700, size: 8, font });
+      page.drawText("Amounts are in US dollars", { x: 50, y: 680, size: 7, font });
+      page.drawText("Fee $500 per visit", { x: 50, y: 660, size: 11, font });
+    });
+    const raw = (await pdfReader.load(path)).pages[0]!.raw;
+    expect(raw).toBe("ARTICLE 5 Fees\nAmounts are in US dollars\nFee $500 per visit");
+  });
+
+  it("masks an account number after a marker without masking the marker", async () => {
+    const path = await pdfFile("acct.pdf", (page, font) => {
+      page.drawText("Account Number", { x: 50, y: 700, size: 10, font });
+      page.drawText("1", { x: 50 + font.widthOfTextAtSize("Account Number", 10), y: 704, size: 6, font });
+      page.drawText("123456789", { x: 50 + font.widthOfTextAtSize("Account Number", 10) + 10, y: 700, size: 10, font });
+    });
+    const page = (await pdfReader.load(path)).pages[0]!;
+    expect(page.raw).toBe("Account Number [1] #########");
+    expect(page.maskBoxes).toHaveLength(1);
   });
 });
 

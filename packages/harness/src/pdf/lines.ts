@@ -1,5 +1,6 @@
 import type { Region } from "@dct/shared";
 import type { Word } from "../types";
+import { FOOTNOTE } from "./text";
 
 const LINE_TOLERANCE = 0.5;
 const MASK_PAD = 0.004;
@@ -49,6 +50,7 @@ function valueAfter(window: Word[]): Word[] {
   const run: Word[] = [];
   for (const w of window) {
     const t = w.text;
+    if (FOOTNOTE.test(t)) continue;
     const part = !AMOUNT.test(t) && (digitCount(t) > 0 || BIC.test(alnum(t)) || (run.length > 0 && IBAN_GROUP.test(alnum(t))));
     if (part) run.push(w);
     else if (run.length) break;

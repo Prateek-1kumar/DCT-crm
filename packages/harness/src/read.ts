@@ -26,6 +26,17 @@ export interface ReadResult {
   log: string[];
 }
 
+/** A read that stopped. The message is plain English for the accountant; `usd` is what it had spent, so it can be recorded. */
+export class ReadFailed extends Error {
+  constructor(
+    message: string,
+    readonly usd: number,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
+
 const COMPILED = new Set(["done", "finishes_exhausted"]);
 // The rest is kept for the second reader and the resolver; a scan-free compile has used about a third of $3.
 const COMPILE_SHARE = 0.7;
@@ -47,10 +58,18 @@ export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadRe
   // Bank details can only be found in a text layer, so a scan can't be masked and must not leave the machine.
   const scanned = scannedPages(docs);
   if (scanned.length) {
-    throw new Error(`These pages are scans: ${scanned.join("; ")}. Bank details can't yet be found and hidden on scans, so the contract wasn't sent to any model.`);
+    throw new ReadFailed(`These pages are scans: ${scanned.join("; ")}. Bank details can't yet be found and hidden on scans, so the contract wasn't sent to any model.`, 0);
   }
   const envUsd = Number(process.env.HARNESS_MAX_USD);
   const budget: Budget = { limit: opts.maxUsd ?? (envUsd > 0 ? envUsd : 3), spent: 0 };
+  try {
+    return await stages(docs, opts, budget);
+  } catch (err) {
+    throw new ReadFailed("The read stopped because of a problem on the server. Start it again; if it keeps happening, tell the team.", budget.spent, { cause: err });
+  }
+}
+
+async function stages(docs: LoadedDoc[], opts: ReadOptions, budget: Budget): Promise<ReadResult> {
   const log: string[] = [];
   const say = (line: string) => {
     log.push(line);

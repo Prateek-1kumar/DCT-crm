@@ -49,12 +49,12 @@ describe("probes", () => {
 });
 
 describe("the jobs queue", () => {
-  it("starts with no queues and no workers", async () => {
+  it("starts with no queues of its own and no workers", async () => {
     const quiet = () => {};
     const boss = await startBoss({ log: { error: quiet, warn: quiet } as unknown as Parameters<typeof startBoss>[0]["log"] });
     try {
-      // pg-boss keeps an internal queue of its own, named __pgboss__…
-      expect((await boss.getQueues()).filter((q) => !q.name.startsWith("__pgboss__"))).toEqual([]);
+      // pg-boss keeps an internal queue of its own, named __pgboss__…; "read" is the read job's, created and kept by the app
+      expect((await boss.getQueues()).filter((q) => !q.name.startsWith("__pgboss__") && q.name !== "read")).toEqual([]);
       expect(boss.getWipData()).toEqual([]);
     } finally {
       await boss.stop({ graceful: false });

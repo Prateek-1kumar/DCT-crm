@@ -40,11 +40,15 @@ export function requiredDecisions(rulebook: Rulebook): Question[] {
   const payable = rulebook.terms.filter((t) => PAYABLE.has(t.category));
   const rule = (category: TermCategory) => rulebook.terms.find((t) => t.category === category)?.source;
   const out: Question[] = [];
+  // A group answered "It differs" leaves its items unsettled: they are then asked one by one.
+  const answered = (id: string) => rulebook.questions.some((q) => q.id === id && q.state !== "open");
+  const ask = (...[id, terms, source, ...rest]: Parameters<typeof grouped>) =>
+    answered(id) ? terms.map((t) => grouped(`${id}:${t.id}`, [t], t.source, ...rest)) : [grouped(id, terms, source, ...rest)];
 
   const billing = payable.filter((t) => t.billing === "unknown");
   if (billing.length) {
     out.push(
-      grouped("rule:billing", billing, billing[0]!.source, "How are these paid: automatically, or does the site invoice them?",
+      ...ask("rule:billing", billing, billing[0]!.source, "How are these paid: automatically, or does the site invoice them?",
         "The contract does not say whether these are paid without an invoice or only when the site bills for them.", [
         ["All are paid automatically", "billing", "auto_paid"],
         ["The site invoices all of them", "billing", "invoice"],
@@ -56,7 +60,7 @@ export function requiredDecisions(rulebook: Rulebook): Question[] {
   const holdback = payable.filter((t) => t.holdbackApplies === "unclear");
   if (holdbackClause && holdback.length) {
     out.push(
-      grouped("rule:holdback", holdback, holdbackClause, "Does the holdback apply to these payments?",
+      ...ask("rule:holdback", holdback, holdbackClause, "Does the holdback apply to these payments?",
         "The contract holds back part of the payments but does not say whether these are included.", [
         ["Yes, to all of them", "holdbackApplies", "yes"],
         ["No, these are paid in full", "holdbackApplies", "no"],
@@ -67,7 +71,7 @@ export function requiredDecisions(rulebook: Rulebook): Question[] {
   const overhead = payable.filter((t) => t.overheadApplies === "unclear");
   if (overhead.length) {
     out.push(
-      grouped("rule:overhead", overhead, rule("overhead") ?? overhead[0]!.source, "How does overhead relate to these amounts?",
+      ...ask("rule:overhead", overhead, rule("overhead") ?? overhead[0]!.source, "How does overhead relate to these amounts?",
         "The contract charges overhead but does not say whether these amounts already include it.", [
         ["Overhead is already included", "overheadApplies", "included"],
         ["Overhead is added on top", "overheadApplies", "added"],
