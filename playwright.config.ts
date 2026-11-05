@@ -30,7 +30,7 @@ export default defineConfig({
   webServer: [
     {
       // the production build (node dist/server.js), as it ships; ready once its database and jobs are
-      command: "pnpm --filter @dct/api exec tsx scripts/e2e-reset.ts && pnpm --filter @dct/api build && pnpm --filter @dct/api start",
+      command: "pnpm --filter @dct/api exec tsx scripts/e2e-reset.ts && pnpm --filter @dct/api exec tsx scripts/e2e-seed.ts && pnpm --filter @dct/api build && pnpm --filter @dct/api start",
       url: `http://127.0.0.1:${API}/readyz`,
       env: api,
       reuseExistingServer: false,

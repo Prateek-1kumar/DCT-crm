@@ -66,6 +66,14 @@ const withBadQuote = (over: Partial<Rulebook> = {}) =>
     ...over,
   });
 
+async function otherDoc() {
+  const pdf = await PDFDocument.create();
+  pdf.addPage([612, 792]).drawText(`Other ${randomUUID()}`, { x: 40, y: 700, size: 9, font: await pdf.embedFont(StandardFonts.Helvetica) });
+  const sha256 = await savePdf(Buffer.from(await pdf.save()));
+  const [doc] = await db().insert(documents).values({ sha256, name: `other-${sha256.slice(0, 6)}.pdf`, bytes: 1, pages: [{ page: 1, kind: "image", chars: 0, firstLine: "" }], createdBy: "test" }).returning();
+  return doc!.id;
+}
+
 async function study() {
   const [sponsor, site] = await db()
     .insert(parties)
@@ -102,10 +110,20 @@ describe("GET /versions/:id", () => {
     const res = await app.inject({ url: `/api/v1/versions/${id}` });
     const body = res.json();
     expect(res.statusCode).toBe(200);
-    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "id", "number", "problems", "read", "rulebook", "status", "studyId"]);
+    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "documents", "id", "number", "problems", "read", "rulebook", "status", "studyId"]);
     expect(body).toMatchObject({ id, studyId, number: 1, status: "draft", documentIds: [docId], createdBy: "test", approvedAt: null, approvedBy: null });
+    expect(body.documents).toEqual([{ id: docId, name: "contract.pdf", pageCount: 1 }]);
     expect(body.answers).toEqual([{ questionId: "q1", option: 0, by: "Ana", at: expect.any(String) }]);
     expect(body.read).toEqual({ id: expect.any(String), status: "queued" });
+  });
+
+  it("lists its documents in the order it was read from them", async () => {
+    const { id } = await seed();
+    const other = await otherDoc();
+    for (const order of [[docId, other], [other, docId]]) {
+      await db().update(versions).set({ documentIds: order }).where(eq(versions.id, id));
+      expect((await app.inject({ url: `/api/v1/versions/${id}` })).json().documents.map((d: { id: string }) => d.id)).toEqual(order);
+    }
   });
 
   it("has no read when none was started; unknown and malformed ids are refused", async () => {
@@ -114,6 +132,47 @@ describe("GET /versions/:id", () => {
     const missing = await app.inject({ url: `/api/v1/versions/${randomUUID()}` });
     expect([missing.statusCode, missing.json().message]).toEqual([404, "There is no such version."]);
     expect((await app.inject({ url: "/api/v1/versions/nope" })).statusCode).toBe(400);
+  });
+});
+
+describe("GET /versions/:id/coverage", () => {
+  const coverage = (id: string) => app.inject({ url: `/api/v1/versions/${id}/coverage` });
+
+  it("says where each printed amount went, with the document it is on", async () => {
+    const { id } = await seed();
+    const res = await coverage(id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      pages: [{
+        documentId: docId, doc: "contract.pdf", page: 1, kind: "text",
+        amounts: [{ box: [expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)], text: "$1,500.00", cents: 150000, status: "captured", ref: { target: "term", id: "t1" }, reason: null, line: "Startup fee $1,500.00 due on signing." }],
+        clauses: [{ termId: "t1", boxes: [[expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)]] }],
+      }],
+      totals: { amounts: 1, captured: 1, decided: 0, setAside: 0, missing: 0 },
+    });
+  });
+
+  it("counts an amount no term, grid or note accounts for as missing", async () => {
+    const { id } = await seed({ rulebook: rulebook({ terms: [term("t1", { amountCents: 99900 })] }) });
+    const body = (await coverage(id)).json();
+    expect(body.pages[0].amounts[0]).toMatchObject({ cents: 150000, status: "missing", ref: null });
+    expect(body.totals).toEqual({ amounts: 1, captured: 0, decided: 0, setAside: 0, missing: 1 });
+  });
+
+  it("follows the version's document order", async () => {
+    const { id } = await seed();
+    const other = await otherDoc();
+    await db().update(versions).set({ documentIds: [other, docId] }).where(eq(versions.id, id));
+    expect((await coverage(id)).json().pages.map((p: { documentId: string }) => p.documentId)).toEqual([other, docId]);
+  });
+
+  it("is refused for a version not read yet, and for an unknown one", async () => {
+    const { id } = await seed({ status: "reading" });
+    await db().update(versions).set({ rulebook: null }).where(eq(versions.id, id));
+    const unread = await coverage(id);
+    expect([unread.statusCode, unread.json().message]).toEqual([409, "This version hasn't been read yet."]);
+    expect((await coverage(randomUUID())).statusCode).toBe(404);
+    expect((await coverage("nope")).statusCode).toBe(400);
   });
 });
 
@@ -233,14 +292,14 @@ describe("approving a version", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ id: draft.id, status: "approved", approvedBy: "Dana", approvedAt: expect.any(String) });
     expect(await stored(old.id)).toMatchObject({ status: "superseded", approvedBy: "Old Approver" });
-    expect((await audits(draft.id)).map((a) => [a.by, a.action, a.detail])).toEqual([["Dana", "version.approved", { number: 2, supersedes: old.id }]]);
+    expect((await audits(draft.id)).map((a) => [a.by, a.action, a.detail])).toEqual([["Dana", "version.approved", { number: 2, supersedes: old.id, ticked: [] }]]);
     expect((await audits(old.id)).map((a) => [a.by, a.action, a.detail])).toEqual([["Dana", "version.superseded", { number: 1, supersededBy: draft.id }]]);
   });
 
   it("approves a first version with nothing to supersede", async () => {
     const { id } = await seed();
     expect((await approve(id, { by: "Dana" })).json().status).toBe("approved");
-    expect((await audits(id))[0]!.detail).toEqual({ number: 1, supersedes: null });
+    expect((await audits(id))[0]!.detail).toEqual({ number: 1, supersedes: null, ticked: [] });
   });
 
   it("only approves a draft", async () => {
@@ -277,6 +336,29 @@ describe("approving a version", () => {
     }
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
     expect((await audits(id)).map((a) => a.action)).toEqual(["version.answered", "version.approved"]);
+  });
+
+  it("records the terms and grids the approver ticked", async () => {
+    const { id } = await seed();
+    expect((await approve(id, { by: "Dana", ticked: ["t1", "g1"] })).statusCode).toBe(200);
+    expect((await audits(id))[0]!.detail).toEqual({ number: 1, supersedes: null, ticked: ["t1", "g1"] });
+  });
+
+  it.each([
+    [{ by: "Dana", ticked: Array(51).fill("t") }, "Tick at most 50 items."],
+    [{ by: "Dana", ticked: ["x".repeat(201)] }, "A ticked item's id is too long."],
+    [{ by: "Dana", ticked: "t1" }, "Send the ticked items as a list."],
+    [{ by: "Dana", ticked: [1] }, "Send the ticked items as a list."],
+  ])("refuses bad ticked items %j", async (body, message) => {
+    const { id } = await seed();
+    const res = await approve(id, body);
+    expect([res.statusCode, res.json().message]).toEqual([400, message]);
+    expect((await stored(id)).status).toBe("draft");
+  });
+
+  it("takes 50 ticked items of 200 characters", async () => {
+    const { id } = await seed();
+    expect((await approve(id, { by: "Dana", ticked: Array(50).fill("x".repeat(200)) })).statusCode).toBe(200);
   });
 
   it("refuses a body with no name", async () => {

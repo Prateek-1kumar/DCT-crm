@@ -1,6 +1,6 @@
 import type { Rulebook } from "@dct/shared";
 import { sql } from "drizzle-orm";
-import { bigserial, check, doublePrecision, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigserial, check, doublePrecision, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const id = () => uuid("id").primaryKey().defaultRandom();
 const at = (name: string) => timestamp(name, { withTimezone: true });
@@ -135,3 +135,17 @@ export const auditLog = pgTable("audit_log", {
   entityId: uuid("entity_id").notNull(),
   detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
 });
+
+/** A write's Idempotency-Key: the first request with it runs, and its answer is replayed to a resend. `status` is null while that request is still running. */
+export const idempotencyKeys = pgTable(
+  "idempotency_keys",
+  {
+    key: text("key").primaryKey(),
+    method: text("method").notNull(),
+    path: text("path").notNull(),
+    status: integer("status"),
+    body: jsonb("body"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("idempotency_keys_created").on(t.createdAt)],
+);

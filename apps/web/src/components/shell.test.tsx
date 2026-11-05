@@ -1,7 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import Home from "@/app/page";
 import { Sidebar } from "./Sidebar";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
@@ -10,13 +9,6 @@ vi.mock("next/image", () => ({ default: ({ alt }: { alt: string }) => <span role
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: { href: string; children: ReactNode }) => <a href={href} {...p}>{children}</a> }));
 
 describe("shell", () => {
-  it("home shows the Contracts title and the empty state", () => {
-    render(<Home />);
-    expect(screen.getByRole("heading", { level: 1, name: "Contracts" })).toBeTruthy();
-    expect(screen.getByText("No contracts yet")).toBeTruthy();
-    expect(screen.getByText("Uploading arrives with the new reader.")).toBeTruthy();
-  });
-
   it("sidebar shows the logo, the Contracts link and the name picker", () => {
     render(<Sidebar />);
     expect(screen.getAllByRole("img", { name: "Discovery Clinical Trials" }).length).toBeGreaterThan(0);

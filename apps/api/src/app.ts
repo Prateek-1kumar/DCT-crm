@@ -10,6 +10,7 @@ import { startBoss } from "./boss.js";
 import { startReadJob } from "./jobs/read.js";
 import { type Models, modelsFromConfig } from "./jobs/models.js";
 import { HttpError } from "./lib/http.js";
+import { idempotency } from "./lib/idempotency.js";
 import { routes } from "./routes/index.js";
 
 export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger; models: () => Models };
@@ -126,6 +127,7 @@ export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyI
         if (p.id !== undefined && !UUID.test(p.id)) throw new HttpError(400, "Malformed id");
         if (p.v !== undefined && !/^[1-9]\d{0,8}$/.test(p.v)) throw new HttpError(400, `Invalid version "${p.v}"`);
       });
+      idempotency(api, db);
       await routes(api, ctx);
       await opts.routes?.(api, ctx);
     },

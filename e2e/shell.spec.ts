@@ -4,7 +4,6 @@ import { expect, test } from "@playwright/test";
 test("home shows the shell and the API is ready behind the proxy", async ({ page, request }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Contracts", exact: true })).toBeVisible();
-  await expect(page.getByText("No contracts yet")).toBeVisible();
   await expect(page.getByRole("link", { name: "Contracts" }).first()).toBeVisible();
 
   // An unknown API route comes back as the API's own plain-English 404 through the web's proxy.

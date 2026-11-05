@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
 import { checks } from "../src/checks";
 import type { LoadedDoc, Page, PageKind } from "../src/types";
+import { wordsOf } from "./words";
 
 type Grid = Rulebook["grids"][number];
 type Term = Rulebook["terms"][number];
 
-const page = (n: number, kind: PageKind, layout: string, raw = layout): Page => ({ page: n, kind, layout, raw, words: [], maskBoxes: [], firstLine: "" });
+const page = (n: number, kind: PageKind, layout: string, raw = layout): Page => ({ page: n, kind, layout, raw, words: wordsOf(layout), maskBoxes: [], firstLine: "" });
 const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${name}`, sha256: "0", pages });
 
 const grid = (over: Partial<Grid>): Grid => ({
@@ -145,7 +146,7 @@ describe("unaccounted", () => {
   it("reports a stray amount once per page, with its line", () => {
     const rb = rulebook({ terms: [term({ amountCents: 10000 })] });
     expect(checks.unaccounted(rb, d)).toEqual([
-      { doc: "A.pdf", page: 1, amountCents: 250000, context: "Startup fee  $2,500.00" },
+      { doc: "A.pdf", page: 1, amountCents: 250000, context: "Startup fee $2,500.00" },
       { doc: "A.pdf", page: 2, amountCents: 250000, context: "Late fee $2,500.00" },
     ]);
   });

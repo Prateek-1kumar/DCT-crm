@@ -1,11 +1,11 @@
 import { applyPatches, type Question, type Rulebook } from "@dct/shared";
-import { checks } from "@dct/harness";
-import { and, asc, eq } from "drizzle-orm";
+import { checks, coverage } from "@dct/harness";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import type { Tx } from "../db/index.js";
-import { answers, reads, studies, versions } from "../db/schema.js";
+import { answers, documents, reads, studies, versions } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { By } from "../lib/by.js";
 import { loadDocs } from "../lib/docs.js";
@@ -14,7 +14,11 @@ import { parse } from "../lib/parse.js";
 
 type Version = typeof versions.$inferSelect;
 
-const ApproveBody = z.object({ by: By });
+const NOT_A_LIST = "Send the ticked items as a list.";
+const ApproveBody = z.object({
+  by: By,
+  ticked: z.array(z.string({ error: NOT_A_LIST }).max(200, { error: "A ticked item's id is too long." }), { error: NOT_A_LIST }).max(50, { error: "Tick at most 50 items." }).default([]),
+});
 const AnswerBody = z.object({ option: z.int({ error: "Pick one of the options." }).min(0, "Pick one of the options."), by: By });
 
 const one = (rows: Version[]) => {
@@ -24,10 +28,17 @@ const one = (rows: Version[]) => {
 
 const lock = async (tx: Tx, id: string) => one(await tx.select().from(versions).where(eq(versions.id, id)).for("update"));
 
+/** The version's documents, in the order it was read from them. */
+async function documentsOf(tx: Tx, ids: string[]) {
+  const rows = await tx.select({ id: documents.id, name: documents.name, pages: documents.pages }).from(documents).where(inArray(documents.id, ids));
+  return ids.flatMap((id) => rows.filter((r) => r.id === id));
+}
+
 async function present(tx: Tx, v: Version) {
-  const [given, [read]] = await Promise.all([
+  const [given, [read], docs] = await Promise.all([
     tx.select().from(answers).where(eq(answers.versionId, v.id)).orderBy(asc(answers.at), asc(answers.id)),
     tx.select({ id: reads.id, status: reads.status }).from(reads).where(eq(reads.versionId, v.id)),
+    documentsOf(tx, v.documentIds),
   ]);
   return {
     id: v.id,
@@ -35,6 +46,7 @@ async function present(tx: Tx, v: Version) {
     number: v.number,
     status: v.status,
     documentIds: v.documentIds,
+    documents: docs.map((d) => ({ id: d.id, name: d.name, pageCount: d.pages.length })),
     rulebook: v.rulebook,
     problems: v.problems,
     createdAt: v.createdAt,
@@ -58,6 +70,14 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
   api.get<{ Params: { id: string } }>("/versions/:id", async (req) => {
     return present(db, one(await db.select().from(versions).where(eq(versions.id, req.params.id))));
+  });
+
+  api.get<{ Params: { id: string } }>("/versions/:id/coverage", async (req) => {
+    const v = one(await db.select().from(versions).where(eq(versions.id, req.params.id)));
+    if (!v.rulebook) throw new HttpError(409, "This version hasn't been read yet.");
+    const [docs, loaded] = await Promise.all([documentsOf(db, v.documentIds), loadDocs(db, v.documentIds)]);
+    const { pages, totals } = coverage(v.rulebook, docs.map((d) => loaded.find((l) => l.name === d.name)!));
+    return { pages: pages.map((p) => ({ documentId: docs.find((d) => d.name === p.doc)!.id, ...p })), totals };
   });
 
   api.post<{ Params: { id: string; questionId: string } }>("/versions/:id/questions/:questionId/answer", async (req) => {
@@ -98,7 +118,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
   });
 
   api.post<{ Params: { id: string } }>("/versions/:id/approve", async (req) => {
-    const { by } = parse(ApproveBody, req.body);
+    const { by, ticked } = parse(ApproveBody, req.body);
     const { id } = req.params;
     return db.transaction(async (tx) => {
       const v = await lock(tx, id);
@@ -118,7 +138,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
         await audit(tx, { by, action: "version.superseded", entity: "version", entityId: previous.id, detail: { number: previous.number, supersededBy: id } });
       }
       const [approved] = await tx.update(versions).set({ status: "approved", approvedAt: new Date(), approvedBy: by }).where(eq(versions.id, id)).returning();
-      await audit(tx, { by, action: "version.approved", entity: "version", entityId: id, detail: { number: v.number, supersedes: previous?.id ?? null } });
+      await audit(tx, { by, action: "version.approved", entity: "version", entityId: id, detail: { number: v.number, supersedes: previous?.id ?? null, ticked } });
       return present(tx, approved!);
     });
   });

@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
-import { pdfReader } from "@dct/harness";
+import { findQuote, pdfReader } from "@dct/harness";
 import { rm } from "node:fs/promises";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
@@ -38,6 +38,7 @@ const NewStudy = z.object({
 });
 const PartySearch = z.object({ kind: z.enum(KINDS, { error: "Kind must be sponsor, cro or site." }).optional(), q: z.string().optional() });
 const ByQuery = z.object({ by: By });
+const FindQuery = z.object({ q: z.string({ error: "Say which words to find." }).min(1, { error: "Say which words to find." }).max(1000, { error: "Those words are too long to find." }) });
 const ImageQuery = z.object({ dpi: z.coerce.number({ error: "dpi must be a whole number from 1 to 200." }).int({ error: "dpi must be a whole number from 1 to 200." }).min(1, { error: "dpi must be a whole number from 1 to 200." }).max(200, { error: "dpi must be a whole number from 1 to 200." }).default(110) });
 
 const uniqueNormalised = (names: string[]) => [...new Map(names.map((n) => [norm(n), n])).values()];
@@ -240,5 +241,11 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
     const { doc, page } = await pageOf(req.params.id, req.params.page);
     const { kind, layout, words } = doc.pages[page - 1]!;
     return { page, kind, layout, words };
+  });
+
+  api.get<{ Params: { id: string; page: string } }>("/documents/:id/pages/:page/find", async (req) => {
+    const { q } = parse(FindQuery, req.query);
+    const { doc, page } = await pageOf(req.params.id, req.params.page);
+    return { boxes: findQuote(doc.pages[page - 1]!.words, q) };
   });
 }

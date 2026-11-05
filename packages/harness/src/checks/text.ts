@@ -3,9 +3,14 @@ import { parseCents } from "@dct/shared";
 // The bare form takes unseparated thousands ("1746.00"), which a printed budget often has; missing one is the unsafe error.
 const AMOUNT = /(?:US\$|USD|\$)\s?\d[\d,]*(?:\.\d{2})?|\b(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}\b/g;
 
-export function amountsIn(text: string): number[] {
-  return [...text.matchAll(AMOUNT)].map((m) => parseCents(m[0])).filter((c): c is number => c !== null);
+export function amountsAt(text: string): { text: string; cents: number; start: number; end: number }[] {
+  return [...text.matchAll(AMOUNT)].flatMap((m) => {
+    const cents = parseCents(m[0]);
+    return cents === null ? [] : [{ text: m[0], cents, start: m.index, end: m.index + m[0].length }];
+  });
 }
+
+export const amountsIn = (text: string): number[] => amountsAt(text).map((a) => a.cents);
 
 export function usd(cents: number): string {
   const abs = Math.abs(cents);

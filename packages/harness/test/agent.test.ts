@@ -8,6 +8,7 @@ import { compile, type CompileOptions } from "../src/agent";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
 import type { LoadedDoc } from "../src/types";
+import { wordsOf } from "./words";
 
 const BUDGET = [
   "Exhibit A Budget",
@@ -20,7 +21,7 @@ const INSURANCE = "Insurance limit $5,000.00 per claim.";
 
 const textDoc = (...lines: string[]): LoadedDoc => {
   const layout = lines.join("\n");
-  return { name: "A.pdf", path: "/x/A.pdf", sha256: "0", pages: [{ page: 1, kind: "text", layout, raw: layout, words: [], maskBoxes: [], firstLine: lines[0]! }] };
+  return { name: "A.pdf", path: "/x/A.pdf", sha256: "0", pages: [{ page: 1, kind: "text", layout, raw: layout, words: wordsOf(layout), maskBoxes: [], firstLine: lines[0]! }] };
 };
 
 type Block = Record<string, unknown>;

@@ -213,6 +213,26 @@ describe("pages", () => {
     expect((await call("GET", `/documents/${docId}/pages/2/text`)).json()).toMatchObject({ page: 2, kind: "image", words: [] });
   });
 
+  it("finds a quote's boxes on a page: one per line, none when it isn't there or the page is a scan", async () => {
+    const find = (page: number, q: string) => call("GET", `/documents/${docId}/pages/${page}/find?q=${encodeURIComponent(q)}`);
+    const found = await find(1, "itemized INVOICE for work");
+    expect(found.statusCode).toBe(200);
+    expect(found.json().boxes).toHaveLength(1);
+    expect(found.json().boxes[0]).toEqual([expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)]);
+    expect((await find(1, "Sponsor pays the Institution within forty-five days of an itemized invoice for work done under this budget. Sponsor pays")).json().boxes).toHaveLength(2);
+    expect((await find(1, "no such words")).json()).toEqual({ boxes: [] });
+    expect((await find(2, "itemized invoice")).json()).toEqual({ boxes: [] });
+  });
+
+  it("needs words to find, at most 1,000 characters of them", async () => {
+    for (const [url, message] of [["find", "Say which words to find."], ["find?q=", "Say which words to find."], [`find?q=${"a".repeat(1001)}`, "Those words are too long to find."]] as const) {
+      const res = await call("GET", `/documents/${docId}/pages/1/${url}`);
+      expect([res.statusCode, res.json().message]).toEqual([400, message]);
+    }
+    expect((await call("GET", `/documents/${docId}/pages/1/find?q=${"a".repeat(1000)}`)).statusCode).toBe(200);
+    expect((await call("GET", `/documents/${docId}/pages/3/find?q=x`)).statusCode).toBe(404);
+  });
+
   it("refuses a page that isn't there, in plain words", async () => {
     const beyond = await call("GET", `/documents/${docId}/pages/3/text`);
     expect([beyond.statusCode, beyond.json().message]).toEqual([404, "This document has 2 pages, so there is no page 3."]);

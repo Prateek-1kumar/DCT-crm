@@ -1,10 +1,5 @@
-import { Empty, PageTitle, pageCls } from "@/components/ui";
+import { StudyList } from "@/components/study/StudyList";
 
 export default function Home() {
-  return (
-    <div className={pageCls}>
-      <PageTitle title="Contracts" />
-      <Empty title="No contracts yet">Uploading arrives with the new reader.</Empty>
-    </div>
-  );
+  return <StudyList />;
 }
