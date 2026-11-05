@@ -12,7 +12,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const study = { id: "s1", protocol: "NWP-418" };
+const study = { id: "s1", protocol: "NWP-418", documents: [{ name: "CTA.pdf" }] };
 const shell = () => renderWithClient(<VersionShell versionId="v1"><p>page body</p></VersionShell>);
 
 describe("VersionShell", () => {
@@ -37,6 +37,12 @@ describe("VersionShell", () => {
     expect(screen.getByRole("link", { name: "Proof" }).getAttribute("href")).toBe("/versions/v1/proof");
     expect(screen.getByRole("link", { name: "Approve" }).getAttribute("href")).toBe("/versions/v1/approve");
     expect(screen.getByText("page body")).toBeTruthy();
+  });
+
+  it("names the study by its first document when its details aren't filled in yet", async () => {
+    mockApi({ "GET /versions/v1": () => version(), "GET /studies/s1": () => ({ ...study, protocol: null }) });
+    shell();
+    expect(await screen.findByRole("link", { name: /CTA\.pdf/ })).toHaveProperty("href", expect.stringContaining("/studies/s1"));
   });
 
   it("calls an approved version Live and shows no count when nothing is open", async () => {

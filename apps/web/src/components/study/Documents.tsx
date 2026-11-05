@@ -2,17 +2,14 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, FileText } from "lucide-react";
-import { useState, type DragEvent, type RefObject } from "react";
+import { useState, type RefObject } from "react";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
 import type { Study, StudyDocument } from "@/lib/types";
-import { Button, Card, cx, Dialog, errorText, ErrorNote, Spinner } from "../ui";
+import { Button, Card, Dialog, ErrorNote, Spinner } from "../ui";
 import { fileSize, scanWarning } from "./format";
-
-const failure = (file: File, error: unknown) => {
-  const message = errorText(error);
-  return message.includes(file.name) ? message : `${file.name}: ${message}`;
-};
+import { PdfDrop } from "./PdfDrop";
+import { useUpload } from "./useUpload";
 
 function RemoveDocument({ study, doc, onClose }: { study: Study; doc: StudyDocument; onClose: () => void }) {
   const by = useActingAs();
@@ -49,38 +46,12 @@ function RemoveDocument({ study, doc, onClose }: { study: Study; doc: StudyDocum
 
 export function Documents({ study, inputRef }: { study: Study; inputRef: RefObject<HTMLInputElement | null> }) {
   const by = useActingAs();
-  const queryClient = useQueryClient();
-  const [over, setOver] = useState(false);
   const [removing, setRemoving] = useState<StudyDocument | null>(null);
+  const upload = useUpload();
 
-  // One file per request: each is checked on its own, and a bad one doesn't sink the others.
-  const upload = useMutation({
-    mutationFn: async (files: File[]) => {
-      const notes: { text: string; problem: boolean }[] = [];
-      for (const file of files) {
-        try {
-          const [result] = await api.upload(study.id, [file], by!);
-          if (result?.alreadyInStudy) notes.push({ text: `${file.name} was already in this contract, so it wasn't added again.`, problem: false });
-        } catch (error) {
-          notes.push({ text: failure(file, error), problem: true });
-        }
-      }
-      return notes;
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: keys.study(study.id) }),
-  });
-
-  function send(list: FileList | null) {
-    const files = [...(list ?? [])];
-    if (!files.length) return;
+  function send(files: File[]) {
     if (!by) return askForPerson();
-    upload.mutate(files);
-  }
-
-  function onDrop(e: DragEvent) {
-    e.preventDefault();
-    setOver(false);
-    send(e.dataTransfer.files);
+    upload.mutate({ studyId: study.id, files });
   }
 
   return (
@@ -110,22 +81,9 @@ export function Documents({ study, inputRef }: { study: Study; inputRef: RefObje
           ))}
         </ul>
       )}
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={onDrop}
-        className={cx("mt-4 flex flex-col items-center gap-3 rounded-tile border border-dashed px-6 py-8 text-center", over ? "border-brand bg-brand-soft" : "border-line-strong bg-sunken")}
-      >
-        <p className="text-body text-muted">Drop contract PDFs here, or choose them from your computer. You can add several at once.</p>
-        <Button disabled={upload.isPending} onClick={() => inputRef.current?.click()}>
-          Choose PDFs
-        </Button>
-        <input ref={inputRef} hidden type="file" multiple accept="application/pdf,.pdf" aria-label="Contract PDFs" onChange={(e) => { send(e.target.files); e.target.value = ""; }} />
+      <PdfDrop className="mt-4" onFiles={send} disabled={upload.isPending} inputRef={inputRef}>
         {upload.isPending && <Spinner label="Uploading" />}
-      </div>
+      </PdfDrop>
       {upload.data && upload.data.length > 0 && (
         <ul className="mt-3 flex flex-col gap-2">
           {upload.data.map(({ text, problem }) => (

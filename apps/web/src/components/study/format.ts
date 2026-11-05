@@ -34,3 +34,8 @@ export function elapsed(ms: number): string {
 export const when = (iso: string) => new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
 
 export const usd = (amount: number) => `$${amount.toFixed(2)}`;
+
+export const studyTitle = (protocol: string | null, firstDocument?: string | null) => protocol ?? firstDocument ?? "New contract";
+
+export const studySub = (protocol: string | null, parties: (string | null | undefined)[]) =>
+  protocol === null ? "Study details are filled in when the contract is read" : parties.filter(Boolean).join(" · ");

@@ -15,15 +15,17 @@ export type VersionStatus = "reading" | "draft" | "failed" | "approved" | "super
 
 export interface StudyRow {
   id: string;
-  protocol: string;
-  sponsorId: string;
+  /** Empty until the contract has been read. */
+  protocol: string | null;
+  sponsorId: string | null;
   payerId: string | null;
-  siteId: string;
+  siteId: string | null;
   createdAt: string;
   createdBy: string;
-  sponsor: string;
+  sponsor: string | null;
   payer: string | null;
-  site: string;
+  site: string | null;
+  firstDocument: string | null;
   latestVersion: { number: number; status: VersionStatus } | null;
 }
 
@@ -47,12 +49,12 @@ export interface VersionSummary {
 
 export interface Study {
   id: string;
-  protocol: string;
+  protocol: string | null;
   createdAt: string;
   createdBy: string;
-  sponsor: Party;
+  sponsor: Party | null;
   payer: Party | null;
-  site: Party;
+  site: Party | null;
   documents: StudyDocument[];
   versions: VersionSummary[];
 }

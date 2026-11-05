@@ -90,6 +90,29 @@ describe("next step", () => {
   });
 });
 
+describe("header", () => {
+  it("shows the protocol, with the sponsor, payer and site under it, once the contract is read", async () => {
+    stubApi({ "GET /studies/s1": () => study() });
+    renderWithClient(<StudyHub id="s1" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "NWP-418-02" })).toBeTruthy();
+    expect(screen.getByText("Northwind Pharma · Fieldstone CRO · Discovery Clinical Trials")).toBeTruthy();
+  });
+
+  it("leaves out a payer the contract doesn't name", async () => {
+    stubApi({ "GET /studies/s1": () => study({ payer: null }) });
+    renderWithClient(<StudyHub id="s1" />);
+    expect(await screen.findByText("Northwind Pharma · Discovery Clinical Trials")).toBeTruthy();
+  });
+
+  it("shows the first document's name until the contract is read, and says where the details will come from", async () => {
+    stubApi({ "GET /studies/s1": () => study({ protocol: null, sponsor: null, payer: null, site: null, documents: [doc({ name: "Master CTA.pdf" }), doc({ id: "d2", name: "Amendment 1.pdf" })] }) });
+    renderWithClient(<StudyHub id="s1" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Master CTA.pdf" })).toBeTruthy();
+    expect(screen.getByText("Study details are filled in when the contract is read")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start reading" })).toBeTruthy();
+  });
+});
+
 describe("reading feed", () => {
   it("shows the progress lines, how long it has run and the spend", async () => {
     hub("reading", { readStatus: "running" });

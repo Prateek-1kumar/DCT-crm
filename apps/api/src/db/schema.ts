@@ -20,10 +20,11 @@ export const parties = pgTable("parties", {
 
 export const studies = pgTable("studies", {
   id: id(),
-  protocol: text("protocol").notNull(),
-  sponsorId: uuid("sponsor_id").notNull().references(() => parties.id),
+  /** Empty until the first read of the contract finishes. */
+  protocol: text("protocol"),
+  sponsorId: uuid("sponsor_id").references(() => parties.id),
   payerId: uuid("payer_id").references(() => parties.id),
-  siteId: uuid("site_id").notNull().references(() => parties.id),
+  siteId: uuid("site_id").references(() => parties.id),
   createdAt: createdAt(),
   createdBy: text("created_by").notNull(),
 });

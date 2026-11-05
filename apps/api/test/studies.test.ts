@@ -35,8 +35,7 @@ async function pdf(...pages: ("text" | "blank")[]) {
 const party = async (kind: string, name: string, aliases?: string[]) => (await call("POST", "/parties", { kind, name, aliases, by: "Asha" })).json();
 
 async function newStudy() {
-  const [sponsor, site] = [await party("sponsor", `Sponsor ${unique()}`), await party("site", `Site ${unique()}`)];
-  const res = await call("POST", "/studies", { protocol: `P-${unique()}`, sponsorId: sponsor.id, siteId: site.id, by: "Asha" });
+  const res = await call("POST", "/studies", { by: "Asha" });
   expect(res.statusCode).toBe(201);
   return res.json() as { id: string };
 }
@@ -86,26 +85,29 @@ describe("parties", () => {
 });
 
 describe("studies", () => {
-  it("creates a study only from parties of the right kind", async () => {
-    const sponsor = await party("sponsor", `Sponsor ${unique()}`);
-    const cro = await party("cro", `CRO ${unique()}`);
-    const site = await party("site", `Site ${unique()}`);
-    const body = { protocol: "ABC-1", sponsorId: sponsor.id, payerId: cro.id, siteId: site.id, by: "Asha" };
+  it("starts bare: just who started it, with nothing filled in until the contract is read", async () => {
+    const res = await call("POST", "/studies", { by: "Asha" });
+    expect(res.statusCode).toBe(201);
+    const { id } = res.json();
+    expect(Object.keys(res.json())).toEqual(["id"]);
+    expect((await auditFor(id)).map((a) => [a.action, a.by])).toEqual([["study.create", "Asha"]]);
 
-    const swapped = await call("POST", "/studies", { ...body, sponsorId: site.id });
-    expect([swapped.statusCode, swapped.json().message]).toEqual([400, `${site.name} is a site, not a sponsor. Pick a sponsor here.`]);
-    const missing = await call("POST", "/studies", { ...body, payerId: "00000000-0000-4000-8000-000000000000" });
-    expect([missing.statusCode, missing.json().message]).toEqual([400, "The CRO you picked doesn't exist. Pick one from the list, or add it first."]);
-    expect((await call("POST", "/studies", { ...body, siteId: "nope" })).json().message).toBe("Pick the site from the list.");
+    const list = (await call("GET", "/studies")).json().find((s: { id: string }) => s.id === id);
+    expect(list).toMatchObject({ protocol: null, sponsor: null, payer: null, site: null, firstDocument: null, latestVersion: null });
+    expect((await call("GET", `/studies/${id}`)).json()).toMatchObject({ protocol: null, sponsor: null, payer: null, site: null, documents: [], versions: [] });
+  });
 
-    const ok = await call("POST", "/studies", body);
-    expect(ok.statusCode).toBe(201);
-    expect((await auditFor(ok.json().id)).map((a) => [a.action, a.by])).toEqual([["study.create", "Asha"]]);
+  it("needs to know who is doing it", async () => {
+    const res = await call("POST", "/studies", {});
+    expect([res.statusCode, res.json().message]).toEqual([400, "Say who is doing this: pick your name first."]);
+  });
 
-    const list = (await call("GET", "/studies")).json().find((s: { id: string }) => s.id === ok.json().id);
-    expect(list).toMatchObject({ protocol: "ABC-1", sponsor: sponsor.name, payer: cro.name, site: site.name, latestVersion: null });
-    const one = (await call("GET", `/studies/${ok.json().id}`)).json();
-    expect(one).toMatchObject({ protocol: "ABC-1", sponsor: { id: sponsor.id }, payer: { id: cro.id }, site: { id: site.id }, documents: [], versions: [] });
+  it("lists the first document uploaded as the study's name until it is read", async () => {
+    const study = await newStudy();
+    await uploadBy(study.id, [{ name: "first.pdf", data: await pdf("text") }]);
+    await uploadBy(study.id, [{ name: "second.pdf", data: await pdf("text") }]);
+    const list = (await call("GET", "/studies")).json().find((s: { id: string }) => s.id === study.id);
+    expect(list.firstDocument).toBe("first.pdf");
   });
 
   it("says so when a study doesn't exist", async () => {

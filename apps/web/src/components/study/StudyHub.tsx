@@ -5,6 +5,7 @@ import { useRef } from "react";
 import { api, keys } from "@/lib/queries";
 import { LoadError, PageTitle, pageCls, Spinner } from "../ui";
 import { Documents } from "./Documents";
+import { studySub, studyTitle } from "./format";
 import { NextStep } from "./NextStep";
 import { VersionsHistory } from "./VersionsHistory";
 
@@ -23,7 +24,7 @@ export function StudyHub({ id }: { id: string }) {
   const s = study.data;
   return (
     <div className={pageCls}>
-      <PageTitle title={s.protocol} sub={[s.sponsor.name, s.payer?.name, s.site.name].filter(Boolean).join(" · ")} />
+      <PageTitle title={studyTitle(s.protocol, s.documents[0]?.name)} sub={studySub(s.protocol, [s.sponsor?.name, s.payer?.name, s.site?.name])} />
       <div className="flex flex-col gap-6">
         <NextStep study={s} pickFiles={picker} />
         <Documents study={s} inputRef={picker} />

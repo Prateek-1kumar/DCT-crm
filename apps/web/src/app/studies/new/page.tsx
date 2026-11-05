@@ -1,5 +1,5 @@
-import { NewStudyForm } from "@/components/study/NewStudyForm";
+import { NewContract } from "@/components/study/NewContract";
 
-export default function NewStudyPage() {
-  return <NewStudyForm />;
+export default function NewContractPage() {
+  return <NewContract />;
 }

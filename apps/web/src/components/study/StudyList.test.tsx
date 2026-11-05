@@ -23,6 +23,7 @@ const row = (over: Partial<StudyRow>): StudyRow => ({
   sponsor: "Northwind Pharma",
   payer: "Fieldstone CRO",
   site: "Discovery Clinical Trials",
+  firstDocument: "Master CTA.pdf",
   latestVersion: { number: 2, status: "draft" },
   ...over,
 });
@@ -45,6 +46,16 @@ describe("contracts list", () => {
     expect(screen.getByText("Live")).toBeTruthy();
     expect(screen.getByText("Not started")).toBeTruthy();
     expect(screen.getByRole("link", { name: "New contract" }).getAttribute("href")).toBe("/studies/new");
+  });
+
+  it("names a study not read yet by its first document and says the details come from the reading", async () => {
+    const unread = { protocol: null, sponsorId: null, payerId: null, siteId: null, sponsor: null, payer: null, site: null, latestVersion: null };
+    stubApi({ "GET /studies": () => [row({ id: "s4", ...unread }), row({ id: "s5", ...unread, firstDocument: null })] });
+    renderWithClient(<StudyList />);
+    const first = (await screen.findByText("Master CTA.pdf")).closest("a")!;
+    expect(first.textContent).toContain("Study details are filled in when the contract is read");
+    expect(first.textContent).toContain("Not started");
+    expect(screen.getByText("New contract", { selector: "span" }).closest("a")!.getAttribute("href")).toBe("/studies/s5");
   });
 
   it("shows a friendly empty state with a way to start", async () => {

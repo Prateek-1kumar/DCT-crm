@@ -5,6 +5,7 @@ import type { Db } from "../db/index.js";
 import { reads, versions } from "../db/schema.js";
 import { loadDocs } from "../lib/docs.js";
 import { HttpError } from "../lib/http.js";
+import { fillStudy } from "../lib/parties.js";
 
 export const READ_QUEUE = "read";
 /** A paid read is never retried by the queue, and may run far longer than pg-boss's 15 minute default before it counts as lost. */
@@ -53,7 +54,7 @@ async function runRead({ db, log, models }: Ctx, readId: string) {
   };
 
   try {
-    const [version] = await db.select({ documentIds: versions.documentIds }).from(versions).where(eq(versions.id, row.versionId));
+    const [version] = await db.select({ studyId: versions.studyId, documentIds: versions.documentIds }).from(versions).where(eq(versions.id, row.versionId));
     const docs = await loadDocs(db, version!.documentIds);
     const result = await read(docs, { ...models(), maxUsd: row.budgetUsd, onProgress: say });
     await appended;
@@ -68,6 +69,7 @@ async function runRead({ db, log, models }: Ctx, readId: string) {
     }
     await db.transaction(async (tx) => {
       await tx.update(versions).set({ rulebook: result.rulebook, problems: result.report.problems, status: "draft" }).where(eq(versions.id, row.versionId));
+      await fillStudy(tx, version!.studyId, result.rulebook.study);
       await tx.update(reads).set({ status: "done", spentUsd: result.usd, finishedAt: new Date(), trace }).where(eq(reads.id, readId));
     });
   } catch (err) {

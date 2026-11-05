@@ -46,7 +46,7 @@ const reply = (...content: Block[]) =>
 
 const study = { protocol: "P-1", sponsor: "Acme Pharma", siteEntity: "Site LLC", documents: [{ doc: "CTA.pdf", role: "cta" }] };
 const startup = { id: "t1", category: "site_fee", name: "Startup fee", amount: "$500.00", unit: "one time", billing: "invoice", source: { doc: "CTA.pdf", page: 1, quote: "Startup fee of $500.00 is payable on signature" } };
-const goodScript = () => [reply(call("put_study", { study })), reply(call("put_terms", { terms: [startup] })), reply(call("finish"))];
+const goodScript = (st: object = study) => [reply(call("put_study", { study: st })), reply(call("put_terms", { terms: [startup] })), reply(call("finish"))];
 
 /** A compile model that plays the script, one reply per call; a step can be a function (wait, or fail) instead. */
 function scripted(script: (ModelMessage | (() => Promise<ModelMessage>))[]): ModelClient {
@@ -101,9 +101,7 @@ async function pdf(name: string, lines = [CLAUSE, FILLER, FILLER]) {
 async function seedStudy(opts: { name?: string; scanned?: boolean; none?: boolean } = {}) {
   const { db } = built.ctx;
   const name = opts.name ?? "CTA.pdf";
-  const [sponsor] = await db.insert(parties).values({ kind: "sponsor", name: `Acme ${nextId++}`, createdBy: "test" }).returning();
-  const [site] = await db.insert(parties).values({ kind: "site", name: `Site ${nextId++}`, createdBy: "test" }).returning();
-  const [s] = await db.insert(studies).values({ protocol: `P-${nextId++}`, sponsorId: sponsor!.id, siteId: site!.id, createdBy: "test" }).returning();
+  const [s] = await db.insert(studies).values({ createdBy: "test" }).returning();
   if (opts.none) return s!;
   const data = await pdf(`${name}${nextId++}`);
   const file = path.join(dir, "seed.pdf");
@@ -218,6 +216,61 @@ describe("starting a read", () => {
     const again = await post(built, s.id);
     expect(again.statusCode).toBe(202);
     await finished(built, again.json().readId);
+  });
+});
+
+describe("filling the study from the contract", () => {
+  const unique = () => Math.random().toString(36).slice(2, 10);
+  const studyOf = async (id: string) => (await built.ctx.db.select().from(studies).where(eq(studies.id, id)))[0]!;
+  const party = async (id: string | null) => (await built.ctx.db.select().from(parties).where(eq(parties.id, id!)))[0];
+
+  it("fills the protocol and links new parties it creates, leaving the payer empty when the contract names none", async () => {
+    const tag = unique();
+    const s = await seedStudy();
+    expect(await studyOf(s.id)).toMatchObject({ protocol: null, sponsorId: null, payerId: null, siteId: null });
+    use(fakes(goodScript({ ...study, sponsor: `Acme Pharma ${tag}`, siteEntity: `Site LLC ${tag}` })));
+    const { readId } = (await post(built, s.id)).json();
+    expect((await finished(built, readId)).status).toBe("done");
+
+    const filled = await studyOf(s.id);
+    expect(filled).toMatchObject({ protocol: "P-1", payerId: null });
+    expect(await party(filled.sponsorId)).toMatchObject({ kind: "sponsor", name: `Acme Pharma ${tag}`, createdBy: "Contract reader" });
+    expect(await party(filled.siteId)).toMatchObject({ kind: "site", name: `Site LLC ${tag}`, createdBy: "Contract reader" });
+    const entries = await built.ctx.db.select().from(auditLog).where(eq(auditLog.entityId, s.id));
+    expect(entries.filter((e) => e.action === "study.fill")).toMatchObject([{ by: "Contract reader", detail: { protocol: "P-1", payerId: null } }]);
+    expect((await built.ctx.db.select().from(auditLog).where(eq(auditLog.entityId, filled.sponsorId!))).map((e) => e.action)).toEqual(["party.create"]);
+  });
+
+  it("links the record a name or alias already matches, of the same kind only", async () => {
+    const tag = unique();
+    const { db } = built.ctx;
+    const [sponsor] = await db.insert(parties).values({ kind: "sponsor", name: `Merck ${tag}`, aliases: [`Acme Pharma Inc. ${tag}`], createdBy: "test" }).returning();
+    const [cro] = await db.insert(parties).values({ kind: "cro", name: `Quintiles ${tag}`, createdBy: "test" }).returning();
+    const [wrongKind] = await db.insert(parties).values({ kind: "cro", name: `Site LLC ${tag}`, createdBy: "test" }).returning();
+    const s = await seedStudy();
+    use(fakes(goodScript({ ...study, sponsor: `ACME PHARMA, INC ${tag}`, payer: `quintiles ${tag}`, siteEntity: `Site LLC ${tag}` })));
+    expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");
+
+    const filled = await studyOf(s.id);
+    expect([filled.sponsorId, filled.payerId]).toEqual([sponsor!.id, cro!.id]);
+    expect(filled.siteId).not.toBe(wrongKind!.id);
+    expect(await party(filled.siteId)).toMatchObject({ kind: "site", createdBy: "Contract reader" });
+  });
+
+  it("leaves a link empty when the contract's name is blank", async () => {
+    const s = await seedStudy();
+    use(fakes(goodScript({ ...study, sponsor: `Acme Pharma ${unique()}`, payer: "  ", siteEntity: "&&&" })));
+    expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");
+    expect(await studyOf(s.id)).toMatchObject({ payerId: null, siteId: null, sponsorId: expect.any(String) });
+  });
+
+  it("leaves the study as it was when the read fails", async () => {
+    const s = await seedStudy();
+    const sponsor = `Acme Pharma ${unique()}`;
+    use(fakes([reply(call("put_study", { study: { ...study, sponsor } })), () => Promise.reject(new Error("overloaded"))]));
+    expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("failed");
+    expect(await studyOf(s.id)).toMatchObject({ protocol: null, sponsorId: null, payerId: null, siteId: null });
+    expect(await built.ctx.db.select().from(parties).where(eq(parties.name, sponsor))).toEqual([]);
   });
 });
 

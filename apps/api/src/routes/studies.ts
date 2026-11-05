@@ -10,17 +10,15 @@ import { audit } from "../lib/audit.js";
 import { By } from "../lib/by.js";
 import { loadStored } from "../lib/docs.js";
 import { HttpError } from "../lib/http.js";
+import { norm } from "../lib/parties.js";
 import { parse } from "../lib/parse.js";
 import { pdfPath, savePdf, sha256 } from "../lib/storage.js";
 
 const MAX_PAGES = 500;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KINDS = ["sponsor", "cro", "site"] as const;
-const KIND_WORD = { sponsor: "sponsor", cro: "CRO", site: "site" } as const;
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const label = z.string({ error: "Give a name." }).trim().min(1, { error: "Give a name." }).max(200, { error: "That name is too long." }).refine((s) => norm(s) !== "", { error: "A name needs at least one letter or digit." });
-const partyId = (what: string) => z.uuid({ error: `Pick the ${what} from the list.` });
 
 const NewParty = z.object({
   kind: z.enum(KINDS, { error: "Say whether this is a sponsor, a CRO or a site." }),
@@ -29,13 +27,7 @@ const NewParty = z.object({
   by: By,
 });
 const NewAlias = z.object({ alias: label, by: By });
-const NewStudy = z.object({
-  protocol: z.string({ error: "Give the protocol number." }).trim().min(1, { error: "Give the protocol number." }).max(200, { error: "That protocol number is too long." }),
-  sponsorId: partyId("sponsor"),
-  payerId: partyId("CRO").nullish(),
-  siteId: partyId("site"),
-  by: By,
-});
+const NewStudy = z.object({ by: By });
 const PartySearch = z.object({ kind: z.enum(KINDS, { error: "Kind must be sponsor, cro or site." }).optional(), q: z.string().optional() });
 const ByQuery = z.object({ by: By });
 const FindQuery = z.object({ q: z.string({ error: "Say which words to find." }).min(1, { error: "Say which words to find." }).max(1000, { error: "Those words are too long to find." }) });
@@ -89,22 +81,10 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
   });
 
   api.post("/studies", async (req, reply) => {
-    const { by, protocol, sponsorId, payerId, siteId } = parse(NewStudy, req.body);
-    const wanted = [
-      { id: sponsorId, kind: "sponsor" },
-      { id: payerId, kind: "cro" },
-      { id: siteId, kind: "site" },
-    ] as const;
-    const found = await db.select().from(parties).where(inArray(parties.id, wanted.flatMap((w) => (w.id ? [w.id] : []))));
-    for (const w of wanted) {
-      if (!w.id) continue;
-      const party = found.find((p) => p.id === w.id);
-      if (!party) throw new HttpError(400, `The ${KIND_WORD[w.kind]} you picked doesn't exist. Pick one from the list, or add it first.`);
-      if (party.kind !== w.kind) throw new HttpError(400, `${party.name} is a ${KIND_WORD[party.kind]}, not a ${KIND_WORD[w.kind]}. Pick a ${KIND_WORD[w.kind]} here.`);
-    }
+    const { by } = parse(NewStudy, req.body);
     const [study] = await db.transaction(async (tx) => {
-      const rows = await tx.insert(studies).values({ protocol, sponsorId, payerId: payerId ?? null, siteId, createdBy: by }).returning();
-      await audit(tx, { by, action: "study.create", entity: "study", entityId: rows[0]!.id, detail: { protocol } });
+      const rows = await tx.insert(studies).values({ createdBy: by }).returning({ id: studies.id });
+      await audit(tx, { by, action: "study.create", entity: "study", entityId: rows[0]!.id });
       return rows;
     });
     return reply.status(201).send(study);
@@ -117,21 +97,27 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
     const rows = await db
       .select({ study: studies, sponsor: sponsor.name, payer: payer.name, site: site.name })
       .from(studies)
-      .innerJoin(sponsor, eq(sponsor.id, studies.sponsorId))
+      .leftJoin(sponsor, eq(sponsor.id, studies.sponsorId))
       .leftJoin(payer, eq(payer.id, studies.payerId))
-      .innerJoin(site, eq(site.id, studies.siteId))
+      .leftJoin(site, eq(site.id, studies.siteId))
       .orderBy(desc(studies.createdAt));
     const latest = await db
       .selectDistinctOn([versions.studyId], { studyId: versions.studyId, number: versions.number, status: versions.status })
       .from(versions)
       .orderBy(versions.studyId, desc(versions.number));
     const byStudy = new Map(latest.map((v) => [v.studyId, { number: v.number, status: v.status }]));
-    return rows.map(({ study, ...names }) => ({ ...study, ...names, latestVersion: byStudy.get(study.id) ?? null }));
+    const firsts = await db
+      .selectDistinctOn([studyDocuments.studyId], { studyId: studyDocuments.studyId, name: documents.name })
+      .from(studyDocuments)
+      .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
+      .orderBy(studyDocuments.studyId, studyDocuments.addedAt, documents.name);
+    const firstDocument = new Map(firsts.map((d) => [d.studyId, d.name]));
+    return rows.map(({ study, ...names }) => ({ ...study, ...names, firstDocument: firstDocument.get(study.id) ?? null, latestVersion: byStudy.get(study.id) ?? null }));
   });
 
   api.get<{ Params: { id: string } }>("/studies/:id", async (req) => {
     const study = await requireStudy(req.params.id);
-    const partyRows = await db.select().from(parties).where(inArray(parties.id, [study.sponsorId, study.siteId, ...(study.payerId ? [study.payerId] : [])]));
+    const partyRows = await db.select().from(parties).where(inArray(parties.id, [study.sponsorId, study.payerId, study.siteId].filter((id) => id !== null)));
     const party = (id: string | null) => partyRows.find((p) => p.id === id) ?? null;
     const docs = await db
       .select({ doc: documents })

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { api, keys } from "@/lib/queries";
 import type { StudyRow } from "@/lib/types";
 import { Badge, btnCls, Card, Empty, ErrorNote, PageTitle, pageCls, Spinner } from "../ui";
-import { VERSION_PILL } from "./format";
+import { studySub, studyTitle, VERSION_PILL } from "./format";
 
 function StudyItem({ study }: { study: StudyRow }) {
   const pill = study.latestVersion ? VERSION_PILL[study.latestVersion.status] : { label: "Not started", tone: "neutral" as const };
@@ -13,8 +13,8 @@ function StudyItem({ study }: { study: StudyRow }) {
     <li>
       <Link href={`/studies/${study.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-card px-6 py-5 transition-colors hover:bg-sunken">
         <span className="min-w-0">
-          <span className="block text-title font-semibold tracking-tight">{study.protocol}</span>
-          <span className="block text-body text-muted">{[study.sponsor, study.payer, study.site].filter(Boolean).join(" · ")}</span>
+          <span className="block text-title font-semibold tracking-tight">{studyTitle(study.protocol, study.firstDocument)}</span>
+          <span className="block text-body text-muted">{studySub(study.protocol, [study.sponsor, study.payer, study.site])}</span>
         </span>
         <span className="flex items-center gap-3">
           {study.latestVersion && <span className="text-small text-faint">Version {study.latestVersion.number}</span>}

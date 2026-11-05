@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { Badge, btnCls, Card, cx, LoadError, pageCls, Spinner, type Tone } from "@/components/ui";
+import { studyTitle } from "@/components/study/format";
 import { api, keys } from "@/lib/queries";
 import type { Version, VersionStatus } from "@/lib/types";
 import { questionCounts } from "./questions";
@@ -93,7 +94,7 @@ export function VersionShell({ versionId, children }: { versionId: string; child
     <>
       <header className="mx-auto w-full max-w-[1280px] px-6 pt-8 lg:px-10">
         <Link href={studyHref} className="text-small font-medium text-accent hover:text-accent-hover">
-          ← {study.data?.protocol ?? "Back to the study"}
+          ← {study.data ? studyTitle(study.data.protocol, study.data.documents[0]?.name) : "Back to the study"}
         </Link>
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <h1 className="text-display font-semibold tracking-[-0.025em]">Version {version.number}</h1>
