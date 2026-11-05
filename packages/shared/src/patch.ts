@@ -30,6 +30,7 @@ function patchTerm(rulebook: Rulebook, { id, set }: Patch) {
     rulebook.terms.push(created.data);
     return;
   }
+  if (Object.hasOwn(set, "id")) throw new Error(`Term '${id}' already exists, so it can't be added again.`);
   for (const key of Object.keys(set)) {
     if (!Object.hasOwn(term, key)) throw new Error(`A term has no field called '${key}', so term '${id}' can't be changed that way.`);
   }

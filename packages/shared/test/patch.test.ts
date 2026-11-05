@@ -39,6 +39,10 @@ describe("applyPatches", () => {
     expect(() => applyPatches(rulebook, [termPatch("t2", { name: "Archive fee" })])).toThrow(/Term 't2' doesn't exist yet.*category/);
   });
 
+  it("refuses to add a term again over one that already exists", () => {
+    expect(() => applyPatches(rulebook, [termPatch("t1", { ...term, name: "Other" })])).toThrow(/already exists/);
+  });
+
   it("refuses a field a term doesn't have", () => {
     expect(() => applyPatches(rulebook, [termPatch("t1", { amount: 5 })])).toThrow("A term has no field called 'amount'");
   });

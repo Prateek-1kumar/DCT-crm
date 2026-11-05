@@ -36,6 +36,12 @@ function patchesOf(changes: Change[], rulebook: Rulebook): Patch[] {
   return kept;
 }
 
+function freeId(rulebook: Rulebook, base: string): string {
+  let id = base;
+  for (let i = 2; rulebook.terms.some((t) => t.id === id); i++) id = `${base}_${i}`;
+  return id;
+}
+
 function newTerm(n: NewTerm, id: string, source: Source): Term | null {
   const { category, name, unit, billing, trigger, formula, conditions, deadline, notes } = n;
   const parsed = Term.safeParse({
@@ -56,7 +62,7 @@ const exists = (about: Finding["about"], rulebook: Rulebook) =>
 
 // option is the suggestion's index among the options that survived, -1 when it points at one that didn't.
 function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { options: Question["options"]; option: number } {
-  const created = f.type === "missed_rule" && f.newTerm ? newTerm(f.newTerm, `rv_${n}`, source) : null;
+  const created = f.type === "missed_rule" && f.newTerm ? newTerm(f.newTerm, freeId(rulebook, `rv_${n}`), source) : null;
   if (created) {
     return {
       options: [

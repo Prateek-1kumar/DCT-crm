@@ -221,6 +221,21 @@ describe("elsewhere", () => {
     });
   const hit = { question: 0, found: true, doc: "Contract.pdf", page: 1, quote: "The holdback applies to all site fees", option: 0 };
 
+  it("never settles an amount, or a quote too short to identify a clause, by citation", async () => {
+    const amount = [{ label: "$900", patches: [{ target: "term" as const, id: "t1", set: { amountCents: 90000 } }] }];
+    const b = rulebook({
+      terms: [term({ source: { doc: "Contract.pdf", page: 1, quote: "Article 4" }, evidence: "quote", holdbackApplies: "unclear" })],
+      questions: [
+        question({ id: "e1", kind: "elsewhere", options: amount }),
+        question({ id: "e2", kind: "elsewhere", options }),
+      ],
+    });
+    const out = await run(b, readers({ find: { answers: [hit, { ...hit, question: 1, quote: "holdback applies" }] } }));
+    expect(out.rulebook.terms[0]!.amountCents).toBe(70000);
+    expect(question1(out.rulebook, "e1")).toMatchObject({ kind: "decision", state: "open" });
+    expect(question1(out.rulebook, "e2")).toMatchObject({ kind: "decision", state: "open" });
+  });
+
   it("settles a question whose quote is verified on a text page, in one call for all questions", async () => {
     const r = readers({ find: { answers: [hit, { question: 1, found: false, doc: null, page: null, quote: null, option: null }] } });
     const out = await run(book(), r);

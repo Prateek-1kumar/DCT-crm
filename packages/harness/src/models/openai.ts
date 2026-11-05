@@ -1,4 +1,5 @@
-import type { Response, ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
+import type { ResponseCreateAndStreamParams } from "openai/lib/responses/ResponseStream";
+import type { Response } from "openai/resources/responses/responses";
 import { openaiPrice, usdFor } from "../agent/cost";
 import { jsonSchemaFor, parseAnswer } from "./schema";
 import { ModelError, type Ask, type Reader } from "./reader";
@@ -7,7 +8,7 @@ const MAX_OUTPUT_TOKENS = 64000;
 
 /** The one call the reader makes, so a test can hand in a scripted fake. The real `new OpenAI()` fits. */
 export interface OpenAIClient {
-  responses: { create(params: ResponseCreateParamsNonStreaming): Promise<Response> };
+  responses: { stream(params: ResponseCreateAndStreamParams): { finalResponse(): Promise<Response> } };
 }
 
 export function openaiReader(client: OpenAIClient, model: string): Reader {
@@ -15,24 +16,27 @@ export function openaiReader(client: OpenAIClient, model: string): Reader {
   return {
     model,
     async ask<T>(req: Ask<T>) {
-      const response = await client.responses.create({
-        model,
-        instructions: req.system,
-        input: [
-          {
-            role: "user",
-            content: req.parts.map((p) =>
-              p.type === "text"
-                ? { type: "input_text" as const, text: p.text }
-                : { type: "input_image" as const, detail: "high" as const, image_url: `data:image/png;base64,${p.png.toString("base64")}` },
-            ),
-          },
-        ],
-        text: { format: { type: "json_schema", name: req.name, strict: true, schema: jsonSchemaFor(req.schema) } },
-        reasoning: req.effort ? { effort: req.effort } : undefined,
-        max_output_tokens: MAX_OUTPUT_TOKENS,
-        store: false,
-      });
+      // Streamed so a long high-effort answer isn't cut off by Node's five-minute wait for a first byte.
+      const response = await client.responses
+        .stream({
+          model,
+          instructions: req.system,
+          input: [
+            {
+              role: "user",
+              content: req.parts.map((p) =>
+                p.type === "text"
+                  ? { type: "input_text" as const, text: p.text }
+                  : { type: "input_image" as const, detail: "high" as const, image_url: `data:image/png;base64,${p.png.toString("base64")}` },
+              ),
+            },
+          ],
+          text: { format: { type: "json_schema", name: req.name, strict: true, schema: jsonSchemaFor(req.schema) } },
+          reasoning: req.effort ? { effort: req.effort } : undefined,
+          max_output_tokens: MAX_OUTPUT_TOKENS,
+          store: false,
+        })
+        .finalResponse();
 
       if (!response.usage) throw new Error(`OpenAI didn't report how many tokens "${req.name}" used, so its spend can't be counted.`);
       // output_tokens already includes reasoning tokens

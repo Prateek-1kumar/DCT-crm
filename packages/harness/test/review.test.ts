@@ -221,6 +221,12 @@ describe("finding to question", () => {
     expect(q!.suggestion).toEqual({ option: 0, reason: "It affects cash flow." });
   });
 
+  it("gives a missed rule an id no existing term has", async () => {
+    const newTerm = { category: "deadline" as const, name: "Payment deadline", amount: null, unit: null, billing: "unknown" as const, trigger: null, formula: null, conditions: null, deadline: "45 days", notes: null };
+    const [q] = await run([finding({ type: "missed_rule", newTerm })], rulebook({ terms: [term({}), term({ id: "rv_0" })] }));
+    expect(q!.options[0]!.patches[0]!.id).toBe("rv_0_2");
+  });
+
   it("converts a new term's amount, and falls back to the finding's own options when the term is invalid", async () => {
     const base = { category: "site_fee" as const, name: "Archive fee", unit: null, billing: "invoice" as const, trigger: null, formula: null, conditions: null, deadline: null, notes: null };
     const [ok, bad] = await run([

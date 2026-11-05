@@ -32,7 +32,7 @@ function fakeClaude(message: ModelMessage) {
   return { client, seen };
 }
 
-type OpenAIResponse = Awaited<ReturnType<OpenAIClient["responses"]["create"]>>;
+type OpenAIResponse = Awaited<ReturnType<ReturnType<OpenAIClient["responses"]["stream"]>["finalResponse"]>>;
 
 const openaiResponse = (over: Record<string, unknown> = {}) =>
   ({
@@ -44,8 +44,8 @@ const openaiResponse = (over: Record<string, unknown> = {}) =>
   }) as unknown as OpenAIResponse;
 
 function fakeOpenAI(response: OpenAIResponse) {
-  const seen: Parameters<OpenAIClient["responses"]["create"]>[0][] = [];
-  const client: OpenAIClient = { responses: { create: (params) => (seen.push(params), Promise.resolve(response)) } };
+  const seen: Parameters<OpenAIClient["responses"]["stream"]>[0][] = [];
+  const client: OpenAIClient = { responses: { stream: (params) => (seen.push(params), { finalResponse: () => Promise.resolve(response) }) } };
   return { client, seen };
 }
 
