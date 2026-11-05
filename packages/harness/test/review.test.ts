@@ -43,6 +43,7 @@ const fake = (findings: Finding[], usd = 0.05) => {
   const calls: Ask<unknown>[] = [];
   const reader: Reader = {
     model: "fake",
+    price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 },
     async ask<T>(req: Ask<T>) {
       calls.push(req);
       return { value: { findings } as T, model: "fake", usd };
@@ -100,7 +101,7 @@ describe("review budget and errors", () => {
     const { reader, calls } = fake([finding()]);
     const result = await review(rulebook(), docs, { reader, budget: { limit: 1, spent: 1 } });
     expect(calls).toHaveLength(0);
-    expect(result).toEqual({ questions: [], usd: 0, error: "The review was skipped: this read has already reached its $1 limit." });
+    expect(result).toEqual({ questions: [], usd: 0, error: "The review was skipped: it would pass this read's $1 limit." });
   });
 
   it("adds the call's cost to the budget", async () => {
@@ -110,8 +111,16 @@ describe("review budget and errors", () => {
     expect(b.spent).toBe(0.25);
   });
 
+  it("skips the review when its estimated cost would pass the limit, even with money left", async () => {
+    const { reader, calls } = fake([]);
+    const pricey: Reader = { ...reader, price: { input: 1e6, output: 1e6, cacheWrite: 0, cacheRead: 0 } };
+    const result = await review(rulebook(), docs, { reader: pricey, budget: { limit: 3, spent: 0 } });
+    expect(calls).toHaveLength(0);
+    expect(result.error).toMatch(/would pass/);
+  });
+
   it("returns a reader error with no questions", async () => {
-    const reader: Reader = { model: "fake", ask: () => Promise.reject(new Error("rate limited")) };
+    const reader: Reader = { model: "fake", price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 }, ask: () => Promise.reject(new Error("rate limited")) };
     const result = await review(rulebook(), docs, { reader, budget: budget() });
     expect(result).toEqual({ questions: [], usd: 0, error: "The review could not be completed: rate limited" });
   });

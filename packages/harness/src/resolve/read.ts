@@ -1,7 +1,6 @@
 import { applyPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
 import { z } from "zod";
 import { IMAGE_PAGE_REASON, checks } from "../checks";
-import { usd } from "../checks/text";
 import type { Part } from "../models/reader";
 import { pdfReader } from "../pdf";
 import type { CheckReport } from "../types";
@@ -46,7 +45,6 @@ const agreed = (item: Item, [a, b]: Pair): Cell => {
   const [x, y] = [item.read(a), item.read(b)];
   return x !== null && y !== null && same(x, y) ? x : null;
 };
-const show = (v: Cell) => (typeof v === "number" ? usd(v) : String(v));
 const where = (j: Pick<Job, "doc" | "pages">) => `p.${j.pages.join(",")} (${j.doc})`;
 
 const readCell = (a: string | null): Cell => {
@@ -131,7 +129,7 @@ function tryApply(run: Run, patches: Patch[]): boolean {
 interface Target {
   id: string;
   what: string;
-  about: NonNullable<Question["about"]>;
+  about: Question["about"];
   source: Source;
   pages: number[];
 }
@@ -151,24 +149,29 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
       }
 
       const settled: { item: ValueItem; value: Cell; pair: Pair }[] = [];
+      const differ: { item: ValueItem; pair: Pair }[] = [];
       items.forEach((item, i) => {
         const pair = reads[i]!;
         const value = agreed(item, pair);
-        if (value !== null) {
-          settled.push({ item, value, pair });
-          return;
-        }
-        const distinct = pair.map(item.read).filter((v, k, all): v is NonNullable<Cell> => v !== null && all.findIndex((w) => w !== null && same(w, v)) === k);
+        if (value !== null) settled.push({ item, value, pair });
+        else differ.push({ item, pair });
+      });
+      if (differ.length) {
+        const said = (m: 0 | 1) => differ.map((d) => `${d.item.label}: ${d.pair[m] ?? UNREADABLE}`).join("; ");
+        const use = (m: 0 | 1) => {
+          const values = differ.map((d) => d.item.read(d.pair[m]));
+          return values.every((v) => v !== null) ? [{ label: `Use what ${m ? run.openai.model : run.claude.model} read`, patches: differ.map((d, k) => d.item.patch(values[k]!)) }] : [];
+        };
         raise(run, {
           ...base,
-          id: item.id,
-          question: `What does p.${t.source.page} of ${t.source.doc} print for ${item.label}?`,
-          context: `The two models read it independently and did not agree: ${run.claude.model} read "${pair[0] ?? UNREADABLE}", ${run.openai.model} read "${pair[1] ?? UNREADABLE}".`,
-          readings: readings(run, (m) => pair[m] ?? UNREADABLE),
-          options: distinct.map((v) => ({ label: show(v), patches: [item.patch(v)] })),
+          id: `read:${t.id}`,
+          question: differ.length === 1 ? `What does p.${t.source.page} of ${t.source.doc} print for ${differ[0]!.item.label}?` : `The two readings of ${t.what} disagree on ${differ.length} values. What does the page print?`,
+          context: `Two models read the page independently and did not agree. ${differ.map((d) => `${d.item.label}: ${run.claude.model} read "${d.pair[0] ?? UNREADABLE}", ${run.openai.model} read "${d.pair[1] ?? UNREADABLE}"`).join("; ")}.`,
+          readings: readings(run, said),
+          options: [...use(0), ...use(1)],
         });
-        run.log.push(`${place}: the two reads disagree on ${item.label}, so a person will be asked`);
-      });
+        run.log.push(`${place}: the two reads disagree on ${differ.length} ${differ.length === 1 ? "value" : "values"}, so a person will be asked`);
+      }
       if (!settled.length) return;
 
       const patches = proven(run.rulebook, settled.map((s) => s.item.patch(s.value)));
@@ -209,10 +212,22 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
   };
 }
 
-function termJob(t: Term): Job {
-  const label = `the amount for '${t.name}'`;
-  const item: ValueItem = { id: `read:${t.id}`, label, current: t.amountCents, read: readAmount, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }) };
-  return valuesJob({ id: t.id, what: label, about: { target: "term", id: t.id }, source: t.source, pages: [t.source.page] }, [item]);
+function termsJob(terms: Term[]): Job {
+  const { doc, page } = terms[0]!.source;
+  const items = terms.map((t): ValueItem => ({
+    id: t.id, label: `the amount for '${t.name}'`, current: t.amountCents, read: readAmount, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
+  }));
+  const one = terms.length === 1 ? terms[0]! : null;
+  return valuesJob(
+    {
+      id: one ? one.id : `${doc}:p${page}`,
+      what: one ? items[0]!.label : `the amounts on p.${page}`,
+      about: one ? { target: "term", id: one.id } : null,
+      source: one ? one.source : { doc, page, quote: "" },
+      pages: [page],
+    },
+    items,
+  );
 }
 
 function gridJob(g: Grid): Job {
@@ -230,9 +245,13 @@ function gridJob(g: Grid): Job {
 }
 
 export function readJobs(rulebook: Rulebook, report: CheckReport): Job[] {
-  const terms = rulebook.terms.filter((t) => report.quotes[t.id] === IMAGE_PAGE_REASON);
+  const onPage = new Map<string, Term[]>();
+  for (const t of rulebook.terms.filter((x) => report.quotes[x.id] === IMAGE_PAGE_REASON)) {
+    const key = `${t.source.doc}\u0000${t.source.page}`;
+    onPage.set(key, [...(onPage.get(key) ?? []), t]);
+  }
   const grids = rulebook.grids.filter((g) => report.grids[g.id]?.problems.length || report.grids[g.id]?.unproven.length);
-  return [...terms.map(termJob), ...grids.map(gridJob)];
+  return [...[...onPage.values()].map(termsJob), ...grids.map(gridJob)];
 }
 
 /** One call per model for each set of pages, however many items ask about them. */

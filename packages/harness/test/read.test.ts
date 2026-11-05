@@ -39,6 +39,7 @@ const rulebook: Rulebook = {
 
 const fake = (model: string, answers: Record<string, unknown>, usd: number): Reader => ({
   model,
+  price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 },
   async ask<T>(req: Ask<T>) {
     return { value: answers[req.name] as T, model, usd };
   },
@@ -72,4 +73,10 @@ it("reviews a saved rulebook, settles the reader's elsewhere question by a verif
     { id: "q1", state: "auto_resolved", resolution: { by: "citation", citation: { doc: "CTA.pdf", page: 1 } } },
     { id: "review:0", origin: "reviewer", kind: "decision", state: "open", blocking: true },
   ]);
+});
+
+it("refuses a contract with scanned pages before any model is called", async () => {
+  const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "image" as const })) };
+  const never = fake("x", {}, 1);
+  await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/CTA.pdf p.1.*scans/);
 });

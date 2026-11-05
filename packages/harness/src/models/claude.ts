@@ -9,6 +9,7 @@ export function claudeReader(client: ModelClient, model: string): Reader {
   const price = priceFor(model);
   return {
     model,
+    price,
     async ask<T>(req: Ask<T>) {
       const response = await client.beta.messages
         .stream({

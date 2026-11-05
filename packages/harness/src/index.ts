@@ -6,7 +6,7 @@ export { pdfReader } from "./pdf";
 export { review } from "./review";
 export type { ReviewResult } from "./review";
 export { resolve } from "./resolve";
-export { read } from "./read";
+export { read, scannedPages } from "./read";
 export type { ReadOptions, ReadResult } from "./read";
 export { claudeReader, openaiReader } from "./models";
 export type { Budget, Reader } from "./models";

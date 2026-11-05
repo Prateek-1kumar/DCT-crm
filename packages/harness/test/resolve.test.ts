@@ -90,6 +90,7 @@ function fake(model: string, o: { read?: (label: string) => string | null; find?
   const calls: Ask<unknown>[] = [];
   const reader: Reader = {
     model,
+    price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 },
     async ask<T>(req: Ask<T>) {
       calls.push(req);
       if (o.fail) throw new Error("secret provider detail");
@@ -175,25 +176,39 @@ describe("reading: two reads agree", () => {
 });
 
 describe("reading: two reads disagree", () => {
-  it("asks a person, showing both readings and one option per distinct reading", async () => {
+  it("asks one question per grid, with every disagreeing value, both readings and each model's values as an option", async () => {
     const book = rulebook({ grids: [grid(20500)] });
-    const read = (label: string, exam: string) => (label === "row 'Exam' at visit 'V2'" ? exam : truthful(label));
-    const out = await run(book, readers({ read: (l) => read(l, "$250.00") }, { read: (l) => read(l, "$205.00") }));
+    const read = (label: string, exam: string, labs: string) =>
+      label === "row 'Exam' at visit 'V2'" ? exam : label === "row 'Labs' at visit 'V1'" ? labs : truthful(label);
+    const out = await run(book, readers({ read: (l) => read(l, "$250.00", "$50.00") }, { read: (l) => read(l, "$205.00", "$80.00") }));
 
-    const q = question1(out.rulebook, "read:g1:rows.0.cells.1");
-    expect(q).toMatchObject({ kind: "reading", origin: "check", state: "open", about: { target: "grid", id: "g1" } });
-    expect(q.readings).toEqual([{ model: "claude-x", answer: "$250.00" }, { model: "openai-x", answer: "$205.00" }]);
-    expect(q.options.map((o) => o.label)).toEqual(["$250.00", "$205.00", "Neither, I'll type the right value"]);
-    expect(q.options[0]!.patches).toEqual<Patch[]>([{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } }]);
-    expect(q.options[2]!.patches).toEqual([]);
-    expect(out.rulebook.grids[0]!.rows[0]!.cells[1]).toBe(20500);
     expect(out.rulebook.questions).toHaveLength(1);
+    const q = question1(out.rulebook, "read:g1");
+    expect(q).toMatchObject({ kind: "reading", origin: "check", state: "open", about: { target: "grid", id: "g1" } });
+    expect(q.readings).toEqual([
+      { model: "claude-x", answer: "row 'Exam' at visit 'V2': $250.00; row 'Labs' at visit 'V1': $50.00" },
+      { model: "openai-x", answer: "row 'Exam' at visit 'V2': $205.00; row 'Labs' at visit 'V1': $80.00" },
+    ]);
+    expect(q.options.map((o) => o.label)).toEqual(["Use what claude-x read", "Use what openai-x read", "Neither, I'll type the right value"]);
+    expect(q.options[0]!.patches).toEqual<Patch[]>([
+      { target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } },
+      { target: "grid", id: "g1", set: { "rows.1.cells.0": 5000 } },
+    ]);
+    expect(out.rulebook.grids[0]!.rows[0]!.cells[1]).toBe(20500);
+  });
+
+  it("asks one question for all the terms on a page", async () => {
+    const page2 = { doc: "Budget.pdf", page: 2, quote: "Exhibit B" };
+    const book = rulebook({ terms: [term({ id: "a", name: "Fee A", source: page2 }), term({ id: "b", name: "Fee B", source: page2 })] });
+    const out = await run(book, readers({ read: () => "$1.00" }, { read: () => "$2.00" }));
+    expect(out.rulebook.questions.map((q) => [q.id, q.about])).toEqual([["read:Budget.pdf:p2", null]]);
   });
 
   it("treats two blank answers as no reading at all", async () => {
     const out = await run(rulebook({ terms: [term()] }), readers({ read: () => null }));
     const q = question1(out.rulebook, "read:t1");
-    expect(q.readings.map((x) => x.answer)).toEqual(["blank or unreadable", "blank or unreadable"]);
+    expect(q.readings.map((x) => x.answer)).toEqual(["the amount for 'Screen failure fee': blank or unreadable", "the amount for 'Screen failure fee': blank or unreadable"]);
+    expect(q.options.map((o) => o.label)).toEqual(["Neither, I'll type the right value"]);
     expect(out.rulebook.terms[0]!.evidence).toBe("quote");
   });
 });
@@ -288,7 +303,7 @@ describe("budget and errors", () => {
     expect(r.claude.calls).toHaveLength(1);
     expect(r.openai.calls).toHaveLength(1);
     expect(out.rulebook.questions.find((q) => q.id === "e1")).toEqual(e);
-    expect(out.log.some((l) => l.includes("$0.15 limit was reached"))).toBe(true);
+    expect(out.log.some((l) => l.includes("$0.15 limit would be passed"))).toBe(true);
   });
 
   it("makes no call when the budget is already spent, and asks a person about what it could not read", async () => {

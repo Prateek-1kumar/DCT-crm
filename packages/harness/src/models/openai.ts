@@ -15,6 +15,7 @@ export function openaiReader(client: OpenAIClient, model: string): Reader {
   const price = openaiPrice(process.env.OPENAI_PRICE_PER_MTOK);
   return {
     model,
+    price,
     async ask<T>(req: Ask<T>) {
       // Streamed so a long high-effort answer isn't cut off by Node's five-minute wait for a first byte.
       const response = await client.responses

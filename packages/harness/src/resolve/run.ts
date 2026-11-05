@@ -1,5 +1,5 @@
 import type { Question, Rulebook } from "@dct/shared";
-import { spentOn, type Ask, type Budget, type Reader } from "../models/reader";
+import { estimateUsd, spentOn, type Ask, type Budget, type Reader } from "../models/reader";
 import type { LoadedDoc } from "../types";
 
 export interface Run {
@@ -12,17 +12,26 @@ export interface Run {
   log: string[];
 }
 
+const OUTPUT_TOKENS = 4000;
+
 /** One model call inside the budget. Failures throw a plain-English message for the log; the model's own error text is never shown. */
 export async function call<T>(run: Run, reader: Reader, ask: Ask<T>): Promise<T> {
-  if (run.budget.spent >= run.budget.limit) throw new Error(`the $${run.budget.limit} limit was reached`);
-  const answer = await reader.ask(ask).catch((err: unknown) => {
-    run.budget.spent += spentOn(err);
-    run.usd += spentOn(err);
+  const estimate = estimateUsd(reader, ask.parts, OUTPUT_TOKENS);
+  if (run.budget.spent + estimate > run.budget.limit) throw new Error(`the $${run.budget.limit} limit would be passed`);
+  // held while the call runs, so a call made in parallel can't count on the same money
+  run.budget.spent += estimate;
+  const settle = (usd: number) => {
+    run.budget.spent += usd - estimate;
+    run.usd += usd;
+  };
+  try {
+    const answer = await reader.ask(ask);
+    settle(answer.usd);
+    return answer.value;
+  } catch (err) {
+    settle(spentOn(err));
     throw new Error(`${reader.model} couldn't answer`);
-  });
-  run.budget.spent += answer.usd;
-  run.usd += answer.usd;
-  return answer.value;
+  }
 }
 
 export function setQuestion(run: Run, id: string, change: Partial<Question>) {

@@ -1,10 +1,13 @@
 import type { Question, Rulebook } from "@dct/shared";
-import { spentOn, type Budget, type Part, type Reader } from "../models/reader";
+import { estimateUsd, spentOn, type Budget, type Part, type Reader } from "../models/reader";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
 import { SYSTEM_PROMPT } from "./prompt";
 import { toQuestions } from "./questions";
 import { Findings } from "./schema";
+
+// A high-effort review has written up to ~25k tokens, most of them reasoning.
+const OUTPUT_TOKENS = 30000;
 
 export interface ReviewResult {
   questions: Question[];
@@ -24,7 +27,6 @@ async function pagesOf(doc: LoadedDoc): Promise<Part[]> {
 
 export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { reader: Reader; budget: Budget }): Promise<ReviewResult> {
   const { reader, budget } = opts;
-  if (budget.spent >= budget.limit) return { questions: [], usd: 0, error: `The review was skipped: this read has already reached its $${budget.limit} limit.` };
 
   const { study, terms, grids, accounted } = rulebook;
   const open = rulebook.questions.map((q) => ({ question: q.question, about: q.about, doc: q.source.doc, page: q.source.page }));
@@ -36,6 +38,9 @@ export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { read
     ...(await Promise.all(moneyDocs.map(pagesOf))).flat(),
   ];
 
+  if (budget.spent + estimateUsd(reader, parts, OUTPUT_TOKENS) > budget.limit) {
+    return { questions: [], usd: 0, error: `The review was skipped: it would pass this read's $${budget.limit} limit.` };
+  }
   try {
     const { value, usd } = await reader.ask({ name: "review", system: SYSTEM_PROMPT, parts, schema: Findings, effort: "high" });
     budget.spent += usd;
