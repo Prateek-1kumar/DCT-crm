@@ -1,12 +1,17 @@
 import type { Rulebook } from "@dct/shared";
-import type { CheckReport, Checks, LoadedDoc, Problem } from "../types";
+import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
 import { checkGrid } from "./grid";
 import { checkQuote } from "./quote";
 import { requiredDecisions } from "./required";
 import { unaccounted } from "./unaccounted";
 import { usd } from "./text";
 
-export const IMAGE_PAGE_REASON = "image page: this amount needs the contract's arithmetic or two independent reads";
+export const OCR_PAGE_REASON = "scanned page: this amount needs the contract's arithmetic, a match with what OCR read there, or two independent reads";
+
+type Term = Rulebook["terms"][number];
+const PROVEN = new Set<Term["evidence"]>(["math", "ocr_match", "two_reads", "person"]);
+
+export const needsProof = (t: Term, page: Page | undefined) => page !== undefined && page.kind !== "text" && t.amountCents !== null && !PROVEN.has(t.evidence);
 
 function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   const problems: Problem[] = [];
@@ -26,8 +31,7 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   const quotes: CheckReport["quotes"] = {};
   for (const t of rulebook.terms) {
     const page = docs.find((d) => d.name === t.source.doc)?.pages.find((p) => p.page === t.source.page);
-    const needsProof = page?.kind === "image" && t.amountCents !== null && t.evidence !== "math" && t.evidence !== "two_reads";
-    const reason = checkQuote(t.source, docs) ?? (needsProof ? IMAGE_PAGE_REASON : null);
+    const reason = checkQuote(t.source, docs) ?? (needsProof(t, page) ? OCR_PAGE_REASON : null);
     if (!reason) continue;
     quotes[t.id] = reason;
     problems.push({ check: "quote", id: t.id, doc: t.source.doc, page: t.source.page, message: reason });

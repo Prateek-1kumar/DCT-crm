@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
+import type { Ocr } from "../src/jobs/ocr.js";
 
 export type Built = Awaited<ReturnType<typeof buildApp>>;
 export type App = Built["app"];
@@ -19,10 +20,15 @@ const testRoutes: NonNullable<Parameters<typeof buildApp>[0]>["routes"] = (api, 
   });
 };
 
+/** OCR that always fails, so a test that doesn't care about OCR never runs the real one. */
+export const noOcr: Ocr = async () => {
+  throw new Error("OCR is off in this test");
+};
+
 export async function testApp(): Promise<Built> {
   // the database's own name, as global-setup checks it: "_test" anywhere else in the URL must not pass
   if (!new URL(process.env.DATABASE_URL ?? "postgres://x/").pathname.slice(1).endsWith("_test")) throw new Error("tests must use the _test database");
-  return buildApp({ routes: testRoutes });
+  return buildApp({ routes: testRoutes, ocr: noOcr });
 }
 
 /** Serialise multipart/form-data with the platform FormData encoder. */

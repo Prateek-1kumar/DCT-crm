@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
 import { checks } from "../src/checks";
 import type { LoadedDoc, Page, PageKind } from "../src/types";
-import { wordsOf } from "./words";
+import { ocrWordsOf, wordsOf } from "./words";
 
 type Grid = Rulebook["grids"][number];
 type Term = Rulebook["terms"][number];
 
-const page = (n: number, kind: PageKind, layout: string, raw = layout): Page => ({ page: n, kind, layout, raw, words: wordsOf(layout), maskBoxes: [], firstLine: "" });
+const page = (n: number, kind: PageKind, layout: string, raw = layout): Page => ({ page: n, kind, layout, raw, words: wordsOf(layout), maskBoxes: [], firstLine: "", confidence: null, rotation: 0 });
+const ocr = (n: number, layout: string, confidence = 90): Page => ({ ...page(n, "ocr", layout), words: ocrWordsOf(layout, confidence), confidence });
 const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${name}`, sha256: "0", pages });
 
 const grid = (over: Partial<Grid>): Grid => ({
@@ -138,6 +139,38 @@ describe("checkQuote", () => {
   });
 });
 
+describe("checkQuote on an OCR page", () => {
+  const d = [doc("A.pdf", ocr(1, "The Site shal1 pay $1,2OO.00 within 45 days of the invoice.\nSchedu1e B"))];
+  const src = (quote: string) => ({ doc: "A.pdf", page: 1, quote });
+
+  it("finds a quote despite OCR slips on either side", () => {
+    expect(checks.checkQuote(src("The Site shall pay $1,200.00 within 45 days"), d)).toBeNull();
+    expect(checks.checkQuote(src("the site shal1 pay $1200.OO within 4S days of the invoice"), d)).toBeNull();
+    expect(checks.checkQuote(src("Schedule B"), d)).toBeNull();
+  });
+
+  it("still reports a quote that isn't there, and keeps text pages exact", () => {
+    expect(checks.checkQuote(src("The Sponsor shall pay $9,999.00 within 90 days"), d)).toBe("quote not found on p.1 of A.pdf");
+    expect(checks.checkQuote(src("Schedule C"), d)).toBe("quote not found on p.1 of A.pdf");
+    const text = [doc("A.pdf", page(1, "text", "The Site shal1 pay within 45 days"))];
+    expect(checks.checkQuote(src("The Site shall pay within 45 days"), text)).toBe("quote not found on p.1 of A.pdf");
+  });
+});
+
+describe("an amount on an OCR page", () => {
+  const docs = [doc("A.pdf", ocr(1, "Startup fee $1,200.00"), page(2, "text", "Startup fee $1,200.00"))];
+  const at = (page: number, over: Partial<Term> = {}) => term({ id: `t${page}`, amountCents: 120000, source: { doc: "A.pdf", page, quote: "Startup fee" }, ...over });
+
+  it("needs arithmetic, a match with OCR, two reads or a person; an amount on a text page is as before", () => {
+    const rb = rulebook({
+      terms: [at(1, { evidence: "quote" }), at(1, { id: "m", evidence: "math" }), at(1, { id: "o", evidence: "ocr_match" }), at(1, { id: "r", evidence: "two_reads" }), at(1, { id: "p", evidence: "person" }), at(1, { id: "n", amountCents: null }), at(2, { evidence: "quote" })],
+    });
+    const { quotes } = checks.runChecks(rb, docs);
+    expect(Object.keys(quotes)).toEqual(["t1"]);
+    expect(quotes.t1).toMatch(/^scanned page.*OCR/);
+  });
+});
+
 describe("unaccounted", () => {
   const d = [doc("A.pdf", page(1, "text", "Startup fee  $2,500.00\nVisit  $100.00  $100.00"), page(2, "text", "Late fee $2,500.00"))];
   const withDocs = (over: Partial<Rulebook["study"]["documents"][number]> = {}) =>
@@ -248,7 +281,7 @@ describe("runChecks", () => {
     rb.grids[0]!.rows[0]!.cells[0] = 1;
     const r = checks.runChecks(rb, docs);
     expect(Object.keys(r.quotes)).toEqual(["bad", "scan"]);
-    expect(r.quotes.scan).toMatch(/^image page/);
+    expect(r.quotes.scan).toMatch(/^scanned page/);
     expect(r.unaccounted.map((u) => u.amountCents)).toEqual([999]);
     expect(r.grids.g1!.problems.length).toBeGreaterThan(0);
     expect(r.problems.map((p) => p.check).sort()).toEqual(["grid", "grid", "quote", "quote", "unaccounted"]);

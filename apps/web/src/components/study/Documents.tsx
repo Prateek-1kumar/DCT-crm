@@ -7,7 +7,7 @@ import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
 import type { Study, StudyDocument } from "@/lib/types";
 import { Button, Card, Dialog, ErrorNote, Spinner } from "../ui";
-import { fileSize, scanWarning } from "./format";
+import { fileSize, pageList } from "./format";
 import { PdfDrop } from "./PdfDrop";
 import { useUpload } from "./useUpload";
 
@@ -44,6 +44,28 @@ function RemoveDocument({ study, doc, onClose }: { study: Study; doc: StudyDocum
   );
 }
 
+function ScannedPages({ doc }: { doc: StudyDocument }) {
+  const { status, pagesDone, pagesTotal, error } = doc.ocr;
+  if (status === "queued" || status === "running") return <Spinner label={`Preparing scanned pages: ${pagesDone} of ${pagesTotal}`} />;
+  if (status === "failed") return <ErrorNote>{error}</ErrorNote>;
+  if (status !== "done") return null;
+  const scanned = doc.scannedPages;
+  const hard = doc.lowConfidencePages;
+  return (
+    <>
+      <p className="text-small text-muted">
+        Scanned {pageList(scanned).toLowerCase()} {scanned.length === 1 ? "was" : "were"} read with OCR
+      </p>
+      {hard.length > 0 && (
+        <p className="flex gap-2 rounded-field bg-warn-soft px-3.5 py-2.5 text-small text-warn">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          {pageList(hard)} {hard.length === 1 ? "was" : "were"} hard to read; check {hard.length === 1 ? "it" : "them"} on the proof screen
+        </p>
+      )}
+    </>
+  );
+}
+
 export function Documents({ study, inputRef }: { study: Study; inputRef: RefObject<HTMLInputElement | null> }) {
   const by = useActingAs();
   const [removing, setRemoving] = useState<StudyDocument | null>(null);
@@ -71,12 +93,7 @@ export function Documents({ study, inputRef }: { study: Study; inputRef: RefObje
                   Remove
                 </Button>
               </div>
-              {doc.scannedPages.length > 0 && (
-                <p className="flex gap-2 rounded-field bg-warn-soft px-3.5 py-2.5 text-small text-warn">
-                  <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-                  {scanWarning(doc.scannedPages)}
-                </p>
-              )}
+              <ScannedPages doc={doc} />
             </li>
           ))}
         </ul>

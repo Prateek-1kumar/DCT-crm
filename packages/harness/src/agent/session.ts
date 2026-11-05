@@ -1,8 +1,9 @@
 import { Region, type Accounted, type Grid, type Question, type Rulebook, type Study, type Term } from "@dct/shared";
 import { z } from "zod";
-import { checks } from "../checks";
+import { OCR_PAGE_REASON, checks } from "../checks";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
+import { OCR_NOTE } from "./prompt";
 import { normalizeAccounted, normalizeGrid, normalizeQuestion, normalizeStudy, normalizeTerm, type Parsed } from "./normalize";
 
 export interface ImageBlock {
@@ -106,7 +107,8 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       const out = wanted.map((n) => {
         const page = doc.pages[n - 1];
         if (!page) return `=== ${doc.name} p${n} ===\n(this document has only ${doc.pages.length} pages)`;
-        return `=== ${doc.name} p${n} ===\n${page.kind === "text" ? page.layout : "(IMAGE page: no text layer, use view_page)"}`;
+        const body = { text: page.layout, ocr: `(${OCR_NOTE})\n${page.layout}`, image: "(IMAGE page: no text layer, use view_page)" }[page.kind];
+        return `=== ${doc.name} p${n} ===\n${body}`;
       });
       if (args.data.pages.length > wanted.length) out.push(`Only the first ${MAX_PAGES_PER_READ} pages were returned; ask for the rest separately.`);
       return text(out.join("\n"), `Reading ${pageList(wanted)} of ${doc.name}`);
@@ -212,7 +214,8 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
     finish() {
       if (!study) return text("There are no study details yet: call put_study first.", "Waiting for the study details", true);
       state.finishes++;
-      const { problems } = checks.runChecks(rulebook(), docs);
+      // proving amounts on OCR pages is the harness's job after the compile, so it can't be fixed here
+      const problems = checks.runChecks(rulebook(), docs).problems.filter((p) => p.message !== OCR_PAGE_REASON);
       if (!problems.length) {
         state.ending = "done";
         return text("ALL CHECKS PASS. Done.", "Checking the whole rulebook: all checks pass");

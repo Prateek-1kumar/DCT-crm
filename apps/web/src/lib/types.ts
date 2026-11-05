@@ -29,12 +29,16 @@ export interface StudyRow {
   latestVersion: { number: number; status: VersionStatus } | null;
 }
 
+export type OcrStatus = "none" | "queued" | "running" | "done" | "failed";
+
 export interface StudyDocument {
   id: string;
   name: string;
   bytes: number;
   pageCount: number;
   scannedPages: number[];
+  lowConfidencePages: number[];
+  ocr: { status: OcrStatus; pagesDone: number; pagesTotal: number; error: string | null };
 }
 
 export interface VersionSummary {
@@ -119,7 +123,7 @@ export interface Word {
 
 export interface PageText {
   page: number;
-  kind: "text" | "image";
+  kind: "text" | "ocr" | "image";
   layout: string;
   words: Word[];
 }
@@ -154,7 +158,7 @@ export interface CoveragePage {
   documentId: string;
   doc: string;
   page: number;
-  kind: "text" | "image";
+  kind: "text" | "ocr" | "image";
   amounts: CoverageAmount[];
   clauses: CoverageClause[];
 }

@@ -68,6 +68,7 @@ function ContractPage({ page, names, filter, layers, selected, target, onAmount,
         <span>{plural(page.amounts.length, "amount")}</span>
         {countOf(page, "missing") > 0 && <Badge tone="danger">{countOf(page, "missing")} missing</Badge>}
         {page.kind === "image" && <Badge tone="warn">Scanned page: amounts on it can&apos;t be checked</Badge>}
+        {page.kind === "ocr" && <Badge>Scanned page, read with OCR</Badge>}
       </header>
       <Lazy eager={!!target}>
         <PageView documentId={page.documentId} page={page.page} alt={`${page.doc}, page ${page.page}`} boxes={boxes} focus={focus} />

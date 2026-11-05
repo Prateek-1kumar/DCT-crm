@@ -75,10 +75,20 @@ it("reviews a saved rulebook, settles the reader's elsewhere question by a verif
   ]);
 });
 
-it("refuses a contract with scanned pages before any model is called", async () => {
+it("refuses only pages nobody has OCR'd yet, before any model is called", async () => {
   const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "image" as const })) };
   const never = fake("x", {}, 1);
-  await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/CTA.pdf p.1.*scans/);
+  await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/Pages CTA\.pdf p\.1 haven't been prepared yet/);
+});
+
+it("reads OCR'd pages, proving an amount by what OCR read there without asking a model", async () => {
+  const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "ocr" as const, confidence: 90 })) };
+  const claude = fake("claude", {}, 1);
+  const openai = fake("gpt", { review: { findings: [] } }, 0.4);
+  const result = await read([scan], { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook });
+  expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "ocr_match" });
+  expect(result.report.problems).toEqual([]);
+  expect(result.usd).toBeCloseTo(0.4);
 });
 
 it("reports what was spent when a read breaks part way, with a plain message", async () => {

@@ -1,7 +1,7 @@
 import type { Region, Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
-import type { LoadedDoc, Word } from "../types";
-import { amountsAt, amountsIn, normalise } from "./text";
+import type { LoadedDoc, Page, PageKind, Word } from "../types";
+import { amountsAt, amountsIn, normalise, ocrAmounts, slipped } from "./text";
 
 export type AmountStatus = "captured" | "decided" | "set_aside" | "missing";
 export type CoverageRef = { target: "term"; id: string } | { target: "grid"; id: string; row: number; col: number };
@@ -15,6 +15,8 @@ export interface CoverageAmount {
   reason: string | null;
   /** The printed line it sits on, for context. */
   line: string;
+  /** OCR's mean confidence in the words it was read from, 0–100; null on a page with a text layer. */
+  confidence: number | null;
 }
 
 export interface CoverageClause {
@@ -25,7 +27,7 @@ export interface CoverageClause {
 export interface CoveragePage {
   doc: string;
   page: number;
-  kind: "text" | "image";
+  kind: PageKind;
   amounts: CoverageAmount[];
   clauses: CoverageClause[];
 }
@@ -35,7 +37,8 @@ export interface Coverage {
   totals: { amounts: number; captured: number; decided: number; setAside: number; missing: number };
 }
 
-const key = (s: string) => normalise(s).replace(/[^\p{L}\p{N}]/gu, "");
+// OCR's letter/digit swaps fold together, so a quote finds its words on a scan as on a text page
+const key = (s: string) => slipped(normalise(s)).replace(/[^\p{L}\p{N}]/gu, "");
 
 const union = (words: Word[]): Region => [Math.min(...words.map((w) => w.x0)), Math.min(...words.map((w) => w.y0)), Math.max(...words.map((w) => w.x1)), Math.max(...words.map((w) => w.y1))];
 
@@ -103,6 +106,23 @@ function candidates(rulebook: Rulebook): Map<number, Candidate[]> {
   return byCents;
 }
 
+/** The amounts printed on one line with the words they sit in; on an OCR page, read with OCR's slips allowed. */
+function amountsOn(page: Page, line: Word[], known: Map<number, Candidate[]>): { text: string; cents: number; printed: Word[] }[] {
+  if (page.kind === "ocr") {
+    return ocrAmounts(line.map((w) => w.text), (c) => known.has(Math.abs(c))).map(({ cents, from, to }) => {
+      const printed = line.slice(from, to + 1);
+      return { text: printed.map((w) => w.text).join(" "), cents: Math.abs(cents), printed };
+    });
+  }
+  let at = 0;
+  const spans = line.map((w) => {
+    const span = { w, start: at, end: at + w.text.length };
+    at = span.end + 1;
+    return span;
+  });
+  return amountsAt(rawLine(line)).map((a) => ({ text: a.text, cents: a.cents, printed: spans.filter((s) => s.start < a.end && s.end > a.start).map((s) => s.w) }));
+}
+
 export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
   const known = candidates(rulebook);
   const noMoney = new Set(rulebook.study.documents.filter((d) => !d.hasMoney).map((d) => d.doc));
@@ -123,20 +143,15 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
         rulebook.accounted.find((a) => a.doc === doc.name && a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents) ??
         rulebook.accounted.find((a) => a.amountCents !== undefined && Math.abs(a.amountCents) === cents);
       for (const line of groupLines(page.words)) {
-        let at = 0;
-        const spans = line.map((w) => {
-          const span = { w, start: at, end: at + w.text.length };
-          at = span.end + 1;
-          return span;
-        });
-        for (const a of amountsAt(rawLine(line))) {
+        const printedLine = rawLine(line);
+        for (const a of amountsOn(page, line, known)) {
           if (a.cents === 0) continue;
-          const printed = spans.filter((s) => s.start < a.end && s.end > a.start).map((s) => s.w);
           const matches = wholePage ? [] : (known.get(a.cents) ?? []);
           const match = matches.find((c) => c.doc === doc.name && c.pages.includes(page.page)) ?? matches[0];
           const accounted = match ? undefined : (wholePage ?? setAside(a.cents));
           const status: AmountStatus = match ? (match.person ? "decided" : "captured") : accounted ? "set_aside" : "missing";
-          out.amounts.push({ box: union(printed), text: a.text, cents: a.cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line: rawLine(line).trim().slice(0, 120) });
+          const confidence = page.kind === "ocr" ? a.printed.reduce((n, w) => n + (w.confidence ?? page.confidence ?? 0), 0) / a.printed.length : null;
+          out.amounts.push({ box: union(a.printed), text: a.text, cents: a.cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line: printedLine.trim().slice(0, 120), confidence });
           totals.amounts++;
           totals[status === "set_aside" ? "setAside" : status]++;
         }

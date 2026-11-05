@@ -21,7 +21,7 @@ const INSURANCE = "Insurance limit $5,000.00 per claim.";
 
 const textDoc = (...lines: string[]): LoadedDoc => {
   const layout = lines.join("\n");
-  return { name: "A.pdf", path: "/x/A.pdf", sha256: "0", pages: [{ page: 1, kind: "text", layout, raw: layout, words: wordsOf(layout), maskBoxes: [], firstLine: lines[0]! }] };
+  return { name: "A.pdf", path: "/x/A.pdf", sha256: "0", pages: [{ page: 1, kind: "text", layout, raw: layout, words: wordsOf(layout), maskBoxes: [], firstLine: lines[0]!, confidence: null, rotation: 0 }] };
 };
 
 type Block = Record<string, unknown>;
@@ -186,6 +186,29 @@ describe("compile", () => {
     expect(result.stopReason).toBe("error");
     expect(result.error).toContain("no more replies");
     expect(result.rulebook.study.protocol).toBe("P-1");
+  });
+});
+
+describe("OCR pages", () => {
+  const ocrDoc = (...lines: string[]): LoadedDoc => {
+    const doc = textDoc(...lines);
+    return { ...doc, pages: [{ ...doc.pages[0]!, kind: "ocr", confidence: 85 }] };
+  };
+  const NOTE = "OCR, scanned: text read by OCR may contain misreads; check numbers with view_page";
+
+  it("are labelled in the inventory and in read_pages, which returns their OCR text under the warning", async () => {
+    const { calls } = await run([ocrDoc(...BUDGET)], [reply([call("read_pages", { doc: "A.pdf", pages: [1] })]), reply([])], { maxTurns: 2 });
+    expect(String(calls[0]!.messages[0]!.content)).toContain(`p1: ${NOTE}, `);
+    expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).toBe(`=== A.pdf p1 ===\n(${NOTE})\n${BUDGET.join("\n")}`);
+  });
+
+  it("leave their amounts to the harness's own proof, so finish can pass without them", async () => {
+    const { result } = await run(
+      [ocrDoc("Startup fee $1,234.56 payable on signature.")],
+      [reply([call("put_study", { study }), call("put_terms", { terms: [startup] })]), reply([call("finish")])],
+    );
+    expect(result.stopReason).toBe("done");
+    expect(result.report.quotes.t1).toMatch(/^scanned page/);
   });
 });
 

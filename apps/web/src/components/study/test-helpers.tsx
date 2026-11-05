@@ -25,7 +25,7 @@ export function stubApi(routes: Record<string, Handler>) {
 
 const party = (id: string, kind: "sponsor" | "cro" | "site", name: string) => ({ id, kind, name, aliases: [], createdAt: "2026-11-01T10:00:00Z", createdBy: "Avery Chen" });
 
-export const doc = (over: Partial<StudyDocument> = {}): StudyDocument => ({ id: "d1", name: "Contract.pdf", bytes: 2_400_000, pageCount: 12, scannedPages: [], ...over });
+export const doc = (over: Partial<StudyDocument> = {}): StudyDocument => ({ id: "d1", name: "Contract.pdf", bytes: 2_400_000, pageCount: 12, scannedPages: [], lowConfidencePages: [], ocr: { status: "none", pagesDone: 0, pagesTotal: 0, error: null }, ...over });
 
 export const version = (over: Partial<VersionSummary> = {}): VersionSummary => ({
   id: "v1",

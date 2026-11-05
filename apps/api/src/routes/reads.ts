@@ -21,18 +21,16 @@ export async function readsRoutes(api: FastifyInstance, { db, boss, log, models 
     const [study] = await db.select({ id: studies.id }).from(studies).where(eq(studies.id, studyId));
     if (!study) throw new HttpError(404, "There is no such study.");
     const docs = await db
-      .select({ id: documents.id, name: documents.name, pages: documents.pages })
+      .select({ id: documents.id, name: documents.name, pages: documents.pages, ocrStatus: documents.ocrStatus, ocrError: documents.ocrError })
       .from(studyDocuments)
       .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
       .where(eq(studyDocuments.studyId, studyId))
       .orderBy(asc(studyDocuments.addedAt), asc(documents.name));
     if (!docs.length) throw new HttpError(409, "Upload the contract first.");
-    const scans = docs.flatMap((d) => {
-      const pages = d.pages.filter((p) => p.kind === "image").map((p) => p.page);
-      return pages.length ? [`${d.name} p.${pages.join(", ")}`] : [];
-    });
-    if (scans.length)
-      throw new HttpError(409, `These pages are scans: ${scans.join("; ")}. Bank details can't yet be found and hidden on scans, so this contract can't be read, and nothing was sent to any model.`);
+    const unprepared = docs.filter((d) => d.pages.some((p) => p.kind === "image"));
+    const failed = unprepared.filter((d) => d.ocrStatus === "failed");
+    if (unprepared.length > failed.length) throw new HttpError(409, "Some pages are still being prepared (OCR). Reading can start when they're done.");
+    if (failed.length) throw new HttpError(409, `Some scanned pages couldn't be prepared, so nothing was sent to any model. ${failed.map((d) => `${d.name}: ${d.ocrError}`).join(" ")}`);
     models();
 
     const started = await db

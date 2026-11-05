@@ -4,7 +4,7 @@ export type { CompileOptions, CompileResult, ModelClient, StopReason, TraceTurn 
 export { checks } from "./checks";
 export { coverage, findQuote } from "./checks/coverage";
 export type { AmountStatus, Coverage, CoverageAmount, CoverageClause, CoveragePage, CoverageRef } from "./checks/coverage";
-export { pdfReader } from "./pdf";
+export { OCR_VERSION, ocrPages, pdfReader, withOcr } from "./pdf";
 export { review } from "./review";
 export type { ReviewResult } from "./review";
 export { resolve } from "./resolve";

@@ -12,7 +12,7 @@ import type { LoadedDoc, Page, PageKind } from "../src/types";
 
 type Term = Rulebook["terms"][number];
 
-const page = (n: number, kind: PageKind, layout: string): Page => ({ page: n, kind, layout, raw: layout, words: [], maskBoxes: [], firstLine: "" });
+const page = (n: number, kind: PageKind, layout: string): Page => ({ page: n, kind, layout, raw: layout, words: [], maskBoxes: [], firstLine: "", confidence: null, rotation: 0 });
 const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${name}`, sha256: "0", pages });
 
 const term = (over: Partial<Term>): Term => ({
@@ -93,6 +93,23 @@ describe("review input", () => {
     expect(parts[i - 1]).toMatchObject({ type: "text", text: expect.stringContaining("CTA.pdf p1") });
     expect(Buffer.isBuffer((parts[i] as { png: Buffer }).png)).toBe(true);
     expect(texts(parts).join("\n")).not.toContain("Screen failure  $5,995.00");
+  });
+});
+
+describe("review input for an OCR page", () => {
+  it("sends the page image with the OCR text, labelled as OCR", async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([612, 792]);
+    const path = join(dir, "ocr.pdf");
+    await writeFile(path, await pdf.save());
+    const loaded = await pdfReader.load(path);
+    const scan: LoadedDoc = { ...loaded, name: "CTA.pdf", pages: [{ ...loaded.pages[0]!, kind: "ocr", layout: "Screen failure  $5,995.00", confidence: 88 }] };
+
+    const { reader, calls } = fake([]);
+    await review(rulebook(), [scan], { reader, budget: budget() });
+    const parts = calls[0]!.parts;
+    const i = parts.findIndex((p) => p.type === "image");
+    expect(parts[i - 1]).toMatchObject({ type: "text", text: expect.stringMatching(/^=== CTA\.pdf p1 ===.*OCR.*misreads\)\nScreen failure {2}\$5,995\.00$/) });
   });
 });
 

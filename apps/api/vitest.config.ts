@@ -13,6 +13,8 @@ export default defineConfig({
       OPENAI_API_KEY: "",
       OPENAI_MODEL: "",
       OPENAI_PRICE_PER_MTOK: "",
+      // the default, whatever test cap a developer's .env sets for real reads
+      READ_BUDGET_USD: "3",
       UPLOAD_DIR: path.join(os.tmpdir(), `dct-api-test-${process.pid}`),
     },
     globalSetup: ["./test/global-setup.ts"],

@@ -46,7 +46,7 @@ function withRequired(rulebook: Rulebook, report: CheckReport): Rulebook {
   return { ...rulebook, questions: [...rulebook.questions, ...report.required.filter((q) => !known.has(q.id))] };
 }
 
-/** Pages that are scans, as "file p.1, 2, 5"; empty when every page has text. */
+/** Scanned pages not yet OCR'd, as "file p.1, 2, 5"; empty when every page has words. */
 export function scannedPages(docs: LoadedDoc[]): string[] {
   return docs.flatMap((d) => {
     const pages = d.pages.filter((p) => p.kind === "image").map((p) => p.page);
@@ -55,10 +55,10 @@ export function scannedPages(docs: LoadedDoc[]): string[] {
 }
 
 export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadResult> {
-  // Bank details can only be found in a text layer, so a scan can't be masked and must not leave the machine.
-  const scanned = scannedPages(docs);
-  if (scanned.length) {
-    throw new ReadFailed(`These pages are scans: ${scanned.join("; ")}. Bank details can't yet be found and hidden on scans, so the contract wasn't sent to any model.`, 0);
+  // Bank details are found in a page's words, so a scan nobody has OCR'd can't be masked and must not leave the machine.
+  const unprepared = scannedPages(docs);
+  if (unprepared.length) {
+    throw new ReadFailed(`Pages ${unprepared.join("; ")} haven't been prepared yet. Their bank details can't be hidden until they are, so the contract wasn't sent to any model.`, 0);
   }
   const envUsd = Number(process.env.HARNESS_MAX_USD);
   const budget: Budget = { limit: opts.maxUsd ?? (envUsd > 0 ? envUsd : 3), spent: 0 };

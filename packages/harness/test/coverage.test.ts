@@ -8,6 +8,7 @@ import { checks } from "../src/checks";
 import { coverage, findQuote } from "../src/checks/coverage";
 import { pdfReader } from "../src/pdf";
 import type { LoadedDoc, Word } from "../src/types";
+import { ocrWordsOf } from "./words";
 
 type Term = Rulebook["terms"][number];
 type Grid = Rulebook["grids"][number];
@@ -234,5 +235,21 @@ describe("coverage and the every-dollar check", () => {
     const missing = coverage(rb, [contract]).pages.flatMap((p) => p.amounts.filter((a) => a.status === "missing").map((a) => a.cents));
     expect([...new Set(missing)].sort()).toEqual(checks.unaccounted(rb, [contract]).map((u) => u.amountCents).sort());
     expect(missing).not.toContain(150000);
+  });
+});
+
+describe("coverage on an OCR page", () => {
+  const layout = "Startup fee $1,2OO.OO due\nVisit 1 200.00 and S9.99 extra";
+  const words = ocrWordsOf(layout).map((w) => (w.text === "$1,2OO.OO" ? { ...w, confidence: 60 } : w.text === "S9.99" ? { ...w, confidence: 40 } : w));
+  const ocr: LoadedDoc = { name: "ocr.pdf", path: "/x/ocr.pdf", sha256: "0", pages: [{ page: 1, kind: "ocr", layout, raw: layout, words, maskBoxes: [], firstLine: "", confidence: 90, rotation: 0 }] };
+  const amounts = (rb: Rulebook) => coverage(rb, [ocr]).pages[0]!.amounts;
+
+  it("matches rulebook values despite OCR slips, and carries OCR's confidence for each amount", () => {
+    const rb = rulebook({ terms: [term("fee", { amountCents: 120000, source: { doc: "ocr.pdf", page: 1, quote: "Startup fee" } })] });
+    expect(amounts(rb).map((a) => [a.cents, a.status, a.confidence])).toEqual([[120000, "captured", 60], [120000, "captured", 90], [999, "missing", 40]]);
+  });
+
+  it("is null on a page with a text layer", () => {
+    expect(page1(rulebook()).amounts.every((a) => a.confidence === null)).toBe(true);
   });
 });

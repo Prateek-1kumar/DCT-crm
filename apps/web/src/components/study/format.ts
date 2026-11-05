@@ -1,4 +1,4 @@
-import type { VersionStatus } from "@/lib/types";
+import type { StudyDocument, VersionStatus } from "@/lib/types";
 import type { Tone } from "../ui";
 
 export const VERSION_PILL: Record<VersionStatus, { label: string; tone: Tone }> = {
@@ -9,7 +9,10 @@ export const VERSION_PILL: Record<VersionStatus, { label: string; tone: Tone }> 
   superseded: { label: "Superseded", tone: "neutral" },
 };
 
-export function scanWarning(pages: number[]): string {
+export const isPreparing = (doc: StudyDocument) => doc.ocr.status === "queued" || doc.ocr.status === "running";
+
+/** "Pages 3–5, 8": the pages in order, consecutive ones as a range. */
+export function pageList(pages: number[]): string {
   const runs: number[][] = [];
   for (const p of [...pages].sort((a, b) => a - b)) {
     const last = runs.at(-1);
@@ -17,8 +20,7 @@ export function scanWarning(pages: number[]): string {
     else runs.push([p, p]);
   }
   const parts = runs.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`));
-  const single = pages.length === 1;
-  return `${single ? "Page" : "Pages"} ${parts.join(", ")} ${single ? "is a scan" : "are scans"}. Scanned contracts can't be read yet, because bank details on them can't be hidden.`;
+  return `${pages.length === 1 ? "Page" : "Pages"} ${parts.join(", ")}`;
 }
 
 export function fileSize(bytes: number): string {

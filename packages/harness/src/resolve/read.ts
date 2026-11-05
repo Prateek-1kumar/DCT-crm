@@ -1,7 +1,7 @@
 import { applyPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
 import { z } from "zod";
-import { IMAGE_PAGE_REASON, checks } from "../checks";
-import type { Part } from "../models/reader";
+import { OCR_PAGE_REASON, checks } from "../checks";
+import type { Part, Reader } from "../models/reader";
 import { pdfReader } from "../pdf";
 import type { CheckReport } from "../types";
 import { call, setQuestion, type Run } from "./run";
@@ -40,38 +40,45 @@ interface Job {
   settle(run: Run, reads: Pair[] | null): void;
 }
 
-const same = (a: Cell, b: Cell) => (typeof a === "string" && typeof b === "string" ? a.toLowerCase() === b.toLowerCase() : a === b);
+export const same = (a: Cell, b: Cell) => (typeof a === "string" && typeof b === "string" ? a.toLowerCase() === b.toLowerCase() : a === b);
 const agreed = (item: Item, [a, b]: Pair): Cell => {
   const [x, y] = [item.read(a), item.read(b)];
   return x !== null && y !== null && same(x, y) ? x : null;
 };
 const where = (j: Pick<Job, "doc" | "pages">) => `p.${j.pages.join(",")} (${j.doc})`;
 
-const readCell = (a: string | null): Cell => {
+export const readCell = (a: string | null): Cell => {
   const text = a?.trim();
   return text ? (parseCents(text) ?? text) : null;
 };
 const readAmount = (a: string | null): Cell => (a === null ? null : parseCents(a));
 
-function describe(item: Item, n: number): string {
+export const termLabel = (t: Term) => `the amount for '${t.name}'`;
+export const cellLabel = (g: Grid, row: number, col: number) => `row '${g.rows[row]!.name}' at visit '${g.visits[col] ?? `#${col + 1}`}'`;
+
+function describe(item: Pick<Item, "label" | "options">, n: number): string {
   const options = item.options?.map((o, i) => `   ${i}) ${o}`) ?? [];
   return [`${n}. ${item.label}`, ...options].join("\n");
 }
 
+/** One answer per item from each reader, who all look at the same images. */
+export async function askPages(run: Run, readers: Reader[], job: Pick<Job, "doc" | "pages" | "region">, items: Pick<Item, "label" | "options">[]): Promise<(string | null)[][]> {
+  const doc = run.docs.find((d) => d.name === job.doc);
+  if (!doc) throw new Error(`${job.doc} isn't in this bundle`);
+  const images = await Promise.all(job.pages.map((p) => pdfReader.render(doc, p, { region: job.region, dpi: DPI })));
+  const parts: Part[] = [
+    ...images.flatMap<Part>((png, i) => [{ type: "text", text: `Page ${job.pages[i]} of ${job.doc}:` }, { type: "image", png }]),
+    { type: "text", text: items.map((item, n) => describe(item, n)).join("\n") },
+  ];
+  const ask = { name: "read_values", system: SYSTEM, parts, schema: Reads };
+  const replies = await Promise.all(readers.map((r) => call(run, r, ask)));
+  return replies.map((r) => items.map((_, i) => r.answers.find((x) => x.item === i)?.answer ?? null));
+}
+
 async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, items: Item[]): Promise<Pair[] | null> {
   try {
-    const doc = run.docs.find((d) => d.name === job.doc);
-    if (!doc) throw new Error(`${job.doc} isn't in this bundle`);
-    const images = await Promise.all(job.pages.map((p) => pdfReader.render(doc, p, { region: job.region, dpi: DPI })));
-    const parts: Part[] = [
-      ...images.flatMap<Part>((png, i) => [{ type: "text", text: `Page ${job.pages[i]} of ${job.doc}:` }, { type: "image", png }]),
-      { type: "text", text: items.map(describe).join("\n") },
-    ];
-    const ask = { name: "read_values", system: SYSTEM, parts, schema: Reads };
-    const [a, b] = await Promise.all([call(run, run.claude, ask), call(run, run.openai, ask)]);
-    const byItem = (r: z.infer<typeof Reads>) => items.map((_, i) => r.answers.find((x) => x.item === i)?.answer ?? null);
-    const [ra, rb] = [byItem(a), byItem(b)];
-    return ra.map((x, i): Pair => [x, rb[i]!]);
+    const [a, b] = await askPages(run, [run.claude, run.openai], job, items);
+    return a!.map((x, i): Pair => [x, b![i]!]);
   } catch (err) {
     run.log.push(`${where(job)}: left for a person (${err instanceof Error ? err.message : "it could not be read"})`);
     return null;
@@ -82,6 +89,8 @@ function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "contex
   const question: Question = {
     kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
   };
+  const region = run.crops.get(q.id);
+  if (region) question.source = { ...question.source, region };
   run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), question] };
 }
 
@@ -90,8 +99,11 @@ const readings = (run: Run, say: (m: 0 | 1) => string) => [
   { model: run.openai.model, answer: say(1) },
 ];
 
-/** The patches settle a value; this adds what proves it: a term's evidence, a grid's cells read twice. */
-function proven(rulebook: Rulebook, patches: Patch[]): Patch[] {
+/**
+ * The patches settle a value; this adds what proves it: a term's evidence, and for a grid the cell in cellsReadTwice. That
+ * list serves whatever read the cell, because the grid check only needs to know it no longer rests on the model's word alone.
+ */
+export function proven(rulebook: Rulebook, patches: Patch[], evidence: "two_reads" | "ocr_match" = "two_reads"): Patch[] {
   const cells = new Map<string, [number, number][]>();
   const terms = new Set<string>();
   for (const p of patches) {
@@ -106,7 +118,7 @@ function proven(rulebook: Rulebook, patches: Patch[]): Patch[] {
   }
   return [
     ...patches,
-    ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence: "two_reads" } })),
+    ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence } })),
     ...[...cells].map(([id, set]): Patch => ({ target: "grid", id, set: { cellsReadTwice: set } })),
   ];
 }
@@ -215,7 +227,7 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
 function termsJob(terms: Term[]): Job {
   const { doc, page } = terms[0]!.source;
   const items = terms.map((t): ValueItem => ({
-    id: t.id, label: `the amount for '${t.name}'`, current: t.amountCents, read: readAmount, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
+    id: t.id, label: termLabel(t), current: t.amountCents, read: readAmount, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
   }));
   const one = terms.length === 1 ? terms[0]! : null;
   return valuesJob(
@@ -237,7 +249,7 @@ function gridJob(g: Grid): Job {
     if (typeof current !== "number") return;
     items.push({ id: `read:${g.id}:${path}`, label, current, read: readCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }) });
   };
-  g.rows.forEach((r, i) => r.cells.forEach((c, j) => add(`row '${r.name}' at visit '${visit(j)}'`, `rows.${i}.cells.${j}`, c)));
+  g.rows.forEach((r, i) => r.cells.forEach((c, j) => add(cellLabel(g, i, j), `rows.${i}.cells.${j}`, c)));
   for (const line of ["subtotal", "overhead", "total"] as const) g[line]?.forEach((c, j) => add(`the ${line} line at visit '${visit(j)}'`, `${line}.${j}`, c));
   add("the grand total", "grandTotalCents", g.grandTotalCents);
   const source = { doc: g.doc, page: g.pages[0]!, quote: "" };
@@ -246,7 +258,7 @@ function gridJob(g: Grid): Job {
 
 export function readJobs(rulebook: Rulebook, report: CheckReport): Job[] {
   const onPage = new Map<string, Term[]>();
-  for (const t of rulebook.terms.filter((x) => report.quotes[x.id] === IMAGE_PAGE_REASON)) {
+  for (const t of rulebook.terms.filter((x) => report.quotes[x.id] === OCR_PAGE_REASON)) {
     const key = `${t.source.doc}\u0000${t.source.page}`;
     onPage.set(key, [...(onPage.get(key) ?? []), t]);
   }

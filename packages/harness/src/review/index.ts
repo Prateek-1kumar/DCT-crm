@@ -20,7 +20,10 @@ async function pagesOf(doc: LoadedDoc): Promise<Part[]> {
   for (const page of doc.pages) {
     const label = `=== ${doc.name} p${page.page} ===`;
     if (page.kind === "text") parts.push({ type: "text", text: `${label}\n${page.layout}` });
-    else parts.push({ type: "text", text: `${label} (scan, shown as an image)` }, { type: "image", png: await pdfReader.render(doc, page.page) });
+    else {
+      const heading = page.kind === "ocr" ? `${label} (OCR, scanned: the image is the page; the text below was read by OCR and may contain misreads)\n${page.layout}` : `${label} (scan, shown as an image)`;
+      parts.push({ type: "text", text: heading }, { type: "image", png: await pdfReader.render(doc, page.page) });
+    }
   }
   return parts;
 }

@@ -56,6 +56,7 @@ async function runRead({ db, log, models }: Ctx, readId: string) {
   try {
     const [version] = await db.select({ studyId: versions.studyId, documentIds: versions.documentIds }).from(versions).where(eq(versions.id, row.versionId));
     const docs = await loadDocs(db, version!.documentIds);
+    if (docs.some((d) => d.pages.some((p) => p.kind === "image"))) throw new HttpError(409, "Some pages are still being prepared (OCR), so nothing was sent to any model. Start the read again when they're done.");
     const result = await read(docs, { ...models(), maxUsd: row.budgetUsd, onProgress: say });
     await appended;
 

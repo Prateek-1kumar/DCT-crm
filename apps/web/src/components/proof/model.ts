@@ -64,7 +64,7 @@ export const STATUS: Record<AmountStatus, { tone: Tone; chip: string; proof: str
   missing: { tone: "danger", chip: "missing", proof: "Missing" },
 };
 
-export const EVIDENCE_TONE: Record<Evidence, Tone> = { math: "ok", quote: "ok", two_reads: "ok", house_rule: "accent", person: "info", none: "warn" };
+export const EVIDENCE_TONE: Record<Evidence, Tone> = { math: "ok", quote: "ok", ocr_match: "ok", two_reads: "ok", house_rule: "accent", person: "info", none: "warn" };
 
 export const GROUPS: { title: string; categories: TermCategory[] }[] = [
   { title: "Fees paid once", categories: ["site_fee"] },

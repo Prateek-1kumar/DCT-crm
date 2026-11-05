@@ -7,13 +7,15 @@ export interface Word {
   y0: number;
   x1: number;
   y1: number;
+  /** OCR's confidence in this word, 0–100; absent for words from a real text layer. */
+  confidence?: number;
 }
 
 /**
- * `text`: the page has a real text layer the checks can trust. `image`: a scan, or text drawn as vector outlines (very
- * few characters but many drawing operations), so only page images can be read (§5.1).
+ * `text`: a real text layer, exact. `ocr`: a scan (or text drawn as outlines) whose words came from OCR on this machine:
+ * positions are reliable, characters may be misread. `image`: a scan not OCR'd yet, so it has no words (§5.1).
  */
-export type PageKind = "text" | "image";
+export type PageKind = "text" | "ocr" | "image";
 
 export interface Page {
   page: number;
@@ -25,6 +27,22 @@ export interface Page {
   /** Bank-detail regions, painted over in every rendered image. */
   maskBoxes: Region[];
   firstLine: string;
+  /** Mean OCR word confidence, 0–100, for an `ocr` page; null otherwise. */
+  confidence: number | null;
+  /**
+   * Degrees clockwise a sideways or upside-down scan was turned to read; 0 otherwise. Words, masks and rendered images are
+   * all in the turned (readable) frame.
+   */
+  rotation: number;
+}
+
+/** What OCR found on one page: kept per file, so each scan is OCR'd once. */
+export interface OcrPage {
+  page: number;
+  words: Word[];
+  confidence: number;
+  /** Degrees clockwise the page was turned to read (a sideways or upside-down scan); `words` are in the turned frame. */
+  rotation: number;
 }
 
 export interface LoadedDoc {

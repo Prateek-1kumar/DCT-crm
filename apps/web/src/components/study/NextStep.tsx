@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { RefObject } from "react";
 import type { Study, VersionSummary } from "@/lib/types";
 import { Button, btnCls, Card } from "../ui";
+import { isPreparing } from "./format";
 import { ReadingPanel } from "./ReadingPanel";
 import { StartReading } from "./StartReading";
 
@@ -19,10 +20,12 @@ export function nextStep(study: Study): Step {
 
 export function NextStep({ study, pickFiles }: { study: Study; pickFiles: RefObject<HTMLInputElement | null> }) {
   const step = nextStep(study);
-  const scanned = study.documents.filter((d) => d.scannedPages.length > 0);
-  const canStart = scanned.length
-    ? { ok: false, reason: `${scanned.map((d) => d.name).join(", ")} has scanned pages that can't be read yet. Remove ${scanned.length === 1 ? "it" : "them"} to go on.` }
-    : { ok: true, reason: "" };
+  const failed = study.documents.filter((d) => d.ocr.status === "failed");
+  const canStart = study.documents.some(isPreparing)
+    ? { ok: false, reason: "Scanned pages are still being prepared. Reading can start when they're done." }
+    : failed.length
+      ? { ok: false, reason: `${failed.map((d) => d.name).join(", ")} couldn't be prepared. Upload ${failed.length === 1 ? "it" : "them"} again to try once more, or remove ${failed.length === 1 ? "it" : "them"} to go on.` }
+      : { ok: true, reason: "" };
 
   return (
     <Card className="p-6">

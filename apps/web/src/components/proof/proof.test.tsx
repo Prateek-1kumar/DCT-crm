@@ -157,6 +157,13 @@ describe("proof screen: contract tab", () => {
     expect(screen.getByText("Scanned page: amounts on it can't be checked")).toBeTruthy();
   });
 
+  it("says a page that was read with OCR is a scan, without warning about it", async () => {
+    const base = coverage();
+    setup({ ...base, pages: base.pages.map((p) => (p.documentId === "d2" ? { ...p, kind: "ocr" as const } : p)) });
+    expect(await screen.findByText("Scanned page, read with OCR")).toBeTruthy();
+    expect(screen.queryByText(/is scanned: amounts on it can't be checked/)).toBeNull();
+  });
+
   it("says nothing is missing when the count is zero", async () => {
     setup(coverage({ totals: { amounts: 5, captured: 3, decided: 1, setAside: 1, missing: 0 } }));
     expect(await screen.findByText(/Nothing missing/)).toBeTruthy();
