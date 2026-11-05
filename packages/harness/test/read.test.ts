@@ -44,26 +44,32 @@ const fake = (model: string, answers: Record<string, unknown>, usd: number): Rea
   },
 });
 
-it("reviews a saved rulebook, then settles the reviewer's question from the contract with a verified quote", async () => {
+const sfOptions = [
+  { label: "Paid in full", patches: [{ target: "term" as const, id: "sf", set: { formula: "full visit rate" } }] },
+  { label: "Pro-rated", patches: [{ target: "term" as const, id: "sf", set: { formula: "pro-rated" } }] },
+];
+
+it("reviews a saved rulebook, settles the reader's elsewhere question by a verified quote, and leaves the reviewer's for a person", async () => {
+  const elsewhere = {
+    id: "q1", kind: "elsewhere" as const, origin: "compile" as const, about: { target: "term" as const, id: "sf" }, question: "Are screen failures pro-rated?", context: "",
+    source: { doc: "CTA.pdf", page: 1, quote: "" }, options: sfOptions, suggestion: null, state: "open" as const, blocking: true, readings: [], resolution: null,
+  };
   const openai = fake("gpt", {
     review: {
       findings: [{
-        type: "judgment", kind: "elsewhere", about: { target: "term", id: "sf" }, question: "Are screen failures pro-rated?", context: "", doc: "CTA.pdf", page: 1,
-        quote: "", region: null, suggestion: null, newTerm: null,
-        options: [
-          { label: "Paid in full", changes: [{ target: "term", id: "sf", field: "formula", value: "full visit rate" }] },
-          { label: "Pro-rated", changes: [{ target: "term", id: "sf", field: "formula", value: "pro-rated" }] },
-        ],
+        type: "judgment", affects: "how_much", about: { target: "term", id: "sf" }, question: "Is a screen failure after Visit 1 paid in full?", context: "", doc: "CTA.pdf", page: 1,
+        quote: "", region: null, suggestion: null, newTerm: null, options: [{ label: "Yes", changes: [] }, { label: "No", changes: [] }],
       }],
     },
   }, 0.4);
   const claude = fake("claude", { find_answers: { answers: [{ question: 0, found: true, doc: "CTA.pdf", page: 1, quote: "paid at the full visit rate", option: 0 }] } }, 0.1);
 
-  const result = await read(docs, { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook });
+  const result = await read(docs, { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook: { ...rulebook, questions: [elsewhere] } });
 
   expect(result.usd).toBeCloseTo(0.5);
   expect(result.rulebook.terms[0]!.formula).toBe("full visit rate");
   expect(result.rulebook.questions).toMatchObject([
-    { id: "review:0", origin: "reviewer", state: "auto_resolved", resolution: { by: "citation", citation: { doc: "CTA.pdf", page: 1 } } },
+    { id: "q1", state: "auto_resolved", resolution: { by: "citation", citation: { doc: "CTA.pdf", page: 1 } } },
+    { id: "review:0", origin: "reviewer", kind: "decision", state: "open", blocking: true },
   ]);
 });

@@ -139,6 +139,8 @@ export const Question = z.object({
   options: z.array(z.object({ label: text, patches: z.array(Patch) })),
   suggestion: z.object({ option: z.number().int().nonnegative(), reason: z.string() }).nullable(),
   state: z.enum(["open", "auto_resolved", "answered"]),
+  /** False for a reviewer's lower-stakes finding: shown as worth a look, but approval doesn't wait for it. */
+  blocking: z.boolean(),
   /** What each model read independently, for a `reading` question; a person sees these when the reads disagree. */
   readings: z.array(z.object({ model: text, answer: z.string() })),
   resolution: z.object({ by: z.enum(["two_reads", "citation"]), patches: z.array(Patch), citation: Source.nullable() }).nullable(),

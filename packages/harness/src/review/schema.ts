@@ -23,7 +23,8 @@ export type NewTerm = z.infer<typeof NewTerm>;
 
 const Finding = z.object({
   type: z.enum(["judgment", "inconsistency", "contradiction", "missed_rule"]),
-  kind: z.enum(["elsewhere", "decision"]),
+  /** What the answer changes for the site; "none" findings are dropped. */
+  affects: z.enum(["how_much", "how_billed", "when_paid", "none"]),
   about: z.object({ target: z.enum(["term", "grid", "study", "none"]), id: text.nullable() }),
   question: text,
   context: text,

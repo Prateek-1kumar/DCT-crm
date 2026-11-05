@@ -82,7 +82,7 @@ async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, i
 
 function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>) {
   const question: Question = {
-    kind: "reading", origin: "check", suggestion: null, state: "open", resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
+    kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
   };
   run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), question] };
 }

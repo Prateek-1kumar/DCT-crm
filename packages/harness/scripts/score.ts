@@ -61,7 +61,7 @@ missing.forEach((t) => console.log(`  ${t.name}: ${t.amountCents}`));
 console.log(`rulebook amounts not in the key, to review (${unknownAmounts.length}):`);
 unknownAmounts.forEach((t) => console.log(`  ${t.id} ${t.name}: ${t.amountCents} (p.${t.source.page})`));
 console.log(`questions raised (${rb.questions.length}):`);
-rb.questions.forEach((q) => console.log(`  [${q.origin}/${q.kind}/${q.state}] ${q.question}${q.resolution ? ` → settled by ${q.resolution.by}` : ""}`));
+rb.questions.forEach((q) => console.log(`  [${q.origin}/${q.kind}/${q.state}${q.blocking ? "" : "/worth a look"}] ${q.question}${q.resolution ? ` → settled by ${q.resolution.by}` : ""}`));
 console.log(`expected decisions (${key.decisions.length}):`);
 key.decisions.forEach((d) => console.log(`  ${d.id}: ${d.question}`));
 if (key.missedRules.length) console.log(`rules the spike missed, look for them in terms: ${key.missedRules.join("; ")}`);

@@ -86,5 +86,5 @@ export function normalizeQuestion(raw: unknown): Parsed<Question> {
     const { patch, ...rest } = o;
     return { patches: patch ? [patch] : [], ...rest };
   }, []);
-  return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open", readings: [], resolution: null }, []);
+  return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open", blocking: true, readings: [], resolution: null }, []);
 }

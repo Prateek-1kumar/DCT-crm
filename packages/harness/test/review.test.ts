@@ -35,7 +35,7 @@ const rulebook = (over: Partial<Rulebook> = {}): Rulebook => ({
 });
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
-  type: "judgment", kind: "decision", about: { target: "term", id: "t1" }, question: "Is a screen failure paid in full?", context: "The contract says nothing about pro-rating.",
+  type: "judgment", affects: "how_much", about: { target: "term", id: "t1" }, question: "Is a screen failure paid in full?", context: "The contract says nothing about pro-rating.",
   doc: "CTA.pdf", page: 1, quote: "Screen failure", region: null, options: [], suggestion: null, newTerm: null, ...over,
 });
 
@@ -119,13 +119,19 @@ describe("review budget and errors", () => {
 
 describe("finding to question", () => {
   it("maps a finding and drops one on a page that does not exist", async () => {
-    const qs = await run([finding({ page: 9 }), finding({ kind: "elsewhere", region: [0.1, 0.2, 0.5, 0.4] })]);
+    const qs = await run([finding({ page: 9 }), finding({ region: [0.1, 0.2, 0.5, 0.4] })]);
     expect(qs).toHaveLength(1);
     expect(qs[0]).toMatchObject({
-      id: "review:1", kind: "elsewhere", origin: "reviewer", state: "open", readings: [], resolution: null,
+      id: "review:1", kind: "decision", origin: "reviewer", state: "open", blocking: true, readings: [], resolution: null,
       about: { target: "term", id: "t1" }, source: { doc: "CTA.pdf", page: 1, quote: "Screen failure", region: [0.1, 0.2, 0.5, 0.4] },
     });
     expect((await run([finding({ doc: "Nope.pdf" })]))).toEqual([]);
+  });
+
+  it("drops findings that change no money, and lets only the first six hold up approval", async () => {
+    const qs = await run([finding({ affects: "none" }), ...Array.from({ length: 8 }, () => finding({ affects: "when_paid" }))]);
+    expect(qs).toHaveLength(8);
+    expect(qs.map((q) => q.blocking)).toEqual([true, true, true, true, true, true, false, false]);
   });
 
   it("clears an about that is not in the rulebook, and a quote that is not on the page", async () => {

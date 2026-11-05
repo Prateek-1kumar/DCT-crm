@@ -82,9 +82,13 @@ function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { o
   return { options, option: kept.indexOf(f.suggestion?.option ?? -1) };
 }
 
+// The reviewer lists findings by money at stake; beyond these, a finding is shown but doesn't hold up approval.
+const MAX_BLOCKING = 6;
+
 export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: LoadedDoc[]): Question[] {
+  let blocking = 0;
   return findings.flatMap((f, n): Question[] => {
-    if (!docs.find((d) => d.name === f.doc)?.pages.some((p) => p.page === f.page)) return [];
+    if (f.affects === "none" || !docs.find((d) => d.name === f.doc)?.pages.some((p) => p.page === f.page)) return [];
     const region = validRegion(f.region);
     const source: Source = { doc: f.doc, page: f.page, quote: f.quote, ...(region && { region }) };
     if (checkQuote(source, docs)) source.quote = "";
@@ -92,7 +96,8 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
     return [
       {
         id: `review:${n}`,
-        kind: f.kind,
+        // A model's judgment call is never settled by a model citing the clause it found unclear.
+        kind: "decision",
         origin: "reviewer",
         about: exists(f.about, rulebook) ? { target: f.about.target as "term" | "grid" | "study", id: f.about.id! } : null,
         question: f.question,
@@ -101,6 +106,7 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
         options,
         suggestion: f.suggestion && options[option] ? { option, reason: f.suggestion.reason } : null,
         state: "open",
+        blocking: blocking++ < MAX_BLOCKING,
         readings: [],
         resolution: null,
       },

@@ -17,7 +17,7 @@ function summarise(docs: LoadedDoc[], r: ReadResult) {
   const gridResults = Object.values(r.report.grids);
   const questions: Record<string, number> = {};
   for (const q of r.rulebook.questions) questions[`${q.origin} ${q.state}`] = (questions[`${q.origin} ${q.state}`] ?? 0) + 1;
-  const open = r.rulebook.questions.filter((q) => q.state === "open").length;
+  const open = r.rulebook.questions.filter((q) => q.state === "open");
   return {
     docs: docs.map((d) => d.name),
     usd: Math.round(r.usd * 100) / 100,
@@ -29,7 +29,8 @@ function summarise(docs: LoadedDoc[], r: ReadResult) {
     quotesNotFound: Object.keys(r.report.quotes).length,
     unaccounted: r.report.unaccounted.length,
     questions,
-    totalForAccountant: open + r.report.problems.length,
+    mustAnswer: open.filter((q) => q.blocking).length + r.report.problems.length,
+    worthALook: open.filter((q) => !q.blocking).length,
   };
 }
 
@@ -43,7 +44,7 @@ async function earlier(dir: string): Promise<Rulebook> {
     grids: raw.grids.map((g) => ({ cellsReadTwice: [], ...g })),
     questions: raw.questions
       .filter((q) => q.origin !== "rule")
-      .map((q) => ({ readings: [], resolution: null, ...q, options: q.options.map(({ patch, ...o }) => ({ patches: patch ? [patch] : [], ...o })) })),
+      .map((q) => ({ readings: [], resolution: null, blocking: true, ...q, options: q.options.map(({ patch, ...o }) => ({ patches: patch ? [patch] : [], ...o })) })),
   });
 }
 

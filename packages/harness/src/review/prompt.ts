@@ -14,10 +14,10 @@ Go through it systematically:
 
 Each finding has a type: judgment (1, 3, 4), inconsistency (2), contradiction (5) or missed_rule (6).
 
-List every finding that would change what the site bills, how much, or when. Skip everything that does not: confidentiality, indemnity, insurance, publication and conduct rules are not findings unless they move money to or from the site. Never ask to confirm a value the checks prove (evidence "math" or "two_reads", and every grid cell). Never repeat an existing question. How a term is billed, whether the holdback reaches it, and how overhead relates to it are asked automatically when the rulebook says "unknown" or "unclear": do not raise those again.
+Only findings whose answer changes how much the site is paid, how it bills, or when it is paid. Confidentiality, indemnity, insurance, subject injury, publication, conduct, enrollment and supply rules are not findings unless they move money to or from the site. One finding per topic: when several items share the same question, ask it once and name them all. List findings with the most money at stake first; the accountant must answer the first few before approving, and sees the rest as worth a look. Never ask to confirm a value the checks prove (evidence "math" or "two_reads", and every grid cell). Never repeat an existing question. How a term is billed, whether the holdback reaches it, and how overhead relates to it are asked automatically when the rulebook says "unknown" or "unclear": do not raise those again.
 
 For each finding:
-- kind: elsewhere (the answer may be in another clause or document of the bundle) or decision (the bundle does not settle it, so a person must).
+- affects: how_much, how_billed or when_paid; none if the answer changes none of these (such a finding is dropped, so leave it out).
 - about: the term or grid it concerns, with its id from the rulebook; "study" with a document name; "none" when it concerns none of these.
 - question: plain English for an accountant, no ids or codes. context: what the contract says and what it leaves out.
 - doc, page, quote: where, with the quote copied exactly from the page. region: [x0, y0, x1, y1] as fractions 0 to 1 of the page from its top left, or null.

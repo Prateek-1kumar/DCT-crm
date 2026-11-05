@@ -57,7 +57,7 @@ const grid = (examV2: number): Grid => ({
 
 const question = (over: Partial<Question>): Question => ({
   id: "q1", kind: "reading", origin: "compile", about: null, question: "Which is it?", context: "The rulebook says $500.00.",
-  source: { doc: "Budget.pdf", page: 2, quote: "" }, options: [], suggestion: null, state: "open", readings: [], resolution: null, ...over,
+  source: { doc: "Budget.pdf", page: 2, quote: "" }, options: [], suggestion: null, state: "open", blocking: true, readings: [], resolution: null, ...over,
 });
 
 const rulebook = (over: Partial<Rulebook> = {}): Rulebook => ({
