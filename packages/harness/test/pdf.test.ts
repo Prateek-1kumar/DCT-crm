@@ -232,15 +232,27 @@ describe("footnote markers", () => {
     expect(raw).toBe("ARTICLE 5 Fees\nAmounts are in US dollars\nFee $500 per visit");
   });
 
-  it("masks an account number after a marker without masking the marker", async () => {
+  it("masks a marker after a bank label along with the number: hiding too much is safe", async () => {
     const path = await pdfFile("acct.pdf", (page, font) => {
       page.drawText("Account Number", { x: 50, y: 700, size: 10, font });
       page.drawText("1", { x: 50 + font.widthOfTextAtSize("Account Number", 10), y: 704, size: 6, font });
       page.drawText("123456789", { x: 50 + font.widthOfTextAtSize("Account Number", 10) + 10, y: 700, size: 10, font });
     });
     const page = (await pdfReader.load(path)).pages[0]!;
-    expect(page.raw).toBe("Account Number [1] #########");
-    expect(page.maskBoxes).toHaveLength(1);
+    expect(page.raw).toBe("Account Number [#] #########");
+  });
+
+  it("masks an account number printed as small raised groups, which read as footnote marks", async () => {
+    const path = await pdfFile("groups.pdf", (page, font) => {
+      page.drawText("Account Number:", { x: 50, y: 700, size: 10, font });
+      let x = 50 + font.widthOfTextAtSize("Account Number:", 10);
+      for (const group of ["900", "765", "432"]) {
+        page.drawText(group, { x, y: 704, size: 6, font });
+        x += font.widthOfTextAtSize(group, 6);
+      }
+    });
+    const page = (await pdfReader.load(path)).pages[0]!;
+    expect(page.raw).not.toMatch(/9|7|4/);
   });
 });
 

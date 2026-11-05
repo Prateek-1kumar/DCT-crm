@@ -61,7 +61,8 @@ async function runRead({ db, log, models }: Ctx, readId: string) {
     const trace = { compile: result.compiled?.trace ?? null, log: result.log };
     const stopped = result.compiled && !COMPILED.has(result.compiled.stopReason) ? result.compiled : undefined;
     if (stopped) {
-      if (stopped.error) log.warn({ reason: stopped.error }, "model call failed during a read");
+      // the reason only: a provider's error text can echo what was sent; the detail stays in the read's trace
+      log.warn({ reason: stopped.stopReason }, "a read stopped early");
       await markFailed(db, ref, whyStopped(stopped.stopReason, row.budgetUsd), { spentUsd: result.usd, trace });
       return;
     }

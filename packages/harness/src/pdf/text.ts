@@ -18,7 +18,6 @@ interface Pt {
   y: number;
 }
 
-export const FOOTNOTE = /^\[[^\]\s]+\]$/;
 
 // A scale-1 viewport transform already applies page rotation.
 export function extractWords(content: TextContent, viewportTransform: number[], width: number, height: number): Word[] {
