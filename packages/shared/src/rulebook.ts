@@ -86,6 +86,8 @@ export const Grid = z.object({
   additions: z.array(z.object({ name: text, cells: z.array(Cell) })),
   total: z.array(Cell).nullable(),
   grandTotalCents: cents.nullable(),
+  /** [row, visit] cells settled by two independent reads, for grids with no printed total to prove them. */
+  cellsReadTwice: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
 });
 export type Grid = z.infer<typeof Grid>;
 
@@ -119,6 +121,7 @@ export const Study = z.object({
 });
 export type Study = z.infer<typeof Study>;
 
+/** `set` keys are term fields, or dotted paths into a grid ("rows.3.cells.5", "total.2", "grandTotalCents"). */
 export const Patch = z.object({ target: z.enum(["term", "grid"]), id: text, set: z.record(z.string(), z.unknown()) });
 export type Patch = z.infer<typeof Patch>;
 
@@ -136,6 +139,9 @@ export const Question = z.object({
   options: z.array(z.object({ label: text, patches: z.array(Patch) })),
   suggestion: z.object({ option: z.number().int().nonnegative(), reason: z.string() }).nullable(),
   state: z.enum(["open", "auto_resolved", "answered"]),
+  /** What each model read independently, for a `reading` question; a person sees these when the reads disagree. */
+  readings: z.array(z.object({ model: text, answer: z.string() })),
+  resolution: z.object({ by: z.enum(["two_reads", "citation"]), patches: z.array(Patch), citation: Source.nullable() }).nullable(),
 });
 export type Question = z.infer<typeof Question>;
 

@@ -6,7 +6,7 @@ import { requiredDecisions } from "./required";
 import { unaccounted } from "./unaccounted";
 import { usd } from "./text";
 
-const IMAGE_PAGE_REASON = "image page: this amount needs the contract's arithmetic or two independent reads";
+export const IMAGE_PAGE_REASON = "image page: this amount needs the contract's arithmetic or two independent reads";
 
 function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   const problems: Problem[] = [];

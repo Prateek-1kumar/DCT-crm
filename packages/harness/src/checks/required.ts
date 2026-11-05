@@ -30,6 +30,8 @@ function grouped(
     ],
     suggestion: null,
     state: "open",
+    readings: [],
+    resolution: null,
   };
 }
 
@@ -89,6 +91,8 @@ export function requiredDecisions(rulebook: Rulebook): Question[] {
       ],
       suggestion: null,
       state: "open",
+      readings: [],
+      resolution: null,
     });
   }
   return out;

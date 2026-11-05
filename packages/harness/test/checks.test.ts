@@ -11,7 +11,7 @@ const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${
 
 const grid = (over: Partial<Grid>): Grid => ({
   id: "g1", name: "Budget", arm: null, doc: "A.pdf", pages: [1], visits: ["V1", "V2"], overheadPct: null,
-  rows: [], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, ...over,
+  rows: [], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], ...over,
 });
 
 const term = (over: Partial<Term>): Term => ({

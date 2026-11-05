@@ -67,7 +67,7 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
   const pct = typeof raw.overheadPct === "string" ? parsePercent(raw.overheadPct) : (raw.overheadPct ?? null);
   if (pct === null && raw.overheadPct != null) issues.push(`overheadPct: "${String(raw.overheadPct)}" is not a percentage`);
   const grid = {
-    arm: null, ...raw, overheadPct: pct, rows, subtotal: line("subtotal"), overhead: line("overhead"), total: line("total"), additions,
+    arm: null, ...raw, cellsReadTwice: [], overheadPct: pct, rows, subtotal: line("subtotal"), overhead: line("overhead"), total: line("total"), additions,
     grandTotalCents: cents(raw.grandTotal, "grandTotal", issues),
   };
   return parse(Grid, grid, issues);
@@ -86,5 +86,5 @@ export function normalizeQuestion(raw: unknown): Parsed<Question> {
     const { patch, ...rest } = o;
     return { patches: patch ? [patch] : [], ...rest };
   }, []);
-  return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open" }, []);
+  return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open", readings: [], resolution: null }, []);
 }

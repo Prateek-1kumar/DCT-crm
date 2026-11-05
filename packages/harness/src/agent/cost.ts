@@ -1,4 +1,4 @@
-interface Price {
+export interface Price {
   input: number;
   output: number;
   cacheWrite: number;
@@ -26,3 +26,11 @@ export function priceFor(model: string): Price {
 
 export const usdFor = (p: Price, u: Usage) =>
   (u.inputTokens * p.input + u.outputTokens * p.output + u.cacheWriteTokens * p.cacheWrite + u.cacheReadTokens * p.cacheRead) / 1e6;
+
+export function openaiPrice(spec: string | undefined): Price {
+  const [input, output, ...rest] = (spec ?? "").split(",").map((n) => Number(n.trim()));
+  if (input === undefined || output === undefined || rest.length || !(input > 0) || !(output > 0)) {
+    throw new Error('The OpenAI price is missing or unreadable, so its spend can\'t be counted. Set OPENAI_PRICE_PER_MTOK to "input,output" in US dollars per million tokens, for example "5,30".');
+  }
+  return { input, output, cacheWrite: 0, cacheRead: 0 };
+}

@@ -96,6 +96,9 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
     problems.push("nothing printed proves these cells: capture the printed subtotal/total rows.");
   }
 
+  grid.cellsReadTwice.forEach(([row, col]) => {
+    if (covered[row]?.[col] !== undefined) covered[row]![col] = true;
+  });
   const printed = printedAmounts(grid, docs);
   const unproven = numericCells(grid).filter(({ row, col }) => !covered[row]![col]! && !printed.has(Math.abs(num(grid.rows[row]!.cells[col])!)));
   return { problems, unproven };

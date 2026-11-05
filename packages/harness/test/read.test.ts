@@ -1,0 +1,69 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Rulebook } from "@dct/shared";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import { afterAll, beforeAll, expect, it } from "vitest";
+import type { ModelClient } from "../src/agent/client";
+import type { Ask, Reader } from "../src/models";
+import { pdfReader } from "../src/pdf";
+import { read } from "../src/read";
+import type { LoadedDoc } from "../src/types";
+
+const CLAUSE = "Screen failures are paid at the full visit rate of $500.00 per subject.";
+const FILLER = "This page carries ordinary contract wording so that it has a real text layer and is not mistaken for a scan.";
+
+let dir: string;
+let docs: LoadedDoc[];
+
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "harness-read-"));
+  const file = await PDFDocument.create();
+  const font = await file.embedFont(StandardFonts.Helvetica);
+  const page = file.addPage([612, 792]);
+  [CLAUSE, FILLER, FILLER].forEach((line, i) => page.drawText(line, { x: 40, y: 740 - i * 16, size: 9, font }));
+  await writeFile(join(dir, "CTA.pdf"), await file.save());
+  docs = [await pdfReader.load(join(dir, "CTA.pdf"))];
+});
+afterAll(() => rm(dir, { recursive: true, force: true }));
+
+const rulebook: Rulebook = {
+  study: { protocol: "P", sponsor: "S", payer: null, siteEntity: "E", siteNumber: null, pi: null, effectiveDate: null, documents: [] },
+  terms: [{
+    id: "sf", category: "screen_failure", name: "Screen failure", amountCents: 50000, unit: "per subject", billing: "invoice", trigger: null, cap: null,
+    formula: null, conditions: null, holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null,
+    source: { doc: "CTA.pdf", page: 1, quote: "Screen failures are paid at the full visit rate" }, evidence: "quote", houseRuleIds: [], notes: null,
+  }],
+  grids: [], accounted: [], questions: [],
+};
+
+const fake = (model: string, answers: Record<string, unknown>, usd: number): Reader => ({
+  model,
+  async ask<T>(req: Ask<T>) {
+    return { value: answers[req.name] as T, model, usd };
+  },
+});
+
+it("reviews a saved rulebook, then settles the reviewer's question from the contract with a verified quote", async () => {
+  const openai = fake("gpt", {
+    review: {
+      findings: [{
+        type: "judgment", kind: "elsewhere", about: { target: "term", id: "sf" }, question: "Are screen failures pro-rated?", context: "", doc: "CTA.pdf", page: 1,
+        quote: "", region: null, suggestion: null, newTerm: null,
+        options: [
+          { label: "Paid in full", changes: [{ target: "term", id: "sf", field: "formula", value: "full visit rate" }] },
+          { label: "Pro-rated", changes: [{ target: "term", id: "sf", field: "formula", value: "pro-rated" }] },
+        ],
+      }],
+    },
+  }, 0.4);
+  const claude = fake("claude", { find_answers: { answers: [{ question: 0, found: true, doc: "CTA.pdf", page: 1, quote: "paid at the full visit rate", option: 0 }] } }, 0.1);
+
+  const result = await read(docs, { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook });
+
+  expect(result.usd).toBeCloseTo(0.5);
+  expect(result.rulebook.terms[0]!.formula).toBe("full visit rate");
+  expect(result.rulebook.questions).toMatchObject([
+    { id: "review:0", origin: "reviewer", state: "auto_resolved", resolution: { by: "citation", citation: { doc: "CTA.pdf", page: 1 } } },
+  ]);
+});
