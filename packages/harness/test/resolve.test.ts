@@ -293,6 +293,16 @@ describe("scanned pages: one closer look by the vision reader", () => {
       expect(texts(exam!)).toContain("column headings");
     });
 
+    it("a grid cell whose visit headings can't be found is shown from the top of the page, so the headings are still in the picture", async () => {
+      const r = readers({ fail: true }, { read: truthful });
+      await resolveOn(scanned({}, low.replace("Visit  V1  V2\n", "")), r, rulebook({ grids: [openGrid()] }));
+
+      const [exam] = r.openai.calls;
+      expect(imagesOf(exam!)).toHaveLength(1);
+      expect(imagesOf(exam!)[0]!.height).toBeGreaterThan(2000);
+      expect(texts(exam!)).not.toContain("column headings");
+    });
+
     it("the closer read of a whole scanned grid sends the page and its strips, as the transcription saw it", async () => {
       const r = readers({ fail: true }, { read: truthful });
       await resolveOn(scanned(), r, rulebook({ grids: [grid(20500)] }));
@@ -342,6 +352,21 @@ describe("scanned pages: one closer look by the vision reader", () => {
     ]);
   });
 
+  it("a handwritten cell in a passing scanned grid whose row can't be found is still asked, and an unmarked one is not", async () => {
+    const lost = grid(25000);
+    const b = rulebook({ grids: [{ ...lost, rows: lost.rows.map((row, i) => (i === 0 ? { ...row, name: "Phlebotomy" } : row)) }] });
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned({ 2: "handwritten" }), r, b);
+
+    expect(r.openai.calls).toHaveLength(0);
+    const q = question1(out.rulebook, "person:g1");
+    expect(q.context).toContain("row 'Phlebotomy' at visit 'V1': $100.00 (could not be found on the page)");
+    expect(q.context).not.toContain("Labs");
+
+    const clean = await resolveOn(scanned(), readers({ fail: true }, { read: truthful }), b);
+    expect(clean.rulebook.questions).toEqual([]);
+  });
+
   it("a failing scanned grid with a marked cell also asks whether to use the print as it is, without a closer read", async () => {
     const r = readers({ fail: true }, { read: truthful });
     const out = await resolveOn(scanned({ 2: "handwritten" }), r, rulebook({ grids: [grid(20500)] }));
@@ -350,6 +375,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
     const q = question1(out.rulebook, "read:g1");
     expect(q).toMatchObject({ kind: "decision", blocking: true, question: "The figures of 'Budget' don't add up. Use them as printed?" });
     expect(q.context).toContain("rows add up to");
+    expect(q.context).toContain("The figures shown are as first read from the image, and none were checked closely because some of them are marked");
     expect(q.options).toEqual([
       { label: "Use them as printed", patches: [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }] },
       { label: "Neither, I'll type the right value", patches: [] },

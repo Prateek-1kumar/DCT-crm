@@ -249,6 +249,22 @@ describe("a grid the agent writes", () => {
   });
 });
 
+describe("a question the agent writes", () => {
+  it("the compile agent can't write a question option that marks a grid accepted as printed or read twice", async () => {
+    const options = [
+      { label: "Use $250.00", patch: { target: "grid", id: "g1", set: { "rows.0.cells.1": 25000, acceptedAsPrinted: true, cellsReadTwice: [[0, 1]] } } },
+      { label: "Use $100.00", patches: [{ target: "term", id: "t1", set: { amountCents: 100, evidence: "person", id: "other" } }] },
+    ];
+    const asked = { id: "q1", kind: "decision", question: "Which one?", source: { doc: "A.pdf", page: 1, quote: "Exhibit A Budget" }, options };
+    const { result } = await run([textDoc(...BUDGET)], [reply([call("put_study", { study }), call("put_terms", { terms: [startup] }), call("put_grid", { grid }), call("put_questions", { questions: [asked] })]), reply([call("finish")])]);
+
+    expect(result.rulebook.questions[0]!.options.map((o) => o.patches)).toEqual([
+      [{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } }],
+      [{ target: "term", id: "t1", set: { amountCents: 100 } }],
+    ]);
+  });
+});
+
 describe("view_page", () => {
   let dir: string | undefined;
   afterAll(async () => {

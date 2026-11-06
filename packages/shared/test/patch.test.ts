@@ -35,6 +35,11 @@ describe("applyPatches", () => {
     expect(next.terms.map((t) => [t.id, t.name])).toEqual([["t1", "Startup fee"], ["t2", "Archive fee"]]);
   });
 
+  it("creates a term with no proof when the patch gives none", () => {
+    const { id: _id, evidence: _evidence, ...whole } = term;
+    expect(applyPatches(rulebook, [termPatch("t2", whole)]).terms[1]!.evidence).toBe("none");
+  });
+
   it("refuses to create a term from a partial patch, and says what is missing", () => {
     expect(() => applyPatches(rulebook, [termPatch("t2", { name: "Archive fee" })])).toThrow(/Term 't2' doesn't exist yet.*category/);
   });

@@ -25,7 +25,8 @@ const issues = (error: { issues: { path: PropertyKey[]; message: string }[] }) =
 function patchTerm(rulebook: Rulebook, { id, set }: Patch) {
   const term = rulebook.terms.find((t) => t.id === id);
   if (!term) {
-    const created = Term.safeParse({ ...set, id });
+    // a created term has no proof yet: a patch from an agent can't carry one
+    const created = Term.safeParse({ evidence: "none", ...set, id });
     if (!created.success) throw new Error(`Term '${id}' doesn't exist yet, so the change has to give all of its details (${issues(created.error)}).`);
     rulebook.terms.push(created.data);
     return;

@@ -86,7 +86,7 @@ export const Grid = z.object({
   additions: z.array(z.object({ name: text, cells: z.array(Cell) })),
   total: z.array(Cell).nullable(),
   grandTotalCents: cents.nullable(),
-  /** [row, visit] cells settled by two independent reads, for grids with no printed total to prove them. */
+  /** [row, visit] cells that no longer rest on the model's word alone: read twice, or decided by a person. */
   cellsReadTwice: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
   /** A person accepted the grid's figures as the contract prints them, though they don't add up. Only an answer sets it, never the agent. */
   acceptedAsPrinted: z.boolean().default(false),
@@ -126,6 +126,9 @@ export type Study = z.infer<typeof Study>;
 /** `set` keys are term fields, or dotted paths into a grid ("rows.3.cells.5", "total.2", "grandTotalCents"). */
 export const Patch = z.object({ target: z.enum(["term", "grid"]), id: text, set: z.record(z.string(), z.unknown()) });
 export type Patch = z.infer<typeof Patch>;
+
+/** What an agent's patch must never set: identity, and the proof only a check or a person earns. */
+export const LOCKED_FIELDS = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted"]);
 
 export const QuestionKind = z.enum(["reading", "elsewhere", "decision"]);
 export type QuestionKind = z.infer<typeof QuestionKind>;

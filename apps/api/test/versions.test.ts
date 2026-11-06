@@ -346,6 +346,55 @@ describe("answering a question about a scanned grid", () => {
   });
 });
 
+describe("answers that leave a scanned grid failing", () => {
+  const grid = (accepted: boolean) =>
+    ({
+      id: "g1", name: "Budget", arm: null, doc: "scan.pdf", pages: [1], visits: ["V1", "V2"], overheadPct: null,
+      rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 25000], printedRowTotalCents: null }],
+      subtotal: [10000, 20000], overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: accepted,
+    }) as Rulebook["grids"][number];
+  const source = { doc: "scan.pdf", page: 1, quote: "" };
+  const seedGrid = async (accepted: boolean, questions: Question[]) => {
+    const documentIds = [await scannedDoc()];
+    const rb = rulebook({ terms: [], grids: [grid(accepted)], questions });
+    return seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
+  };
+  const cellTo = (cents: number) => [{ target: "grid" as const, id: "g1", set: { "rows.0.cells.1": cents } }];
+
+  it("after answering a zoomed disagreement on a grid whose totals still fail, the person is asked to use them as printed, then can approve", async () => {
+    const zoomed = question("read:g1", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use the whole-page reading ($250.00)", patches: cellTo(25000) }, { label: "Use the zoomed reading ($260.00)", patches: cellTo(26000) }, { label: "Neither, I'll type the right value", patches: [] }] });
+    const { id } = await seedGrid(false, [zoomed]);
+
+    const res = (await answer(id, "read:g1", { option: 1, by: "Ana" })).json();
+    const asked = res.rulebook.questions.find((q: Question) => q.state === "open");
+    expect(asked).toMatchObject({ id: "read:g1:printed", kind: "decision", blocking: true, question: "The figures of 'Budget' don't add up. Use them as printed?" });
+    expect(asked.options[0]).toEqual({ label: "Use them as printed", patches: [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }] });
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(409);
+
+    expect((await answer(id, "read:g1:printed", { option: 0, by: "Ana" })).json().problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("changing a figure of a grid accepted as printed clears the acceptance and asks again", async () => {
+    const change = question("q-change", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $260.00", patches: cellTo(26000) }] });
+    const { id } = await seedGrid(true, [change]);
+    expect((await stored(id)).problems).toEqual([]);
+
+    const res = (await answer(id, "q-change", { option: 0, by: "Ana" })).json();
+    expect(res.rulebook.grids[0].acceptedAsPrinted).toBe(false);
+    expect(res.problems.length).toBeGreaterThan(0);
+    expect(res.rulebook.questions.filter((q: Question) => q.state === "open").map((q: Question) => q.id)).toEqual(["read:g1:printed"]);
+  });
+
+  it("asks only once while the question about the grid is still open", async () => {
+    const change = question("q-change", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $260.00", patches: cellTo(26000) }] });
+    const open = question("read:g1", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use them as printed", patches: [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }] }] });
+    const { id } = await seedGrid(false, [change, open]);
+    const res = (await answer(id, "q-change", { option: 0, by: "Ana" })).json();
+    expect(res.rulebook.questions.map((q: Question) => q.id)).toEqual(["q-change", "read:g1"]);
+  });
+});
+
 describe("approving a version", () => {
   it("approves a clean draft and supersedes the study's previous live version", async () => {
     const studyId = await study();

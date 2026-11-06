@@ -9,6 +9,7 @@ export { SCAN_PAGE_USD, fileScanStore, scanDocs, scanVersion, untranscribed, wit
 export { review } from "./review";
 export type { ReviewResult } from "./review";
 export { resolve } from "./resolve";
+export { asPrintedQuestion } from "./resolve/read";
 export { ReadFailed, read } from "./read";
 export type { ReadOptions, ReadResult } from "./read";
 export { claudeReader, openaiReader } from "./models";

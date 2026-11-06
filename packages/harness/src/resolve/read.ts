@@ -112,10 +112,14 @@ export const values = (n: number) => `${n} ${n === 1 ? "value" : "values"}`;
 /** Questions that go straight to a person with no model call: a marked value, or a spot that can't be found to look at closely. */
 export const personId = (target: string) => `person:${target}`;
 
-export function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>) {
-  const question: Question = {
-    kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
-  };
+type Raised = Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>;
+
+const checkQuestion = (q: Raised): Question => ({
+  kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
+});
+
+export function raise(run: Run, q: Raised) {
+  const question = checkQuestion(q);
   const region = run.crops.get(q.id);
   if (region) question.source = { ...question.source, region };
   run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), question] };
@@ -129,16 +133,19 @@ export function raiseUnread(run: Run, q: Pick<Question, "id" | "about" | "source
 const acceptAsPrinted = (gridId: string): Patch => ({ target: "grid", id: gridId, set: { acceptedAsPrinted: true } });
 
 /** A grid whose print doesn't add up: only a person can accept it as it is. */
-function raiseAsPrinted(run: Run, q: Pick<Question, "id" | "about" | "source">, grid: Grid, lead: string, problems: string[]) {
-  raise(run, {
-    ...q,
-    kind: "decision",
-    question: `The figures of '${grid.name}' don't add up. Use them as printed?`,
-    context: `${lead} ${problems.join(" ")}`,
-    readings: [],
-    options: [{ label: "Use them as printed", patches: [acceptAsPrinted(grid.id)] }],
-  });
-}
+const asPrinted = (grid: Grid, id: string, lead: string, problems: string[]): Raised => ({
+  id,
+  about: { target: "grid", id: grid.id },
+  source: { doc: grid.doc, page: grid.pages[0]!, quote: "" },
+  kind: "decision",
+  question: `The figures of '${grid.name}' don't add up. Use them as printed?`,
+  context: `${lead} ${problems.join(" ")}`,
+  readings: [],
+  options: [{ label: "Use them as printed", patches: [acceptAsPrinted(grid.id)] }],
+});
+
+/** The same question for a caller that isn't a resolver run, such as the answer that leaves a grid failing. */
+export const asPrintedQuestion = (grid: Grid, id: string, lead: string, problems: string[]): Question => checkQuestion(asPrinted(grid, id, lead, problems));
 
 export const shown = (c: Cell) => (typeof c === "number" ? usd(c) : String(c));
 
@@ -348,7 +355,7 @@ export async function rereadScanGrids(run: Run, report: CheckReport) {
     const base = { id: `read:${g.id}`, about: { target: "grid" as const, id: g.id }, source: { doc: g.doc, page: g.pages[0]!, quote: "" } };
     const problems = report.grids[g.id]!.problems;
     if (run.rulebook.questions.some((q) => q.id === personId(g.id))) {
-      raiseAsPrinted(run, base, g, "Some values are marked on the page, so they are not read again; a person is asked about them in the other question.", problems);
+      raise(run, asPrinted(g, base.id, "The figures shown are as first read from the image, and none were checked closely because some of them are marked; a person is asked about those in the other question.", problems));
       run.log.push(`${where({ doc: g.doc, pages: g.pages })}: the figures don't add up and some values are marked, so a person will be asked`);
       continue;
     }
@@ -375,7 +382,7 @@ export async function rereadScanGrids(run: Run, report: CheckReport) {
     } else {
       const all = read.every((r) => r.value !== null);
       const lead = all ? "A closer read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent." : "A closer read of the page agrees with the rulebook wherever it could read, and the contract's own arithmetic does not hold.";
-      raiseAsPrinted(run, base, g, lead, problems);
+      raise(run, asPrinted(g, base.id, lead, problems));
       run.log.push(`${where(job)}: a closer read confirms what it could read, but the printed figures don't add up, so a person will be asked`);
     }
   }

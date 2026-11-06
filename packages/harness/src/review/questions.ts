@@ -1,10 +1,8 @@
-import { Term, applyPatches, parseCents, parsePercent, type Patch, type Question, type Region, type Rulebook, type Source } from "@dct/shared";
+import { LOCKED_FIELDS, Term, applyPatches, parseCents, parsePercent, type Patch, type Question, type Region, type Rulebook, type Source } from "@dct/shared";
 import { checkQuote } from "../checks/quote";
 import type { LoadedDoc } from "../types";
 import type { Change, Finding, NewTerm } from "./schema";
 
-// What a patch must never set: identity, and the proof only a check or a person earns.
-const LOCKED = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted"]);
 const CELL_PATH = /^((rows|additions)\.\d+\.cells|subtotal|overhead|total)\.\d+$/;
 
 function validRegion(r: number[] | null): Region | undefined {
@@ -24,7 +22,7 @@ function patchesOf(changes: Change[], rulebook: Rulebook): Patch[] {
   const kept: Patch[] = [];
   for (const c of changes) {
     const [key, value] = converted(c);
-    if (LOCKED.has(key) || (c.target === "term" && !rulebook.terms.some((t) => t.id === c.id))) continue;
+    if (LOCKED_FIELDS.has(key) || (c.target === "term" && !rulebook.terms.some((t) => t.id === c.id))) continue;
     const patch: Patch = { target: c.target, id: c.id, set: { [key]: value } };
     try {
       applyPatches(rulebook, [...kept, patch]);

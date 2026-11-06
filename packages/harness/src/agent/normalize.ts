@@ -1,4 +1,4 @@
-import { Accounted, Grid, Question, Study, Term, parseCents, parsePercent } from "@dct/shared";
+import { Accounted, Grid, LOCKED_FIELDS, Question, Study, Term, parseCents, parsePercent } from "@dct/shared";
 import type { z } from "zod";
 
 type Raw = Record<string, unknown>;
@@ -79,12 +79,16 @@ export function normalizeAccounted(raw: unknown): Parsed<Accounted> {
   return parse(Accounted, { ...raw, amountCents: raw.amount == null ? undefined : cents(raw.amount, "amount", issues) }, issues);
 }
 
+// An option's patch is applied when a person picks it, who never sees the patch: it can't carry the proof fields.
+const unlocked = (p: unknown) => (isObject(p) && isObject(p.set) ? { ...p, set: Object.fromEntries(Object.entries(p.set).filter(([key]) => !LOCKED_FIELDS.has(key))) } : p);
+
 export function normalizeQuestion(raw: unknown): Parsed<Question> {
   if (!isObject(raw)) return notAnObject;
   const options = list(raw.options, (o) => {
     if (!isObject(o)) return o;
     const { patch, ...rest } = o;
-    return { patches: patch ? [patch] : [], ...rest };
+    const patches = list(rest.patches ?? (patch ? [patch] : []), unlocked, []);
+    return { ...rest, patches };
   }, []);
   return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open", blocking: true, readings: [], resolution: null }, []);
 }

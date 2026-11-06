@@ -83,6 +83,7 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
     const result = report.grids[g.id];
     const failing = (result?.problems.length ?? 0) > 0;
     const unproven = new Set((result?.unproven ?? []).map(({ row, col }) => `${row},${col}`));
+    const marked = pages.some((p) => p.words.some((w) => w.doubt && MARKS[w.doubt]));
     g.rows.forEach((r, row) =>
       r.cells.forEach((current, col) => {
         if (typeof current !== "number") return;
@@ -94,12 +95,13 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
           current, words: wordsIn(page, band), failing,
           // from the top of the page, so the visit headings above the row are in the picture
           crop: band ? [0, 0, 1, Math.min(1, band[1] + PAD)] : undefined,
-          zoom: band ? [0, Math.max(0, band[0] - PAD), 1, Math.min(1, band[1] + PAD)] : undefined,
+          // without the visit headings found, the picture runs from the top of the page, so they are still in it
+          zoom: band && headed ? [0, Math.max(0, band[0] - PAD), 1, Math.min(1, band[1] + PAD)] : undefined,
           header: band && headed ? [0, Math.max(0, headed[0] - PAD), 1, Math.min(1, headed[1] + PAD)] : undefined,
           patch: (v) => ({ target: "grid", id: g.id, set: { [`rows.${row}.cells.${col}`]: v } }),
         };
-        // a marked value is asked whether or not the totals cover it
-        if (failing || unproven.has(`${row},${col}`) || markOf(spot)) spots.push(spot);
+        // a marked value is asked whether or not the totals cover it; when its row can't be found to look for marks, any mark on the grid's pages counts
+        if (failing || unproven.has(`${row},${col}`) || markOf(spot) || (!band && marked)) spots.push(spot);
       }),
     );
     spots.push(...markedLines(g, pages));
