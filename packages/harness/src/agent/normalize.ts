@@ -86,7 +86,7 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
 export function normalizeAccounted(raw: unknown): Parsed<Accounted> {
   if (!isObject(raw)) return notAnObject;
   const issues: string[] = [];
-  if (typeof raw.reason === "string" && raw.reason.trim().toLowerCase() === CORRECTED) issues.push(`reason: "${CORRECTED}" is kept for amounts only a person's answer corrected; give the real reason`);
+  if (typeof raw.reason === "string" && raw.reason.trim().replace(/[\s.!;:,]+$/, "").toLowerCase() === CORRECTED) issues.push(`reason: "${CORRECTED}" is kept for amounts only a person's answer corrected; give the real reason`);
   return parse(Accounted, { ...raw, amountCents: raw.amount == null ? undefined : cents(raw.amount, "amount", issues) }, issues);
 }
 

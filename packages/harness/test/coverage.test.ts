@@ -301,15 +301,15 @@ describe("coverage on a scanned page, by cell", () => {
     expect(amountsOf(rulebook()).map((a) => a.cents)).toEqual([200000, 30000, 150000, 15000]);
   });
 
-  it("a column is money unless its heading is only a count, a percentage or a code; there a figure with $ still counts", () => {
+  it("a number is money unless its cell is a count under a count heading, or a code under a code heading", () => {
     const doc = (heading: string, other: string) => scanned(`T 0.1-0.3 | Schedule\nH | Item | ${heading}\nR 0.12-0.13 | A | 1,500\nR 0.14-0.15 | B | ${other}`);
     const bare = (heading: string, other = "7") => amountsOf(rulebook(), doc(heading, other)).map((a) => a.cents);
     expect(bare("Visit 1")).toEqual([150000, 700]);
     expect(bare("")).toEqual([150000, 700]);
-    expect(bare("CPT code")).toEqual([]);
-    expect(bare("No. of subjects")).toEqual([]);
+    expect(bare("CPT code", "93000")).toEqual([150000]);
+    expect(bare("No. of subjects")).toEqual([150000]);
     expect(bare("Number of payments")).toEqual([150000, 700]);
-    expect(bare("Hours", "$7.00")).toEqual([700]);
+    expect(bare("Hours", "$7.00")).toEqual([150000, 700]);
   });
 
   it("a quantity column on a scan page isn't counted as money", () => {
@@ -343,6 +343,33 @@ describe("coverage on a scanned page, by cell", () => {
     expect(amountsOf(rulebook(), doc, 2).map((a) => a.cents)).toEqual([25000]);
     const other = scanned(first, "T 0.1-0.3 | \nR 0.12-0.13 | Labs | 250");
     expect(amountsOf(rulebook(), other, 2).map((a) => a.cents)).toEqual([25000]);
+  });
+
+  const cents = (doc: LoadedDoc, page = 1) => amountsOf(rulebook(), doc, page).map((a) => a.cents);
+
+  it("an amount in a CPT column still counts", () => {
+    expect(cents(scanned("T 0.1-0.3 | Budget\nH | Item | CPT\nR 0.12-0.13 | Exam | 99213\nR 0.14-0.15 | ECG | 1,500.00\nR 0.16-0.17 | Lab | G0101-QW"))).toEqual([150000]);
+  });
+
+  it("a fee shifted into a code column still counts, and a code-shaped figure under Fee is a fee", () => {
+    const doc = scanned("T 0.1-0.3 | Budget\nH | Item | CPT | Fee\nR 0.12-0.13 | Exam | 99213 | 150.00\nR 0.14-0.15 | Consent | 500.00 |\nR 0.16-0.17 | Startup | | 15000");
+    expect(cents(doc)).toEqual([15000, 50000, 1500000]);
+  });
+
+  it("a continued table can't drop a fee by inheriting a count column", () => {
+    const doc = scanned("T 0.1-0.3 | Labs\nH | Item | Qty | Fee\nR 0.12-0.13 | CBC | 2 | 150.00", "T 0.1-0.3 | \nR 0.12-0.13 | Exam | 1,500.00 | 300.00\nR 0.14-0.15 | ECG | 3 | 75.00");
+    expect(cents(doc, 2)).toEqual([150000, 30000, 7500]);
+  });
+
+  it("8.00 under Quantity is still excused", () => {
+    expect(cents(scanned("T 0.1-0.3 | Budget\nH | Item | Quantity | Overhead %\nR 0.12-0.13 | Exam | 8.00 | 25%\nR 0.14-0.15 | ECG | 1,500.00 | 15.00"))).toEqual([150000]);
+  });
+
+  it("every bare amount in a money cell counts", () => {
+    const doc = scanned("T 0.1-0.3 | Budget\nH | Item | Fee\nR 0.12-0.13 | Exam | 1,000{x} 1,200{hw}\nR 0.14-0.15 | ECG | 1,500 / 2,000\nR 0.16-0.17 | Lab | 1,500 max 6,000");
+    expect(cents(doc)).toEqual([100000, 120000, 150000, 200000, 150000, 600000]);
+    const rb = rulebook({ terms: [term("exam", { amountCents: 120000, source: { doc: "s.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } })] });
+    expect(amountsOf(rb, doc).slice(0, 2).map((a) => a.status)).toEqual(["captured", "captured"]);
   });
 
   it("a cell printing a fee and a maximum needs both accounted", () => {

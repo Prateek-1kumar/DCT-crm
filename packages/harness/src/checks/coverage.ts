@@ -147,59 +147,73 @@ function citations(rulebook: Rulebook): Map<string, Cited[]> {
   return byCell;
 }
 
-// When in doubt a column is money, and its bare numbers ("1,500") count. Only a heading that is nothing but a count
-// ("Quantity", "Total Quantity", "Visits", "No. of subjects"), a percentage label ("Overhead %") or a code ("CPT") makes
-// a count column, where only a figure with $ is money. Any money word in it, or a number after "visits" ("Visits 2-5"),
-// keeps it money.
-const COUNT = /^\s*(?:total\s+)?(?:qty|quantit(?:y|ies)|count|#|units?|hours|visits|%|percent(?:age)?|(?:number|no\.?) of \w+|(?:cpt|hcpcs)(?:\s+codes?)?|codes?)\s*$/i;
+// Every table cell's numbers are money unless the cell itself is excused: a count ("8.00", "25%") under a heading that
+// is nothing but a count ("Quantity", "Total Quantity", "Visits", "No. of subjects") or a percentage label ("Overhead %"),
+// or a code ("99213", "G0101-QW") under a code heading ("CPT"). Anything else printed there, such as a fee shifted one
+// column, still counts; any money word in a heading, or a number after "visits" ("Visits 2-5"), keeps it ordinary.
+const COUNT = /^\s*(?:total\s+)?(?:qty|quantit(?:y|ies)|count|#|units?|hours|visits|%|percent(?:age)?|(?:number|no\.?) of \w+)\s*$/i;
 const PERCENTAGE = /^\s*[a-z ]*%\s*$/i;
+const CODE = /^\s*(?:(?:cpt|hcpcs)(?:\s+codes?)?|codes?)\s*$/i;
 const MONEY_WORD = /\b(?:total|rate|per|overhead|reimburs\w*|compensation|charge|fee|cost|price|amount|payment|stipend)s?\b/i;
-const CURRENCY = /\$|\busd\b/i;
+const COUNT_SHAPED = /^\s*(?:\d{1,3}(?:\.0+)?|\d+(?:\.\d+)?\s*%)\s*$/;
+const CODE_SHAPED = /^\s*(?:\d{5}|[A-Z]\d{4})(?:-?[A-Z0-9]{2})?\s*$/i;
 
-type Column = "money" | "count";
+type Excused = "count" | "code";
 
-const counts = (heading: string) =>
-  (COUNT.test(heading) && !MONEY_WORD.test(heading.replace(/^\s*total\s+/i, ""))) || (PERCENTAGE.test(heading) && !MONEY_WORD.test(heading.replace(/\boverhead\b/i, "")));
+function excusedBy(heading: string): Excused | undefined {
+  if ((COUNT.test(heading) && !MONEY_WORD.test(heading.replace(/^\s*total\s+/i, ""))) || (PERCENTAGE.test(heading) && !MONEY_WORD.test(heading.replace(/\boverhead\b/i, "")))) return "count";
+  return CODE.test(heading) ? "code" : undefined;
+}
 
 function tokens(text: string): { text: string; cents: number }[] {
   const words = text.split(/\s+/).filter(Boolean);
   return looseAmounts(words, () => false).map(({ cents, from, to }) => ({ text: words.slice(from, to + 1).join(" "), cents: Math.abs(cents) }));
 }
 
-/** What a scanned cell or line prints: its amount-shaped words, or a table cell's whole value ("$ 1,500", or "1,500" in a money column). */
-function printedIn(cell: ScanCell, column: Column): { text: string; cents: number }[] {
-  if (cell.row !== null && cell.col) {
-    if (column === "count") return tokens(cell.text).filter((t) => CURRENCY.test(t.text));
-    const whole = looseCents(cell.text) ?? parseCents(cell.text);
-    if (whole !== null) return [{ text: cell.text, cents: Math.abs(whole) }];
-  }
-  return tokens(cell.text);
+/** Each word of a table cell that is a number, bare ones too ("1,500 / 2,000", "1,000{x} 1,200{hw}"). */
+function numbers(text: string): { text: string; cents: number }[] {
+  return text.split(/\s+/).flatMap((word) => {
+    const cents = looseCents(word) ?? parseCents(word);
+    return cents === null ? [] : [{ text: word, cents: Math.abs(cents) }];
+  });
+}
+
+/** What a scanned cell or line prints: a line's amount-shaped words, or a table cell's numbers, read whole first ("$ 1,500"). */
+function printedIn(cell: ScanCell, excused: Excused | undefined): { text: string; cents: number }[] {
+  if (cell.row === null || !cell.col) return tokens(cell.text);
+  if ((excused === "count" && COUNT_SHAPED.test(cell.text)) || (excused === "code" && CODE_SHAPED.test(cell.text))) return [];
+  const whole = looseCents(cell.text) ?? parseCents(cell.text);
+  return whole === null ? numbers(cell.text) : [{ text: cell.text, cents: Math.abs(whole) }];
 }
 
 const widthOf = (cells: ScanCell[], table: number) => Math.max(0, ...cells.filter((c) => c.table === table).map((c) => c.col ?? 0));
 
 /**
- * The count columns of a page's tables, as "table.col". A table printed without headings is taken as the rest of the
- * last table on the page before with as many columns, as a budget continued on the next page is.
+ * The count and code columns of a page's tables, by "table.col". A table printed without headings is taken as the rest
+ * of the last table on the page before with as many columns, as a budget continued on the next page is.
  * ponytail: walks back one page per continued page; fine for any real contract's page count.
  */
-function countColumns(pages: Page[], index: number): Set<string> {
+function excusedColumns(pages: Page[], index: number): Map<string, Excused> {
   const cells = pages[index]?.cells ?? [];
-  const counted = new Set<string>();
+  const excused = new Map<string, Excused>();
   const headed = new Set(cells.filter((c) => c.table !== null && c.row === null).map((c) => c.table));
   for (const c of cells) {
-    if (c.table !== null && c.row === null && c.col && counts(c.text)) counted.add(`${c.table}.${c.col}`);
+    const kind = c.table !== null && c.row === null && c.col ? excusedBy(c.text) : undefined;
+    if (kind) excused.set(`${c.table}.${c.col}`, kind);
   }
   const tables = new Set(cells.flatMap((c) => (c.table === null || headed.has(c.table) ? [] : [c.table])));
-  if (!tables.size || index === 0) return counted;
+  if (!tables.size || index === 0) return excused;
   const before = pages[index - 1]!.cells ?? [];
-  const earlier = countColumns(pages, index - 1);
+  const earlier = excusedColumns(pages, index - 1);
   for (const table of tables) {
     const width = widthOf(cells, table);
     const match = [...new Set(before.flatMap((c) => (c.table === null ? [] : [c.table])))].filter((t) => widthOf(before, t) === width).at(-1);
-    for (let col = 1; match !== undefined && col <= width; col++) if (earlier.has(`${match}.${col}`)) counted.add(`${table}.${col}`);
+    for (let col = 1; match !== undefined && col <= width; col++) {
+      const kind = earlier.get(`${match}.${col}`);
+      if (kind) excused.set(`${table}.${col}`, kind);
+    }
   }
-  return counted;
+  return excused;
 }
 
 /** The row a cell is on ("p7.t1.r5", "p7.t1.h"), or the line itself. */
@@ -220,14 +234,14 @@ function cellBand(page: Page, id: string): Region {
 function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number, cited: Map<string, Cited[]>): CoverageAmount[] {
   const page = pages[index]!;
   const cells = page.cells ?? [];
-  const counted = countColumns(pages, index);
+  const excused = excusedColumns(pages, index);
   return cells.flatMap((cell) => {
     const row = cell.table === null ? [cell] : cells.filter((c) => c.table === cell.table && c.row === cell.row);
     const line = row.map((c) => c.text).join(" ").trim().slice(0, 120);
-    const printed = printedIn(cell, counted.has(`${cell.table}.${cell.col}`) ? "count" : "money");
+    const printed = printedIn(cell, excused.get(`${cell.table}.${cell.col}`));
     // a citation names one amount: a second one in the same cell or line ("$500.00 per visit, max $6,000.00") needs its
     // own, except a struck value the cited one replaces
-    const struck = new Set((cell.struck ?? []).flatMap((s) => tokens(s).map((t) => t.cents)));
+    const struck = new Set((cell.struck ?? []).flatMap((s) => [...tokens(s), ...numbers(s)].map((t) => t.cents)));
     return printed.flatMap(({ text, cents }): CoverageAmount[] => {
       if (cents === 0) return [];
       const match = cited.get(cell.id)?.find((c) => printed.length === 1 || struck.has(cents) || (c.cents !== null && Math.abs(c.cents) === cents));

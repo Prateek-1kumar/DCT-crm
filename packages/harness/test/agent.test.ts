@@ -126,6 +126,7 @@ describe("compile", () => {
   it("refuses to set an amount aside as corrected by a person: only a person's answer does that", () => {
     const refused = normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: " Corrected by a Person " });
     expect(refused).toMatchObject({ ok: false, issues: [expect.stringMatching(/only a person's answer/)] });
+    expect(normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: "Corrected by a person." }).ok).toBe(false);
     expect(normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: "printed twice" }).ok).toBe(true);
   });
 
