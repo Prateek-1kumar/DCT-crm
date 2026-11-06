@@ -194,7 +194,7 @@ export async function relook(run: Run, report: CheckReport) {
     for (let from = 0; from < crops.length; from += MAX_CROPS) {
       const group = crops.slice(from, from + MAX_CROPS).flat();
       const { doc, page } = group[0]!.source;
-      const asked = group.map((s) => ({ label: s.rowOf ? `every amount printed on the row labelled '${s.rowOf}', in the order printed, separated by " | "` : s.label, look: { region: s.zoom ?? s.crop, header: s.header } }));
+      const asked = group.map((s) => ({ label: s.rowOf ? `every amount on the row that prints "${s.source.quote.replace(/\s+/g, " ")}" (the rulebook calls it '${s.rowOf}'), in the order printed, separated by " | "` : s.label, look: { region: s.zoom ?? s.crop, header: s.header } }));
       const answers = (await tryAsk(run, [run.openai], { doc, pages: [page] }, asked))?.[0];
       if (!answers) {
         unread.push(...group);
