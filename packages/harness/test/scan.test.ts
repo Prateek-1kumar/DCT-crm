@@ -29,17 +29,44 @@ describe("toWords", () => {
 
   it("keeps a table row on one line in column order", () => {
     const words = toWords(table([{ label: "Visit 1", cells: [cell("$1,200.00"), cell("$300.00")], top: 0.3, bottom: 0.32 }]));
-    const lines = groupLines(words);
-    expect(lines).toHaveLength(1);
-    expect(rawLine(lines[0]!)).toBe("Visit 1 $1,200.00 $300.00");
+    expect(groupLines(words).map(rawLine).at(-1)).toBe("Visit 1 $1,200.00 $300.00");
   });
 
   it("leaves the slot of a blank cell empty, so the next value stays under its own column", () => {
-    const words = toWords(table([{ label: "Visit 1", cells: [cell("$1,200.00"), cell(""), cell("$300.00")], top: 0.3, bottom: 0.32 }]));
+    const words = groupLines(toWords(table([{ label: "Visit 1", cells: [cell("$1,200.00"), cell(""), cell("$300.00")], top: 0.3, bottom: 0.32 }]))).at(-1)!;
     expect(words.map((w) => w.text)).toEqual(["Visit", "1", "$1,200.00", "$300.00"]);
     const [label, first, third] = [words[0]!, words[2]!, words[3]!];
     const slot = first.x0 - label.x0;
     expect(third.x0 - first.x0).toBeCloseTo(2 * slot);
+  });
+
+  it("emits a table's title and column headings above its rows", () => {
+    const t = table([{ label: "Visit 1", cells: [cell("$1,200.00"), cell("$300.00")], top: 0.3, bottom: 0.32 }]);
+    const lines = groupLines(toWords({ ...t, lines: [line("Before the table", 0.05, 0.07)] })).map(rawLine);
+    expect(lines).toEqual(["Before the table", "Budget", "Visit Fee Extra Total", "Visit 1 $1,200.00 $300.00"]);
+    const heading = groupLines(toWords(t))[1]!;
+    const row = groupLines(toWords(t))[2]!;
+    expect(heading[1]!.x0).toBeCloseTo(row[2]!.x0);
+  });
+
+  it("masks every cell under a bank heading, not the amount column beside it", () => {
+    const t = transcription({
+      lines: [],
+      tables: [{
+        title: "Payments", top: 0.2, bottom: 0.6, columns: ["Site", "Account Number", "Fee"],
+        rows: [["900765432", "$100.00"], ["000333444", "$200.00"], ["12-3456-78", "$300.00"]].map(([account, fee], i) => ({ label: `Site ${i + 1}`, top: 0.3 + i * 0.03, bottom: 0.32 + i * 0.03, cells: [cell(account!), cell(fee!)] })),
+      }],
+    });
+    const lines = groupLines(toWords(t)).map(rawLine);
+    expect(lines.slice(2)).toEqual(["Site 1 ######### $100.00", "Site 2 ######### $200.00", "Site 3 ##-####-## $300.00"]);
+    expect(lines[1]).toBe("Site Account Number Fee");
+  });
+
+  it("two zero-height lines on the same band among normal lines stay two lines in order", () => {
+    const t = transcription({
+      lines: [line("Startup fee", 0.3, 0.3), line("Visit fee", 0.3, 0.3), line("Intro", 0.1, 0.12), line("Closing words", 0.5, 0.52), line("Payment $200.00", 0.6, 0.62), line("Total $1,000.00", 0.7, 0.72)],
+    });
+    expect(groupLines(toWords(t)).map(rawLine)).toEqual(["Intro", "Startup fee", "Visit fee", "Closing words", "Payment $200.00", "Total $1,000.00"]);
   });
 
   it("keeps two lines with the same band as two lines in order", () => {
@@ -153,7 +180,7 @@ describe("scanDocs", () => {
     const doc = await imagePdf("budget.pdf", [[612, 792], [612, 792], [612, 792]]);
     const { reader, sent } = fakeReader(() => transcription());
     const store = memoryStore();
-    const stopped = await scanDocs([doc], { reader, store, budget: budgetOf(0.15) }).catch((e: unknown) => e);
+    const stopped = await scanDocs([doc], { reader, store, budget: budgetOf(0.1 + 0.05) }).catch((e: unknown) => e);
     expect(stopped).toBeInstanceOf(ReadFailed);
     expect((stopped as ReadFailed).message).toContain("1 of 3");
     expect((stopped as ReadFailed).message).toContain("$0.15 limit");

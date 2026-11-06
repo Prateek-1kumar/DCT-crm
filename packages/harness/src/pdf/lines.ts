@@ -40,12 +40,18 @@ const digitCount = (t: string) => t.replace(/\D/g, "").length;
 const alnum = (t: string) => t.replace(/[^A-Za-z0-9]/g, "");
 
 const LABELS = ["account", "acct", "ac", "aba", "routing", "swift", "bic", "iban", "bank", "transit"];
-function isLabel(line: Word[], i: number) {
-  const parts = labelParts(line[i]!.text);
-  return parts.some((p) => LABELS.includes(p)) || (parts.at(-1) === "sort" && bare(line[i + 1]?.text) === "code");
+function isLabel(texts: string[], i: number) {
+  const parts = labelParts(texts[i]!);
+  return parts.some((p) => LABELS.includes(p)) || (parts.at(-1) === "sort" && bare(texts[i + 1]) === "code");
 }
 
-const isAmount = (t: string) => AMOUNT.test(t);
+export const isAmount = (t: string) => AMOUNT.test(t);
+
+/** Whether a table's column heading names a bank detail ("Account Number", "Routing"). */
+export function isBankHeading(heading: string): boolean {
+  const texts = heading.split(/\s+/).filter(Boolean);
+  return texts.some((_, i) => isLabel(texts, i));
+}
 
 function valueAfter(window: Word[]): Word[] {
   const run: Word[] = [];
@@ -63,8 +69,9 @@ function valueAfter(window: Word[]): Word[] {
 export function maskBankDetails(lines: Word[][]): Region[] {
   const masked = new Set<Word>();
   lines.forEach((line, li) => {
+    const texts = line.map((w) => w.text);
     line.forEach((label, wi) => {
-      if (!isLabel(line, wi)) return;
+      if (!isLabel(texts, wi)) return;
       if (digitCount(label.text) >= MIN_BANK_DIGITS) masked.add(label);
       const window = [...line.slice(wi + 1), ...(lines[li + 1] ?? [])].slice(0, LOOKAHEAD_WORDS);
       for (const w of valueAfter(window)) masked.add(w);

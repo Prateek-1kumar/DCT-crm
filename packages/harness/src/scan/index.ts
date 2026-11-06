@@ -111,7 +111,7 @@ export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store:
     throw new ReadFailed(`${failure.name} p.${failure.page} couldn't be read, so the read stopped. The pages already read are kept, so starting the read again continues from there.`, budget.spent, { cause: failure.cause });
   }
   if (outOfBudget) {
-    throw new ReadFailed(`Stopped at the $${budget.limit} limit after reading ${done} of ${todo.length} scanned pages. They're kept, so starting the read again continues from there.`, budget.spent);
+    throw new ReadFailed(`Stopped at the $${budget.limit.toFixed(2)} limit after reading ${done} of ${todo.length} scanned pages. They're kept, so starting the read again continues from there.`, budget.spent);
   }
   return docs.map((doc, i) => withScans(doc, saved[i]!));
 }

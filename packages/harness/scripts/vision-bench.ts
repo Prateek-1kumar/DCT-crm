@@ -124,8 +124,11 @@ for (const [fileIndex, spec] of args.entries()) {
       for (const k of Object.keys(s) as (keyof Score)[]) total[k] += s[k];
       console.log(`${id}: ${show(s)}`);
     } catch (err) {
-      console.log(`${id}: ${err instanceof Error ? err.message : "failed"}`);
-      if (spent >= cap) break;
+      if (spent >= cap) {
+        console.log(`${id}: stopped at the $${cap} cap ($${spent.toFixed(2)} spent)`);
+        break;
+      }
+      console.log(`${id}: failed (${err instanceof Error ? err.name : "unknown error"})`);
     }
   }
 }
