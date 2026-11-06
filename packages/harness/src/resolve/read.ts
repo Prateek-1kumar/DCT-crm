@@ -1,4 +1,4 @@
-import { applyPatches, cellProofPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
+import { applyPatches, cellProofPatches, citationPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
 import { z } from "zod";
 import { SCAN_PAGE_REASON, checks } from "../checks";
 import { usd } from "../checks/text";
@@ -216,16 +216,20 @@ export function proven(rulebook: Rulebook, patches: Patch[]): Patch[] {
   return [...patches, ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence: "two_reads" } })), ...cellProofPatches(rulebook, patches)];
 }
 
-/** Applies the patches only if the checks still pass for everything they touch (and `also` holds); otherwise the rulebook is left as it was. */
+/**
+ * Applies the patches only if the checks still pass for everything they touch (and `also` holds); otherwise the rulebook is
+ * left as it was. A changed scanned amount no longer rests on the cell it cited, so its citation goes.
+ */
 function tryApply(run: Run, patches: Patch[], also: (report: CheckReport) => boolean = () => true): boolean {
   let next: Rulebook;
   try {
-    next = applyPatches(run.rulebook, patches);
+    next = applyPatches(run.rulebook, [...patches, ...citationPatches(run.rulebook, patches)]);
   } catch {
     return false;
   }
   const report: CheckReport = checks.runChecks(next, run.docs);
-  const broken = patches.some((p) => (p.target === "grid" ? (report.grids[p.id]?.problems.length ?? 0) > 0 : p.id in report.quotes));
+  const cited = report.problems.some((p) => p.check === "cell" && patches.some((x) => x.id === p.id));
+  const broken = cited || patches.some((p) => (p.target === "grid" ? (report.grids[p.id]?.problems.length ?? 0) > 0 : p.id in report.quotes));
   if (broken || !also(report)) return false;
   run.rulebook = next;
   return true;

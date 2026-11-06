@@ -163,8 +163,8 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       const notFound: string[] = [];
       const cited = (raw: unknown): Parsed<Term> => {
         const result = normalizeTerm(raw);
-        const why = result.ok && citeTerm(result.value, docs);
-        return why ? { ok: false, issues: [why] } : result;
+        const why = result.ok ? citeTerm(result.value, docs) : [];
+        return why.length ? { ok: false, issues: why } : result;
       };
       const failures = storeAll(
         args.data.terms,

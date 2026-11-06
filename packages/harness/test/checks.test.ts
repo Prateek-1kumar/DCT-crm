@@ -328,19 +328,24 @@ describe("checkCitations", () => {
       "H | Item | Fee | Fee with overhead",
       "R 0.31-0.32 | Exam | $100.00 | $130.00",
       "R 0.33-0.34 | Labs | $900.00{x} $1,050.00{hw} | $1,365.00",
+      "R 0.35-0.36 | Visit fee | $100.00 | $130.00",
+      "R 0.37-0.38 | Bundle | $100.00 $130.00 |",
       "L 0.7-0.72 | Startup fee $2,000.00 payable on signature{in}",
-      "L 0.8-0.82 | Closeout fee $500.00",
+      "L 0.8-0.82 | Closeout fee $500.00, at most $5,000.00 a year",
     ].join("\n"),
+    "L 0.1-0.12 | Exam $100.00",
   );
-  const cited = (cents: number, cell?: string, over: Partial<Term> = {}) => term({ amountCents: cents, evidence: "none", source: { doc: "A.pdf", page: 1, quote: "Exam", ...(cell && { cell }) }, ...over });
+  const cited = (cents: number, cell?: string, quote = "Exam", over: Partial<Term> = {}) =>
+    term({ amountCents: cents, evidence: "none", source: { doc: "A.pdf", page: 1, quote, ...(cell && { cell }) }, ...over });
   const citations = (over: Partial<Rulebook>, docs = [fees]) => checkCitations(rulebook(over), docs);
+  const messages = (over: Partial<Rulebook>, docs = [fees]) => citations(over, docs).problems.map((p) => p.message);
 
   it("passes a term whose amount is the one its cell prints, in a table or a line", () => {
-    expect(citations({ terms: [cited(10000, "p1.t1.r1.c1"), cited(13000, "p1.t1.r1.c2", { id: "t2" }), cited(50000, "p1.l2", { id: "t3" })] })).toEqual({ problems: [], marked: [] });
+    expect(citations({ terms: [cited(10000, "p1.t1.r1.c1"), cited(13000, "p1.t1.r1.c2", "Exam", { id: "t2" }), cited(50000, "p1.l2", "Closeout fee", { id: "t3" })] })).toEqual({ problems: [], marked: [] });
   });
 
   it("refuses an amount its cited cell doesn't print, a missing citation and an unknown id, in plain words", () => {
-    const { problems } = citations({ terms: [cited(10100, "p1.t1.r1.c1"), cited(10000, undefined, { id: "t2" }), cited(10000, "p1.t1.r9.c1", { id: "t3" })] });
+    const { problems } = citations({ terms: [cited(10100, "p1.t1.r1.c1"), cited(10000, undefined, "Exam", { id: "t2" }), cited(10000, "p1.t1.r9.c1", "Exam", { id: "t3" })] });
     expect(problems).toEqual([
       { check: "cell", id: "t1", doc: "A.pdf", page: 1, message: 'the amount is $101.00, but cell p1.t1.r1.c1 prints "$100.00": write the amount as the cited cell prints it, or cite the cell it is printed in.' },
       { check: "cell", id: "t2", doc: "A.pdf", page: 1, message: "the amount is on a scanned page, so it has to cite the cell or line it is printed in (source.cell), with its id as read_pages shows it, e.g. p7.t1.r5.c3." },
@@ -349,19 +354,49 @@ describe("checkCitations", () => {
   });
 
   it("takes either amount of a struck cell with its handwritten replacement, and always reports the cell as marked", () => {
-    const { problems, marked } = citations({ terms: [cited(105000, "p1.t1.r2.c1"), cited(90000, "p1.t1.r2.c1", { id: "t2" }), cited(200000, "p1.l1", { id: "t3" })] });
+    const { problems, marked } = citations({ terms: [cited(105000, "p1.t1.r2.c1", "Labs"), cited(90000, "p1.t1.r2.c1", "Labs", { id: "t2" }), cited(200000, "p1.l1", "Startup fee", { id: "t3" })] });
     expect(problems).toEqual([]);
     expect(marked).toEqual([
       { target: "term", id: "t1", path: "amountCents", cell: "p1.t1.r2.c1", doubts: ["struck_out", "handwritten"] },
       { target: "term", id: "t2", path: "amountCents", cell: "p1.t1.r2.c1", doubts: ["struck_out", "handwritten"] },
       { target: "term", id: "t3", path: "amountCents", cell: "p1.l1", doubts: ["initialed"] },
     ]);
-    expect(citations({ terms: [cited(100000, "p1.t1.r2.c1")] }).problems).toHaveLength(1);
+    expect(citations({ terms: [cited(100000, "p1.t1.r2.c1", "Labs")] }).problems).toHaveLength(1);
+  });
+
+  it("an unmarked table cell has to print just the amount", () => {
+    expect(messages({ terms: [cited(10000, "p1.t1.r4.c1", "Bundle")] })).toEqual([
+      'the amount is $100.00, but cell p1.t1.r4.c1 prints "$100.00 $130.00": write the amount as the cited cell prints it, or cite the cell it is printed in.',
+    ]);
+  });
+
+  it("a term citing another row that prints the same amount is refused", () => {
+    expect(messages({ terms: [cited(10000, "p1.t1.r3.c1")] })).toEqual([
+      `the amount cites p1.t1.r3.c1, but the quote "Exam" is not on that row ("Visit fee $100.00 $130.00"): cite the cell on the row the quote is from, and quote that row's own words.`,
+    ]);
+    expect(messages({ terms: [cited(50000, "p1.l2", "Startup fee")] })[0]).toMatch(/^the amount cites p1\.l2, but the quote "Startup fee" is not on that line/);
+  });
+
+  it("a scanned cap value must equal its cited cell", () => {
+    const capped = (value: number, capCell?: string, evidence: Term["evidence"] = "none") =>
+      cited(50000, "p1.l2", "Closeout fee", { evidence, cap: { kind: "amount", value, period: "year", text: "" }, source: { doc: "A.pdf", page: 1, quote: "Closeout fee", cell: "p1.l2", ...(capCell && { capCell }) } });
+    expect(messages({ terms: [capped(500000, "p1.l2")] })).toEqual([]);
+    expect(messages({ terms: [capped(600000, "p1.l2")] })).toEqual([
+      "the cap is $6,000.00, but cell p1.l2 prints \"Closeout fee $500.00, at most $5,000.00 a year\": write the amount as the cited cell prints it, or cite the cell it is printed in.",
+    ]);
+    expect(messages({ terms: [capped(500000)] })[0]).toMatch(/^the cap is on a scanned page, so it has to cite .*\(source\.capCell\)/);
+    expect(messages({ terms: [capped(600000, undefined, "person")] })).toEqual([]);
+  });
+
+  it("a citation must be on the term's page, or one of the grid's pages", () => {
+    expect(messages({ terms: [cited(10000, "p2.l1")] })).toEqual(["the amount cites p2.l1, which is on p.2: cite a cell on p.1, the term's page."]);
+    const onPage2 = grid({ rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: null }], cellIds: { "rows.0.cells.0": "p2.l1" } });
+    expect(messages({ grids: [onPage2] })).toEqual(["row 'Exam' at visit 'V1' cites p2.l1, which is on p.2: cite a cell on the grid's pages (1)."]);
   });
 
   it("lets a person's decision stand without a citation, but still checks one that is given", () => {
-    expect(citations({ terms: [cited(77700, undefined, { evidence: "person" })] }).problems).toEqual([]);
-    expect(citations({ terms: [cited(77700, "p1.t1.r1.c1", { evidence: "person" })] }).problems).toHaveLength(1);
+    expect(citations({ terms: [cited(77700, undefined, "Exam", { evidence: "person" })] }).problems).toEqual([]);
+    expect(citations({ terms: [cited(77700, "p1.t1.r1.c1", "Exam", { evidence: "person" })] }).problems).toHaveLength(1);
   });
 
   it("needs no citation on a text page, or for a term with no amount", () => {
@@ -370,20 +405,39 @@ describe("checkCitations", () => {
     expect(citations({ terms: [term({ source: { doc: "A.pdf", page: 1, quote: "Exam" } })] }).problems).toEqual([]);
   });
 
-  const exam = (cellIds: Record<string, string>, over: Partial<Grid> = {}) =>
+  const exam = (cellIds: Record<string, string | null>, over: Partial<Grid> = {}) =>
     grid({ rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: 10000 }], grandTotalCents: 10000, cellIds, ...over });
 
   it("checks every amount of a grid on a scanned page against its cell, naming the place", () => {
     expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.printedRowTotalCents": "p1.t1.r1.c1", grandTotalCents: "p1.t1.r1.c1" })] }).problems).toEqual([]);
-    const { problems } = citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2", grandTotalCents: "p1.t1.r1.c1" })] });
-    expect(problems.map((p) => p.message)).toEqual([
+    expect(messages({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2", grandTotalCents: "p1.t1.r1.c1" })] })).toEqual([
       `row 'Exam' at visit 'V1' is $100.00, but cell p1.t1.r1.c2 prints "$130.00": write the amount as the cited cell prints it, or cite the cell it is printed in.`,
       "the printed total of row 'Exam' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
     ]);
   });
 
-  it("a grid value a person settled may drop its citation", () => {
+  it("a grid row citing cells from two different printed rows is refused", () => {
+    const g = grid({ rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 13000], printedRowTotalCents: null }], cellIds: { "rows.0.cells.0": "p1.t1.r3.c1", "rows.0.cells.1": "p1.t1.r1.c2" } });
+    expect(messages({ grids: [g] })).toEqual(["row 'Exam' cites cells of different printed rows on p.1 (p1.t1.r3, p1.t1.r1): every amount of one row comes from the same printed row."]);
+  });
+
+  it("a visit citing cells from two different printed columns is refused", () => {
+    const g = grid({
+      rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: null }, { name: "Visit fee", code: null, unitCostCents: null, cells: [13000, null], printedRowTotalCents: null }],
+      cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.1.cells.0": "p1.t1.r3.c2" },
+    });
+    expect(messages({ grids: [g] })).toEqual(["visit 'V1' cites cells of different printed columns on p.1 (p1.t1.c1, p1.t1.c2): every amount of one visit comes from the same printed column."]);
+  });
+
+  it("a grid value a person settled may drop its citation, or have it cleared", () => {
     expect(citations({ grids: [exam({ "rows.0.printedRowTotalCents": "p1.t1.r1.c1", grandTotalCents: "p1.t1.r1.c1" }, { cellsReadTwice: [[0, 0]] })] }).problems).toEqual([]);
+    expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.printedRowTotalCents": null, grandTotalCents: null })] }).problems).toEqual([]);
+  });
+
+  it("a grid that also spans a text page needs no citation for an amount that may be printed there", () => {
+    const mixed = doc("A.pdf", fees.pages[0]!, page(2, "text", "Exam $100.00"));
+    expect(citations({ grids: [exam({}, { pages: [1, 2] })] }, [mixed]).problems).toEqual([]);
+    expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2" }, { pages: [1, 2] })] }, [mixed]).problems).toHaveLength(1);
   });
 
   it("reports a marked cell a grid cites", () => {
@@ -393,6 +447,6 @@ describe("checkCitations", () => {
   });
 
   it("goes into runChecks", () => {
-    expect(checks.runChecks(rulebook({ terms: [cited(10100, "p1.t1.r1.c1", { evidence: "person" })] }), [fees]).problems.map((p) => p.check)).toContain("cell");
+    expect(checks.runChecks(rulebook({ terms: [cited(10100, "p1.t1.r1.c1", "Exam", { evidence: "person" })] }), [fees]).problems.map((p) => p.check)).toContain("cell");
   });
 });

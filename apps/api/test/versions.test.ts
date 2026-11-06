@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checks } from "@dct/harness";
+import { checks, resolve, type Reader } from "@dct/harness";
 import { buildApp } from "../src/app.js";
 import { answers, auditLog, documents, parties, reads, studies, versions } from "../src/db/schema.js";
 import { loadDocs } from "../src/lib/docs.js";
@@ -377,13 +377,12 @@ describe("answers that leave a scanned grid failing", () => {
   const source = { doc: "scan.pdf", page: 1, quote: "" };
   const seedGrid = async (accepted: boolean, questions: Question[]) => {
     const { documentIds, grid: cited } = await scannedGrid(grid(accepted));
-    // the transcribed $250.00 stays on the page when an answer replaces it
-    const accounted = [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the whole-page reading" }];
+    // the transcribed figures stay on the page when an answer replaces them
+    const accounted = [25000, 20000].map((amountCents) => ({ doc: "scan.pdf", page: 1, amountCents, reason: "the whole-page reading" }));
     const rb = rulebook({ terms: [], grids: [cited], questions, accounted });
     return seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
   };
-  // a value other than the one transcribed can't keep citing that cell
-  const cellTo = (cents: number) => [{ target: "grid" as const, id: "g1", set: { "rows.0.cells.1": cents, ...(cents !== 25000 && { "cellIds.rows.0.cells.1": null }) } }];
+  const cellTo = (cents: number) => [{ target: "grid" as const, id: "g1", set: { "rows.0.cells.1": cents } }];
 
   it("after answering a zoomed disagreement on a grid whose totals still fail, the person is asked to use them as printed, then can approve", async () => {
     const zoomed = question("read:g1", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use the whole-page reading ($250.00)", patches: cellTo(25000) }, { label: "Use the zoomed reading ($260.00)", patches: cellTo(26000) }, { label: "Neither, I'll type the right value", patches: [] }] });
@@ -396,6 +395,16 @@ describe("answers that leave a scanned grid failing", () => {
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(409);
 
     expect((await answer(id, "read:g1:printed", { option: 0, by: "Ana" })).json().problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("an answer that changes a scanned subtotal clears its citation, and the version can be approved", async () => {
+    const fix = question("q-subtotal", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $250.00", patches: [{ target: "grid", id: "g1", set: { "subtotal.1": 25000 } }] }] });
+    const { id } = await seedGrid(false, [fix]);
+
+    const res = (await answer(id, "q-subtotal", { option: 0, by: "Ana" })).json();
+    expect(res.rulebook.grids[0].cellIds).toMatchObject({ "subtotal.0": "p1.t1.r2.c1", "subtotal.1": null });
+    expect(res.problems).toEqual([]);
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
   });
 
@@ -442,16 +451,14 @@ describe("answers that leave a scanned grid failing", () => {
 describe("an answer that changes a scanned term's amount", () => {
   const scanSource = { doc: "scan.pdf", page: 1, quote: "Exam" };
   const options = [
-    { label: "Use $260.00, still citing the $250.00 cell", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000 } }] },
-    { label: "Use $260.00, which the page doesn't print as read", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000, source: scanSource } }] },
+    { label: "Use $260.00", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000 } }] },
     { label: "Use the fee with overhead", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000, source: { ...scanSource, cell: "p1.t1.r1.c2" } } }] },
   ];
 
   it.each([
-    [0, 409],
-    [1, 200],
-    [2, 200],
-  ])("must change or clear its citation: option %i, approval %i", async (option, status) => {
+    [0, undefined],
+    [1, "p1.t1.r1.c2"],
+  ])("drops the old citation unless the option cites another cell (option %i), and the version can be approved", async (option, cell) => {
     const documentIds = [await scannedDoc([table([["Exam", [field("$250.00"), field("$260.00")]]])])];
     const rb = rulebook({
       terms: [term("t9", { amountCents: 25000, evidence: "none", source: { ...scanSource, cell: "p1.t1.r1.c1" } })],
@@ -461,8 +468,37 @@ describe("an answer that changes a scanned term's amount", () => {
     const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
 
     const res = (await answer(id, "read:t9", { option, by: "Ana" })).json();
-    expect(res.problems.map((p: { check: string }) => p.check)).toEqual(status === 200 ? [] : ["cell"]);
-    expect((await approve(id, { by: "Ben" })).statusCode).toBe(status);
+    expect(res.rulebook.terms[0].source.cell).toBe(cell);
+    expect(res.problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+});
+
+describe("an option the resolver wrote", () => {
+  const reader = (answers: Record<string, unknown>): Reader => ({
+    model: "fake-openai",
+    price: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    ask: async <T,>(req: { name: string }) => ({ value: answers[req.name] as T, model: "fake-openai", usd: 0 }),
+  });
+
+  it("picking the zoomed reading of a scanned term drops the citation of the old value, so the version can be approved", async () => {
+    const documentIds = [await scannedDoc([table([["Exam", [field("$250.00")]]])])];
+    const docs = await loadDocs(db(), documentIds);
+    const before = rulebook({
+      terms: [term("t9", { amountCents: 25000, evidence: "none", source: { doc: "scan.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } })],
+      accounted: [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the whole-page reading" }],
+    });
+    const zoomed = reader({ read_values: { answers: [{ item: 0, answer: "$260.00" }] } });
+    const { rulebook: rb } = await resolve(before, docs, checks.runChecks(before, docs), { claude: zoomed, openai: zoomed, budget: { limit: 5, spent: 0 } });
+    const option = rb.questions.find((q) => q.id === "read:t9")!.options.findIndex((o) => o.label === "Use the zoomed reading ($260.00)");
+    expect(option).toBeGreaterThan(0);
+    const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, docs).problems });
+
+    const res = (await answer(id, "read:t9", { option, by: "Ana" })).json();
+    expect(res.rulebook.terms[0]).toMatchObject({ amountCents: 26000, evidence: "person", source: { doc: "scan.pdf", page: 1, quote: "Exam" } });
+    expect(res.rulebook.terms[0].source).not.toHaveProperty("cell");
+    expect(res.problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
   });
 });
 

@@ -16,6 +16,8 @@ export const Source = z.object({
   region: Region.optional(),
   /** On a scanned page, the id of the transcribed cell or line the term's amount is printed in ("p7.t1.r5.c3", "p7.l2"). */
   cell: z.string().optional(),
+  /** The same for the cap's amount. */
+  capCell: z.string().optional(),
 });
 export type Source = z.infer<typeof Source>;
 
@@ -97,8 +99,11 @@ export const Grid = z.object({
   cellsReadTwice: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
   /** A person accepted the grid's figures as the contract prints them, though they don't add up. Only an answer sets it, never the agent. */
   acceptedAsPrinted: z.boolean().default(false),
-  /** On a scanned page, the cell each amount is printed in, by the amount's place as a patch names it ("rows.3.cells.5", "total.2", "grandTotalCents"). */
-  cellIds: z.record(z.string(), z.string()).optional(),
+  /**
+   * On a scanned page, the cell each amount is printed in, by the amount's place as a patch names it ("rows.3.cells.5",
+   * "total.2", "grandTotalCents"). null once an answer or a closer read changed the amount: it no longer rests on that cell.
+   */
+  cellIds: z.record(z.string(), z.string().nullable()).optional(),
 });
 export type Grid = z.infer<typeof Grid>;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, cellProofPatches, type Patch, type Rulebook, type Term } from "../src/index.js";
+import { applyPatches, cellProofPatches, citationPatches, type Patch, type Rulebook, type Term } from "../src/index.js";
 
 const term: Term = {
   id: "t1", category: "site_fee", name: "Startup fee", amountCents: 100000, unit: null, billing: "auto_paid", trigger: null, cap: null,
@@ -100,8 +100,26 @@ describe("a scanned value's citation", () => {
     const cited = applyPatches(rulebook, [gridPatch({ "cellIds.rows.0.cells.1": "p1.t1.r1.c2", "cellIds.grandTotalCents": "p1.t1.r3.c1" })]);
     expect(cited.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": "p1.t1.r1.c2", grandTotalCents: "p1.t1.r3.c1" });
     const next = applyPatches(cited, [gridPatch({ "rows.0.cells.1": 250, "cellIds.rows.0.cells.1": "p2.t1.r1.c1", "cellIds.grandTotalCents": null })]);
-    expect(next.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": "p2.t1.r1.c1" });
+    expect(next.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": "p2.t1.r1.c1", grandTotalCents: null });
     expect(cellProofPatches(rulebook, [gridPatch({ "cellIds.rows.0.cells.1": "p1.t1.r1.c2" })])).toEqual([]);
+  });
+
+  it("is dropped when a change gives a scanned amount another value, unless the change cites it again", () => {
+    const cited: Rulebook = {
+      ...rulebook,
+      terms: [{ ...term, source: { ...term.source, cell: "p1.t1.r1.c1", capCell: "p1.l2" }, cap: { kind: "amount", value: 500000, period: null, text: "" } }],
+      grids: [{ ...rulebook.grids[0]!, cellIds: { "rows.0.cells.1": "p1.t1.r1.c2", "subtotal.1": "p1.t1.r2.c2", grandTotalCents: "p1.t1.r3.c1" } }],
+    };
+    expect(citationPatches(cited, [termPatch("t1", { amountCents: 150000 })])).toEqual([termPatch("t1", { source: { ...term.source, capCell: "p1.l2" } })]);
+    expect(citationPatches(cited, [termPatch("t1", { cap: { kind: "amount", value: 1, period: null, text: "" } })])).toEqual([termPatch("t1", { source: { ...term.source, cell: "p1.t1.r1.c1" } })]);
+    expect(citationPatches(cited, [termPatch("t1", { amountCents: 100000, notes: "same amount" })])).toEqual([]);
+    expect(citationPatches(cited, [termPatch("t1", { amountCents: 1, source: { ...term.source, cell: "p1.t1.r1.c2" } })])).toEqual([]);
+
+    expect(citationPatches(cited, [gridPatch({ "rows.0.cells.1": 250, "subtotal.1": 200 })])).toEqual([gridPatch({ "cellIds.rows.0.cells.1": null })]);
+    expect(citationPatches(cited, [gridPatch({ subtotal: [100, 250] })])).toEqual([gridPatch({ "cellIds.subtotal.1": null })]);
+    expect(citationPatches(cited, [gridPatch({ grandTotalCents: 9, "cellIds.grandTotalCents": "p1.t1.r4.c1" })])).toEqual([]);
+    const next = applyPatches(cited, [gridPatch({ "rows.0.cells.1": 250 }), ...citationPatches(cited, [gridPatch({ "rows.0.cells.1": 250 })])]);
+    expect(next.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": null, "subtotal.1": "p1.t1.r2.c2", grandTotalCents: "p1.t1.r3.c1" });
   });
 
   it("of a grid value must be an id", () => {

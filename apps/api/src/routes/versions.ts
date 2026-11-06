@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { applyPatches, cellProofPatches, type Question, type Rulebook } from "@dct/shared";
+import { applyPatches, cellProofPatches, citationPatches, type Question, type Rulebook } from "@dct/shared";
 import { asPrintedQuestion, checks, coverage } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -102,7 +102,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       let patched: Rulebook;
       try {
         // worked out now, from the grid as it is, so answers to two questions about one grid add to each other's cells
-        patched = applyPatches(rulebook, [...chosen.patches, ...cellProofPatches(rulebook, chosen.patches)]);
+        patched = applyPatches(rulebook, [...chosen.patches, ...cellProofPatches(rulebook, chosen.patches), ...citationPatches(rulebook, chosen.patches)]);
       } catch (err) {
         throw new HttpError(409, (err as Error).message);
       }

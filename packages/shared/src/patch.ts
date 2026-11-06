@@ -46,8 +46,7 @@ function patchGrid(rulebook: Rulebook, { id, set }: Patch) {
   for (const [path, value] of Object.entries(set)) {
     if (!path.startsWith(CITE)) setPath(grid, path, value);
     // keyed by the cited value's own dotted path, so the rest of the key is one key, not a path to walk
-    else if (value === null) delete grid.cellIds?.[path.slice(CITE.length)];
-    else (grid.cellIds ??= {})[path.slice(CITE.length)] = value as string;
+    else (grid.cellIds ??= {})[path.slice(CITE.length)] = value as string | null;
   }
 }
 
@@ -81,4 +80,34 @@ export function cellProofPatches(rulebook: Rulebook, patches: Patch[]): Patch[] 
     }
   }
   return [...cells].map(([id, set]): Patch => ({ target: "grid", id, set: { cellsReadTwice: set } }));
+}
+
+const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
+const capAmount = (cap: unknown) => (typeof cap === "object" && cap !== null && "kind" in cap && cap.kind === "amount" && "value" in cap ? cap.value : null);
+
+/**
+ * Patches that drop the citation of every scanned amount the given patches change, unless they cite it again themselves:
+ * the cited cell prints the old amount, so the new one rests on whoever changed it, never on that cell.
+ */
+export function citationPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
+  const dropped: Patch[] = [];
+  for (const t of rulebook.terms) {
+    const sets = patches.filter((p) => p.target === "term" && p.id === t.id).map((p) => p.set);
+    if (sets.some((set) => "source" in set)) continue;
+    const { cell, capCell, ...source } = t.source;
+    const amount = cell !== undefined && sets.some((set) => "amountCents" in set && set.amountCents !== t.amountCents);
+    const cap = capCell !== undefined && sets.some((set) => "cap" in set && capAmount(set.cap) !== capAmount(t.cap));
+    if (amount || cap) dropped.push({ target: "term", id: t.id, set: { source: { ...source, ...(!amount && cell !== undefined && { cell }), ...(!cap && capCell !== undefined && { capCell }) } } });
+  }
+  for (const g of rulebook.grids) {
+    const sets = patches.filter((p) => p.target === "grid" && p.id === g.id).flatMap((p) => Object.entries(p.set));
+    for (const [cited, id] of Object.entries(g.cellIds ?? {})) {
+      if (id === null || sets.some(([path]) => path === `${CITE}${cited}`)) continue;
+      const before = valueAt(g, cited);
+      // a patch may set the amount itself ("total.2") or a line that holds it ("total")
+      const after = (path: string, value: unknown) => (path === cited ? value : cited.startsWith(`${path}.`) ? valueAt(value, cited.slice(path.length + 1)) : before);
+      if (sets.some(([path, value]) => !path.startsWith(CITE) && after(path, value) !== before)) dropped.push({ target: "grid", id: g.id, set: { [`${CITE}${cited}`]: null } });
+    }
+  }
+  return dropped;
 }

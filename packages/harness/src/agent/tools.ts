@@ -28,12 +28,12 @@ export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   },
   {
     name: "put_terms",
-    description: "Add or replace rulebook terms (by id). Each term's source.quote is checked against its page; the result lists the quotes that were not found. On a SCAN page the amount must be the one printed in the cell or line source.cell names. Invalid terms are rejected with the reason.",
+    description: "Add or replace rulebook terms (by id). Each term's source.quote is checked against its page; the result lists the quotes that were not found. On a SCAN page the amount must be the one printed in the cell or line source.cell names, on the row or line the quote is from (and a cap amount the one source.capCell names). Invalid terms are rejected with the reason.",
     input_schema: object({ terms: array({ type: "object" }) }, ["terms"]),
   },
   {
     name: "put_grid",
-    description: "Add or replace one budget grid (by id). On a SCAN page every amount is {value, cell} and the grid is refused if a cell doesn't print its value. Its arithmetic is checked at once against the contract's own printed subtotals, overhead and totals; problems are returned, or PROVEN when everything holds.",
+    description: "Add or replace one budget grid (by id). On a SCAN page every amount is {value, cell} and the grid is refused if a cell doesn't print its value, or one row's or one visit's amounts come from different printed rows or columns. Its arithmetic is checked at once against the contract's own printed subtotals, overhead and totals; problems are returned, or PROVEN when everything holds.",
     input_schema: object({ grid: { type: "object" } }, ["grid"]),
   },
   {
@@ -45,7 +45,7 @@ export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   {
     name: "put_questions",
     description:
-      "Questions for the accountant: only what a person must decide. Each: {id, kind: reading | elsewhere | decision, about: {target: term | grid | study, id} or null, question, context, source: {doc, page, quote}, options: [{label, patches}], suggestion: {option (index), reason} or null}. patches is a list of {target, id, set} (may be empty); each set uses the rulebook's stored field names with money in integer cents. An option that changes an amount on a SCAN page also says where the new amount is printed: for a term, a whole new source with its cell (or without one when the page doesn't print it); for a grid, \"cellIds.<the value's path>\" (e.g. \"cellIds.rows.3.cells.5\") set to the cell's id, or null. Never ask to confirm a value the checks prove.",
+      "Questions for the accountant: only what a person must decide. Each: {id, kind: reading | elsewhere | decision, about: {target: term | grid | study, id} or null, question, context, source: {doc, page, quote}, options: [{label, patches}], suggestion: {option (index), reason} or null}. patches is a list of {target, id, set} (may be empty); each set uses the rulebook's stored field names with money in integer cents. Never ask to confirm a value the checks prove.",
     input_schema: object({ questions: array({ type: "object" }) }, ["questions"]),
   },
   {

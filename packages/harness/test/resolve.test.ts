@@ -8,6 +8,8 @@ import { checks } from "../src/checks";
 import type { Ask, Budget, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
 import { resolve } from "../src/resolve";
+import { cellsOf } from "../src/scan/cells";
+import { parseTranscription } from "../src/scan/transcribe";
 import type { Doubt, LoadedDoc } from "../src/types";
 import { wordsOf } from "./words";
 
@@ -351,6 +353,18 @@ describe("scanned pages: one closer look by the vision reader", () => {
     expect(out.rulebook.questions).toEqual([]);
     expect(checks.runChecks(out.rulebook, scanned()).grids["g1"]!.problems).toEqual([]);
     expect(out.log).toContain("p.1 (Budget.pdf): a closer read corrected 1 value and the totals now add up ✓");
+  });
+
+  it("a closer read's correction of a cited cell drops the citation of the misread value", async () => {
+    const printed = ["T 0.1-0.5 | Budget", "H | Item | V1 | V2", "R 0.11-0.12 | Exam | $100.00 | $205.00", "R 0.13-0.14 | Labs | $50.00 | $50.00", "R 0.15-0.16 | Subtotal | $150.00 | $300.00", "R 0.17-0.18 | Grand total | $450.00 |"];
+    const scan = scanned();
+    scan[0]!.pages[0]!.cells = cellsOf(1, parseTranscription({ rotation: 0, text: printed.join("\n") }));
+    const ids = { "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2", "rows.1.cells.0": "p1.t1.r2.c1", "rows.1.cells.1": "p1.t1.r2.c2", "subtotal.0": "p1.t1.r3.c1", "subtotal.1": "p1.t1.r3.c2", grandTotalCents: "p1.t1.r4.c1" };
+    const out = await resolveOn(scan, readers({ fail: true }, { read: truthful }), rulebook({ grids: [{ ...grid(20500), cellIds: ids }] }));
+
+    expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000]);
+    expect(out.rulebook.grids[0]!.cellIds).toEqual({ ...ids, "rows.0.cells.1": null });
+    expect(checks.runChecks(out.rulebook, scan).problems.filter((p) => p.check !== "unaccounted")).toEqual([]);
   });
 
   it("a scanned grid still failing after the closer read is asked", async () => {
