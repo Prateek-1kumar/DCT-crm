@@ -31,15 +31,11 @@ export const studies = pgTable("studies", {
 
 export interface PageInfo {
   page: number;
-  /** "image" until OCR has run on a scanned page, then "ocr". */
-  kind: "text" | "ocr" | "image";
+  /** "image" until a read has transcribed a scanned page, then "scan". */
+  kind: "text" | "scan" | "image";
   chars: number;
   firstLine: string;
-  /** Mean OCR word confidence, 0–100; null for a page with a real text layer. */
-  confidence: number | null;
 }
-
-export const ocrStatus = pgEnum("ocr_status", ["none", "queued", "running", "done", "failed"]);
 
 /** A PDF, stored once by its sha256 (the file lives in the upload folder under that name). */
 export const documents = pgTable("documents", {
@@ -48,10 +44,6 @@ export const documents = pgTable("documents", {
   name: text("name").notNull(),
   bytes: integer("bytes").notNull(),
   pages: jsonb("pages").$type<PageInfo[]>().notNull(),
-  ocrStatus: ocrStatus("ocr_status").notNull().default("none"),
-  /** Scanned pages OCR has finished so far in the current run. */
-  ocrPagesDone: integer("ocr_pages_done").notNull().default(0),
-  ocrError: text("ocr_error"),
   createdAt: createdAt(),
   createdBy: text("created_by").notNull(),
 });

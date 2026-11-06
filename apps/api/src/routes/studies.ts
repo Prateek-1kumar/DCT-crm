@@ -8,7 +8,6 @@ import type { Ctx } from "../app.js";
 import { documents, type PageInfo, parties, studies, studyDocuments, versions } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { By } from "../lib/by.js";
-import { queueOcr } from "../jobs/ocr.js";
 import { loadStored, pageInfos } from "../lib/docs.js";
 import { HttpError } from "../lib/http.js";
 import { norm } from "../lib/parties.js";
@@ -36,14 +35,9 @@ const ImageQuery = z.object({ dpi: z.coerce.number({ error: "dpi must be a whole
 
 const uniqueNormalised = (names: string[]) => [...new Map(names.map((n) => [norm(n), n])).values()];
 
-const LOW_CONFIDENCE = 80;
-
 const scannedOf = (pages: PageInfo[]) => pages.filter((p) => p.kind !== "text").map((p) => p.page);
-const lowConfidenceOf = (pages: PageInfo[]) => pages.filter((p) => p.kind === "ocr" && (p.confidence ?? 100) < LOW_CONFIDENCE).map((p) => p.page);
-const awaitsOcr = (d: { pages: PageInfo[]; ocrStatus: string }) => d.pages.some((p) => p.kind === "image") && d.ocrStatus !== "queued" && d.ocrStatus !== "running";
 
-export async function studiesRoutes(api: FastifyInstance, ctx: Ctx) {
-  const { db } = ctx;
+export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
   const requireStudy = async (studyId: string) => {
     const [study] = await db.select().from(studies).where(eq(studies.id, studyId));
     if (!study) throw new HttpError(404, "That study doesn't exist. Go back to the study list and pick it again.");
@@ -147,8 +141,6 @@ export async function studiesRoutes(api: FastifyInstance, ctx: Ctx) {
         bytes: doc.bytes,
         pageCount: doc.pages.length,
         scannedPages: scannedOf(doc.pages),
-        lowConfidencePages: lowConfidenceOf(doc.pages),
-        ocr: { status: doc.ocrStatus, pagesDone: doc.ocrPagesDone, pagesTotal: scannedOf(doc.pages).length, error: doc.ocrError },
       })),
       versions: versionRows,
     };
@@ -189,7 +181,6 @@ export async function studiesRoutes(api: FastifyInstance, ctx: Ctx) {
       prepared.push({ name, hash, bytes: data.length, pages: pageInfos(doc) });
     }
 
-    const toOcr: string[] = [];
     const results = await db.transaction(async (tx) => {
       const inStudy = await tx.select({ id: documents.id, name: documents.name }).from(studyDocuments).innerJoin(documents, eq(documents.id, studyDocuments.documentId)).where(eq(studyDocuments.studyId, study.id));
       const results = [];
@@ -198,7 +189,6 @@ export async function studiesRoutes(api: FastifyInstance, ctx: Ctx) {
         const [doc] = created ? [created] : await tx.select().from(documents).where(eq(documents.sha256, file.hash));
         if (created) await audit(tx, { by: actor, action: "document.upload", entity: "document", entityId: doc!.id, detail: { name: doc!.name, bytes: doc!.bytes } });
         const result = { id: doc!.id, name: doc!.name, pages: doc!.pages.length, scannedPages: scannedOf(doc!.pages), alreadyInStudy: inStudy.some((d) => d.id === doc!.id) };
-        if (awaitsOcr(doc!)) toOcr.push(doc!.id);
         if (!result.alreadyInStudy) {
           if (inStudy.some((d) => d.name === doc!.name)) throw new HttpError(409, `This study already has a different file called "${doc!.name}". Rename the new one so the two can be told apart, or remove the old one first.`);
           await tx.insert(studyDocuments).values({ studyId: study.id, documentId: doc!.id, addedBy: actor });
@@ -209,7 +199,6 @@ export async function studiesRoutes(api: FastifyInstance, ctx: Ctx) {
       }
       return results;
     });
-    for (const id of new Set(toOcr)) await queueOcr(ctx, id);
     return results;
   });
 

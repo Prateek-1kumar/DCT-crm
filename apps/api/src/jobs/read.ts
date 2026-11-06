@@ -1,11 +1,12 @@
-import { ReadFailed, read } from "@dct/harness";
+import { type LoadedDoc, ReadFailed, read } from "@dct/harness";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Ctx } from "../app.js";
 import type { Db } from "../db/index.js";
-import { reads, versions } from "../db/schema.js";
-import { loadDocs } from "../lib/docs.js";
+import { documents, reads, versions } from "../db/schema.js";
+import { forgetStored, loadDocs, loadStored, pageInfos } from "../lib/docs.js";
 import { HttpError } from "../lib/http.js";
 import { fillStudy } from "../lib/parties.js";
+import { scanStore } from "../lib/storage.js";
 
 export const READ_QUEUE = "read";
 /** A paid read is never retried by the queue, and may run far longer than pg-boss's 15 minute default before it counts as lost. */
@@ -37,7 +38,20 @@ export async function markFailed(db: Db, { id, versionId }: ReadRef, error: stri
   });
 }
 
-async function runRead({ db, log, models }: Ctx, readId: string) {
+/** A read keeps the scanned pages it transcribed even when it stops part way, so the stored page list is brought up to date either way. */
+async function refreshPages({ db, log }: Ctx, docs: LoadedDoc[]) {
+  for (const { name, sha256 } of docs) {
+    try {
+      forgetStored(sha256);
+      await db.update(documents).set({ pages: pageInfos(await loadStored(sha256)) }).where(eq(documents.sha256, sha256));
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.name : "unknown", name }, "couldn't update a document's pages after a read");
+    }
+  }
+}
+
+async function runRead(ctx: Ctx, readId: string) {
+  const { db, log, models } = ctx;
   const [row] = await db.update(reads).set({ status: "running", startedAt: new Date() }).where(and(eq(reads.id, readId), eq(reads.status, "queued"))).returning();
   if (!row) return;
   const ref = { id: row.id, versionId: row.versionId };
@@ -56,8 +70,8 @@ async function runRead({ db, log, models }: Ctx, readId: string) {
   try {
     const [version] = await db.select({ studyId: versions.studyId, documentIds: versions.documentIds }).from(versions).where(eq(versions.id, row.versionId));
     const docs = await loadDocs(db, version!.documentIds);
-    if (docs.some((d) => d.pages.some((p) => p.kind === "image"))) throw new HttpError(409, "Some pages are still being prepared (OCR), so nothing was sent to any model. Start the read again when they're done.");
-    const result = await read(docs, { ...models(), maxUsd: row.budgetUsd, onProgress: say });
+    const scanned = docs.filter((d) => d.pages.some((p) => p.kind === "image"));
+    const result = await read(docs, { ...models(), maxUsd: row.budgetUsd, onProgress: say, scans: scanStore }).finally(() => refreshPages(ctx, scanned));
     await appended;
 
     const trace = { compile: result.compiled?.trace ?? null, log: result.log };
@@ -93,6 +107,7 @@ async function recoverReads({ db, boss }: Ctx) {
 
 export async function startReadJob(ctx: Ctx) {
   await ctx.boss.createQueue(READ_QUEUE);
+  await ctx.boss.deleteQueue("ocr"); // the OCR job of earlier versions: nothing works it any more
   await recoverReads(ctx);
   await ctx.boss.work<{ readId: string }>(READ_QUEUE, { batchSize: 1, pollingIntervalSeconds: 0.5 }, async ([job]) => runRead(ctx, job!.data.readId));
 }

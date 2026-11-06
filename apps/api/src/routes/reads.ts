@@ -1,3 +1,4 @@
+import { SCAN_PAGE_USD, untranscribed } from "@dct/harness";
 import { asc, eq, max } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -7,8 +8,10 @@ import { documents, reads, studies, studyDocuments, versions } from "../db/schem
 import { markFailed, READ_JOB, READ_QUEUE } from "../jobs/read.js";
 import { audit } from "../lib/audit.js";
 import { By } from "../lib/by.js";
+import { loadDocs } from "../lib/docs.js";
 import { HttpError } from "../lib/http.js";
 import { parse } from "../lib/parse.js";
+import { scanStore } from "../lib/storage.js";
 
 const StartBody = z.object({ by: By });
 const NOT_STARTED = "The read couldn't be started. Try again; if it keeps happening, tell the team.";
@@ -21,17 +24,15 @@ export async function readsRoutes(api: FastifyInstance, { db, boss, log, models 
     const [study] = await db.select({ id: studies.id }).from(studies).where(eq(studies.id, studyId));
     if (!study) throw new HttpError(404, "There is no such study.");
     const docs = await db
-      .select({ id: documents.id, name: documents.name, pages: documents.pages, ocrStatus: documents.ocrStatus, ocrError: documents.ocrError })
+      .select({ id: documents.id })
       .from(studyDocuments)
       .innerJoin(documents, eq(documents.id, studyDocuments.documentId))
       .where(eq(studyDocuments.studyId, studyId))
       .orderBy(asc(studyDocuments.addedAt), asc(documents.name));
     if (!docs.length) throw new HttpError(409, "Upload the contract first.");
-    const unprepared = docs.filter((d) => d.pages.some((p) => p.kind === "image"));
-    const failed = unprepared.filter((d) => d.ocrStatus === "failed");
-    if (unprepared.length > failed.length) throw new HttpError(409, "Some pages are still being prepared (OCR). Reading can start when they're done.");
-    if (failed.length) throw new HttpError(409, `Some scanned pages couldn't be prepared, so nothing was sent to any model. ${failed.map((d) => `${d.name}: ${d.ocrError}`).join(" ")}`);
-    models();
+    const { openai } = models();
+    const scans = await untranscribed(await loadDocs(db, docs.map((d) => d.id)), scanStore, openai);
+    const budgetUsd = Math.round((config.readBudgetUsd + SCAN_PAGE_USD * scans) * 100) / 100;
 
     const started = await db
       .transaction(async (tx) => {
@@ -40,7 +41,7 @@ export async function readsRoutes(api: FastifyInstance, { db, boss, log, models 
           .insert(versions)
           .values({ studyId, number: (latest ?? 0) + 1, status: "reading", documentIds: docs.map((d) => d.id), createdBy: by })
           .returning();
-        const [read] = await tx.insert(reads).values({ versionId: version!.id, budgetUsd: config.readBudgetUsd }).returning();
+        const [read] = await tx.insert(reads).values({ versionId: version!.id, budgetUsd }).returning();
         await audit(tx, { by, action: "read.started", entity: "read", entityId: read!.id, detail: { studyId, versionId: version!.id, number: version!.number, budgetUsd: read!.budgetUsd } });
         return { readId: read!.id, versionId: version!.id };
       })

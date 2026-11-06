@@ -77,7 +77,7 @@ await db.transaction(async (tx) => {
   const [sponsor] = await tx.insert(parties).values({ kind: "sponsor", name: "Example Pharma", createdBy: by }).returning();
   const [site] = await tx.insert(parties).values({ kind: "site", name: "Discovery Clinical Trials", createdBy: by }).returning();
   const [study] = await tx.insert(studies).values({ protocol: "EX-101", sponsorId: sponsor!.id, siteId: site!.id, createdBy: by }).returning();
-  const pages = loaded.pages.map((p) => ({ page: p.page, kind: p.kind, chars: p.raw.length, firstLine: p.firstLine, confidence: null }));
+  const pages = loaded.pages.map((p) => ({ page: p.page, kind: p.kind, chars: p.raw.length, firstLine: p.firstLine }));
   const [doc] = await tx.insert(documents).values({ sha256: hash, name: DOC, bytes: 0, pages, createdBy: by }).returning();
   await tx.insert(studyDocuments).values({ studyId: study!.id, documentId: doc!.id, addedBy: by });
   await tx.insert(versions).values({ studyId: study!.id, number: 1, status: "draft", documentIds: [doc!.id], rulebook, problems: report.problems, createdBy: by });

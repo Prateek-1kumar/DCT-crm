@@ -125,9 +125,19 @@ describe("documents", () => {
     expect(file).toMatchObject({ name: "contract.pdf", pages: 4, scannedPages: [2, 4], alreadyInStudy: false });
 
     const detail = (await call("GET", `/studies/${study.id}`)).json();
-    expect(detail.documents).toEqual([{ id: file.id, name: "contract.pdf", bytes: expect.any(Number), pageCount: 4, scannedPages: [2, 4], lowConfidencePages: [], ocr: expect.objectContaining({ pagesTotal: 2 }) }]);
+    expect(detail.documents).toEqual([{ id: file.id, name: "contract.pdf", bytes: expect.any(Number), pageCount: 4, scannedPages: [2, 4] }]);
     expect((await auditFor(study.id)).map((a) => a.action)).toEqual(["study.create", "study.document.add"]);
     expect((await auditFor(file.id)).map((a) => [a.action, a.by])).toEqual([["document.upload", "Asha"]]);
+  });
+
+  it("uploading a scanned PDF queues nothing and lists its scanned pages", async () => {
+    const study = await newStudy();
+    const [file] = (await uploadBy(study.id, [{ name: "scan.pdf", data: await pdf("blank", "text", "blank") }])).json();
+    expect(file).toMatchObject({ pages: 3, scannedPages: [1, 3] });
+
+    const [doc] = (await call("GET", `/studies/${study.id}`)).json().documents;
+    expect(doc).toEqual({ id: file.id, name: "scan.pdf", bytes: expect.any(Number), pageCount: 3, scannedPages: [1, 3] });
+    expect((await built.ctx.boss.getQueues()).map((q) => q.name)).not.toContain("ocr");
   });
 
   it("refuses what isn't a PDF, naming the file, and stores nothing", async () => {

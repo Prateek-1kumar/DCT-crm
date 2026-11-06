@@ -53,8 +53,8 @@ describe("the jobs queue", () => {
     const quiet = () => {};
     const boss = await startBoss({ log: { error: quiet, warn: quiet } as unknown as Parameters<typeof startBoss>[0]["log"] });
     try {
-      // pg-boss keeps an internal queue of its own, named __pgboss__…; "read" and "ocr" are the app's jobs, created and kept by the app
-      expect((await boss.getQueues()).filter((q) => !q.name.startsWith("__pgboss__") && q.name !== "read" && q.name !== "ocr")).toEqual([]);
+      // pg-boss keeps an internal queue of its own, named __pgboss__…; "read" is the app's job, created and kept by the app
+      expect((await boss.getQueues()).filter((q) => !q.name.startsWith("__pgboss__") && q.name !== "read")).toEqual([]);
       expect(boss.getWipData()).toEqual([]);
     } finally {
       await boss.stop({ graceful: false });

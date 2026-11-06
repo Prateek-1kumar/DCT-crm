@@ -1,7 +1,10 @@
+import { sql } from "drizzle-orm";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { migrationProblems } from "../scripts/db-check.js";
+import { createDb } from "../src/db/index.js";
+import { config } from "../src/config.js";
 
 // Drizzle applies only the migrations newer than the last one applied (by the journal's `when`), and never says when it
 // skips one: a migration out of order, or one the journal doesn't list, never runs.
@@ -19,4 +22,15 @@ describe("the migrations", () => {
   it("agree with src/db/schema.ts, by drizzle-kit's own diff (pnpm --filter @dct/api db:check)", () => {
     expect(migrationProblems()).toEqual([]);
   }, 60_000);
+
+  it("leave no trace of the OCR job on the documents table", async () => {
+    const { db, pool } = createDb(config.databaseUrl);
+    try {
+      const { rows } = await db.execute<{ name: string }>(sql`SELECT column_name AS name FROM information_schema.columns WHERE table_name = 'documents' AND column_name LIKE 'ocr%'`);
+      const { rows: types } = await db.execute<{ name: string }>(sql`SELECT typname AS name FROM pg_type WHERE typname = 'ocr_status'`);
+      expect([rows, types]).toEqual([[], []]);
+    } finally {
+      await pool.end();
+    }
+  });
 });

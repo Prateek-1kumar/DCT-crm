@@ -3,19 +3,17 @@ import { sql } from "drizzle-orm";
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
-import { ocrPages } from "@dct/harness";
 import type { PgBoss } from "pg-boss";
 import { config } from "./config.js";
 import { apiPoolOptions, createDb, type Db, pendingMigrations } from "./db/index.js";
 import { startBoss } from "./boss.js";
-import { type Ocr, startOcrJob } from "./jobs/ocr.js";
 import { startReadJob } from "./jobs/read.js";
 import { type Models, modelsFromConfig } from "./jobs/models.js";
 import { HttpError } from "./lib/http.js";
 import { idempotency } from "./lib/idempotency.js";
 import { routes } from "./routes/index.js";
 
-export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger; models: () => Models; ocr: Ocr };
+export type Ctx = { db: Db; boss: PgBoss; log: FastifyBaseLogger; models: () => Models };
 
 /** Postgres errors a request causes (a malformed id, a number out of range): the request's fault, so 400. */
 const BAD_INPUT: Record<string, string> = {
@@ -46,9 +44,8 @@ const within = <T>(ms: number, p: Promise<T>) =>
 /**
  * `routes` adds routes under /api/v1 beside the real ones, behind the same id/version check: the way a test adds its own.
  * `models` builds the model clients a read uses (called when a read starts and again by the job); tests hand in fakes.
- * `ocr` reads the scanned pages of a document; tests hand in a fake so no real OCR runs.
  */
-export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyInstance, ctx: Ctx) => void | Promise<void>; models?: () => Models; ocr?: Ocr } = {}) {
+export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyInstance, ctx: Ctx) => void | Promise<void>; models?: () => Models } = {}) {
   const app = Fastify({
     // JSON lines (pino). Request logging is the method and the route pattern only: never bodies, ids or query strings
     // (search terms, names); errors are logged by the handler below, without values.
@@ -69,9 +66,8 @@ export async function buildApp(opts: { logger?: boolean; routes?: (api: FastifyI
   const behind = await pendingMigrations(db);
   if (behind) app.log.error({ pending: behind }, "the database is behind this build: run the migrations (pnpm --filter @dct/api db:migrate), then restart");
   const boss = await startBoss({ log: app.log });
-  const ctx: Ctx = { db, boss, log: app.log, models: opts.models ?? modelsFromConfig, ocr: opts.ocr ?? ocrPages };
+  const ctx: Ctx = { db, boss, log: app.log, models: opts.models ?? modelsFromConfig };
   await startReadJob(ctx);
-  await startOcrJob(ctx);
   let stopped = false;
   boss.once("stopped", () => (stopped = true));
 

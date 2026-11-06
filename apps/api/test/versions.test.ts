@@ -32,7 +32,7 @@ beforeAll(async () => {
   const sha256 = await savePdf(Buffer.from(await pdf.save()));
   const [doc] = await built.ctx.db
     .insert(documents)
-    .values({ sha256, name: "contract.pdf", bytes: 1, pages: [{ page: 1, kind: "text", chars: 250, firstLine: "Startup fee", confidence: null }], createdBy: "test" })
+    .values({ sha256, name: "contract.pdf", bytes: 1, pages: [{ page: 1, kind: "text", chars: 250, firstLine: "Startup fee" }], createdBy: "test" })
     .onConflictDoUpdate({ target: documents.sha256, set: { name: "contract.pdf" } })
     .returning();
   docId = doc!.id;
@@ -70,7 +70,7 @@ async function otherDoc() {
   const pdf = await PDFDocument.create();
   pdf.addPage([612, 792]).drawText(`Other ${randomUUID()}`, { x: 40, y: 700, size: 9, font: await pdf.embedFont(StandardFonts.Helvetica) });
   const sha256 = await savePdf(Buffer.from(await pdf.save()));
-  const [doc] = await db().insert(documents).values({ sha256, name: `other-${sha256.slice(0, 6)}.pdf`, bytes: 1, pages: [{ page: 1, kind: "image", chars: 0, firstLine: "", confidence: null }], createdBy: "test" }).returning();
+  const [doc] = await db().insert(documents).values({ sha256, name: `other-${sha256.slice(0, 6)}.pdf`, bytes: 1, pages: [{ page: 1, kind: "image", chars: 0, firstLine: "" }], createdBy: "test" }).returning();
   return doc!.id;
 }
 
@@ -145,7 +145,7 @@ describe("GET /versions/:id/coverage", () => {
     expect(res.json()).toEqual({
       pages: [{
         documentId: docId, doc: "contract.pdf", page: 1, kind: "text",
-        amounts: [{ box: [expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)], text: "$1,500.00", cents: 150000, status: "captured", ref: { target: "term", id: "t1" }, reason: null, line: "Startup fee $1,500.00 due on signing.", confidence: null }],
+        amounts: [{ box: [expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)], text: "$1,500.00", cents: 150000, status: "captured", ref: { target: "term", id: "t1" }, reason: null, line: "Startup fee $1,500.00 due on signing.", doubt: null }],
         clauses: [{ termId: "t1", boxes: [[expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)]] }],
       }],
       totals: { amounts: 1, captured: 1, decided: 0, setAside: 0, missing: 0 },

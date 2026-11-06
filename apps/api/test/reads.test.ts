@@ -1,6 +1,6 @@
 import { HttpError } from "../src/lib/http.js";
 import type { ModelClient, Reader } from "@dct/harness";
-import { pdfReader } from "@dct/harness";
+import { pdfReader, scanVersion } from "@dct/harness";
 import { eq } from "drizzle-orm";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,9 +10,9 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { auditLog, documents, parties, reads, studies, studyDocuments, versions, type PageInfo } from "../src/db/schema.js";
-import { savePdf } from "../src/lib/storage.js";
+import { savePdf, scanStore } from "../src/lib/storage.js";
 import type { Models } from "../src/jobs/models.js";
-import { type Built, noOcr } from "./helpers.js";
+import type { Built } from "./helpers.js";
 
 // Reading a contract as a background job, with fake models: nothing here can reach a real one.
 
@@ -28,7 +28,7 @@ const extra: Built[] = [];
 
 /** Another app on the same database, as a restart or a server with no keys; closed after the test, so it never takes a job meant for `built`. */
 const start = async (opts: Parameters<typeof buildApp>[0] = {}) => {
-  const b = await buildApp({ ocr: noOcr, ...opts });
+  const b = await buildApp(opts);
   extra.push(b);
   return b;
 };
@@ -64,11 +64,13 @@ function scripted(script: (ModelMessage | (() => Promise<ModelMessage>))[]): Mod
   };
 }
 
+let transcriptions = 0;
 const reader = (model: string, answers: Record<string, unknown>): Reader => ({
   model,
   price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 },
   async ask<T>(req: { name: string }) {
     modelCalls++;
+    if (req.name === "transcribe_page") transcriptions++;
     return { value: answers[req.name] as T, model, usd: 0.25 };
   },
 });
@@ -76,13 +78,13 @@ const reader = (model: string, answers: Record<string, unknown>): Reader => ({
 const fakes = (script: Parameters<typeof scripted>[0] = goodScript()): Models => ({
   anthropic: scripted(script),
   claude: reader("claude-sonnet-5-5", {}),
-  openai: reader("fake-openai", { review: { findings: [] } }),
+  openai: reader("fake-openai", { review: { findings: [] }, transcribe_page: { rotation: 0, lines: [{ text: CLAUSE, top: 0.1, bottom: 0.12, unsure: false, marks: [] }], tables: [] } }),
 });
 
 let dir: string;
 beforeAll(async () => {
   dir = await mkdtemp(path.join(tmpdir(), "dct-reads-"));
-  built = await buildApp({ models: () => models(), ocr: noOcr });
+  built = await buildApp({ models: () => models() });
 });
 afterEach(async () => {
   await Promise.all(extra.splice(0).map((b) => b.app.close()));
@@ -97,22 +99,33 @@ async function pdf(name: string, lines = [CLAUSE, FILLER, FILLER]) {
   return Buffer.from(await file.save());
 }
 
-/** A study with one stored contract (a text PDF, or pages marked as scans), seeded straight into the database. */
-async function seedStudy(opts: { name?: string; scanned?: "image" | "ocr"; ocrStatus?: "queued" | "running" | "failed"; none?: boolean } = {}) {
+/** A PDF of blank pages: no text layer, so every page is a scan. Each call makes different bytes. */
+async function scan(pages: number) {
+  const file = await PDFDocument.create();
+  file.setTitle(`${nextId++}`);
+  for (let i = 0; i < pages; i++) file.addPage([612, 792]);
+  return Buffer.from(await file.save());
+}
+
+/** A study with one stored contract (a text PDF, or a blank-page scan), seeded straight into the database. */
+async function seedStudy(opts: { name?: string; scanPages?: number; none?: boolean } = {}) {
   const { db } = built.ctx;
   const name = opts.name ?? "CTA.pdf";
   const [s] = await db.insert(studies).values({ createdBy: "test" }).returning();
   if (opts.none) return s!;
-  const data = await pdf(`${name}${nextId++}`);
+  const data = opts.scanPages ? await scan(opts.scanPages) : await pdf(`${name}${nextId++}`);
   const file = path.join(dir, "seed.pdf");
   await writeFile(file, data);
   const loaded = await pdfReader.load(file);
-  const pages: PageInfo[] = loaded.pages.map((p) => ({ page: p.page, kind: opts.scanned ?? p.kind, chars: p.raw.length, firstLine: p.firstLine, confidence: null }));
+  const pages: PageInfo[] = loaded.pages.map((p) => ({ page: p.page, kind: p.kind, chars: p.raw.length, firstLine: p.firstLine }));
   const hash = await savePdf(data);
-  const [doc] = await db.insert(documents).values({ sha256: hash, name, bytes: data.length, pages, ocrStatus: opts.ocrStatus, ocrError: opts.ocrStatus === "failed" ? "The scanned pages couldn't be read. Upload the file again to try once more." : null, createdBy: "test" }).returning();
+  const [doc] = await db.insert(documents).values({ sha256: hash, name, bytes: data.length, pages, createdBy: "test" }).returning();
   await db.insert(studyDocuments).values({ studyId: s!.id, documentId: doc!.id, addedBy: "test" });
   return s!;
 }
+
+const contractOf = async (studyId: string) =>
+  (await built.ctx.db.select({ id: documents.id, sha256: documents.sha256 }).from(studyDocuments).innerJoin(documents, eq(documents.id, studyDocuments.documentId)).where(eq(studyDocuments.studyId, studyId)))[0]!;
 
 const post = (b: Built, studyId: string, body: unknown = { by: "Asha" }) => b.app.inject({ method: "POST", url: `/api/v1/studies/${studyId}/reads`, payload: body as object });
 const get = async (b: Built, readId: string) => (await b.app.inject({ url: `/api/v1/reads/${readId}` })).json();
@@ -179,32 +192,61 @@ describe("starting a read", () => {
     expect((await post(built, s.id, { by: " " })).json().message).toMatch(/pick your name/);
   });
 
-  it.each(["queued", "running"] as const)("won't start while a scanned document is %s for OCR, and sends nothing to a model or saves nothing", async (ocrStatus) => {
-    const s = await seedStudy({ name: "Scan.pdf", scanned: "image", ocrStatus });
+  it("starting a read on a 2-page scan records budget 3 + 0.80", async () => {
+    const s = await seedStudy({ scanPages: 2 });
     use(fakes());
-    const before = modelCalls;
-    const res = await post(built, s.id);
-    expect([res.statusCode, res.json().message]).toEqual([409, "Some pages are still being prepared (OCR). Reading can start when they're done."]);
-    expect(modelCalls).toBe(before);
-    expect(await built.ctx.db.select().from(versions).where(eq(versions.studyId, s.id))).toEqual([]);
+    const { readId } = (await post(built, s.id)).json();
+    expect((await get(built, readId)).budgetUsd).toBe(3.8);
+    const entries = await built.ctx.db.select().from(auditLog).where(eq(auditLog.entityId, readId));
+    expect(entries).toMatchObject([{ detail: { budgetUsd: 3.8 } }]);
+    await finished(built, readId);
   });
 
-  it("won't start when a scanned document's OCR failed, naming it with the reason and the way forward", async () => {
-    const s = await seedStudy({ name: "Scan.pdf", scanned: "image", ocrStatus: "failed" });
+  it("budgets nothing extra for a contract with a text layer", async () => {
+    const s = await seedStudy();
     use(fakes());
-    const before = modelCalls;
-    const res = await post(built, s.id);
-    expect(res.statusCode).toBe(409);
-    expect(res.json().message).toContain("Scan.pdf: The scanned pages couldn't be read. Upload the file again");
-    expect(modelCalls).toBe(before);
+    const { readId } = (await post(built, s.id)).json();
+    expect((await get(built, readId)).budgetUsd).toBe(3);
+    await finished(built, readId);
   });
 
-  it("starts when every scanned page has been read with OCR", async () => {
-    const s = await seedStudy({ scanned: "ocr" });
+  it("after a read, the scanned pages show as scan with words", async () => {
+    const s = await seedStudy({ scanPages: 2 });
     use(fakes());
-    const res = await post(built, s.id);
-    expect(res.statusCode).toBe(202);
-    expect((await finished(built, res.json().readId)).status).toBe("done");
+    transcriptions = 0;
+    const read = await finished(built, (await post(built, s.id)).json().readId);
+    expect(read.status).toBe("done");
+    expect(transcriptions).toBe(2);
+    const contract = await contractOf(s.id);
+    expect(read.progress).toContain("Reading scanned pages: 2 of 2");
+
+    const [doc] = await built.ctx.db.select().from(documents).where(eq(documents.id, contract.id));
+    expect(doc!.pages.map((p) => p.kind)).toEqual(["scan", "scan"]);
+    expect(doc!.pages[0]!.chars).toBeGreaterThan(0);
+    const text = (await built.app.inject({ url: `/api/v1/documents/${contract.id}/pages/1/text` })).json();
+    expect(text).toMatchObject({ page: 1, kind: "scan", words: expect.arrayContaining([expect.objectContaining({ text: "Startup" })]) });
+    expect(await scanStore.get(contract.sha256)).toHaveLength(2);
+  });
+
+  it("a second read of the same file adds nothing to the budget and transcribes nothing again", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    use(fakes());
+    expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");
+    use(fakes());
+    transcriptions = 0;
+    const again = (await post(built, s.id)).json();
+    expect((await get(built, again.readId)).budgetUsd).toBe(3);
+    expect((await finished(built, again.readId)).status).toBe("done");
+    expect(transcriptions).toBe(0);
+  });
+
+  it("charges only for the scanned pages not yet transcribed, when a read stopped part way", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    await scanStore.put((await contractOf(s.id)).sha256, { page: 1, version: scanVersion(fakes().openai), rotation: 0, words: [] });
+    use(fakes());
+    const { readId } = (await post(built, s.id)).json();
+    expect((await get(built, readId)).budgetUsd).toBe(3.4);
+    await finished(built, readId);
   });
 
   it("says plainly that reading isn't set up when the keys are missing, and saves nothing", async () => {
