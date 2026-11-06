@@ -13,6 +13,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "ocr-bench": "tsx scripts/ocr-bench.ts",
+    "vision-bench": "tsx --env-file-if-exists=../../.env scripts/vision-bench.ts",
     "read": "tsx --env-file-if-exists=../../.env src/cli.ts"
   },
   "dependencies": {
