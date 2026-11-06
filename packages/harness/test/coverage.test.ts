@@ -5,7 +5,7 @@ import type { Rulebook } from "@dct/shared";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
-import { coverage, findQuote } from "../src/checks/coverage";
+import { coverage, findQuote, quoteBoxes } from "../src/checks/coverage";
 import { pdfReader } from "../src/pdf";
 import type { LoadedDoc, Word } from "../src/types";
 import { wordsOf } from "./words";
@@ -72,7 +72,7 @@ const term = (id: string, over: Partial<Term> = {}): Term => ({
 
 const grid = (over: Partial<Grid> = {}): Grid => ({
   id: "g1", name: "Budget", arm: null, doc: "contract.pdf", pages: [2], visits: ["V1", "V2"], overheadPct: null,
-  rows: [], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], ...over,
+  rows: [], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false, ...over,
 });
 
 const rulebook = (over: Partial<Rulebook> = {}): Rulebook => ({
@@ -251,5 +251,20 @@ describe("coverage on a scanned page", () => {
 
   it("is null on a page with a text layer", () => {
     expect(page1(rulebook()).amounts.every((a) => a.doubt === null)).toBe(true);
+  });
+
+  it("amount boxes on a scan page span the full width, since the words' horizontal positions are made up", () => {
+    const rb = rulebook({ terms: [term("fee", { amountCents: 120000, source: { doc: "scan.pdf", page: 1, quote: "Startup fee" } })] });
+    const boxes = amounts(rb).map((a) => a.box);
+    expect(boxes.map(([x0, , x1]) => [x0, x1])).toEqual([[0, 1], [0, 1], [0, 1]]);
+    expect(boxes[0]![1]).toBeCloseTo(0);
+    expect(boxes[1]![1]).toBeCloseTo(0.01);
+  });
+
+  it("a quote's boxes on a scan page span the full width of their lines", () => {
+    const rb = rulebook({ terms: [term("fee", { amountCents: 120000, source: { doc: "scan.pdf", page: 1, quote: "Startup fee" } })] });
+    expect(coverage(rb, [scan]).pages[0]!.clauses).toEqual([{ termId: "fee", boxes: [[0, expect.closeTo(0, 3), 1, expect.closeTo(0.008, 3)]] }]);
+    expect(quoteBoxes(scan.pages[0]!, "and S9.99")).toEqual([[0, expect.any(Number), 1, expect.any(Number)]]);
+    expect(quoteBoxes({ ...scan.pages[0]!, kind: "text" }, "and S9.99")[0]![0]).toBeGreaterThan(0);
   });
 });

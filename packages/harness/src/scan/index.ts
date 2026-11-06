@@ -3,7 +3,7 @@ import { pdfReader } from "../pdf";
 import { buildPage } from "../pdf/page";
 import { ReadFailed } from "../read";
 import type { LoadedDoc, Page, ScanPage, ScanStore } from "../types";
-import { pageParts, transcribeAsk, type Transcription } from "./transcribe";
+import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts, transcribeAsk, type Transcription } from "./transcribe";
 import { toWords } from "./words";
 
 export { fileScanStore } from "./store";
@@ -13,9 +13,6 @@ export const SCAN_PAGE_USD = 0.4;
 
 const OUTPUT_TOKENS = 8000;
 const PARALLEL_PAGES = 4;
-const SCAN_DPI = 200;
-// A letter page at 200 dpi is about 3.7 million pixels; the model's strips are cut from this image, so it is not capped like a page sent whole.
-const MAX_SCAN_PIXELS = 12e6;
 
 export const scanVersion = (reader: Reader) => `transcribe-1 ${reader.model}`;
 
@@ -98,6 +95,7 @@ export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store:
         }
         await store.put(job.doc.sha256, scan);
         job.saved.push(scan);
+        if (!scan.words.length) opts.onProgress?.(`p.${job.page.page} of ${job.doc.name} looked blank when read from the image`);
         done++;
         progress();
       } catch (cause) {

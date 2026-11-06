@@ -72,7 +72,7 @@ const full: Rulebook = {
       additions: [],
       total: [5000, 0],
       grandTotalCents: 5000,
-      cellsReadTwice: [],
+      cellsReadTwice: [], acceptedAsPrinted: false,
     },
   ],
   accounted: [],

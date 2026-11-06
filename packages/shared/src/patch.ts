@@ -46,8 +46,31 @@ function patchGrid(rulebook: Rulebook, { id, set }: Patch) {
 /** Returns a new rulebook with the patches applied in order; the input is never changed. Throws in plain English if a patch doesn't fit or the result isn't a valid rulebook. */
 export function applyPatches(rulebook: Rulebook, patches: Patch[]): Rulebook {
   const next = structuredClone(rulebook);
+  // a rulebook stored before this field existed has no place for a patch to set
+  for (const grid of next.grids) grid.acceptedAsPrinted ??= false;
   for (const patch of patches) (patch.target === "term" ? patchTerm : patchGrid)(next, patch);
   const result = Rulebook.safeParse(next);
   if (!result.success) throw new Error(`That change would leave the rulebook invalid: ${issues(result.error)}.`);
   return result.data;
+}
+
+const CELL = /^rows\.(\d+)\.cells\.(\d+)$/;
+
+/**
+ * Patches that add every grid cell the given patches set to its grid's cellsReadTwice. That list means the cell no longer
+ * rests on the model's word alone, whoever settled it: a second read, or a person's answer.
+ */
+export function cellProofPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
+  const cells = new Map<string, [number, number][]>();
+  for (const p of patches) {
+    if (p.target !== "grid") continue;
+    for (const key of Object.keys(p.set)) {
+      const m = CELL.exec(key);
+      if (!m) continue;
+      const known = cells.get(p.id) ?? rulebook.grids.find((g) => g.id === p.id)?.cellsReadTwice ?? [];
+      const cell: [number, number] = [Number(m[1]), Number(m[2])];
+      cells.set(p.id, known.some(([r, c]) => r === cell[0] && c === cell[1]) ? known : [...known, cell]);
+    }
+  }
+  return [...cells].map(([id, set]): Patch => ({ target: "grid", id, set: { cellsReadTwice: set } }));
 }

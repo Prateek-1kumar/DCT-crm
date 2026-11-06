@@ -16,15 +16,20 @@ type ReadRef = { id: string; versionId: string };
 
 const COMPILED = new Set(["done", "finishes_exhausted"]);
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const whyStopped = (reason: string, budget: number) =>
-  ({
-    budget: `The read reached its spending limit of ${usd(budget)} before it finished, so nothing was kept. Start it again to try once more.`,
-    max_turns: "The model went through too many steps without finishing, so nothing was kept. Start the read again.",
-    refusal: "The model declined to read this contract, so nothing was kept.",
-    max_tokens: "The model ran out of room before finishing this contract, so nothing was kept.",
-    model_context_window_exceeded: "This contract is too long for the model to read in one go, so nothing was kept.",
-    error: "The model stopped answering part way through, so nothing was kept. Start the read again.",
-  })[reason] ?? "The read stopped before it finished, so nothing was kept. Start the read again.";
+const whyStopped = (reason: string, budget: number, scansKept: boolean) => {
+  // the rulebook is lost when a read stops, but what the vision model transcribed is saved and isn't paid for again
+  const lost = scansKept ? "so the rulebook wasn't kept. The scanned pages it read are saved, so the next read costs less" : "so nothing was kept";
+  return (
+    {
+      budget: `The read reached its spending limit of ${usd(budget)} before it finished, ${lost}. Start it again to try once more.`,
+      max_turns: `The model went through too many steps without finishing, ${lost}. Start the read again.`,
+      refusal: `The model declined to read this contract, ${lost}.`,
+      max_tokens: `The model ran out of room before finishing this contract, ${lost}.`,
+      model_context_window_exceeded: `This contract is too long for the model to read in one go, ${lost}.`,
+      error: `The model stopped answering part way through, ${lost}. Start the read again.`,
+    }[reason] ?? `The read stopped before it finished, ${lost}. Start the read again.`
+  );
+};
 
 const GENERIC = "The read stopped because of a problem on the server. Start it again; if it keeps happening, tell the team.";
 const SERVER_STOPPED = "The server stopped while this contract was being read. Start the read again.";
@@ -80,7 +85,7 @@ async function runRead(ctx: Ctx, readId: string) {
     if (stopped) {
       // the reason only: a provider's error text can echo what was sent; the detail stays in the read's trace
       log.warn({ reason: stopped.stopReason }, "a read stopped early");
-      await markFailed(db, ref, whyStopped(stopped.stopReason, row.budgetUsd), { spentUsd: result.usd, trace });
+      await markFailed(db, ref, whyStopped(stopped.stopReason, row.budgetUsd, docs.some((d) => d.pages.some((p) => p.kind !== "text"))), { spentUsd: result.usd, trace });
       return;
     }
     await db.transaction(async (tx) => {

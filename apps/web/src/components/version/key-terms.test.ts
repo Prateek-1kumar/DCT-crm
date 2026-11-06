@@ -17,7 +17,7 @@ const grid = (id: string, grandTotalCents: number | null): Grid => ({
   additions: [],
   total: null,
   grandTotalCents,
-  cellsReadTwice: [],
+  cellsReadTwice: [], acceptedAsPrinted: false,
 });
 
 describe("keyTerms", () => {

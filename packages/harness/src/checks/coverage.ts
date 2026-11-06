@@ -71,6 +71,12 @@ export function findQuote(words: Word[], quote: string): Region[] {
   return [];
 }
 
+/** Where a scanned word sits across the page is made up (§5.1), so a scan's boxes are whole-width bands of the lines they are on. */
+const bandOf = (page: Page, box: Region): Region => (page.kind === "scan" ? [0, box[1], 1, box[3]] : box);
+
+/** findQuote for a page: on a scan, the full-width bands of the quote's lines. */
+export const quoteBoxes = (page: Page, quote: string): Region[] => findQuote(page.words, quote).map((box) => bandOf(page, box));
+
 interface Candidate {
   ref: CoverageRef;
   person: boolean;
@@ -151,7 +157,7 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
           const accounted = match ? undefined : (wholePage ?? setAside(a.cents));
           const status: AmountStatus = match ? (match.person ? "decided" : "captured") : accounted ? "set_aside" : "missing";
           const doubt = a.printed.find((w) => w.doubt)?.doubt ?? null;
-          out.amounts.push({ box: union(a.printed), text: a.text, cents: a.cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line: printedLine.trim().slice(0, 120), doubt });
+          out.amounts.push({ box: bandOf(page, union(a.printed)), text: a.text, cents: a.cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line: printedLine.trim().slice(0, 120), doubt });
           totals.amounts++;
           totals[status === "set_aside" ? "setAside" : status]++;
         }
@@ -159,7 +165,7 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
 
       for (const t of rulebook.terms) {
         if (t.source.doc !== doc.name || t.source.page !== page.page) continue;
-        const boxes = findQuote(page.words, t.source.quote);
+        const boxes = quoteBoxes(page, t.source.quote);
         if (boxes.length) out.clauses.push({ termId: t.id, boxes });
       }
     }

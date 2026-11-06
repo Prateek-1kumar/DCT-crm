@@ -88,6 +88,8 @@ export const Grid = z.object({
   grandTotalCents: cents.nullable(),
   /** [row, visit] cells settled by two independent reads, for grids with no printed total to prove them. */
   cellsReadTwice: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
+  /** A person accepted the grid's figures as the contract prints them, though they don't add up. Only an answer sets it, never the agent. */
+  acceptedAsPrinted: z.boolean().default(false),
 });
 export type Grid = z.infer<typeof Grid>;
 

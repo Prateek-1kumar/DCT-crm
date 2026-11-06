@@ -42,7 +42,7 @@ export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { read
   ];
 
   if (budget.spent + estimateUsd(reader, parts, OUTPUT_TOKENS) > budget.limit) {
-    return { questions: [], usd: 0, error: `The review was skipped: it would pass this read's $${budget.limit} limit.` };
+    return { questions: [], usd: 0, error: `The review was skipped: it would pass this read's $${budget.limit.toFixed(2)} limit.` };
   }
   try {
     const { value, usd } = await reader.ask({ name: "review", system: SYSTEM_PROMPT, parts, schema: Findings, effort: "high" });

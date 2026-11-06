@@ -2,7 +2,7 @@ export type * from "./types";
 export { compile } from "./agent";
 export type { CompileOptions, CompileResult, ModelClient, StopReason, TraceTurn } from "./agent";
 export { checks } from "./checks";
-export { coverage, findQuote } from "./checks/coverage";
+export { coverage, findQuote, quoteBoxes } from "./checks/coverage";
 export type { AmountStatus, Coverage, CoverageAmount, CoverageClause, CoveragePage, CoverageRef } from "./checks/coverage";
 export { pdfReader } from "./pdf";
 export { SCAN_PAGE_USD, fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "./scan";

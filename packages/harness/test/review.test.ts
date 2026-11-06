@@ -29,7 +29,7 @@ const rulebook = (over: Partial<Rulebook> = {}): Rulebook => ({
   grids: [{
     id: "g1", name: "Budget", arm: null, doc: "CTA.pdf", pages: [1], visits: ["V1", "V2"], overheadPct: 35,
     rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 20000], printedRowTotalCents: 30000 }],
-    subtotal: [10000, 20000], overhead: null, additions: [], total: null, grandTotalCents: 30000, cellsReadTwice: [],
+    subtotal: [10000, 20000], overhead: null, additions: [], total: null, grandTotalCents: 30000, cellsReadTwice: [], acceptedAsPrinted: false,
   }],
   accounted: [], questions: [], ...over,
 });
@@ -100,7 +100,7 @@ describe("review input for a scan page", () => {
   it("the reviewer gets the image and the transcription for a scan page", async () => {
     const pdf = await PDFDocument.create();
     pdf.addPage([612, 792]);
-    const path = join(dir, "ocr.pdf");
+    const path = join(dir, "scanned-page.pdf");
     await writeFile(path, await pdf.save());
     const loaded = await pdfReader.load(path);
     const scan: LoadedDoc = { ...loaded, name: "CTA.pdf", pages: [{ ...loaded.pages[0]!, kind: "scan", layout: "Screen failure  $5,995.00" }] };
@@ -118,7 +118,7 @@ describe("review budget and errors", () => {
     const { reader, calls } = fake([finding()]);
     const result = await review(rulebook(), docs, { reader, budget: { limit: 1, spent: 1 } });
     expect(calls).toHaveLength(0);
-    expect(result).toEqual({ questions: [], usd: 0, error: "The review was skipped: it would pass this read's $1 limit." });
+    expect(result).toEqual({ questions: [], usd: 0, error: "The review was skipped: it would pass this read's $1.00 limit." });
   });
 
   it("adds the call's cost to the budget", async () => {

@@ -5,6 +5,7 @@ import { Rulebook } from "@dct/shared";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, describe, expect, it } from "vitest";
 import { compile, type CompileOptions } from "../src/agent";
+import { withScans } from "../src/scan";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
 import type { Doubt, LoadedDoc } from "../src/types";
@@ -195,7 +196,7 @@ describe("scan pages", () => {
     const page = doc.pages[0]!;
     return { ...doc, pages: [{ ...page, kind: "scan", words: page.words.map((w) => (doubts[w.text] ? { ...w, doubt: doubts[w.text] } : w)) }] };
   };
-  const NOTE = "SCAN: text read from the page image by a vision model; amounts here are re-checked at zoom after you finish. Quote the words as transcribed.";
+  const NOTE = "SCAN: text read from the page image by a vision model; amounts the contract's arithmetic doesn't prove are re-read at zoom after you finish. Quote the words as transcribed.";
   const read = async (doc: LoadedDoc) => {
     const { calls } = await run([doc], [reply([call("read_pages", { doc: "A.pdf", pages: [1] })]), reply([])], { maxTurns: 2 });
     return calls;
@@ -214,6 +215,15 @@ describe("scan pages", () => {
     );
   });
 
+  it("read_pages shows a doubtful bank number masked, as it does a certain one", async () => {
+    const page = { page: 1, version: "v", rotation: 0, words: wordsOf("Account number 123456789\nFee $1,250.00").map((w) => (w.text === "123456789" ? { ...w, doubt: "unsure" as const } : w)) };
+    const [masked] = [withScans({ ...textDoc("x"), pages: [{ ...textDoc("x").pages[0]!, kind: "image", words: [] }] }, [page])];
+    const calls = await read(masked!);
+    const shown = String(resultsAfter(calls[1]!.messages)[0]!.content);
+    expect(shown).toContain('Doubtful on this page: "#########" (unsure)');
+    expect(shown).not.toContain("123456789");
+  });
+
   it("read_pages adds no doubt line when there are none", async () => {
     const calls = await read(scanDoc(["Fee $1,250.00"]));
     expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).not.toContain("Doubtful");
@@ -226,6 +236,16 @@ describe("scan pages", () => {
     );
     expect(result.stopReason).toBe("done");
     expect(result.report.quotes.t1).toMatch(/^scanned page/);
+  });
+});
+
+describe("a grid the agent writes", () => {
+  it("the compile agent can't mark a grid as accepted as printed", async () => {
+    const failing = { ...grid, grandTotal: "$999.00", acceptedAsPrinted: true };
+    const { result } = await run([textDoc(...BUDGET)], [reply([call("put_study", { study }), call("put_terms", { terms: [startup] }), call("put_grid", { grid: failing })]), reply([call("finish")])], { maxFinishes: 1 });
+
+    expect(result.rulebook.grids[0]!.acceptedAsPrinted).toBe(false);
+    expect(result.report.grids["g1"]!.problems).not.toEqual([]);
   });
 });
 

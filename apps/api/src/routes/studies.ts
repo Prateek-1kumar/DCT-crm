@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
-import { findQuote, pdfReader } from "@dct/harness";
+import { pdfReader, quoteBoxes } from "@dct/harness";
 import { rm } from "node:fs/promises";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
@@ -35,7 +35,7 @@ const ImageQuery = z.object({ dpi: z.coerce.number({ error: "dpi must be a whole
 
 const uniqueNormalised = (names: string[]) => [...new Map(names.map((n) => [norm(n), n])).values()];
 
-const scannedOf = (pages: PageInfo[]) => pages.filter((p) => p.kind !== "text").map((p) => p.page);
+const pagesOf = (pages: PageInfo[], kind: PageInfo["kind"]) => pages.filter((p) => p.kind === kind).map((p) => p.page);
 
 export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
   const requireStudy = async (studyId: string) => {
@@ -140,7 +140,8 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
         name: doc.name,
         bytes: doc.bytes,
         pageCount: doc.pages.length,
-        scannedPages: scannedOf(doc.pages),
+        scannedPages: pagesOf(doc.pages, "image"),
+        scansRead: pagesOf(doc.pages, "scan"),
       })),
       versions: versionRows,
     };
@@ -188,7 +189,7 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
         const [created] = await tx.insert(documents).values({ sha256: file.hash, name: file.name, bytes: file.bytes, pages: file.pages, createdBy: actor }).onConflictDoNothing().returning();
         const [doc] = created ? [created] : await tx.select().from(documents).where(eq(documents.sha256, file.hash));
         if (created) await audit(tx, { by: actor, action: "document.upload", entity: "document", entityId: doc!.id, detail: { name: doc!.name, bytes: doc!.bytes } });
-        const result = { id: doc!.id, name: doc!.name, pages: doc!.pages.length, scannedPages: scannedOf(doc!.pages), alreadyInStudy: inStudy.some((d) => d.id === doc!.id) };
+        const result = { id: doc!.id, name: doc!.name, pages: doc!.pages.length, scannedPages: pagesOf(doc!.pages, "image"), alreadyInStudy: inStudy.some((d) => d.id === doc!.id) };
         if (!result.alreadyInStudy) {
           if (inStudy.some((d) => d.name === doc!.name)) throw new HttpError(409, `This study already has a different file called "${doc!.name}". Rename the new one so the two can be told apart, or remove the old one first.`);
           await tx.insert(studyDocuments).values({ studyId: study.id, documentId: doc!.id, addedBy: actor });
@@ -238,6 +239,6 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
   api.get<{ Params: { id: string; page: string } }>("/documents/:id/pages/:page/find", async (req) => {
     const { q } = parse(FindQuery, req.query);
     const { doc, page } = await pageOf(req.params.id, req.params.page);
-    return { boxes: findQuote(doc.pages[page - 1]!.words, q) };
+    return { boxes: quoteBoxes(doc.pages[page - 1]!, q) };
   });
 }

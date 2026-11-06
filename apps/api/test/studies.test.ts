@@ -125,7 +125,7 @@ describe("documents", () => {
     expect(file).toMatchObject({ name: "contract.pdf", pages: 4, scannedPages: [2, 4], alreadyInStudy: false });
 
     const detail = (await call("GET", `/studies/${study.id}`)).json();
-    expect(detail.documents).toEqual([{ id: file.id, name: "contract.pdf", bytes: expect.any(Number), pageCount: 4, scannedPages: [2, 4] }]);
+    expect(detail.documents).toEqual([{ id: file.id, name: "contract.pdf", bytes: expect.any(Number), pageCount: 4, scannedPages: [2, 4], scansRead: [] }]);
     expect((await auditFor(study.id)).map((a) => a.action)).toEqual(["study.create", "study.document.add"]);
     expect((await auditFor(file.id)).map((a) => [a.action, a.by])).toEqual([["document.upload", "Asha"]]);
   });
@@ -138,7 +138,7 @@ describe("documents", () => {
     expect(file).toMatchObject({ pages: 3, scannedPages: [1, 3] });
 
     const [doc] = (await call("GET", `/studies/${study.id}`)).json().documents;
-    expect(doc).toEqual({ id: file.id, name: "scan.pdf", bytes: expect.any(Number), pageCount: 3, scannedPages: [1, 3] });
+    expect(doc).toEqual({ id: file.id, name: "scan.pdf", bytes: expect.any(Number), pageCount: 3, scannedPages: [1, 3], scansRead: [] });
     expect(await jobs()).toBe(before);
   });
 

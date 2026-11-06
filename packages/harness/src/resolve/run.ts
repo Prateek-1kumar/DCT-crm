@@ -19,7 +19,7 @@ const OUTPUT_TOKENS = 4000;
 /** One model call inside the budget. Failures throw a plain-English message for the log; the model's own error text is never shown. */
 export async function call<T>(run: Run, reader: Reader, ask: Ask<T>): Promise<T> {
   const estimate = estimateUsd(reader, ask.parts, OUTPUT_TOKENS);
-  if (run.budget.spent + estimate > run.budget.limit) throw new Error(`the $${run.budget.limit} limit would be passed`);
+  if (run.budget.spent + estimate > run.budget.limit) throw new Error(`the $${run.budget.limit.toFixed(2)} limit would be passed`);
   // held while the call runs, so a call made in parallel can't count on the same money
   run.budget.spent += estimate;
   const settle = (usd: number) => {

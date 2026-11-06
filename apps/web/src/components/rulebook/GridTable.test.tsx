@@ -20,7 +20,7 @@ const grid: Grid = {
   additions: [{ name: "Travel stipend", cells: [5000, "Inc in PE"] }],
   total: [20375, 0],
   grandTotalCents: 20375,
-  cellsReadTwice: [],
+  cellsReadTwice: [], acceptedAsPrinted: false,
 };
 
 afterEach(cleanup);

@@ -13,7 +13,7 @@ const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${
 
 const grid = (over: Partial<Grid>): Grid => ({
   id: "g1", name: "Budget", arm: null, doc: "A.pdf", pages: [1], visits: ["V1", "V2"], overheadPct: null,
-  rows: [], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], ...over,
+  rows: [], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false, ...over,
 });
 
 const term = (over: Partial<Term>): Term => ({
@@ -139,11 +139,24 @@ describe("checkQuote", () => {
   });
 });
 
+describe("a grid accepted as printed", () => {
+  it("has no arithmetic problems, and its cells count as proven by a person", () => {
+    const wrong = cbt({ subtotal: [174600, 999] });
+    expect(checks.checkGrid(wrong, []).problems).not.toEqual([]);
+    expect(checks.checkGrid({ ...wrong, acceptedAsPrinted: true }, [])).toEqual({ problems: [], unproven: [] });
+  });
+
+  it("still reports a row that doesn't have one value per visit", () => {
+    const short = cbt({ acceptedAsPrinted: true, rows: [{ name: "Labs", code: null, unitCostCents: null, cells: [1], printedRowTotalCents: null }] });
+    expect(checks.checkGrid(short, []).problems).toHaveLength(1);
+  });
+});
+
 describe("checkQuote on a scanned page", () => {
   const d = [doc("A.pdf", scan(1, "The Site shal1 pay $1,2OO.00 within 45 days of the invoice.\nSchedu1e B"))];
   const src = (quote: string) => ({ doc: "A.pdf", page: 1, quote });
 
-  it("finds a quote despite OCR slips on either side", () => {
+  it("finds a quote despite reading slips on either side", () => {
     expect(checks.checkQuote(src("The Site shall pay $1,200.00 within 45 days"), d)).toBeNull();
     expect(checks.checkQuote(src("the site shal1 pay $1200.OO within 4S days of the invoice"), d)).toBeNull();
     expect(checks.checkQuote(src("Schedule B"), d)).toBeNull();

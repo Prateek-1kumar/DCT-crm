@@ -1,4 +1,4 @@
-import { applyPatches, type Question, type Rulebook } from "@dct/shared";
+import { applyPatches, cellProofPatches, type Question, type Rulebook } from "@dct/shared";
 import { checks, coverage } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -62,7 +62,7 @@ function requireDraft(v: Version, doing: string) {
   if (v.status !== "draft") throw new HttpError(409, `This version is ${v.status}, so it can't be ${doing}. Only a draft can.`);
 }
 
-/** Terms an option changes or adds: a person chose them, whoever wrote the patch (design §5.5a). */
+/** Terms an option changes or adds: a person chose them, whoever wrote the patch (design §5.5a). Grid cells it sets are proven by cellProofPatches. */
 const decided = (option: Question["options"][number]) => new Set(option.patches.filter((p) => p.target === "term").map((p) => p.id));
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -95,7 +95,8 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
 
       let patched: Rulebook;
       try {
-        patched = applyPatches(rulebook, chosen.patches);
+        // worked out now, from the grid as it is, so answers to two questions about one grid add to each other's cells
+        patched = applyPatches(rulebook, [...chosen.patches, ...cellProofPatches(rulebook, chosen.patches)]);
       } catch (err) {
         throw new HttpError(409, (err as Error).message);
       }

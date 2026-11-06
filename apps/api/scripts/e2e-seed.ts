@@ -63,7 +63,7 @@ const draft: Rulebook = {
   grids: [{
     id: "budget", name: "Per-patient budget", arm: null, doc: DOC, pages: [1], visits: ["Visit 1", "Visit 2"], overheadPct: null,
     rows: [{ name: "Physical exam", code: null, unitCostCents: null, cells: [10000, 20000], printedRowTotalCents: 30000 }],
-    subtotal: null, overhead: null, additions: [], total: [10000, 20000], grandTotalCents: 30000, cellsReadTwice: [],
+    subtotal: null, overhead: null, additions: [], total: [10000, 20000], grandTotalCents: 30000, cellsReadTwice: [], acceptedAsPrinted: false,
   }],
   accounted: [{ doc: DOC, page: 1, amountCents: 200000000, reason: "Insurance limit, not a payment to the site" }],
   questions: [reviewer],

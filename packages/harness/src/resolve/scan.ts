@@ -1,4 +1,4 @@
-import { applyPatches, type Patch, type Question, type Region, type Source } from "@dct/shared";
+import { applyPatches, parseCents, type Grid, type Patch, type Question, type Region, type Source } from "@dct/shared";
 import { needsProof } from "../checks";
 import { findQuote } from "../checks/coverage";
 import { usd } from "../checks/text";
@@ -21,8 +21,11 @@ interface Spot {
   current: number;
   /** What was transcribed at this spot: the quote's lines, or none when the quote can't be found. */
   words: Word[];
-  /** Where to look closer; undefined when the spot can't be found, so the whole page is shown. */
+  /** What a person is shown; undefined when the spot can't be found, so the whole page is shown. */
   crop?: Region;
+  /** What the zoomed look is given: the spot's own band, with `header` above it when the visit headings were found. Defaults to `crop`. */
+  zoom?: Region;
+  header?: Region;
   /** A cell of a grid whose arithmetic fails, which rereadScanGrids reads with the whole grid. A marked cell, or one whose row can't be found, is still asked about here. */
   failing: boolean;
   patch(value: number): Patch;
@@ -34,6 +37,30 @@ const lineBand = (words: Word[], text: string): [number, number] | null => {
 };
 
 const wordsIn = (page: Page, band: [number, number] | null) => (band ? page.words.filter((w) => (w.y0 + w.y1) / 2 >= band[0] && (w.y0 + w.y1) / 2 <= band[1]) : []);
+
+/** A printed subtotal, overhead, total or added line carries no row name to find it by, so a marked word with its amount stands for it. */
+function markedLines(g: Grid, pages: Page[]): Spot[] {
+  const visit = (j: number) => g.visits[j] ?? `#${j + 1}`;
+  const lines = [
+    ...(["subtotal", "overhead", "total"] as const).flatMap((k) => (g[k] ?? []).map((current, j) => ({ current, label: `the ${k} line at visit '${visit(j)}'`, path: `${k}.${j}` }))),
+    ...g.additions.flatMap((a, i) => a.cells.map((current, j) => ({ current, label: `the '${a.name}' line at visit '${visit(j)}'`, path: `additions.${i}.cells.${j}` }))),
+    { current: g.grandTotalCents, label: "the grand total", path: "grandTotalCents" },
+  ];
+  return lines.flatMap(({ current, label, path }): Spot[] => {
+    if (typeof current !== "number") return [];
+    for (const page of pages) {
+      const word = page.words.find((w) => w.doubt && MARKS[w.doubt] && parseCents(w.text) === current);
+      if (!word) continue;
+      const band: [number, number] = [word.y0, word.y1];
+      return [{
+        source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label, questionId: `read:${g.id}`, personId: personId(g.id),
+        current, words: wordsIn(page, band), failing: false, crop: [0, 0, 1, Math.min(1, band[1] + PAD)],
+        patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }),
+      }];
+    }
+    return [];
+  });
+}
 
 function spotsOf(run: Run, report: CheckReport): Spot[] {
   const pageOf = (doc: string, n: number) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === n);
@@ -53,23 +80,29 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   for (const g of run.rulebook.grids) {
     if (!onScan(run, g.doc, g.pages)) continue;
     const pages = g.pages.flatMap((n) => pageOf(g.doc, n) ?? []);
-    const failing = (report.grids[g.id]?.problems.length ?? 0) > 0;
-    // a failing grid's marked cells must reach a person whatever the arithmetic says, so every number in it is looked at
-    const cells = failing ? g.rows.flatMap((r, row) => r.cells.flatMap((_, col) => ({ row, col }))) : (report.grids[g.id]?.unproven ?? []);
-    for (const { row, col } of cells) {
-      const current = g.rows[row]!.cells[col];
-      if (typeof current !== "number") continue;
-      const name = g.rows[row]!.name;
-      const page = pages.find((p) => findQuote(p.words, name).length) ?? pages[0]!;
-      const band = lineBand(page.words, name);
-      spots.push({
-        source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label: cellLabel(g, row, col), questionId: `read:${g.id}`, personId: personId(g.id),
-        current, words: wordsIn(page, band), failing,
-        // from the top of the page, so the visit headings above the row are in the picture
-        crop: band ? [0, 0, 1, Math.min(1, band[1] + PAD)] : undefined,
-        patch: (v) => ({ target: "grid", id: g.id, set: { [`rows.${row}.cells.${col}`]: v } }),
-      });
-    }
+    const result = report.grids[g.id];
+    const failing = (result?.problems.length ?? 0) > 0;
+    const unproven = new Set((result?.unproven ?? []).map(({ row, col }) => `${row},${col}`));
+    g.rows.forEach((r, row) =>
+      r.cells.forEach((current, col) => {
+        if (typeof current !== "number") return;
+        const page = pages.find((p) => findQuote(p.words, r.name).length) ?? pages[0]!;
+        const band = lineBand(page.words, r.name);
+        const headed = lineBand(page.words, g.visits.join(" ")) ?? lineBand(page.words, g.visits[0]!);
+        const spot: Spot = {
+          source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label: cellLabel(g, row, col), questionId: `read:${g.id}`, personId: personId(g.id),
+          current, words: wordsIn(page, band), failing,
+          // from the top of the page, so the visit headings above the row are in the picture
+          crop: band ? [0, 0, 1, Math.min(1, band[1] + PAD)] : undefined,
+          zoom: band ? [0, Math.max(0, band[0] - PAD), 1, Math.min(1, band[1] + PAD)] : undefined,
+          header: band && headed ? [0, Math.max(0, headed[0] - PAD), 1, Math.min(1, headed[1] + PAD)] : undefined,
+          patch: (v) => ({ target: "grid", id: g.id, set: { [`rows.${row}.cells.${col}`]: v } }),
+        };
+        // a marked value is asked whether or not the totals cover it
+        if (failing || unproven.has(`${row},${col}`) || markOf(spot)) spots.push(spot);
+      }),
+    );
+    spots.push(...markedLines(g, pages));
   }
   return spots;
 }
@@ -133,7 +166,8 @@ export async function relook(run: Run, report: CheckReport) {
   const unread: Spot[] = [];
   for (const group of grouped(spots.filter((s) => !whyPerson(s) && !s.failing), (s) => JSON.stringify([s.source.doc, s.source.page, s.crop]))) {
     const { doc, page } = group[0]!.source;
-    const answers = (await tryAsk(run, [run.openai], { doc, pages: [page], region: group[0]!.crop }, group))?.[0];
+    const [{ crop, zoom, header }] = group as [Spot, ...Spot[]];
+    const answers = (await tryAsk(run, [run.openai], { doc, pages: [page], region: zoom ?? crop, header }, group))?.[0];
     if (!answers) {
       unread.push(...group);
       continue;

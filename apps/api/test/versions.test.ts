@@ -3,9 +3,11 @@ import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { checks } from "@dct/harness";
 import { buildApp } from "../src/app.js";
 import { answers, auditLog, documents, parties, reads, studies, versions } from "../src/db/schema.js";
-import { savePdf } from "../src/lib/storage.js";
+import { loadDocs } from "../src/lib/docs.js";
+import { savePdf, scanStore } from "../src/lib/storage.js";
 import type { App, Built } from "./helpers.js";
 
 let built: Built;
@@ -74,6 +76,18 @@ async function otherDoc() {
   return doc!.id;
 }
 
+/** A document with one scanned page: no text layer in the PDF, and a transcription saved for it. */
+async function scannedDoc() {
+  const pdf = await PDFDocument.create();
+  pdf.addPage([612, 792]);
+  pdf.setTitle(randomUUID());
+  const sha256 = await savePdf(Buffer.from(await pdf.save()));
+  const words = ["Exhibit", "A"].map((text, i) => ({ text, x0: 0.05 + i * 0.1, x1: 0.1 + i * 0.1, y0: 0.05, y1: 0.06 }));
+  await scanStore.put(sha256, { page: 1, version: "test", rotation: 0, words });
+  const [doc] = await db().insert(documents).values({ sha256, name: "scan.pdf", bytes: 1, pages: [{ page: 1, kind: "scan", chars: 9, firstLine: "Exhibit A" }], createdBy: "test" }).returning();
+  return doc!.id;
+}
+
 async function study() {
   const [sponsor, site] = await db()
     .insert(parties)
@@ -83,13 +97,13 @@ async function study() {
   return s!.id;
 }
 
-async function seed(opts: { rulebook?: Rulebook; status?: (typeof versions.$inferInsert)["status"]; problems?: (typeof versions.$inferInsert)["problems"]; studyId?: string; number?: number } = {}) {
+async function seed(opts: { documentIds?: string[]; rulebook?: Rulebook; status?: (typeof versions.$inferInsert)["status"]; problems?: (typeof versions.$inferInsert)["problems"]; studyId?: string; number?: number } = {}) {
   const studyId = opts.studyId ?? (await study());
   const status = opts.status ?? "draft";
   const [v] = await db()
     .insert(versions)
     .values({
-      studyId, number: opts.number ?? 1, status, documentIds: [docId], rulebook: opts.rulebook ?? rulebook(), problems: opts.problems ?? [], createdBy: "test",
+      studyId, number: opts.number ?? 1, status, documentIds: opts.documentIds ?? [docId], rulebook: opts.rulebook ?? rulebook(), problems: opts.problems ?? [], createdBy: "test",
       ...(status === "approved" || status === "superseded" ? { approvedAt: new Date(), approvedBy: "Old Approver" } : {}),
     })
     .returning();
@@ -280,6 +294,55 @@ describe("answering a question", () => {
     const log = await audits(id);
     expect(log).toHaveLength(1);
     expect(log[0]).toMatchObject({ by: "Ana", action: "version.answered", entity: "version", detail: { questionId: "q1", option: 0, label: "Yes" } });
+  });
+});
+
+describe("answering a question about a scanned grid", () => {
+  // stored before grids had acceptedAsPrinted, as older versions are
+  const scanGrid = (subtotal: (number | null)[]) =>
+    ({
+      id: "g1", name: "Budget", arm: null, doc: "scan.pdf", pages: [1], visits: ["V1", "V2"], overheadPct: null,
+      rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 25000], printedRowTotalCents: null }],
+      subtotal, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [],
+    }) as unknown as Rulebook["grids"][number];
+  const gridQuestion = (id: string, label: string, patches: Question["options"][number]["patches"]) =>
+    question(id, { about: { target: "grid", id: "g1" }, source: { doc: "scan.pdf", page: 1, quote: "" }, options: [{ label, patches }, { label: "Neither, I'll type the right value", patches: [] }] });
+  const seedScan = async (rb: Rulebook) => {
+    const documentIds = [await scannedDoc()];
+    const checked = checks.runChecks(rb, await loadDocs(db(), documentIds));
+    return seed({ documentIds, rulebook: rb, problems: checked.problems });
+  };
+
+  it("answering the marked-values question on a scanned grid lets the version be approved", async () => {
+    const asWritten = gridQuestion("person:g1", "Use the values as written", [{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } }]);
+    const { id } = await seedScan(rulebook({ terms: [], grids: [scanGrid([10000, null])], questions: [asWritten] }));
+    expect((await stored(id)).problems).toHaveLength(1);
+
+    const res = await answer(id, "person:g1", { option: 0, by: "Ana" });
+    expect(res.json().problems).toEqual([]);
+    expect(res.json().rulebook.grids[0].cellsReadTwice).toEqual([[0, 1]]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("answers to two questions about one grid add to each other's proven cells", async () => {
+    const first = gridQuestion("person:g1", "Use the values as written", [{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } }]);
+    const second = gridQuestion("read:g1", "Use the whole-page reading", [{ target: "grid", id: "g1", set: { "rows.0.cells.0": 10000 } }]);
+    const { id } = await seedScan(rulebook({ terms: [], grids: [scanGrid([null, null])], questions: [first, second] }));
+
+    await answer(id, "person:g1", { option: 0, by: "Ana" });
+    const res = await answer(id, "read:g1", { option: 0, by: "Ana" });
+    expect(res.json().rulebook.grids[0].cellsReadTwice).toEqual([[0, 1], [0, 0]]);
+  });
+
+  it("accepting a grid whose figures don't add up as printed lets the version be approved", async () => {
+    const accept = gridQuestion("read:g1", "Use them as printed", [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }]);
+    const { id } = await seedScan(rulebook({ terms: [], grids: [scanGrid([10000, 20000])], questions: [accept] }));
+    expect((await stored(id)).problems[0]!.message).toContain("rows add up to");
+
+    const res = await answer(id, "read:g1", { option: 0, by: "Ana" });
+    expect(res.json().problems).toEqual([]);
+    expect(res.json().rulebook.grids[0].acceptedAsPrinted).toBe(true);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
   });
 });
 

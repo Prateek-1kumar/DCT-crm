@@ -37,6 +37,7 @@ function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
 export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   const shape = shapeProblems(grid);
   if (shape.length) return { problems: shape, unproven: numericCells(grid) };
+  if (grid.acceptedAsPrinted) return { problems: [], unproven: [] };
 
   const problems: string[] = [];
   const covered = grid.rows.map((r) => r.cells.map(() => false));

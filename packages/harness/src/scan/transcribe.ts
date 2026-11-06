@@ -29,7 +29,12 @@ You get the whole page, then zoomed strips of it from top to bottom (they overla
 - unsure: true when you can't read every character with certainty (faint, blurred, cut off). Be honest: an unsure flag costs a second look, a wrong value costs money.
 - marks: "handwritten" for writing by hand, "struck_out" for printed text crossed out, "initialed" for initials beside a change. For a struck-out value, transcribe the struck value and flag it; a handwritten replacement is a separate cell or line, also flagged.`;
 
-// Claude scales an image down past ~1,568 px on its long side, so each strip is sized to reach the model at full detail.
+export const SCAN_DPI = 200;
+// A letter page at 200 dpi is about 3.7 million pixels; the strips are cut from this image, so it is not capped like a page sent whole.
+// A closer look at a scan is rendered under the same limit, so it is never coarser than the transcription.
+export const MAX_SCAN_PIXELS = 12e6;
+
+// Both providers scale a large image down before the model sees it, which blurs small print, so each strip is cut to a size the model keeps at full detail.
 const MODEL_EDGE = 1568;
 const STRIP_ASPECT = 0.6;
 const OVERLAP = 0.08;

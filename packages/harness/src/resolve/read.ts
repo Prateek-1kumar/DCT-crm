@@ -1,10 +1,11 @@
-import { applyPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
+import { applyPatches, cellProofPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
 import { z } from "zod";
 import { SCAN_PAGE_REASON, checks } from "../checks";
 import { usd } from "../checks/text";
 import type { Part, Reader } from "../models/reader";
 import { pdfReader } from "../pdf";
-import type { CheckReport } from "../types";
+import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts } from "../scan/transcribe";
+import type { CheckReport, LoadedDoc } from "../types";
 import { call, setQuestion, type Run } from "./run";
 
 const DPI = 300;
@@ -38,6 +39,8 @@ interface Job {
   doc: string;
   pages: number[];
   region?: Region;
+  /** The column headings to show above `region` on a scanned page, so the values under them are read against the right visits. */
+  header?: Region;
   items: ValueItem[];
   /** null when the pages could not be read twice. */
   settle(run: Run, reads: Pair[] | null): void;
@@ -64,22 +67,33 @@ function describe(item: Pick<Item, "label" | "options">, n: number): string {
   return [`${n}. ${item.label}`, ...options].join("\n");
 }
 
+type Look = Pick<Job, "doc" | "pages" | "region" | "header">;
+
+/**
+ * What the readers are shown of one page. A scan is looked at closer than it was transcribed: rendered without the view cap
+ * that a whole page gets, as the heading band and the value's band, or, for a whole page, as the page and its strips.
+ */
+async function imagesOf(doc: LoadedDoc, n: number, { doc: name, region, header }: Look): Promise<Part[]> {
+  const label = (what: string): Part => ({ type: "text", text: `Page ${n} of ${name}${what}:` });
+  if (doc.pages.find((p) => p.page === n)?.kind !== "scan") return [label(""), { type: "image", png: await pdfReader.render(doc, n, { region, dpi: DPI }) }];
+  const zoom = (r?: Region) => pdfReader.render(doc, n, { region: r, dpi: DPI, maxPixels: MAX_SCAN_PIXELS });
+  if (!region) return [label(" and strips of it"), ...(await pageParts(await pdfReader.render(doc, n, { dpi: SCAN_DPI, maxPixels: MAX_SCAN_PIXELS })))];
+  if (!header) return [label(""), { type: "image", png: await zoom(region) }];
+  return [label(", the column headings"), { type: "image", png: await zoom(header) }, label(", the row"), { type: "image", png: await zoom(region) }];
+}
+
 /** One answer per item from each reader, who all look at the same images. */
-export async function askPages(run: Run, readers: Reader[], job: Pick<Job, "doc" | "pages" | "region">, items: Pick<Item, "label" | "options">[]): Promise<(string | null)[][]> {
+export async function askPages(run: Run, readers: Reader[], job: Look, items: Pick<Item, "label" | "options">[]): Promise<(string | null)[][]> {
   const doc = run.docs.find((d) => d.name === job.doc);
   if (!doc) throw new Error(`${job.doc} isn't in this bundle`);
-  const images = await Promise.all(job.pages.map((p) => pdfReader.render(doc, p, { region: job.region, dpi: DPI })));
-  const parts: Part[] = [
-    ...images.flatMap<Part>((png, i) => [{ type: "text", text: `Page ${job.pages[i]} of ${job.doc}:` }, { type: "image", png }]),
-    { type: "text", text: items.map((item, n) => describe(item, n)).join("\n") },
-  ];
+  const parts: Part[] = [...(await Promise.all(job.pages.map((n) => imagesOf(doc, n, job)))).flat(), { type: "text", text: items.map((item, n) => describe(item, n)).join("\n") }];
   const ask = { name: "read_values", system: SYSTEM, parts, schema: Reads };
   const replies = await Promise.all(readers.map((r) => call(run, r, ask)));
   return replies.map((r) => items.map((_, i) => r.answers.find((x) => x.item === i)?.answer ?? null));
 }
 
 /** askPages that logs a failure in plain words and returns null, so the items can be left for a person. */
-export async function tryAsk(run: Run, readers: Reader[], job: Pick<Job, "doc" | "pages" | "region">, items: Pick<Item, "label" | "options">[]): Promise<(string | null)[][] | null> {
+export async function tryAsk(run: Run, readers: Reader[], job: Look, items: Pick<Item, "label" | "options">[]): Promise<(string | null)[][] | null> {
   try {
     return await askPages(run, readers, job, items);
   } catch (err) {
@@ -88,7 +102,7 @@ export async function tryAsk(run: Run, readers: Reader[], job: Pick<Job, "doc" |
   }
 }
 
-async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, items: Item[]): Promise<Pair[] | null> {
+async function readTwice(run: Run, job: Look, items: Item[]): Promise<Pair[] | null> {
   const answers = await tryAsk(run, [run.claude, run.openai], job, items);
   return answers && answers[0]!.map((x, i): Pair => [x, answers[1]![i]!]);
 }
@@ -109,7 +123,21 @@ export function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | 
 
 /** What a scanned page's amounts get when the closer look could not be done. */
 export function raiseUnread(run: Run, q: Pick<Question, "id" | "about" | "source" | "question">) {
-  raise(run, { ...q, context: "This still needs a closer second read of the page, and it could not be done in this run.", readings: [], options: [] });
+  raise(run, { ...q, context: "This still needs a closer second read of the page, and it could not be done in this run. Start the read again to have this spot read closely.", readings: [], options: [] });
+}
+
+const acceptAsPrinted = (gridId: string): Patch => ({ target: "grid", id: gridId, set: { acceptedAsPrinted: true } });
+
+/** A grid whose print doesn't add up: only a person can accept it as it is. */
+function raiseAsPrinted(run: Run, q: Pick<Question, "id" | "about" | "source">, grid: Grid, lead: string, problems: string[]) {
+  raise(run, {
+    ...q,
+    kind: "decision",
+    question: `The figures of '${grid.name}' don't add up. Use them as printed?`,
+    context: `${lead} ${problems.join(" ")}`,
+    readings: [],
+    options: [{ label: "Use them as printed", patches: [acceptAsPrinted(grid.id)] }],
+  });
 }
 
 export const shown = (c: Cell) => (typeof c === "number" ? usd(c) : String(c));
@@ -156,23 +184,8 @@ const readings = (run: Run, say: (m: 0 | 1) => string) => [
  * list serves whatever read the cell, because the grid check only needs to know it no longer rests on the model's word alone.
  */
 export function proven(rulebook: Rulebook, patches: Patch[]): Patch[] {
-  const cells = new Map<string, [number, number][]>();
-  const terms = new Set<string>();
-  for (const p of patches) {
-    if (p.target === "term" && "amountCents" in p.set) terms.add(p.id);
-    for (const key of Object.keys(p.set)) {
-      const m = p.target === "grid" ? /^rows\.(\d+)\.cells\.(\d+)$/.exec(key) : null;
-      if (!m) continue;
-      const known = cells.get(p.id) ?? rulebook.grids.find((g) => g.id === p.id)?.cellsReadTwice ?? [];
-      const cell: [number, number] = [Number(m[1]), Number(m[2])];
-      cells.set(p.id, known.some(([r, c]) => r === cell[0] && c === cell[1]) ? known : [...known, cell]);
-    }
-  }
-  return [
-    ...patches,
-    ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence: "two_reads" } })),
-    ...[...cells].map(([id, set]): Patch => ({ target: "grid", id, set: { cellsReadTwice: set } })),
-  ];
+  const terms = new Set(patches.filter((p) => p.target === "term" && "amountCents" in p.set).map((p) => p.id));
+  return [...patches, ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence: "two_reads" } })), ...cellProofPatches(rulebook, patches)];
 }
 
 /** Applies the patches only if the checks still pass for everything they touch (and `also` holds); otherwise the rulebook is left as it was. */
@@ -258,7 +271,7 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
           question: `The figures printed for ${t.what} don't add up. Use them as printed?`,
           context: `Two models read the page independently and both see exactly what the rulebook has, so the contract's own print is inconsistent. ${problems}`,
           readings: readings(run, () => "the same as the rulebook"),
-          options: [{ label: "Use them as printed", patches: [] }],
+          options: [{ label: "Use them as printed", patches: t.about?.target === "grid" ? [acceptAsPrinted(t.id)] : [] }],
         });
         run.log.push(`${place}: the two reads confirm the print, but the printed figures don't add up, so a person will be asked`);
         return;
@@ -328,13 +341,18 @@ export function readJobs(run: Run, report: CheckReport): Job[] {
 /**
  * A scanned grid whose arithmetic fails is read again at zoom by the vision reader. If the corrected figures make the checks
  * pass and no changed cell is left without a total proving it, the arithmetic is the proof; otherwise a person sees both
- * readings. A grid with a marked value is left to the person already asked about it.
+ * readings. A grid with a marked value is not read again: the person asked about it is also asked whether to use the print as it is.
  */
 export async function rereadScanGrids(run: Run, report: CheckReport) {
   for (const g of run.rulebook.grids.filter((x) => report.grids[x.id]?.problems.length && onScan(run, x.doc, x.pages))) {
-    if (run.rulebook.questions.some((q) => q.id === personId(g.id))) continue;
-    const job = gridJob(g);
     const base = { id: `read:${g.id}`, about: { target: "grid" as const, id: g.id }, source: { doc: g.doc, page: g.pages[0]!, quote: "" } };
+    const problems = report.grids[g.id]!.problems;
+    if (run.rulebook.questions.some((q) => q.id === personId(g.id))) {
+      raiseAsPrinted(run, base, g, "Some values are marked on the page, so they are not read again; a person is asked about them in the other question.", problems);
+      run.log.push(`${where({ doc: g.doc, pages: g.pages })}: the figures don't add up and some values are marked, so a person will be asked`);
+      continue;
+    }
+    const job = gridJob(g);
     const answers = (await tryAsk(run, [run.openai], job, job.items))?.[0];
     if (!answers) {
       raiseUnread(run, { ...base, question: printQuestion(base.source, [`the figures of '${g.name}'`]) });
@@ -356,14 +374,8 @@ export async function rereadScanGrids(run: Run, report: CheckReport) {
       run.log.push(`${where(job)}: a closer read doesn't settle the figures by the totals, so a person will be asked`);
     } else {
       const all = read.every((r) => r.value !== null);
-      raise(run, {
-        ...base,
-        kind: "decision",
-        question: `The figures of '${g.name}' don't add up. Use them as printed?`,
-        context: `${all ? "A closer read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent." : "A closer read of the page agrees with the rulebook wherever it could read, and the contract's own arithmetic does not hold."} ${report.grids[g.id]!.problems.join(" ")}`,
-        readings: [],
-        options: [{ label: "Use them as printed", patches: [] }],
-      });
+      const lead = all ? "A closer read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent." : "A closer read of the page agrees with the rulebook wherever it could read, and the contract's own arithmetic does not hold.";
+      raiseAsPrinted(run, base, g, lead, problems);
       run.log.push(`${where(job)}: a closer read confirms what it could read, but the printed figures don't add up, so a person will be asked`);
     }
   }

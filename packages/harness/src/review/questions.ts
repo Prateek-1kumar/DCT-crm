@@ -4,7 +4,7 @@ import type { LoadedDoc } from "../types";
 import type { Change, Finding, NewTerm } from "./schema";
 
 // What a patch must never set: identity, and the proof only a check or a person earns.
-const LOCKED = new Set(["id", "evidence", "cellsReadTwice"]);
+const LOCKED = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted"]);
 const CELL_PATH = /^((rows|additions)\.\d+\.cells|subtotal|overhead|total)\.\d+$/;
 
 function validRegion(r: number[] | null): Region | undefined {

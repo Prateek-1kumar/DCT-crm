@@ -207,6 +207,18 @@ describe("scanDocs", () => {
     expect(store.pages.get(doc.sha256)).toMatchObject([{ page: 1 }]);
   });
 
+  it("says when a page looked blank when read from the image, and keeps going", async () => {
+    const doc = await imagePdf("backs.pdf", [[612, 792], [612, 792]]);
+    const { reader } = fakeReader((call) => (call === 1 ? transcription({ lines: [], tables: [] }) : transcription()));
+    const progress: string[] = [];
+    const [scanned] = await scanDocs([doc], { reader, store: memoryStore(), budget: budgetOf(3), onProgress: (l) => progress.push(l) });
+
+    const blank = progress.filter((l) => l.includes("blank"));
+    expect(blank).toHaveLength(1);
+    expect(blank[0]).toMatch(/^p\.[12] of backs\.pdf looked blank when read from the image$/);
+    expect(scanned!.pages.map((p) => p.kind)).toEqual(["scan", "scan"]);
+  });
+
   it("masks bank numbers in the text and paints nothing", async () => {
     const doc = await imagePdf("bank.pdf", [[612, 792]]);
     const { reader } = fakeReader(() => transcription({ lines: [line("Account number 123456789", 0.1, 0.12), line("Startup fee $1,234.56", 0.2, 0.22)] }));

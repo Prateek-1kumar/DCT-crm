@@ -231,6 +231,8 @@ describe("starting a read", () => {
     const text = (await built.app.inject({ url: `/api/v1/documents/${contract.id}/pages/1/text` })).json();
     expect(text).toMatchObject({ page: 1, kind: "scan", words: expect.arrayContaining([expect.objectContaining({ text: "Startup" })]) });
     expect(await scanStore.get(contract.sha256)).toHaveLength(2);
+    const detail = (await built.app.inject({ url: `/api/v1/studies/${s.id}` })).json();
+    expect(detail.documents[0]).toMatchObject({ scannedPages: [], scansRead: [1, 2] });
   });
 
   it("a second read of the same file adds nothing to the budget and transcribes nothing again", async () => {
@@ -427,6 +429,16 @@ describe("a read that fails", () => {
     expect(read.status).toBe("failed");
     expect(read.error).toMatch(/spending limit of \$3\.00/);
     expect(read.spentUsd).toBeGreaterThan(3);
+  });
+
+  it("says the scanned pages it read are kept, and the next read costs less, when a read of scans stops at the limit", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    const big = { ...reply(call("put_study", { study })), usage: { input_tokens: 1_000_000, output_tokens: 500_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } };
+    use(fakes([big as unknown as ModelMessage]));
+    const read = await finished(built, (await post(built, s.id)).json().readId);
+    expect(read.status).toBe("failed");
+    expect(read.error).toBe("The read reached its spending limit of $3.80 before it finished, so the rulebook wasn't kept. The scanned pages it read are saved, so the next read costs less. Start it again to try once more.");
+    expect(await scanStore.get((await contractOf(s.id)).sha256)).toHaveLength(2);
   });
 
   it("passes a setup error on, and hides any other behind a generic message", async () => {

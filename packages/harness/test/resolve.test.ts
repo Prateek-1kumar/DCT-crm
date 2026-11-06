@@ -53,7 +53,7 @@ const grid = (examV2: number): Grid => ({
     { name: "Exam", code: null, unitCostCents: null, cells: [10000, examV2], printedRowTotalCents: null },
     { name: "Labs", code: null, unitCostCents: null, cells: [5000, 5000], printedRowTotalCents: null },
   ],
-  subtotal: [15000, 30000], overhead: null, additions: [], total: null, grandTotalCents: 45000, cellsReadTwice: [],
+  subtotal: [15000, 30000], overhead: null, additions: [], total: null, grandTotalCents: 45000, cellsReadTwice: [], acceptedAsPrinted: false,
 });
 
 const question = (over: Partial<Question>): Question => ({
@@ -173,16 +173,17 @@ describe("reading: two reads agree", () => {
     expect(q).toMatchObject({ kind: "decision", origin: "check", state: "open" });
     expect(q.context).toContain("rows add up to");
     expect(q.options.map((o) => o.label)).toEqual(["Use them as printed", "Neither, I'll type the right value"]);
+    expect(q.options[0]!.patches).toEqual<Patch[]>([{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }]);
   });
 });
 
 describe("scanned pages: one closer look by the vision reader", () => {
   const sheet = "Exhibit A\nScreen failure fee  $75.00\nExam  $100.00  $250.00\nLabs  $50.00  $50.00\nStartup fee  $1,000.00\nAmended charge  $900.00";
-  const scanned = (doubts: Record<number, Doubt> = {}): LoadedDoc[] => {
+  const scanned = (doubts: Record<number, Doubt> = {}, text = sheet): LoadedDoc[] => {
     const [budget, ...rest] = docs;
     const [first, ...pages] = budget!.pages;
-    const words = wordsOf(sheet).map((w) => ({ ...w, ...(doubts[Math.round(w.y0 * 100)] ? { doubt: doubts[Math.round(w.y0 * 100)] } : {}) }));
-    return [{ ...budget!, pages: [{ ...first!, kind: "scan", layout: sheet, raw: sheet, words }, ...pages] }, ...rest];
+    const words = wordsOf(text).map((w) => ({ ...w, ...(doubts[Math.round(w.y0 * 100)] ? { doubt: doubts[Math.round(w.y0 * 100)] } : {}) }));
+    return [{ ...budget!, pages: [{ ...first!, kind: "scan", layout: text, raw: text, words }, ...pages] }, ...rest];
   };
   const fee = (over: Partial<Term> = {}) => term({ amountCents: 7500, source: { doc: "Budget.pdf", page: 1, quote: "Screen failure fee" }, ...over });
   const resolveOn = (scan: LoadedDoc[], r: ReturnType<typeof readers>, b: Rulebook) =>
@@ -261,7 +262,46 @@ describe("scanned pages: one closer look by the vision reader", () => {
     expect(q.options.map((o) => o.label)).toEqual(["Use the whole-page reading ($205.00)", "Use the zoomed reading ($260.00)", "Neither, I'll type the right value"]);
   });
 
+  it("a scanned grid whose closer read sees the print as it is asks whether to use it, and the answer accepts it", async () => {
+    const asPrinted = (label: string) => (label === "row 'Exam' at visit 'V2'" ? "$205.00" : truthful(label));
+    const r = readers({ fail: true }, { read: asPrinted });
+    const out = await resolveOn(scanned(), r, rulebook({ grids: [grid(20500)] }));
+
+    const q = question1(out.rulebook, "read:g1");
+    expect(q).toMatchObject({ kind: "decision", question: "The figures of 'Budget' don't add up. Use them as printed?" });
+    expect(q.options[0]!.patches).toEqual<Patch[]>([{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }]);
+  });
+
   const openGrid = (): Grid => ({ ...grid(25000), subtotal: [15000, null], grandTotalCents: null });
+
+  describe("the closer look is closer than the transcription", () => {
+    const sizeOf = (png: Buffer) => ({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) });
+    const imagesOf = (ask: Ask<unknown>) => ask.parts.flatMap((p) => (p.type === "image" ? [sizeOf(p.png)] : []));
+    const low = `Exhibit A${"\n".repeat(68)}Visit  V1  V2\nExam  $100.00  $250.00\nLabs  $50.00  $50.00`;
+
+    it("the zoomed re-look of a grid cell sends the header and the row at full detail", async () => {
+      const r = readers({ fail: true }, { read: truthful });
+      await resolveOn(scanned({}, low), r, rulebook({ grids: [openGrid()] }));
+
+      const [exam] = r.openai.calls;
+      const [header, row] = imagesOf(exam!);
+      expect(imagesOf(exam!)).toHaveLength(2);
+      for (const image of [header!, row!]) {
+        expect(image.width).toBeGreaterThanOrEqual(2500);
+        expect(image.height).toBeLessThan(500);
+      }
+      expect(texts(exam!)).toContain("column headings");
+    });
+
+    it("the closer read of a whole scanned grid sends the page and its strips, as the transcription saw it", async () => {
+      const r = readers({ fail: true }, { read: truthful });
+      await resolveOn(scanned(), r, rulebook({ grids: [grid(20500)] }));
+
+      const sent = imagesOf(r.openai.calls[0]!);
+      expect(sent).toHaveLength(4);
+      expect(Math.max(...sent.map((i) => i.width))).toBeGreaterThanOrEqual(1500);
+    });
+  });
 
   it("a handwritten cell in a scan grid whose totals fail is asked, never settled by the closer read", async () => {
     const r = readers({ fail: true }, { read: truthful });
@@ -270,9 +310,50 @@ describe("scanned pages: one closer look by the vision reader", () => {
     expect(r.openai.calls).toHaveLength(0);
     expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 20500]);
     expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([]);
-    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1", "read:g1"]);
     expect(question1(out.rulebook, "person:g1").context).toContain("row 'Exam' at visit 'V2': $205.00 (handwritten)");
     expect(question1(out.rulebook, "person:g1").source.region).toBeDefined();
+  });
+
+  it("a handwritten cell in a scanned grid whose totals add up is still asked", async () => {
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned({ 2: "handwritten" }), r, rulebook({ grids: [grid(25000)] }));
+
+    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
+    const q = question1(out.rulebook, "person:g1");
+    expect(q.context).toContain("row 'Exam' at visit 'V1': $100.00 (handwritten); row 'Exam' at visit 'V2': $250.00 (handwritten)");
+    expect(q.context).not.toContain("Labs");
+    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([]);
+  });
+
+  it("a marked subtotal line in a scanned grid whose totals add up is asked in the same question", async () => {
+    const text = "Exhibit A\nExam  $100.00  $250.00\nLabs  $50.00  $50.00\nSubtotal  $150.00  $300.00";
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned({ 3: "struck_out" }, text), r, rulebook({ grids: [grid(25000)] }));
+
+    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
+    const q = question1(out.rulebook, "person:g1");
+    expect(q.context).toContain("the subtotal line at visit 'V1': $150.00 (struck out); the subtotal line at visit 'V2': $300.00 (struck out)");
+    expect(q.options[0]!.patches).toEqual<Patch[]>([
+      { target: "grid", id: "g1", set: { "subtotal.0": 15000 } },
+      { target: "grid", id: "g1", set: { "subtotal.1": 30000 } },
+    ]);
+  });
+
+  it("a failing scanned grid with a marked cell also asks whether to use the print as it is, without a closer read", async () => {
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned({ 2: "handwritten" }), r, rulebook({ grids: [grid(20500)] }));
+
+    expect(r.openai.calls).toHaveLength(0);
+    const q = question1(out.rulebook, "read:g1");
+    expect(q).toMatchObject({ kind: "decision", blocking: true, question: "The figures of 'Budget' don't add up. Use them as printed?" });
+    expect(q.context).toContain("rows add up to");
+    expect(q.options).toEqual([
+      { label: "Use them as printed", patches: [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }] },
+      { label: "Neither, I'll type the right value", patches: [] },
+    ]);
   });
 
   it("one handwritten row in a scan grid is asked once", async () => {
@@ -280,7 +361,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
     const out = await resolveOn(scanned({ 2: "handwritten" }), r, rulebook({ grids: [{ ...grid(25000), subtotal: null, grandTotalCents: null }] }));
 
     expect(r.openai.calls).toHaveLength(0);
-    expect(out.rulebook.questions.map((x) => x.id)).toEqual(["person:g1"]);
+    expect(out.rulebook.questions.map((x) => x.id)).toEqual(["person:g1", "read:g1"]);
     const q = question1(out.rulebook, "person:g1");
     expect(q.context).toContain("row 'Exam' at visit 'V1': $100.00 (handwritten); row 'Exam' at visit 'V2': $250.00 (handwritten)");
     expect(q.options.map((o) => o.label)).toEqual(["Use the values as written", "Neither, I'll type the right value"]);
@@ -300,7 +381,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
 
     expect(r.openai.calls).toHaveLength(0);
     expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
-    expect(question1(out.rulebook, "person:g1").context).toContain("row 'Exam' at visit 'V2': $250.00 (handwritten, p.1); row 'Labs' at visit 'V2': $50.00 (handwritten, p.2)");
+    expect(question1(out.rulebook, "person:g1").context).toContain("row 'Exam' at visit 'V1': $100.00 (handwritten, p.1); row 'Exam' at visit 'V2': $250.00 (handwritten, p.1); row 'Labs' at visit 'V1': $50.00 (handwritten, p.2); row 'Labs' at visit 'V2': $50.00 (handwritten, p.2)");
   });
 
   it("a failing scan grid whose row can't be found never settles its cells by a closer read", async () => {
@@ -322,7 +403,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
 
     expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual(["row 'Labs' at visit 'V2'"]);
     expect(out.rulebook.questions.map((q) => q.id).sort()).toEqual(["person:g1", "read:g1"]);
-    expect(question1(out.rulebook, "person:g1").options[0]!.label).toBe("Use $250.00");
+    expect(question1(out.rulebook, "person:g1").options[0]!.label).toBe("Use the values as written");
     expect(question1(out.rulebook, "read:g1").readings.map((x) => x.model)).toEqual(["openai-x (whole page)", "openai-x (zoomed)"]);
   });
 
@@ -333,7 +414,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
 
     expect(r.claude.calls).toHaveLength(0);
     expect(r.openai.calls).toHaveLength(1);
-    expect(r.openai.calls[0]!.parts.filter((p) => p.type === "image")).toHaveLength(2);
+    expect(r.openai.calls[0]!.parts.filter((p) => p.type === "image")).toHaveLength(5);
     expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000]);
     expect(out.rulebook.questions).toEqual([]);
   });
@@ -352,8 +433,23 @@ describe("scanned pages: one closer look by the vision reader", () => {
   it("a scanned grid the closer read could not be made is asked in plain words", async () => {
     const out = await resolveOn(scanned(), readers({ fail: true }, { fail: true }), rulebook({ grids: [grid(20500)] }));
     const q = question1(out.rulebook, "read:g1");
-    expect(q.context).toBe("This still needs a closer second read of the page, and it could not be done in this run.");
+    expect(q.context).toBe("This still needs a closer second read of the page, and it could not be done in this run. Start the read again to have this spot read closely.");
     expect(out.log.join("\n")).not.toContain("secret");
+  });
+
+  it("when the closer look runs out of budget, the amount is asked and nothing passes silently or is spent", async () => {
+    const r = readers({ fail: true }, { read: () => "$75.00" });
+    const budget = { limit: 3.8, spent: 3.795 };
+    const b = rulebook({ terms: [fee()] });
+    const scan = scanned();
+    const out = await resolve(b, scan, checks.runChecks(b, scan), { claude: r.claude.reader, openai: r.openai.reader, budget });
+
+    expect(r.openai.calls).toHaveLength(0);
+    expect(budget.spent).toBe(3.795);
+    expect(out.usd).toBe(0);
+    expect(out.rulebook.terms[0]!.evidence).toBe("quote");
+    expect(question1(out.rulebook, "read:t1:unread")).toMatchObject({ state: "open", blocking: true, context: expect.stringContaining("Start the read again") });
+    expect(out.log.join("\n")).toContain("the $3.80 limit would be passed");
   });
 
   it("a scanned amount whose spot can't be found is asked", async () => {

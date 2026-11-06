@@ -61,7 +61,7 @@ const grid: Grid = {
   additions: [],
   total: null,
   grandTotalCents: null,
-  cellsReadTwice: [],
+  cellsReadTwice: [], acceptedAsPrinted: false,
 };
 
 const amount = (text: string, status: CoveragePage["amounts"][number]["status"], ref: CoveragePage["amounts"][number]["ref"], reason: string | null = null, y = 0.1): CoveragePage["amounts"][number] => ({
