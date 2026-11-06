@@ -62,18 +62,19 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   const spots: Spot[] = [];
   for (const t of run.rulebook.terms) {
     const page = pageOf(t.source.doc, t.source.page);
-    if (page?.kind !== "scan" || t.evidence === "person") continue;
+    const onScan = page?.kind === "scan";
     const about = { target: "term" as const, id: t.id };
-    if (t.amountCents !== null) {
+    if (onScan && t.amountCents !== null && t.evidence !== "person") {
       spots.push({
         about, source: t.source, label: termLabel(t), path: "amountCents", cents: t.amountCents, cell: t.source.cell, checkable: true,
         unproven: needsProof(t, page) && t.id in report.quotes, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
       });
     }
-    // a term's evidence speaks for its amount, so its cap is read again on every run (from the store after the first)
+    // a term's evidence speaks for its amount, so its cap is read again on every run (from the store after the first);
+    // a cap a person changed no longer cites a cell, and a text page's cap is checked only where it cites one
     const cap = t.cap;
-    if (cap?.kind === "amount" && cap.value !== null) {
-      const cell = t.source.capCell;
+    const cell = t.source.capCell;
+    if (cap?.kind === "amount" && cap.value !== null && (cell || (onScan && t.evidence !== "person"))) {
       spots.push({
         about, source: { ...t.source, page: cell ? pageOfCell(cell) : t.source.page }, label: `the cap of '${t.name}'`, path: "cap.value", cents: cap.value, cell,
         checkable: false, unproven: true, patch: (v) => ({ target: "term", id: t.id, set: { cap: { ...cap, value: v } } }),
@@ -112,6 +113,20 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   return spots;
 }
 
+/** A question a person already answered about this value settles it: it isn't asked again, whatever a later read says. */
+const answered = (run: Run, s: Spot) =>
+  run.rulebook.questions.some(
+    (q) => q.origin === "check" && q.state === "answered" && q.options.some((o) => o.patches.some((p) => p.target === s.about.target && p.id === s.about.id && Object.keys(p.set).some((k) => k === s.path || s.path.startsWith(`${k}.`)))),
+  );
+
+/** The id to ask under: an answered question keeps its own, so a new one about the same term or grid takes the next free id beside it. */
+function freshId(run: Run, id: string) {
+  const taken = (x: string) => run.rulebook.questions.some((q) => q.id === x);
+  let fresh = id;
+  for (let n = 2; taken(fresh); n++) fresh = `${id}:${n}`;
+  return fresh;
+}
+
 /** The page's second read, from the store when an earlier run made it; null (and a log line) when it can't be made. */
 async function secondRead(run: Run, doc: LoadedDoc, page: Page, first: Transcription): Promise<Transcription | null> {
   const version = verifyVersion(run.openai);
@@ -140,7 +155,7 @@ function askPerson(run: Run, group: Spot[], why: Map<Spot, string>) {
   const one = group.length === 1;
   const pages = new Set(group.map((s) => s.source.page)).size > 1;
   raise(run, {
-    id: personId(first.about.id),
+    id: freshId(run, personId(first.about.id)),
     about: first.about,
     source: first.source,
     question: one ? `What does p.${first.source.page} of ${first.source.doc} print for ${first.label}?` : `What does ${first.source.doc} print for these ${group.length} values?`,
@@ -165,7 +180,7 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
   const one = rows.length === 1;
   const shown = (r: { second: string }) => r.second || "blank";
   raise(run, {
-    id: `read:${s.about.id}`,
+    id: freshId(run, `read:${s.about.id}`),
     about: s.about,
     source: s.source,
     question: one ? `What does p.${s.source.page} of ${s.source.doc} print for ${s.label}?` : `Two readings of ${s.source.doc} disagree on ${rows.length} values. What does the page print?`,
@@ -185,15 +200,15 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
 /** A scanned grid whose figures still don't add up, and that nothing else asks about: only a person can accept the print as it is. */
 function askAsPrinted(run: Run, report: CheckReport) {
   const after = checks.runChecks(run.rulebook, run.docs);
-  const open = (id: string) => run.rulebook.questions.some((q) => q.id === id && q.state === "open");
+  const open = (id: string) => run.rulebook.questions.some((q) => q.state === "open" && (q.id === id || q.id.startsWith(`${id}:`)));
   for (const g of run.rulebook.grids) {
     const problems = after.grids[g.id]?.problems ?? [];
     if (!report.grids[g.id]?.problems.length || !problems.length || !onScan(run, g.doc, g.pages)) continue;
-    if (open(`read:${g.id}`) || open(`read:${g.id}:unread`) || checks.checkGrid({ ...g, acceptedAsPrinted: true }, run.docs).problems.length) continue;
+    if (open(`read:${g.id}`) || checks.checkGrid({ ...g, acceptedAsPrinted: true }, run.docs).problems.length) continue;
     const lead = open(personId(g.id))
       ? "The figures shown are as first read from the image; the ones that are marked, or that a second read could not settle, are asked about in the other question."
       : "A second read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent.";
-    raise(run, asPrinted(g, `read:${g.id}`, lead, problems));
+    raise(run, asPrinted(g, freshId(run, `read:${g.id}`), lead, problems));
     run.log.push(`p.${g.pages.join(",")} (${g.doc}): the figures of '${g.name}' don't add up as printed, so a person will be asked`);
   }
 }
@@ -207,7 +222,7 @@ function askAsPrinted(run: Run, report: CheckReport) {
 export async function settleScans(run: Run, report: CheckReport) {
   const { marked } = checkCitations(run.rulebook, run.docs);
   const cellText = (doc: string, id: string) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === pageOfCell(id))?.cells?.find((c) => c.id === id)?.text ?? "";
-  const spots = spotsOf(run, report);
+  const spots = spotsOf(run, report).filter((s) => !answered(run, s));
   const why = new Map<Spot, string>();
   for (const s of spots) {
     const mark = marked.find((m) => m.target === s.about.target && m.id === s.about.id && m.path === s.path);
@@ -259,7 +274,7 @@ export async function settleScans(run: Run, report: CheckReport) {
   for (const group of grouped(unread, (s) => s.about.id)) {
     const [s] = group as [Spot];
     const question = group.length === 1 ? `What does p.${s.source.page} of ${s.source.doc} print for ${s.label}?` : `What does ${s.source.doc} print for these ${group.length} values?`;
-    raise(run, { id: `read:${s.about.id}:unread`, about: s.about, source: s.source, question, context: UNREAD, readings: [], options: [] });
+    raise(run, { id: freshId(run, `read:${s.about.id}:unread`), about: s.about, source: s.source, question, context: UNREAD, readings: [], options: [] });
   }
   askAsPrinted(run, report);
 }

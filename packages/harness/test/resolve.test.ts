@@ -500,6 +500,19 @@ describe("scanned pages: a blind second read of the page", () => {
       expect(question1(out.rulebook, "person:t1").context).toContain("the cap of 'Screen failure fee': $600.00 (handwritten on the first read)");
     });
 
+    it("a cap is read again even when a person settled the term's amount", async () => {
+      const out = await resolveOn(scanned(), readers({ fail: true }, { verify: said(swap(SHEET, "$600.00", "$650.00")) }), rulebook({ terms: [capped({ evidence: "person" })] }));
+      expect(question1(out.rulebook, "read:t1").readings[1]!.answer).toBe("the cap of 'Screen failure fee': $650.00");
+    });
+
+    it("a term on a text page whose cap is printed on a scanned page has its cap read again", async () => {
+      const t = capped({ amountCents: null, source: { doc: "Budget.pdf", page: 3, quote: "Startup fee schedule", capCell: "p1.l3" } });
+      const r = readers({ fail: true }, { verify: said(swap(SHEET, "$600.00", "$650.00")) });
+      const out = await resolveOn(scanned(), r, rulebook({ terms: [t] }));
+      expect(verifies(r)).toHaveLength(1);
+      expect(question1(out.rulebook, "read:t1").readings[1]!.answer).toBe("the cap of 'Screen failure fee': $650.00");
+    });
+
     it("an uncited cap goes to a person", async () => {
       const out = await resolveOn(scanned(), readers({ fail: true }, { fail: true }), rulebook({ terms: [capped({ evidence: "math", source: { doc: "Budget.pdf", page: 1, quote: "The screen failure fee", cell: "p1.l2" } })] }));
       expect(question1(out.rulebook, "person:t1").context).toContain("does not say which cell");
@@ -523,6 +536,22 @@ describe("scanned pages: a blind second read of the page", () => {
 
     const marked = await resolveOn(scanned({ 1: swap(sheet, "| Exam | $100.00", "| Exam | $100.00{in}") }), readers({ fail: true }, { fail: true }), rulebook({ grids: [g] }));
     expect(question1(marked.rulebook, "person:g1").context).toContain("the unit cost of row 'Exam': $100.00 (initialed on the first read)");
+  });
+
+  it("a value a person already answered about is not asked again, and the answer is kept", async () => {
+    const sheet = ["T 0.1-0.3 | Budget", "H | Procedure | Unit cost | V1 | V2", "R 0.12-0.13 | Exam | $100.00 | $100.00 | $100.00", "R 0.14-0.15 | Subtotal | | $100.00 | $100.00"];
+    const g: Grid = {
+      ...grid(10000), rows: [{ name: "Exam", code: null, unitCostCents: 10000, cells: [10000, 10000], printedRowTotalCents: null }], subtotal: [10000, 10000], grandTotalCents: null,
+      cellIds: { "rows.0.unitCostCents": "p1.t1.r1.c1", "rows.0.cells.0": "p1.t1.r1.c2", "rows.0.cells.1": "p1.t1.r1.c3", "subtotal.0": "p1.t1.r2.c2", "subtotal.1": "p1.t1.r2.c3" },
+    };
+    const answered = question({
+      id: "read:g1", origin: "check", state: "answered", about: { target: "grid", id: "g1" },
+      options: [{ label: "Use the first reading ($100.00)", patches: [{ target: "grid", id: "g1", set: { "rows.0.unitCostCents": 10000 } }] }],
+    });
+    const r = readers({ fail: true }, { verify: said(swap(sheet, "| Exam | $100.00", "| Exam | $110.00")) });
+    const out = await resolveOn(scanned({ 1: sheet }), r, rulebook({ grids: [g], questions: [answered] }));
+
+    expect(out.rulebook.questions).toEqual([answered]);
   });
 
   it("an uncited printed line of a scanned grid whose totals fail goes to a person", async () => {

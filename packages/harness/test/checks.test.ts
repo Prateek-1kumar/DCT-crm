@@ -397,6 +397,19 @@ describe("checkCitations", () => {
     expect(messages({ terms: [elsewhere] })).toEqual([]);
   });
 
+  it("a term on a text page whose cap is printed only on a scanned page cites the cap's cell", () => {
+    const mixed = withScans(doc("A.pdf", page(1, "text", "Closeout fee $500.00 payable at closeout."), page(2, "image", "")), [
+      { page: 2, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text: "L 0.1-0.12 | at most $5,000.00 a year" }) },
+    ]);
+    const capped = (value: number, capCell?: string) =>
+      term({ amountCents: 50000, cap: { kind: "amount", value, period: "year", text: "" }, source: { doc: "A.pdf", page: 1, quote: "Closeout fee", ...(capCell && { capCell }) } });
+    expect(messages({ terms: [capped(500000, "p2.l1")] }, [mixed])).toEqual([]);
+    expect(messages({ terms: [capped(500000)] }, [mixed])[0]).toMatch(/^the cap is on a scanned page, so it has to cite .*\(source\.capCell\)/);
+    expect(messages({ terms: [capped(600000, "p2.l1")] }, [mixed])).toHaveLength(1);
+    // printed on the text page, it needs no citation
+    expect(messages({ terms: [capped(50000)] }, [mixed])).toEqual([]);
+  });
+
   it("a citation must be on the term's page, or one of the grid's pages", () => {
     expect(messages({ terms: [cited(10000, "p2.l1")] })).toEqual(["the amount cites p2.l1, which is on p.2: cite a cell on p.1, the term's page."]);
     const onPage2 = grid({ rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: null }], cellIds: { "rows.0.cells.0": "p2.l1" } });

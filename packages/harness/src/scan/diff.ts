@@ -49,9 +49,9 @@ function align(n: number, m: number, like: (i: number, j: number) => boolean): M
 }
 
 /**
- * Tables by their order on the page when both reads found as many and every pair agrees: both titled alike, both untitled,
- * or, when only one read has a title, most of their rows lining up. Otherwise by title alone, so a table one read missed is
- * never paired with another one that prints the same rows (two arms of a study).
+ * Tables by their order on the page when both reads found as many and every pair agrees: titled alike, or, where either is
+ * untitled, most of their rows lining up with each other's and with no other table's. Otherwise by title alone. Arms printed
+ * alike can't be told apart without titles, and a table one read missed would shift the rest onto their neighbours.
  */
 function alignTables(a: Table[], b: Table[]): Map<number, number> {
   const title = (t: Table) => looseKey(withoutAmounts(t.title));
@@ -59,7 +59,8 @@ function alignTables(a: Table[], b: Table[]): Map<number, number> {
   const pairs = (i: number) => {
     const [x, y] = [title(a[i]!), title(b[i]!)];
     if (x && y) return near(x, y);
-    return (!x && !y) || mostRowsAlign(a[i]!, b[i]!);
+    const only = range(b.length).every((j) => j === i || !mostRowsAlign(a[i]!, b[j]!)) && range(a.length).every((k) => k === i || !mostRowsAlign(a[k]!, b[i]!));
+    return only && mostRowsAlign(a[i]!, b[i]!);
   };
   if (a.length === b.length && range(a.length).every(pairs)) return new Map(range(a.length).map((i) => [i, i]));
   return align(a.length, b.length, (i, j) => !!title(a[i]!) && !!title(b[j]!) && near(title(a[i]!), title(b[j]!)));
@@ -69,33 +70,26 @@ const width = (t: Table) => Math.max(t.columns.length - 1, ...t.rows.map((r) => 
 const filled = (r: Row) => r.cells.some((c) => c.text.trim());
 
 /**
- * Rows that print something beyond their label, each with its label and the labels around it. A label wrapped over several
- * printed lines may be split differently by each read, with the values beside any of the lines, so the rows that only carry
- * label words between two such rows count as part of both.
+ * Rows that print something beyond their label, each with the labels around it: the label-only rows between it and the next
+ * such row on either side, which count as part of both, and where among them its own label sits.
  */
 function anchors(t: Table) {
   const at = t.rows.flatMap((r, i) => (filled(r) ? [i] : []));
   return at.map((i, k) => {
     const from = k ? at[k - 1]! + 1 : 0;
     const to = k + 1 < at.length ? at[k + 1]! - 1 : t.rows.length - 1;
-    const block = t.rows.slice(from, to + 1).map((r) => looseKey(r.label));
-    const label = t.rows[i]!.label;
-    return { row: i, key: looseKey(label), words: new Set(label.split(/\s+/).map(looseKey).filter(Boolean)), around: block.join(""), others: block.filter((_, n) => from + n !== i) };
+    return { row: i, at: i - from, labels: t.rows.slice(from, to + 1).map((r) => looseKey(r.label)).join("|") };
   });
 }
 
 /**
- * Rows by their labels, each read's label found among the other's label words around its row. A row slipped onto its
- * neighbour's figure is never paired: the two labels must share a word, and neither may be a label-only row of the other read.
+ * Rows by their labels, and those among label-only rows only when both reads split them the same way with the figures on
+ * the same one. A label wrapped differently by each read looks exactly like a row slipped onto its neighbour's figure (or
+ * two labels merged over it), so those rows are left for a person.
  */
 function alignRows(a: Table, b: Table): Map<number, number> {
   const [x, y] = [anchors(a), anchors(b)];
-  const like = (i: number, j: number) => {
-    const [p, q] = [x[i]!, y[j]!];
-    if (!p.key || !q.key) return !p.key && !q.key;
-    const wrapped = q.around.includes(p.key) && p.around.includes(q.key);
-    return wrapped && [...p.words].some((w) => q.words.has(w)) && !p.others.includes(q.key) && !q.others.includes(p.key);
-  };
+  const like = (i: number, j: number) => x[i]!.labels === y[j]!.labels && x[i]!.at === y[j]!.at;
   return new Map([...align(x.length, y.length, like)].map(([i, j]) => [x[i]!.row, y[j]!.row]));
 }
 

@@ -64,10 +64,13 @@ function checkOne(doc: LoadedDoc, c: Cite): string | null {
 const rowText = (doc: LoadedDoc, cell: ScanCell) =>
   cell.table === null ? cell.text : (cellsOn(doc, cell.page) ?? []).filter((c) => c.table === cell.table && c.row === cell.row).map((c) => c.text).join(" ");
 
-/** Why a term's amounts on a scanned page don't match the cells they cite. Text pages need no citation. */
+/** Why a term's amounts on a scanned page don't match the cells they cite. Text pages need none, but for a cap printed only on a scanned page. */
 export function citeTerm(t: Term, docs: LoadedDoc[], marked: Marked[] = []): string[] {
   const doc = docs.find((d) => d.name === t.source.doc);
-  if (!doc || !cellsOn(doc, t.source.page)) return [];
+  if (!doc) return [];
+  const onScan = cellsOn(doc, t.source.page) !== undefined;
+  const onText = (cents: number) => doc.pages.some((p) => p.kind === "text" && amountsIn(p.layout).includes(cents));
+  const capCited = (cents: number) => onScan || t.source.capCell !== undefined || (doc.pages.some((p) => p.cells) && !onText(cents));
   const base = { optional: t.evidence === "person", pages: [t.source.page], pagesText: `p.${t.source.page}, the term's page` };
   // a cap is often printed away from the amount, so it may cite any scanned page of the document
   const scanned = doc.pages.filter((p) => p.cells).map((p) => p.page);
@@ -79,8 +82,8 @@ export function citeTerm(t: Term, docs: LoadedDoc[], marked: Marked[] = []): str
     return `the amount cites ${cell.id}, but the quote "${t.source.quote}" is not on that ${cell.table === null ? "line" : "row"} ("${words}"): cite the cell on the row the quote is from, and quote that row's own words.`;
   };
   const cites: Cite[] = [
-    ...(t.amountCents === null ? [] : [{ ...base, what: "the amount", how: "source.cell", cents: t.amountCents, id: t.source.cell, misplaced, mark: mark("amountCents") }]),
-    ...(t.cap?.kind === "amount" && t.cap.value !== null ? [{ ...base, what: "the cap", how: "source.capCell", cents: t.cap.value, id: t.source.capCell, pages: scanned, pagesText: `a scanned page of ${doc.name}`, mark: mark("cap.value") }] : []),
+    ...(t.amountCents === null || !onScan ? [] : [{ ...base, what: "the amount", how: "source.cell", cents: t.amountCents, id: t.source.cell, misplaced, mark: mark("amountCents") }]),
+    ...(t.cap?.kind === "amount" && t.cap.value !== null && capCited(t.cap.value) ? [{ ...base, what: "the cap", how: "source.capCell", cents: t.cap.value, id: t.source.capCell, pages: scanned, pagesText: `a scanned page of ${doc.name}`, mark: mark("cap.value") }] : []),
   ];
   return cites.flatMap((c) => checkOne(doc, c) ?? []);
 }

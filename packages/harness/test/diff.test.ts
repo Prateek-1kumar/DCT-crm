@@ -33,20 +33,43 @@ describe("diffReads", () => {
       "p1.t1.r6.c1": { outcome: "agree", second: "$55.00" },
     });
 
-    // the second read dropped one of the two exam rows: which one is left can't be told, so neither is confirmed
+    // the second read dropped the first exam row: its section heading still says which one is left
     const dropped = read("T | Budget", "H | Item | Fee", "R | Screening |", "R | Labs | $50.00", "R | Treatment |", "R | Exam | $110.00", "R | Labs | $55.00");
     const diff = diffReads(1, table("$110.00"), dropped);
     expect(diff.get("p1.t1.r2.c1")).toEqual({ outcome: "unaligned" });
-    expect(diff.get("p1.t1.r5.c1")).toEqual({ outcome: "unaligned" });
+    expect(diff.get("p1.t1.r5.c1")).toEqual({ outcome: "agree", second: "$110.00" });
+
+    // with no headings, which exam row is left can't be told, so neither is confirmed
+    const plain = read("T | Budget", "H | Item | Fee", "R | Exam | $100.00", "R | Labs | $50.00", "R | Exam | $110.00", "R | Labs | $55.00");
+    const lost = diffReads(1, plain, read("T | Budget", "H | Item | Fee", "R | Labs | $50.00", "R | Exam | $110.00", "R | Labs | $55.00"));
+    expect(lost.get("p1.t1.r1.c1")).toEqual({ outcome: "unaligned" });
+    expect(lost.get("p1.t1.r3.c1")).toEqual({ outcome: "unaligned" });
   });
 
-  it("a wrapped label split differently by each read still aligns", () => {
+  it("a wrapped label split differently by each read is asked about, since a slipped row looks the same", () => {
     const first = read("T | Budget", "H | Item | Fee", "R | Physical examination including | $100.00", "R | vital signs |", "R | Labs | $50.00");
     const second = read("T | Budget", "H | Item | Fee", "R | Physical examination |", "R | including vital signs | $100.00", "R | Labs | $50.00");
-    expect(outcomes(first, second, ["p1.t1.r1.c1", "p1.t1.r3.c1"])).toEqual({
-      "p1.t1.r1.c1": { outcome: "agree", second: "$100.00" },
+    // the label-only row may belong to the row above or below it, so both rows beside it are left for a person
+    expect(outcomes(first, second, ["p1.t1.r1.c1", "p1.t1.r3.c1"])).toEqual({ "p1.t1.r1.c1": { outcome: "unaligned" }, "p1.t1.r3.c1": { outcome: "unaligned" } });
+  });
+
+  it("a wrapped label both reads split the same way still aligns", () => {
+    const table = (fee: string) => read("T | Budget", "H | Item | Fee", `R | Physical examination including | ${fee}`, "R | vital signs |", "R | Labs | $50.00");
+    expect(outcomes(table("$100.00"), table("$110.00"), ["p1.t1.r1.c1", "p1.t1.r3.c1"])).toEqual({
+      "p1.t1.r1.c1": { outcome: "differ", second: "$110.00" },
       "p1.t1.r3.c1": { outcome: "agree", second: "$50.00" },
     });
+  });
+
+  it("a slipped row hidden by a label the other read merged is never confirmed", () => {
+    // printed: Baseline 700.00, Week 4 300.00; the first read slipped Baseline's figure onto Week 4, the second merged the labels
+    const slipped = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline |", "R | Week 4 | $700.00");
+    const merged = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline Week 4 | $700.00");
+    expect(diffReads(1, slipped, merged).get("p1.t1.r3.c1")!.outcome).not.toBe("agree");
+    expect(diffReads(1, merged, slipped).get("p1.t1.r2.c1")!.outcome).not.toBe("agree");
+
+    const split = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline | $700.00", "R | Week 4 |");
+    expect(diffReads(1, merged, split).get("p1.t1.r2.c1")!.outcome).not.toBe("agree");
   });
 
   it("names the cells of the page it is given", () => {
@@ -85,12 +108,23 @@ describe("diffReads", () => {
     // printed: Screening 500.00, Baseline 700.00, Week 4 300.00; the first read put Baseline's figure on the Week 4 row
     const first = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline |", "R | Week 4 | $700.00");
     const second = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline | $700.00", "R | Week 4 |");
-    const diff = diffReads(1, first, second);
-    expect(diff.get("p1.t1.r1.c1")!.outcome).toBe("agree");
-    expect(diff.get("p1.t1.r3.c1")!.outcome).not.toBe("agree");
+    expect(diffReads(1, first, second).get("p1.t1.r3.c1")!.outcome).not.toBe("agree");
 
     const visits = (a: string, b: string) => read("T | Budget", "H | Visit | Fee", `R | Week 4 visit | ${a}`, `R | Week 8 visit | ${b}`);
     expect(diffReads(1, visits("", "$700.00"), visits("$700.00", "")).get("p1.t1.r2.c1")!.outcome).not.toBe("agree");
+  });
+
+  it("look-alike untitled tables are never paired by order", () => {
+    const arm = (exam: string) => ["T |", "H | Procedure | Fee", `R | Physical exam | ${exam}`, "R | Labs | $50.00"];
+    // the page prints arms A, B and C alike; the first read missed B and misread C's 500.00, the second returned A and B
+    const first = read(...arm("$400.00"), ...arm("$600.00"));
+    const second = read(...arm("$400.00"), ...arm("$600.00"));
+    expect(diffReads(1, first, second).get("p1.t2.r1.c1")!.outcome).not.toBe("agree");
+
+    // the same with titles read only once
+    const titled = read(...arm("$400.00").map((l) => l.replace("T |", "T | Arm A")), ...arm("$600.00").map((l) => l.replace("T |", "T | Arm C")));
+    expect(diffReads(1, titled, second).get("p1.t2.r1.c1")!.outcome).not.toBe("agree");
+    expect(diffReads(1, second, titled).get("p1.t2.r1.c1")!.outcome).not.toBe("agree");
   });
 
   it("tables are paired by order only when their titles agree, or neither read has titles", () => {
@@ -99,11 +133,12 @@ describe("diffReads", () => {
     const lost = read("T |", "H | Procedure | Fee", "R | Physical exam | $210.00", "T |", "H | Item | Fee", "R | Archiving | $300.00");
     expect(diffReads(1, arms, lost).get("p1.t1.r1.c1")!.outcome).not.toBe("agree");
 
-    // the second read only missed the titles: every table still lines up with its own
-    const untitled = read("T |", "H | Procedure | Fee", "R | Physical exam | $200.00", "T |", "H | Procedure | Fee", "R | Physical exam | $210.00");
-    const diff = diffReads(1, arms, untitled);
+    // the second read only missed the titles of tables that print different rows: each still lines up with its own
+    const titled = read("T | Arm A", "H | Procedure | Fee", "R | Physical exam | $210.00", "T | Other fees", "H | Item | Fee", "R | Archiving | $300.00");
+    const untitled = read("T |", "H | Procedure | Fee", "R | Physical exam | $200.00", "T |", "H | Item | Fee", "R | Archiving | $300.00");
+    const diff = diffReads(1, titled, untitled);
     expect(diff.get("p1.t1.r1.c1")).toEqual({ outcome: "differ", second: "$200.00" });
-    expect(diff.get("p1.t2.r1.c1")).toEqual({ outcome: "agree", second: "$210.00" });
+    expect(diff.get("p1.t2.r1.c1")).toEqual({ outcome: "agree", second: "$300.00" });
   });
 
   it("columns whose headings line up are compared by heading, even when one read has a column more", () => {
