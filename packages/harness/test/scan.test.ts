@@ -132,12 +132,12 @@ const sizeOf = (png: Buffer) => ({ width: png.readUInt32BE(16), height: png.read
 
 const compact = (rotation = 0, text = "L 0.100-0.120 | Startup fee $1,234.56") => ({ rotation, text });
 
-function fakeReader(answer: (call: number, png: Buffer) => { rotation: number; text: string }) {
+function fakeReader(answer: (call: number, png: Buffer) => { rotation: number; text: string }, price = { input: 0, output: 25, cacheWrite: 0, cacheRead: 0 }) {
   const sent: Buffer[] = [];
   const reader: Reader = {
     model: "gpt-test",
-    // 8,000 output tokens at $12.50 a million: every call is estimated at $0.10
-    price: { input: 0, output: 12.5, cacheWrite: 0, cacheRead: 0 },
+    // 4,000 output tokens at $25 a million: every call is estimated at $0.10
+    price,
     async ask<T>(req: Ask<T>) {
       const first = req.parts[0];
       if (first?.type !== "image") throw new Error("the page image comes first");
@@ -222,6 +222,22 @@ describe("scanDocs", () => {
     await scanDocs([doc], { reader, store, budget: budgetOf(3) });
     expect(sent.length - before).toBe(2);
     expect(store.pages.get(doc.sha256)).toHaveLength(3);
+  });
+
+  it("holds a realistic cost per page, so $0.60 lets pages start in parallel at OpenAI's price", async () => {
+    const doc = await imagePdf("parallel.pdf", [[612, 792], [612, 792], [612, 792], [612, 792]]);
+    const { reader } = fakeReader(() => compact(), { input: 5, output: 30, cacheWrite: 0, cacheRead: 0 });
+    const ask = reader.ask.bind(reader);
+    let running = 0;
+    let most = 0;
+    reader.ask = async (req) => {
+      most = Math.max(most, ++running);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      running--;
+      return ask(req);
+    };
+    await scanDocs([doc], { reader, store: memoryStore(), budget: budgetOf(0.6) });
+    expect(most).toBeGreaterThanOrEqual(3);
   });
 
   it("stops on a failed page and keeps the others", async () => {

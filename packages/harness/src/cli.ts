@@ -5,7 +5,7 @@ import { Rulebook } from "@dct/shared";
 import OpenAI from "openai";
 import { claudeReader, openaiReader } from "./models";
 import { pdfReader } from "./pdf";
-import { read, readBudget, type ReadResult } from "./read";
+import { ReadFailed, read, readBudget, type ReadResult } from "./read";
 import { fileScanStore, untranscribed } from "./scan";
 import type { LoadedDoc } from "./types";
 
@@ -94,4 +94,7 @@ async function main() {
   if (result.compiled?.error) fail(`The read stopped because the model call failed: ${result.compiled.error}`);
 }
 
-main().catch((err: unknown) => fail(`The read failed: ${err instanceof Error ? err.message : String(err)}`));
+main().catch((err: unknown) => {
+  const spent = err instanceof ReadFailed ? ` Spent $${err.usd.toFixed(2)} before stopping.` : "";
+  fail(`The read failed: ${err instanceof Error ? err.message : String(err)}${spent}`);
+});

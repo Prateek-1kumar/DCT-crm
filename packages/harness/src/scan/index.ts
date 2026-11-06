@@ -11,7 +11,8 @@ export { fileScanStore } from "./store";
 /** What the budget adds for each scanned page not yet transcribed: about $0.30 for a dense budget page, much less for prose. */
 export const SCAN_PAGE_USD = 0.4;
 
-const OUTPUT_TOKENS = 8000;
+// Measured on compact transcriptions: the densest page costs about $0.20 at $30 a million output tokens.
+const OUTPUT_TOKENS = 4000;
 const PARALLEL_PAGES = 4;
 
 export const scanVersion = (reader: Reader) => `transcribe-3 ${reader.model}`;
