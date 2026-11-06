@@ -1,8 +1,9 @@
-import { CORRECTED_BY_SECOND_READ, applyPatches, cellProofPatches, citationPatches, correctedCells, parseCents, type Patch, type Source } from "@dct/shared";
+import { CORRECTED_BY_SECOND_READ, SET_ASIDE, applyPatches, cellProofPatches, citationPatches, correctedCells, parseCents, type Patch, type Source } from "@dct/shared";
 import { checks, needsProof } from "../checks";
 import { checkCitations } from "../checks/cells";
 import { printedAmounts, printsTotals } from "../checks/grid";
-import { amountsIn, usd } from "../checks/text";
+import { coverage, secondReadCell } from "../checks/coverage";
+import { amountsAt, amountsIn, usd } from "../checks/text";
 import { pdfReader } from "../pdf";
 import { amountsOf, diffReads, printsAmounts, verdictOf } from "../scan/diff";
 import { MAX_SCAN_PIXELS, SCAN_DPI, type Transcription } from "../scan/transcribe";
@@ -245,6 +246,57 @@ function askAsPrinted(run: Run, report: CheckReport) {
   }
 }
 
+const words = (line: string) => (line.length >= 120 ? line.slice(0, line.lastIndexOf(" ")) : line).trim();
+
+/**
+ * One question per scanned page about the amounts only its second read found: a fee the first read dropped, or a figure
+ * the second read saw twice. The person adds them as fees, each printed row or line one term (its one amount, or all of
+ * them in its formula, so a row and its own total aren't billed twice), or sets them aside.
+ */
+function askMissed(run: Run) {
+  for (const page of coverage(run.rulebook, run.docs).pages) {
+    const missed = page.amounts.filter((a) => a.status === "missing" && a.secondRead !== undefined);
+    if (!missed.length) continue;
+    const { doc, page: n } = page;
+    const one = missed.length === 1;
+    const overhead = run.rulebook.terms.some((t) => t.category === "overhead") || run.rulebook.grids.some((g) => g.overheadPct !== null);
+    const taken = new Set(run.rulebook.terms.map((t) => t.id));
+    const fees = grouped(missed, (a) => a.secondRead!.replace(/\.c\d+$/, "")).map((row): Patch => {
+      const line = words(row[0]!.line);
+      const amounts = [...new Set(row.map((a) => a.cents))];
+      let id = `p${n}-added`;
+      for (let k = 2; taken.has(id); k++) id = `p${n}-added-${k}`;
+      taken.add(id);
+      const name = amountsAt(line).reduceRight((t, a) => t.slice(0, a.start) + t.slice(a.end), line).replace(/\s+/g, " ").trim().slice(0, 80) || `Amount on p.${n}`;
+      return {
+        target: "term", id,
+        set: {
+          category: "site_fee", name, amountCents: amounts.length === 1 ? amounts[0]! : null, unit: null, billing: "unknown", trigger: null, cap: null,
+          formula: amounts.length === 1 ? null : `Amounts printed on this row of p.${n}: ${amounts.map(usd).join(", ")}`, conditions: null, holdbackApplies: "unclear", overheadApplies: overhead ? "unclear" : "n/a",
+          deadline: null, source: { doc, page: n, quote: line }, evidence: "person", houseRuleIds: [], notes: "Found only by a second reading of the page; added by a person.",
+        },
+      };
+    });
+    const cells = [...new Set(missed.map((a) => a.secondRead!))];
+    const aside = cells.map((cell): Patch => ({ target: "accounted", id: cell, set: { doc, page: n, cell: secondReadCell(cell), reason: SET_ASIDE } }));
+    const listed = missed.map((a) => `${usd(a.cents)} in "${words(a.line)}"`).join("; ");
+    raise(run, {
+      id: freshId(run, `read:${doc}:p${n}:missed`),
+      kind: "decision",
+      about: null,
+      source: { doc, page: n, quote: "" },
+      question: one ? `A second reading of p.${n} of ${doc} found ${usd(missed[0]!.cents)} that the first reading missed. Is it a fee?` : `A second reading of p.${n} of ${doc} found ${missed.length} amounts that the first reading missed. Are they fees?`,
+      context: `${one ? "It isn't" : "They aren't"} in the rulebook yet: ${listed}. Check the page. Add ${one ? "it" : "them"} if ${one ? "it is a fee" : "they are fees"} the site can bill; set ${one ? "it" : "them"} aside if ${one ? "it is" : "they are"} only an amount already in the rulebook, read twice.`,
+      readings: [],
+      options: [
+        { label: one ? "It's a fee: add it" : "They're fees: add them", patches: fees },
+        { label: one ? "It isn't a separate amount: set it aside" : "They aren't separate amounts: set them aside", patches: aside },
+      ],
+    }, false);
+    run.log.push(`p.${n} (${doc}): a second read found ${values(missed.length)} the first read missed, so a person will be asked`);
+  }
+}
+
 /**
  * Settles the amounts cited on scanned pages that arithmetic doesn't prove (§5.5). Each page with one gets a single blind
  * second read, compared with the first cell by cell by structure: agreement proves a value (two_reads); a difference stands
@@ -321,4 +373,5 @@ export async function settleScans(run: Run, report: CheckReport) {
     raise(run, { id: freshId(run, `read:${s.about.id}:unread`), about: s.about, source: s.source, question, context: UNREAD, readings: [], options: [] });
   }
   askAsPrinted(run, report);
+  askMissed(run);
 }

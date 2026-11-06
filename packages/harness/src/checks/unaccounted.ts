@@ -9,7 +9,7 @@ export function unaccounted(rulebook: Rulebook, docs: LoadedDoc[]): UnaccountedA
     return p.amounts.flatMap((a) => {
       if (a.status !== "missing" || seen.has(a.cents)) return [];
       seen.add(a.cents);
-      return [{ doc: p.doc, page: p.page, amountCents: a.cents, context: a.line }];
+      return [{ doc: p.doc, page: p.page, amountCents: a.cents, context: a.line, ...(a.secondRead !== undefined && { secondRead: true as const }) }];
     });
   });
 }

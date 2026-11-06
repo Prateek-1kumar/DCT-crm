@@ -529,6 +529,44 @@ describe("an option the resolver wrote", () => {
   });
 });
 
+describe("an amount only a second reading of the page found", () => {
+  const reader = (answers: Record<string, unknown>): Reader => ({
+    model: "fake-openai",
+    price: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    ask: async <T,>(req: { name: string }) => ({ value: answers[req.name] as T, model: "fake-openai", usd: 0 }),
+  });
+  // the first read dropped the Labs row; the second read, kept in the store, has it
+  const missedDraft = async () => {
+    const documentIds = [await scannedDoc([table([["Exam", [field("$250.00")]]])])];
+    const docs = await loadDocs(db(), documentIds);
+    const before = rulebook({ terms: [term("t9", { amountCents: 25000, evidence: "none", source: { doc: "scan.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } })] });
+    const second = reader({ verify_page: { rotation: 0, text: "T 0.1-0.5 | Budget\nR 0.1-0.11 | Exam | $250.00\nR 0.12-0.13 | Labs | $75.00" } });
+    const { rulebook: rb } = await resolve(before, docs, checks.runChecks(before, docs), { claude: second, openai: second, budget: { limit: 5, spent: 0 }, scans: scanStore });
+    const problems = checks.runChecks(rb, docs).problems;
+    expect(problems.map((p) => p.message)).toEqual(['$75.00 on p.1 of scan.pdf was found only by a second reading of the page ("Labs $75.00"): answer the question about it.']);
+    return seed({ documentIds, rulebook: rb, problems });
+  };
+
+  it("can be added as a fee by a person, and the version approved", async () => {
+    const { id } = await missedDraft();
+    const added = (await answer(id, "read:scan.pdf:p1:missed", { option: 0, by: "Ana" })).json();
+    expect(added.rulebook.terms[1]).toMatchObject({ name: "Labs", amountCents: 7500, billing: "unknown", evidence: "person", source: { doc: "scan.pdf", page: 1, quote: "Labs $75.00" } });
+    expect(added.problems).toEqual([]);
+    // how it is billed is the one thing left to decide
+    const billed = (await answer(id, "rule:billing", { option: 0, by: "Ana" })).json();
+    expect(billed.rulebook.terms[1].billing).toBe("auto_paid");
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("can be set aside by a person, and the version approved", async () => {
+    const { id } = await missedDraft();
+    const res = (await answer(id, "read:scan.pdf:p1:missed", { option: 1, by: "Ana" })).json();
+    expect(res.rulebook.accounted).toEqual([{ doc: "scan.pdf", page: 1, cell: "p1.t1.r2.c1 (second read)", reason: "set aside by a person" }]);
+    expect(res.problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+});
+
 describe("approving a version", () => {
   it("approves a clean draft and supersedes the study's previous live version", async () => {
     const studyId = await study();

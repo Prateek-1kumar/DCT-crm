@@ -1,5 +1,5 @@
 import type { Rulebook } from "@dct/shared";
-import { printedText } from "../scan/cells";
+import { printedText, scanText } from "../scan/cells";
 import type { LoadedDoc } from "../types";
 import { normalise, looseContains } from "./text";
 
@@ -14,9 +14,10 @@ export function checkQuote(source: Rulebook["terms"][number]["source"], docs: Lo
   if (!quote) return `no quote given for p.${source.page} of ${source.doc}`;
   // a scan not yet transcribed has nothing to check against; runChecks asks for proof of its amounts instead
   if (page.kind === "image") return null;
+  // a fee a person added from the page's second read is quoted from that read
   const found =
     page.kind === "scan"
-      ? looseContains(printedText(page.raw), source.quote)
+      ? [page.raw, ...(page.second ? [scanText(page.page, page.second)] : [])].some((text) => looseContains(printedText(text), source.quote))
       : [page.raw, page.layout].map(normalise).some((t) => t.includes(quote) || squash(t).includes(squash(quote)));
   return found ? null : `quote not found on p.${source.page} of ${source.doc}`;
 }

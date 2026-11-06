@@ -82,6 +82,8 @@ export interface Problem {
   doc?: string;
   page?: number;
   message: string;
+  /** Settled after the compile (a second read, or a person), so it isn't the compile agent's to fix. */
+  afterCompile?: true;
 }
 
 export interface GridResult {
@@ -97,6 +99,8 @@ export interface UnaccountedAmount {
   page: number;
   amountCents: number;
   context: string;
+  /** Only the page's second read found it. */
+  secondRead?: true;
 }
 
 export interface CheckReport {

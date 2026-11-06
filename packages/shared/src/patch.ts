@@ -1,4 +1,4 @@
-import { Rulebook, Term, type Accounted, type Patch } from "./rulebook";
+import { Accounted, Rulebook, Term, type Patch } from "./rulebook";
 
 type Grid = Rulebook["grids"][number];
 
@@ -66,7 +66,14 @@ export function applyPatches(rulebook: Rulebook, patches: Patch[]): Rulebook {
   const next = structuredClone(rulebook);
   // a rulebook stored before this field existed has no place for a patch to set
   for (const grid of next.grids) grid.acceptedAsPrinted ??= false;
-  for (const patch of patches) (patch.target === "term" ? patchTerm : patchGrid)(next, patch);
+  for (const patch of patches) {
+    if (patch.target !== "accounted") (patch.target === "term" ? patchTerm : patchGrid)(next, patch);
+    else {
+      const entry = Accounted.safeParse(patch.set);
+      if (!entry.success) throw new Error(`That answer can't set the amount aside (${issues(entry.error)}).`);
+      next.accounted.push(entry.data);
+    }
+  }
   const result = Rulebook.safeParse(next);
   if (!result.success) throw new Error(`That change would leave the rulebook invalid: ${issues(result.error)}.`);
   return result.data;
@@ -123,6 +130,10 @@ export function citationPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
 
 export const CORRECTED = "corrected by a person";
 export const CORRECTED_BY_SECOND_READ = "corrected by a second read";
+/** An amount only a page's second read found, that a person said isn't a separate amount. */
+export const SET_ASIDE = "set aside by a person";
+/** The reasons only the harness gives, never the compile agent. */
+export const KEPT_REASONS = [CORRECTED, CORRECTED_BY_SECOND_READ, SET_ASIDE];
 
 /**
  * The cells the given citationPatches drop, set aside: each still prints the amount an answer or a second read replaced,

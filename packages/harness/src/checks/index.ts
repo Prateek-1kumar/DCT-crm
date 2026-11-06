@@ -39,17 +39,18 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
     const reason = checkQuote(t.source, docs) ?? (needsProof(t, page) ? SCAN_PAGE_REASON : null);
     if (!reason) continue;
     quotes[t.id] = reason;
-    problems.push({ check: "quote", id: t.id, doc: t.source.doc, page: t.source.page, message: reason });
+    problems.push({ check: "quote", id: t.id, doc: t.source.doc, page: t.source.page, message: reason, ...(reason === SCAN_PAGE_REASON && { afterCompile: true as const }) });
   }
 
   problems.push(...checkCitations(rulebook, docs).problems);
 
   const stray = unaccounted(rulebook, docs);
   for (const u of stray) {
-    problems.push({
-      check: "unaccounted", doc: u.doc, page: u.page,
-      message: `${usd(u.amountCents)} on p.${u.page} of ${u.doc} is not in the rulebook ("${u.context}"): add it to a term or grid, or list it as accounted with a reason.`,
-    });
+    problems.push(
+      u.secondRead
+        ? { check: "unaccounted", doc: u.doc, page: u.page, afterCompile: true, message: `${usd(u.amountCents)} on p.${u.page} of ${u.doc} was found only by a second reading of the page ("${u.context}"): answer the question about it.` }
+        : { check: "unaccounted", doc: u.doc, page: u.page, message: `${usd(u.amountCents)} on p.${u.page} of ${u.doc} is not in the rulebook ("${u.context}"): add it to a term or grid, or list it as accounted with a reason.` },
+    );
   }
 
   return { grids, quotes, unaccounted: stray, required: requiredDecisions(rulebook), problems };

@@ -140,8 +140,11 @@ export const Study = z.object({
 });
 export type Study = z.infer<typeof Study>;
 
-/** `set` keys are term fields, or dotted paths into a grid ("rows.3.cells.5", "total.2", "grandTotalCents"). */
-export const Patch = z.object({ target: z.enum(["term", "grid"]), id: text, set: z.record(z.string(), z.unknown()) });
+/**
+ * `set` keys are term fields, or dotted paths into a grid ("rows.3.cells.5", "total.2", "grandTotalCents"). An `accounted`
+ * patch adds `set` as one accounted entry; only the harness's own questions carry one, for a person to choose.
+ */
+export const Patch = z.object({ target: z.enum(["term", "grid", "accounted"]), id: text, set: z.record(z.string(), z.unknown()) });
 export type Patch = z.infer<typeof Patch>;
 
 /**
@@ -153,6 +156,9 @@ const LOCKED_PATHS = ["source.cell", "source.capCell"];
 
 /** Whether a patch key is a locked field or a path into one ("cellsReadTwice.0"). */
 export const isLockedField = (key: string) => LOCKED_FIELDS.has(key.split(".")[0]!) || LOCKED_PATHS.some((path) => key === path || key.startsWith(`${path}.`));
+
+/** A patch that sets money aside, which an agent's or a reviewer's option must never carry. */
+export const isLockedPatch = (p: { target: string }) => p.target === "accounted";
 
 export const QuestionKind = z.enum(["reading", "elsewhere", "decision"]);
 export type QuestionKind = z.infer<typeof QuestionKind>;

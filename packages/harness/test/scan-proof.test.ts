@@ -1,5 +1,6 @@
-import type { Grid, Relation, Rulebook } from "@dct/shared";
+import { applyPatches, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
+import { normalizeAccounted, normalizeQuestion } from "../src/agent/normalize";
 import { checks } from "../src/checks";
 import { coverage } from "../src/checks/coverage";
 import { withRelationProof } from "../src/checks/relations";
@@ -102,5 +103,70 @@ describe("a second read's figure that makes the arithmetic hold leaves nothing t
     expect(rulebook.accounted).toEqual([{ doc: DOC, page: 1, cell: "p1.t1.r1.c1", reason: "corrected by a second read" }]);
     expect(open(rulebook)).toEqual([]);
     expect(report.problems).toEqual([]);
+  });
+});
+
+describe("an amount only the second read found is a person's to settle (C2)", () => {
+  // the first read dropped the Labs row
+  const truth = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | Labs | $250.00"]);
+  const first = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00"]);
+  const ecg: Term = {
+    id: "t1", category: "site_fee", name: "ECG", amountCents: 10000, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+    holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: "ECG $100.00", cell: "p1.t1.r1.c1" }, evidence: "none", houseRuleIds: [], notes: null,
+  };
+  const missed = (rb: Rulebook, docs: LoadedDoc[]) => coverage(rb, docs).pages.flatMap((p) => p.amounts.filter((a) => a.secondRead !== undefined).map((a) => [a.cents, a.status]));
+  /** What the answer route does with a person's pick, without the database. */
+  const pick = (rb: Rulebook, id: string, option: number): Rulebook => {
+    const chosen = rb.questions.find((q) => q.id === id)!.options[option]!;
+    const next = applyPatches(rb, chosen.patches);
+    const touched = new Set(chosen.patches.filter((p) => p.target === "term").map((p) => p.id));
+    return { ...next, terms: next.terms.map((t) => (touched.has(t.id) ? { ...t, evidence: "person" as const } : t)), questions: next.questions.map((q) => (q.id === id ? { ...q, state: "answered" as const } : q)) };
+  };
+
+  it("a person-captured term for the amount, named on its row, clears it", () => {
+    const docs = [docOf([first])];
+    docs[0]!.pages[0]!.second = truth;
+    const labs: Term = { ...ecg, id: "t2", name: "Labs", amountCents: 25000, evidence: "person", source: { doc: DOC, page: 1, quote: "ECG" } };
+    expect(missed(book({ terms: [ecg, labs] }), docs)).toEqual([[25000, "decided"]]);
+    // the same amount on another row clears nothing
+    expect(missed(book({ terms: [ecg, { ...labs, name: "Parking" }] }), docs)).toEqual([[25000, "missing"]]);
+  });
+
+  it("is asked once per page, and can be added as a fee by a person, leaving nothing to fix but how it is billed", async () => {
+    const { rulebook, docs } = await settle(book({ terms: [ecg] }), [first], [truth]);
+    const q = open(rulebook).find((x) => x.id === "read:Budget.pdf:p1:missed")!;
+    expect(q).toMatchObject({ kind: "decision", question: "A second reading of p.1 of Budget.pdf found $250.00 that the first reading missed. Is it a fee?" });
+    expect(q.options.map((o) => o.label)).toEqual(["It's a fee: add it", "It isn't a separate amount: set it aside"]);
+    expect(checks.runChecks(rulebook, docs).unaccounted).toEqual([{ doc: DOC, page: 1, amountCents: 25000, context: "Labs $250.00", secondRead: true }]);
+
+    const added = pick(rulebook, q.id, 0);
+    expect(added.terms[1]).toMatchObject({ name: "Labs", amountCents: 25000, billing: "unknown", evidence: "person", source: { doc: DOC, page: 1, quote: "Labs $250.00" } });
+    const report = checks.runChecks(added, docs);
+    expect(report.problems).toEqual([]);
+    expect(report.required.map((x) => x.id)).toEqual(["rule:billing"]);
+    expect(missed(added, docs)).toEqual([[25000, "decided"]]);
+  });
+
+  it("can be set aside by a person", async () => {
+    const { rulebook, docs } = await settle(book({ terms: [ecg] }), [first], [truth]);
+    const aside = pick(rulebook, "read:Budget.pdf:p1:missed", 1);
+    expect(aside.accounted).toEqual([{ doc: DOC, page: 1, cell: "p1.t1.r2.c1 (second read)", reason: "set aside by a person" }]);
+    expect(checks.runChecks(aside, docs).problems).toEqual([]);
+    // a re-run asks nothing more
+    const again = await resolve(aside, docs, checks.runChecks(aside, docs), { claude: NO_CALLS, openai: NO_CALLS, budget: { limit: 3, spent: 0 }, scans: storeOf([truth]) });
+    expect(open(again.rulebook)).toEqual([]);
+  });
+
+  it("the agent can't account away a second-read-only amount", () => {
+    const docs = [docOf([first])];
+    docs[0]!.pages[0]!.second = truth;
+    const listed = book({ terms: [ecg], accounted: [{ doc: DOC, page: 1, amountCents: 25000, reason: "a double read" }] });
+    expect(missed(listed, docs)).toEqual([[25000, "missing"]]);
+    // nor give the reason only a person's answer gives, nor offer to set money aside in a question
+    expect(normalizeAccounted({ doc: DOC, page: 1, cell: "p1.t1.r2.c1 (second read)", reason: "Set aside by a person." })).toMatchObject({ ok: false });
+    const asked = normalizeQuestion({ id: "q", kind: "decision", question: "Is it a fee?", source: { doc: DOC, page: 1, quote: "" }, options: [{ label: "No", patches: [{ target: "accounted", id: "x", set: { doc: DOC, page: 1, cell: "p1.t1.r2.c1 (second read)", reason: "set aside by a person" } }] }] });
+    expect(asked.ok && asked.value.options[0]!.patches).toEqual([]);
+    // the compile agent is told so, and isn't asked to fix it
+    expect(checks.runChecks(book({ terms: [ecg] }), docs).problems.filter((p) => p.check === "unaccounted")).toEqual([expect.objectContaining({ afterCompile: true })]);
   });
 });

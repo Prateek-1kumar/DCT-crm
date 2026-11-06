@@ -1,4 +1,4 @@
-import { Accounted, CORRECTED, Grid, isLockedField, Question, Relation, Study, Term, parseCents, parsePercent } from "@dct/shared";
+import { Accounted, Grid, KEPT_REASONS, isLockedField, isLockedPatch, Question, Relation, Study, Term, parseCents, parsePercent } from "@dct/shared";
 import type { z } from "zod";
 
 type Raw = Record<string, unknown>;
@@ -86,7 +86,8 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
 export function normalizeAccounted(raw: unknown): Parsed<Accounted> {
   if (!isObject(raw)) return notAnObject;
   const issues: string[] = [];
-  if (typeof raw.reason === "string" && raw.reason.trim().replace(/[\s.!;:,]+$/, "").toLowerCase() === CORRECTED) issues.push(`reason: "${CORRECTED}" is kept for amounts only a person's answer corrected; give the real reason`);
+  const reason = typeof raw.reason === "string" ? raw.reason.trim().replace(/[\s.!;:,]+$/, "").toLowerCase() : "";
+  if (KEPT_REASONS.includes(reason)) issues.push(`reason: "${reason}" is kept for amounts a person or a second read settled; give the real reason`);
   return parse(Accounted, { ...raw, amountCents: raw.amount == null ? undefined : cents(raw.amount, "amount", issues) }, issues);
 }
 
@@ -95,15 +96,17 @@ export function normalizeRelation(raw: unknown): Parsed<Relation> {
   return parse(Relation, { ...raw, operands: typeof raw.operands === "string" ? [raw.operands] : raw.operands }, []);
 }
 
-// An option's patch is applied when a person picks it, who never sees the patch: it can't carry the proof fields.
+// An option's patch is applied when a person picks it, who never sees the patch: it can't carry the proof fields, or set money aside.
 const unlocked = (p: unknown) => (isObject(p) && isObject(p.set) ? { ...p, set: Object.fromEntries(Object.entries(p.set).filter(([key]) => !isLockedField(key))) } : p);
+const settable = (p: unknown) => !(isObject(p) && typeof p.target === "string" && isLockedPatch({ target: p.target }));
 
 export function normalizeQuestion(raw: unknown): Parsed<Question> {
   if (!isObject(raw)) return notAnObject;
   const options = list(raw.options, (o) => {
     if (!isObject(o)) return o;
     const { patch, ...rest } = o;
-    const patches = list(rest.patches ?? (patch ? [patch] : []), unlocked, []);
+    const given: unknown = rest.patches ?? (patch ? [patch] : []);
+    const patches = list(Array.isArray(given) ? given.filter(settable) : given, unlocked, []);
     return { ...rest, patches };
   }, []);
   return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open", blocking: true, readings: [], resolution: null }, []);

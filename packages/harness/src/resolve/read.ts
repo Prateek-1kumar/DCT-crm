@@ -91,12 +91,14 @@ export const personId = (target: string) => `person:${target}`;
 
 type Raised = Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>;
 
-const checkQuestion = (q: Raised): Question => ({
-  kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
+/** `neither`: a person may say none of the options is right, which leaves the value to them to type. */
+const checkQuestion = (q: Raised, neither = true): Question => ({
+  kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q,
+  options: [...q.options, ...(neither && q.options.length ? [{ label: NEITHER, patches: [] }] : [])],
 });
 
-export function raise(run: Run, q: Raised) {
-  run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), checkQuestion(q)] };
+export function raise(run: Run, q: Raised, neither = true) {
+  run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), checkQuestion(q, neither)] };
 }
 
 const acceptAsPrinted = (gridId: string): Patch => ({ target: "grid", id: gridId, set: { acceptedAsPrinted: true } });
@@ -191,7 +193,8 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
           question: differ.length === 1 ? `What does p.${t.source.page} of ${t.source.doc} print for ${differ[0]!.item.label}?` : `The two readings of ${t.what} disagree on ${differ.length} values. What does the page print?`,
           context: `Two models read the page independently and did not agree. ${differ.map((d) => `${d.item.label}: ${run.claude.model} read "${d.pair[0] ?? UNREADABLE}", ${run.openai.model} read "${d.pair[1] ?? UNREADABLE}"`).join("; ")}.`,
           readings: readings(run, said),
-          options: [...use(0), ...use(1)],
+          // with no reading to offer, the person can still keep what the rulebook has after looking at the page
+          options: [...use(0), ...use(1)].length ? [...use(0), ...use(1)] : [{ label: differ.length === 1 ? "Keep the value the rulebook has" : "Keep the values the rulebook has", patches: differ.map((d) => d.item.patch(d.item.current)) }],
         });
         run.log.push(`${place}: the two reads disagree on ${values(differ.length)}, so a person will be asked`);
       }

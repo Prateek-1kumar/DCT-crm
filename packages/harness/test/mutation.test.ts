@@ -1,12 +1,14 @@
-import type { Accounted, Cell, Grid, Relation, Rulebook, Term } from "@dct/shared";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Accounted, type Cell, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
+import { printsTotals } from "../src/checks/grid";
 import { coverage } from "../src/checks/coverage";
 import { withRelationProof } from "../src/checks/relations";
 import { amountsAt, usd } from "../src/checks/text";
 import type { Reader } from "../src/models/reader";
 import { buildPage } from "../src/pdf/page";
 import { resolve } from "../src/resolve";
+import { asPrintedQuestion } from "../src/resolve/read";
 import { withScans } from "../src/scan";
 import { amountsOf } from "../src/scan/diff";
 import { parseTranscription, type Field, type Transcription } from "../src/scan/transcribe";
@@ -248,6 +250,7 @@ const SHAPES: Shape[] = [
       const terms: Term[] = [];
       const relations: Relation[] = [];
       const values: Value[] = [];
+      const accounted: Accounted[] = [];
       t!.tables[0]?.rows.forEach((row, i) => {
         const id = (k: number) => `p1.t1.r${i + 1}.c${k}`;
         const cents = cited(row.cells[1]).at(-1);
@@ -255,9 +258,12 @@ const SHAPES: Shape[] = [
         const t = term(`t${i + 1}`, row.label, cents, row.label, id(2));
         terms.push(t);
         values.push({ target: "term", id: t.id, path: "amountCents", key: row.label, cents });
-        if (cited(row.cells[0]).length) relations.push({ kind: "sum", doc: DOC, result: id(2), operands: [id(1)], rate: "p1.t1.h2" });
+        if (cited(row.cells[0]).length) {
+          relations.push({ kind: "sum", doc: DOC, result: id(2), operands: [id(1)], rate: "p1.t1.h2" });
+          accounted.push({ doc: DOC, page: 1, cell: id(1), reason: "the fee before overhead" });
+        }
       });
-      return { terms, grids: [], relations, values };
+      return { terms, grids: [], relations, values, accounted };
     },
   },
   {
@@ -449,6 +455,39 @@ function proofOf(rulebook: Rulebook, docs: LoadedDoc[], v: Value): Proof | null 
   return !result.problems.length && !(cell && result.unproven.some(at)) ? "totals" : null;
 }
 
+/**
+ * Whether the draft is stuck: a person answers every open question with its first option, as the answer route applies it,
+ * and it still can't be approved with nothing left to answer. Which option is picked doesn't matter here, only that some
+ * answer always leads on.
+ */
+function deadEnd(start: Rulebook, docs: LoadedDoc[], compiled: Rulebook): boolean {
+  // what the compile agent's own book left is its to fix before it finishes, not a person's
+  const agents = new Set(checks.runChecks(compiled, docs).problems.filter((p) => !p.afterCompile).map((p) => p.message));
+  const withRequired = (rb: Rulebook) => {
+    const known = new Set(rb.questions.map((q) => q.id));
+    const report = checks.runChecks(rb, docs);
+    const asked = (g: Grid) => rb.questions.some((q) => q.state === "open" && q.about?.target === "grid" && q.about.id === g.id);
+    const printed = rb.grids.filter((g) => report.grids[g.id]?.problems.length && printsTotals(g) && !checks.checkGrid({ ...g, acceptedAsPrinted: true }, docs).problems.length && !asked(g));
+    return { ...rb, questions: [...rb.questions, ...report.required.filter((q) => !known.has(q.id)), ...printed.map((g) => asPrintedQuestion(g, `read:${g.id}:printed${rb.questions.length}`, "", report.grids[g.id]!.problems))] };
+  };
+  let rb = withRequired(start);
+  for (let n = 0; n < 100; n++) {
+    const q = rb.questions.find((x) => x.state === "open" && x.blocking && x.options.length);
+    if (!q) break;
+    const chosen = q.options[0]!;
+    const dropped = citationPatches(rb, chosen.patches);
+    const patched = applyPatches(rb, [...chosen.patches, ...cellProofPatches(rb, chosen.patches), ...dropped]);
+    const touched = new Set(chosen.patches.filter((p) => p.target === "term").map((p) => p.id));
+    rb = withRequired({
+      ...patched,
+      accounted: [...patched.accounted, ...correctedCells(rb, dropped)],
+      terms: patched.terms.map((t) => (touched.has(t.id) ? { ...t, evidence: "person" as const } : t)),
+      questions: patched.questions.map((x) => (x.id === q.id ? { ...x, state: "answered" as const } : x)),
+    });
+  }
+  return checks.runChecks(rb, docs).problems.some((p) => !agents.has(p.message)) || rb.questions.some((q) => q.state === "open" && q.blocking);
+}
+
 interface Tally {
   trials: number;
   pages: number;
@@ -466,6 +505,8 @@ interface Tally {
   unnoticed: number;
   /** Lost values coverage doesn't list as missing, as an amount only the second read found. */
   unflagged: number;
+  /** Drafts that answering every question still leaves unapprovable. */
+  stuck: number;
 }
 
 async function trial(t: Tally, shape: Shape, mutation: string | null, seed: number, misread: "first" | "second") {
@@ -498,6 +539,10 @@ async function trial(t: Tally, shape: Shape, mutation: string | null, seed: numb
   t.lost += lost.length;
   if (!questions) t.unnoticed += lost.length;
   t.unflagged += lost.filter((key) => !flagged.includes(Math.abs(truthOf.get(key)!))).length;
+  if (deadEnd(out.rulebook, scanned, before)) {
+    t.stuck++;
+    if (process.env.DEBUG_STUCK) console.log("STUCK", shape.name, mutation, misread, seed, JSON.stringify(checks.runChecks(out.rulebook, scanned).problems.map((p) => p.message)), JSON.stringify(out.rulebook.questions.map((q) => [q.id, q.options.map((o) => o.label)])));
+  }
   for (const v of book.values) {
     const right = truthOf.get(v.key);
     if (v.cents !== right) t.cited++;
@@ -513,7 +558,7 @@ async function tally(misread: "first" | "second") {
   const rows: (Tally & { shape: string; mutation: string })[] = [];
   for (const shape of SHAPES) {
     for (const mutation of [null, ...Object.keys(MUTATIONS)]) {
-      const t: Tally = { trials: 0, pages: 0, cited: 0, wrong: 0, proven: { reads: 0, relation: 0, totals: 0 }, questions: 0, baseline: 0, lost: 0, unnoticed: 0, unflagged: 0 };
+      const t: Tally = { trials: 0, pages: 0, cited: 0, wrong: 0, proven: { reads: 0, relation: 0, totals: 0 }, questions: 0, baseline: 0, lost: 0, unnoticed: 0, unflagged: 0, stuck: 0 };
       for (let seed = 1; seed <= SEEDS; seed++) await trial(t, shape, mutation, seed * 7919 + shape.name.length, misread);
       rows.push({ shape: shape.name, mutation: mutation ?? "none", ...t });
     }
@@ -521,11 +566,11 @@ async function tally(misread: "first" | "second") {
   console.log(
     [
       `Misread in the ${misread} read (${SEEDS} seeds each; "-" where the mutation has nothing to act on)`,
-      "shape | mutation | trials | pages | wrong as cited | still wrong | wrong, proven by reads / relation / totals | questions (clean-read baseline) | extra per page | values lost / with no question / not listed as possibly missed",
+      "shape | mutation | trials | pages | wrong as cited | still wrong | wrong, proven by reads / relation / totals | questions (clean-read baseline) | extra per page | values lost / with no question / not listed as possibly missed | stuck drafts",
       ...rows.map((x) =>
         [
           x.shape, x.mutation, x.trials, x.pages, x.cited, x.wrong, `${x.proven.reads} / ${x.proven.relation} / ${x.proven.totals}`, `${x.questions} (${x.baseline})`,
-          x.pages ? ((x.questions - x.baseline) / x.pages).toFixed(2) : "-", `${x.lost} / ${x.unnoticed} / ${x.unflagged}`,
+          x.pages ? ((x.questions - x.baseline) / x.pages).toFixed(2) : "-", `${x.lost} / ${x.unnoticed} / ${x.unflagged}`, x.stuck,
         ].join(" | "),
       ),
     ].join("\n"),
@@ -544,11 +589,13 @@ describe("planted misreads", () => {
     expect(total(rows, (t) => t.proven.reads + t.proven.relation + t.proven.totals)).toBe(0);
     // every scanned page with money is read twice, so whatever the first read lost is listed as possibly missed
     expect(total(rows, (t) => t.unflagged)).toBe(0);
+    expect(total(rows, (t) => t.stuck)).toBe(0);
   });
 
   it("a misread in the second read only raises questions, fewer than one a page", { timeout: 300_000 }, async () => {
     const rows = await tally("second");
     expect(total(rows, (t) => t.wrong)).toBe(0);
+    expect(total(rows, (t) => t.stuck)).toBe(0);
     const mutated = rows.filter((x) => x.mutation !== "none");
     const pages = total(mutated, (t) => t.pages);
     const perPage = total(mutated, (t) => t.questions) / pages;

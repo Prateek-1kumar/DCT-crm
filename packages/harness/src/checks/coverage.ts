@@ -1,10 +1,10 @@
-import { parseCents, type Region, type Rulebook } from "@dct/shared";
+import { SET_ASIDE, parseCents, type Region, type Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
 import { cellsOf, type ScanCell } from "../scan/cells";
 import { alignTables, amountsOf, diffReads } from "../scan/diff";
 import { bandsOf } from "../scan/words";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
-import { amountsAt, amountsIn, looseAmounts, looseCents, looseFind, looseKey } from "./text";
+import { amountsAt, amountsIn, looseAmounts, looseCents, looseContains, looseFind, looseKey } from "./text";
 
 export type AmountStatus = "captured" | "decided" | "set_aside" | "missing";
 export type CoverageRef = { target: "term"; id: string } | { target: "grid"; id: string; row: number; col: number };
@@ -20,7 +20,12 @@ export interface CoverageAmount {
   line: string;
   /** The first doubt the reader flagged on the words it was read from; null when none, and on a page with a text layer. */
   doubt: Doubt | null;
+  /** Set on an amount only the page's second read found: the id of its cell or line in that read. */
+  secondRead?: string;
 }
+
+/** How a person's "set aside" names an amount only the second read found, apart from the first read's cell of the same id. */
+export const secondReadCell = (id: string) => `${id} (second read)`;
 
 export interface CoverageClause {
   termId: string;
@@ -271,11 +276,21 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
   });
 }
 
+/** A term a person added or settled that holds this amount, named on the printed row or line it is on. */
+const decidedBy = (rulebook: Rulebook, doc: string, page: number, cents: number, line: string) =>
+  rulebook.terms.find(
+    (t) =>
+      t.evidence === "person" && t.source.doc === doc && t.source.page === page &&
+      [t.amountCents, ...[t.formula, t.notes].flatMap((x) => (x ? amountsIn(x) : []))].some((c) => c !== null && Math.abs(c) === cents) &&
+      [t.name, t.source.quote].some((words) => words.trim() && looseContains(line, words)),
+  );
+
 /**
  * Amounts the page's second read found with nothing in the first read beside them: an unpaired row or line, or a cell the
  * first read left blank. Only tables that paired with one of the first read's count: a table that didn't has its cells
  * asked about already, and listing all of its amounts again would say nothing new. Nothing cites them, so each is missing
- * until a value captures it or `accounted` lists it (its amount on this page, or the whole page).
+ * until a person settles it: a term of theirs with that amount on that row, or their "set aside" (or the whole page set
+ * aside). The compile agent's listing of the amount never counts, since it can't tell a dropped fee from a double read.
  */
 function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number): CoverageAmount[] {
   const page = pages[index]!;
@@ -288,8 +303,11 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
     printed.flatMap(({ text, cents }): CoverageAmount[] => {
       const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
       if (!cents || !verdict || (cell.table !== null && !paired.has(cell.table - 1)) || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
-      const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents)));
-      return [{ box: cellBand(second, cell.id), text, cents, status: accounted ? "set_aside" : "missing", ref: null, reason: accounted?.reason ?? `a second read of p.${page.page} found an amount the first read didn't`, line, doubt: cell.doubts[0] ?? null }];
+      const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || (a.reason === SET_ASIDE && a.page === page.page && a.cell === secondReadCell(cell.id))));
+      const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line);
+      const status: AmountStatus = added ? "decided" : accounted ? "set_aside" : "missing";
+      const reason = accounted?.reason ?? (added ? null : `a second read of p.${page.page} found an amount the first read didn't`);
+      return [{ box: cellBand(second, cell.id), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id }];
     }),
   );
 }

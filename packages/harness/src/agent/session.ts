@@ -1,6 +1,6 @@
 import { Region, type Accounted, type Grid, type Question, type Relation, type Rulebook, type Study, type Term } from "@dct/shared";
 import { z } from "zod";
-import { SCAN_PAGE_REASON, checks } from "../checks";
+import { checks } from "../checks";
 import { citeGrid, citeTerm } from "../checks/cells";
 import { checkRelations, evaluateRelation, lessRelationProven, provenText, withRelationProof } from "../checks/relations";
 import { pdfReader } from "../pdf";
@@ -256,19 +256,22 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
     finish() {
       if (!study) return text("There are no study details yet: call put_study first.", "Waiting for the study details", true);
       state.finishes++;
-      // proving amounts on scanned pages is the harness's job after the compile, so it can't be fixed here
-      const problems = checks.runChecks(rulebook(), docs).problems.filter((p) => p.message !== SCAN_PAGE_REASON);
+      // proving amounts on scanned pages, and amounts only a second read found, are settled after the compile, not here
+      const all = checks.runChecks(rulebook(), docs).problems;
+      const problems = all.filter((p) => !p.afterCompile);
+      const missed = all.filter((p) => p.afterCompile && p.check === "unaccounted").map((p) => `${p.message.replace(/: answer the question about it\.$/, "")}.`);
+      const later = missed.length ? `\nFound only by a second read of a page, so a person is asked whether each is a fee; never list these with put_accounted:\n${withMore(missed, MAX_SHOWN).join("\n")}` : "";
       const byMath = withRelationProof(rulebook(), docs).terms.filter((t) => t.evidence === "math");
       const proven = byMath.length ? `\nProven by arithmetic between cells: ${byMath.map((t) => `term ${t.id}`).join(", ")}.` : "";
       if (!problems.length) {
         state.ending = "done";
-        return text(`ALL CHECKS PASS. Done.${proven}`, "Checking the whole rulebook: all checks pass");
+        return text(`ALL CHECKS PASS. Done.${proven}${later}`, "Checking the whole rulebook: all checks pass");
       }
       const last = state.finishes >= maxFinishes;
       if (last) state.ending = "finishes_exhausted";
       const lines = problems.map((p) => `${p.check === "unaccounted" ? "UNACCOUNTED" : `${p.check.toUpperCase()} ${p.id}`}: ${p.message}`);
       const head = `Finish ${state.finishes} of ${maxFinishes}: ${plural(problems.length, "thing")} to fix. ` + (last ? "That was the last finish: what remains goes to the accountant." : "Fix these, then call finish again.");
-      return text([head, ...withMore(lines, MAX_PROBLEM_LINES)].join("\n") + proven, `Checking the whole rulebook: ${plural(problems.length, "thing")} to fix`);
+      return text([head, ...withMore(lines, MAX_PROBLEM_LINES)].join("\n") + proven + later, `Checking the whole rulebook: ${plural(problems.length, "thing")} to fix`);
     },
   };
 

@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, describe, expect, it } from "vitest";
 import { compile, type CompileOptions } from "../src/agent";
 import { normalizeAccounted } from "../src/agent/normalize";
+import { createSession } from "../src/agent/session";
 import { withScans } from "../src/scan";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
@@ -125,7 +126,7 @@ describe("compile", () => {
 
   it("refuses to set an amount aside as corrected by a person: only a person's answer does that", () => {
     const refused = normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: " Corrected by a Person " });
-    expect(refused).toMatchObject({ ok: false, issues: [expect.stringMatching(/only a person's answer/)] });
+    expect(refused).toMatchObject({ ok: false, issues: [expect.stringMatching(/kept for amounts a person or a second read settled/)] });
     expect(normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: "Corrected by a person." }).ok).toBe(false);
     expect(normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: "printed twice" }).ok).toBe(true);
   });
@@ -394,6 +395,17 @@ describe("scanned values cite cells", () => {
     expect(result.rulebook.relations).toEqual([byRow, byColumn]);
     expect(String(resultsAfter(calls[3]!.messages)[0]!.content)).not.toContain("Proven by arithmetic");
     expect(result.rulebook.terms[0]!.evidence).toBe("none");
+  });
+
+  it("an amount only a page's second read found is left to a person, and finish tells the agent not to account it away", async () => {
+    const doc = scanned(["T 0.3-0.6 | Fees", "H | Item | Fee", "R 0.31-0.32 | Exam | $1,520.00"].join("\n"));
+    doc.pages[0]!.second = parseTranscription({ rotation: 0, text: ["T 0.3-0.6 | Fees", "H | Item | Fee", "R 0.31-0.32 | Exam | $1,520.00", "R 0.33-0.34 | Labs | $80.00"].join("\n") });
+    const session = createSession([doc], 3);
+    await session.run("put_study", { study });
+    await session.run("put_terms", { terms: [{ ...exam("$1,520.00", "p1.t1.r1.c1"), source: { doc: "A.pdf", page: 1, quote: "Exam $1,520.00", cell: "p1.t1.r1.c1" } }] });
+    const finish = String((await session.run("finish", {})).content);
+    expect(finish).toContain("ALL CHECKS PASS");
+    expect(finish).toContain("never list these with put_accounted:\n$80.00 on p.1 of A.pdf was found only by a second reading of the page");
   });
 
   it("text-page terms need no citation", async () => {

@@ -269,7 +269,10 @@ describe("scanned pages: a blind second read of the page", () => {
     const r = readers({ fail: true }, { verify: said(sheet(true)) });
     const out = await resolveOn(scan, r, book);
     expect(verifies(r)).toHaveLength(1);
-    expect(out.rulebook.questions).toEqual([]);
+    // the row's fee and its own total are one fee to add, never two
+    const asked = question1(out.rulebook, "read:Budget.pdf:p1:missed");
+    expect(out.rulebook.questions).toEqual([asked]);
+    expect(asked.options[0]!.patches).toEqual([expect.objectContaining({ target: "term", set: expect.objectContaining({ name: "ECG", amountCents: 4000 }) })]);
     const missed = coverage(out.rulebook, scan).pages[0]!.amounts.filter((a) => a.status === "missing");
     expect(missed.map((a) => [a.cents, a.reason])).toEqual([[4000, "a second read of p.1 found an amount the first read didn't"], [4000, "a second read of p.1 found an amount the first read didn't"]]);
     expect(checks.runChecks(out.rulebook, scan).unaccounted.map((u) => u.amountCents)).toEqual([4000]);
@@ -410,7 +413,7 @@ describe("scanned pages: a blind second read of the page", () => {
     // the first read dropped the Exam row, the cap's line and Labs' V2 figure
     const first = swap(SHEET.filter((l) => !l.includes("| Exam |") && !l.includes("capped")), "| Labs | $50.00 | $50.00", "| Labs | $50.00 |");
     const missed = (b: Rulebook, scan: LoadedDoc[]) =>
-      coverage(b, scan).pages.flatMap((p) => p.amounts.filter((a) => a.reason?.startsWith("a second read")).map((a) => [a.cents, a.status]));
+      coverage(b, scan).pages.flatMap((p) => p.amounts.filter((a) => a.secondRead !== undefined).map((a) => [a.cents, a.status]));
     const reason = "a second read of p.1 found an amount the first read didn't";
 
     const scan = scanned({ 1: first });
@@ -420,9 +423,11 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(coverage(out.rulebook, scan).pages[0]!.amounts.find((a) => a.cents === 60000)).toMatchObject({ reason, line: "Payments are capped at $600.00 per subject." });
     expect(checks.runChecks(out.rulebook, scan).unaccounted.map((u) => u.amountCents)).toEqual(expect.arrayContaining([10000, 25000, 60000]));
 
-    // listing it as accounted for, with a reason, settles it
+    // the compile agent listing it as accounted for doesn't settle it; a person setting it aside does
     const listed = { ...out.rulebook, accounted: [{ doc: "Budget.pdf", page: 1, amountCents: 60000, reason: "a cap, already in the contract's terms" }] };
-    expect(missed(listed, scan)).not.toContainEqual([60000, "missing"]);
+    expect(missed(listed, scan)).toContainEqual([60000, "missing"]);
+    const aside = question1(out.rulebook, "read:Budget.pdf:p1:missed").options[1]!.patches;
+    expect(missed(applyPatches(out.rulebook, aside), scan)).toEqual([[10000, "set_aside"], [25000, "set_aside"], [5000, "set_aside"], [60000, "set_aside"]]);
 
     // a page with no second read reports nothing of the kind
     const unread = scanned({ 1: first });
@@ -706,7 +711,8 @@ describe("reading: two reads disagree", () => {
     const out = await run(rulebook({ terms: [term()] }), readers({ read: () => null }));
     const q = question1(out.rulebook, "read:t1");
     expect(q.readings.map((x) => x.answer)).toEqual(["the amount for 'Screen failure fee': blank or unreadable", "the amount for 'Screen failure fee': blank or unreadable"]);
-    expect(q.options.map((o) => o.label)).toEqual(["Neither, I'll type the right value"]);
+    expect(q.options.map((o) => o.label)).toEqual(["Keep the value the rulebook has", "Neither, I'll type the right value"]);
+    expect(q.options[0]!.patches).toEqual([{ target: "term", id: "t1", set: { amountCents: 70000 } }]);
     expect(out.rulebook.terms[0]!.evidence).toBe("quote");
   });
 });
