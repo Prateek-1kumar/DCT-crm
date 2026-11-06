@@ -29,16 +29,12 @@ export interface StudyRow {
   latestVersion: { number: number; status: VersionStatus } | null;
 }
 
-export type OcrStatus = "none" | "queued" | "running" | "done" | "failed";
-
 export interface StudyDocument {
   id: string;
   name: string;
   bytes: number;
   pageCount: number;
   scannedPages: number[];
-  lowConfidencePages: number[];
-  ocr: { status: OcrStatus; pagesDone: number; pagesTotal: number; error: string | null };
 }
 
 export interface VersionSummary {
@@ -123,7 +119,7 @@ export interface Word {
 
 export interface PageText {
   page: number;
-  kind: "text" | "ocr" | "image";
+  kind: "text" | "scan" | "image";
   layout: string;
   words: Word[];
 }
@@ -133,6 +129,8 @@ export interface PageText {
  * person, set aside on purpose (with the reason), or missing.
  */
 export type AmountStatus = "captured" | "decided" | "set_aside" | "missing";
+
+export type Doubt = "unsure" | "handwritten" | "struck_out" | "initialed";
 
 export type CoverageRef = { target: "term"; id: string } | { target: "grid"; id: string; row: number; col: number };
 
@@ -144,6 +142,7 @@ export interface CoverageAmount {
   status: AmountStatus;
   ref: CoverageRef | null;
   reason: string | null;
+  doubt: Doubt | null;
   /** The printed line it sits on, for context. */
   line: string;
 }
@@ -158,7 +157,7 @@ export interface CoveragePage {
   documentId: string;
   doc: string;
   page: number;
-  kind: "text" | "ocr" | "image";
+  kind: "text" | "scan" | "image";
   amounts: CoverageAmount[];
   clauses: CoverageClause[];
 }

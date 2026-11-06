@@ -1,6 +1,6 @@
 import type { Evidence, Grid, Rulebook, Term, TermCategory } from "@dct/shared";
 import type { Tone } from "../ui";
-import type { AmountStatus, Coverage, CoveragePage, CoverageRef, Version } from "@/lib/types";
+import type { AmountStatus, Coverage, CoveragePage, CoverageRef, Doubt, Version } from "@/lib/types";
 
 export interface ProofData {
   version: Version;
@@ -64,7 +64,9 @@ export const STATUS: Record<AmountStatus, { tone: Tone; chip: string; proof: str
   missing: { tone: "danger", chip: "missing", proof: "Missing" },
 };
 
-export const EVIDENCE_TONE: Record<Evidence, Tone> = { math: "ok", quote: "ok", ocr_match: "ok", two_reads: "ok", house_rule: "accent", person: "info", none: "warn" };
+export const DOUBT_WORDS: Record<Doubt, string> = { unsure: "unsure", handwritten: "handwritten", struck_out: "struck out", initialed: "initialed" };
+
+export const EVIDENCE_TONE: Record<Evidence, Tone> = { math: "ok", quote: "ok", two_reads: "ok", house_rule: "accent", person: "info", none: "warn" };
 
 export const GROUPS: { title: string; categories: TermCategory[] }[] = [
   { title: "Fees paid once", categories: ["site_fee"] },

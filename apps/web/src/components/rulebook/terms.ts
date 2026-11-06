@@ -43,7 +43,6 @@ export const OVERHEAD_LABEL: Record<Term["overheadApplies"], string> = {
 export const EVIDENCE_LABEL: Record<Term["evidence"], string> = {
   math: "Totals add up",
   quote: "Matches the contract",
-  ocr_match: "Scanned page: OCR and the reader agree",
   two_reads: "Read twice, both agree",
   house_rule: "Follows a standing rule",
   person: "Decided by a person",

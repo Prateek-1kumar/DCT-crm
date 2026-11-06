@@ -1,4 +1,4 @@
-import type { StudyDocument, VersionStatus } from "@/lib/types";
+import type { VersionStatus } from "@/lib/types";
 import type { Tone } from "../ui";
 
 export const VERSION_PILL: Record<VersionStatus, { label: string; tone: Tone }> = {
@@ -8,8 +8,6 @@ export const VERSION_PILL: Record<VersionStatus, { label: string; tone: Tone }> 
   approved: { label: "Live", tone: "ok" },
   superseded: { label: "Superseded", tone: "neutral" },
 };
-
-export const isPreparing = (doc: StudyDocument) => doc.ocr.status === "queued" || doc.ocr.status === "running";
 
 /** "Pages 3–5, 8": the pages in order, consecutive ones as a range. */
 export function pageList(pages: number[]): string {

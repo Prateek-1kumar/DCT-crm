@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, FileText } from "lucide-react";
+import { FileText } from "lucide-react";
 import { useState, type RefObject } from "react";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
@@ -45,24 +45,12 @@ function RemoveDocument({ study, doc, onClose }: { study: Study; doc: StudyDocum
 }
 
 function ScannedPages({ doc }: { doc: StudyDocument }) {
-  const { status, pagesDone, pagesTotal, error } = doc.ocr;
-  if (status === "queued" || status === "running") return <Spinner label={`Preparing scanned pages: ${pagesDone} of ${pagesTotal}`} />;
-  if (status === "failed") return <ErrorNote>{error}</ErrorNote>;
-  if (status !== "done") return null;
   const scanned = doc.scannedPages;
-  const hard = doc.lowConfidencePages;
+  if (scanned.length === 0) return null;
   return (
-    <>
-      <p className="text-small text-muted">
-        Scanned {pageList(scanned).toLowerCase()} {scanned.length === 1 ? "was" : "were"} read with OCR
-      </p>
-      {hard.length > 0 && (
-        <p className="flex gap-2 rounded-field bg-warn-soft px-3.5 py-2.5 text-small text-warn">
-          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-          {pageList(hard)} {hard.length === 1 ? "was" : "were"} hard to read; check {hard.length === 1 ? "it" : "them"} on the proof screen
-        </p>
-      )}
-    </>
+    <p className="text-small text-muted">
+      Scanned {pageList(scanned).toLowerCase()} {scanned.length === 1 ? "is" : "are"} read from the image when the read starts (about $0.40 a page, the first time only).
+    </p>
   );
 }
 

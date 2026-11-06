@@ -6,7 +6,7 @@ import { formatCents } from "@/lib/money";
 import type { CoverageAmount, CoverageRef } from "@/lib/types";
 import { BILLING_LABEL, EVIDENCE_LABEL, GridTable, termValue } from "@/components/rulebook";
 import { Badge, Button, Card } from "../ui";
-import { decidedBy, findGrid, findTerm, groupTitle, STATUS, type ProofData } from "./model";
+import { decidedBy, DOUBT_WORDS, findGrid, findTerm, groupTitle, STATUS, type ProofData } from "./model";
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -79,6 +79,7 @@ export function DetailPanel({ data, amount, line, onShowInRulebook }: { data: Pr
           <div className="flex items-center gap-3">
             <span className="num text-heading font-semibold">{amount.text}</span>
             <Badge tone={STATUS[amount.status].tone}>{STATUS[amount.status].proof}</Badge>
+            {amount.doubt && <Badge tone="warn">{DOUBT_WORDS[amount.doubt]}</Badge>}
           </div>
         )}
         {amount?.status === "missing" && (

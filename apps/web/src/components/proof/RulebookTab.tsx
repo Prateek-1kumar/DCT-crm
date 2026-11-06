@@ -39,7 +39,7 @@ function SourcePane({ data, line, onShow }: { data: ProofData; line: CoverageRef
         </Button>
       </div>
       {page.kind === "image" && <p className="rounded-field bg-warn-soft px-4 py-2 text-small text-warn">Scanned page: the words on it can&apos;t be searched. Read it on the page below.</p>}
-      {page.kind === "ocr" && <p className="rounded-field bg-sunken px-4 py-2 text-small text-muted">Scanned page, read with OCR</p>}
+      {page.kind === "scan" && <p className="rounded-field bg-sunken px-4 py-2 text-small text-muted">Scanned page, read from the image</p>}
       {page.kind !== "image" && lost && <p className="rounded-field bg-warn-soft px-4 py-2 text-small text-warn">We couldn&apos;t find the exact words on this page. The page is shown so you can look.</p>}
       <div data-page-scroller className="relative min-h-0 flex-1 overflow-auto rounded-tile">
         <PageView key={`${spot.doc}-${spot.page}`} documentId={spot.doc} page={spot.page} alt={`${docName(data, spot.doc)}, page ${spot.page}`} boxes={boxes} focus={regions[0]} />

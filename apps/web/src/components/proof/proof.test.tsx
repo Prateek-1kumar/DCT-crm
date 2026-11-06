@@ -72,6 +72,7 @@ const amount = (text: string, status: CoveragePage["amounts"][number]["status"],
   status,
   ref,
   reason,
+  doubt: null,
 });
 
 const coverage = (over: Partial<Coverage> = {}): Coverage => ({
@@ -157,11 +158,30 @@ describe("proof screen: contract tab", () => {
     expect(screen.getByText("Scanned page: amounts on it can't be checked")).toBeTruthy();
   });
 
-  it("says a page that was read with OCR is a scan, without warning about it", async () => {
+  it("says a page read from the image is a scan, without warning about it", async () => {
     const base = coverage();
-    setup({ ...base, pages: base.pages.map((p) => (p.documentId === "d2" ? { ...p, kind: "ocr" as const } : p)) });
-    expect(await screen.findByText("Scanned page, read with OCR")).toBeTruthy();
+    setup({ ...base, pages: base.pages.map((p) => (p.documentId === "d2" ? { ...p, kind: "scan" as const } : p)) });
+    expect(await screen.findByText("Scanned page, read from the image")).toBeTruthy();
     expect(screen.queryByText(/is scanned: amounts on it can't be checked/)).toBeNull();
+  });
+
+  it.each([
+    ["unsure", "unsure"],
+    ["handwritten", "handwritten"],
+    ["struck_out", "struck out"],
+    ["initialed", "initialed"],
+  ] as const)("marks an amount read as %s with a pill", async (doubt, words) => {
+    const base = coverage();
+    setup({ ...base, pages: base.pages.map((p) => ({ ...p, amounts: p.amounts.map((a) => (a.text === "$5,000.00" ? { ...a, doubt } : a)) })) });
+    fireEvent.click(await box(/\$5,000\.00 · captured/));
+    expect(await screen.findByText(words)).toBeTruthy();
+  });
+
+  it("shows no doubt pill on an amount with no doubt", async () => {
+    setup();
+    fireEvent.click(await box(/\$5,000\.00 · captured/));
+    await screen.findByText("Startup fee");
+    expect(screen.queryByText("unsure")).toBeNull();
   });
 
   it("says nothing is missing when the count is zero", async () => {

@@ -5,18 +5,12 @@ import { useRef } from "react";
 import { api, keys } from "@/lib/queries";
 import { LoadError, PageTitle, pageCls, Spinner } from "../ui";
 import { Documents } from "./Documents";
-import { isPreparing, studySub, studyTitle } from "./format";
+import { studySub, studyTitle } from "./format";
 import { NextStep } from "./NextStep";
 import { VersionsHistory } from "./VersionsHistory";
 
-const PREPARING_POLL_MS = 2000;
-
 export function StudyHub({ id }: { id: string }) {
-  const study = useQuery({
-    queryKey: keys.study(id),
-    queryFn: () => api.study(id),
-    refetchInterval: (q) => (q.state.data?.documents.some(isPreparing) ? PREPARING_POLL_MS : false),
-  });
+  const study = useQuery({ queryKey: keys.study(id), queryFn: () => api.study(id) });
   const picker = useRef<HTMLInputElement>(null);
 
   if (study.isPending)

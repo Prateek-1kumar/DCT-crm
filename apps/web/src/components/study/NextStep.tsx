@@ -4,7 +4,6 @@ import Link from "next/link";
 import type { RefObject } from "react";
 import type { Study, VersionSummary } from "@/lib/types";
 import { Button, btnCls, Card } from "../ui";
-import { isPreparing } from "./format";
 import { ReadingPanel } from "./ReadingPanel";
 import { StartReading } from "./StartReading";
 
@@ -20,12 +19,6 @@ export function nextStep(study: Study): Step {
 
 export function NextStep({ study, pickFiles }: { study: Study; pickFiles: RefObject<HTMLInputElement | null> }) {
   const step = nextStep(study);
-  const failed = study.documents.filter((d) => d.ocr.status === "failed");
-  const canStart = study.documents.some(isPreparing)
-    ? { ok: false, reason: "Scanned pages are still being prepared. Reading can start when they're done." }
-    : failed.length
-      ? { ok: false, reason: `${failed.map((d) => d.name).join(", ")} couldn't be prepared. Upload ${failed.length === 1 ? "it" : "them"} again to try once more, or remove ${failed.length === 1 ? "it" : "them"} to go on.` }
-      : { ok: true, reason: "" };
 
   return (
     <Card className="p-6">
@@ -47,10 +40,10 @@ export function NextStep({ study, pickFiles }: { study: Study; pickFiles: RefObj
             <h2 className="text-heading font-semibold tracking-tight">Ready to read</h2>
             <p className="mt-1 text-body text-muted">We read every page and build the rulebook. Then we ask you about anything we can&apos;t settle ourselves.</p>
           </div>
-          <StartReading studyId={study.id} label="Start reading" canStart={canStart} />
+          <StartReading studyId={study.id} label="Start reading" />
         </div>
       )}
-      {(step.kind === "reading" || step.kind === "questions" || step.kind === "failed") && <ReadingPanel studyId={study.id} version={step.version} canStart={canStart} />}
+      {(step.kind === "reading" || step.kind === "questions" || step.kind === "failed") && <ReadingPanel studyId={study.id} version={step.version} />}
       {step.kind === "live" && (
         <div className="flex flex-col items-start gap-4">
           <div>

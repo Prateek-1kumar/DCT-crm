@@ -62,23 +62,8 @@ describe("next step", () => {
     await waitFor(() => expect(fetch.mock.calls.some(([u, i]) => String(u) === "/api/v1/studies/s1/reads" && i?.method === "POST" && JSON.parse(i.body as string).by === "Avery Chen")).toBe(true));
   });
 
-  it("won't start while scanned pages are being prepared, and says why", async () => {
-    hub(null, { docs: [doc({ scannedPages: [3, 4, 5], ocr: { status: "running", pagesDone: 1, pagesTotal: 3, error: null } })] });
-    const button = await screen.findByRole("button", { name: "Start reading" });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("Scanned pages are still being prepared. Reading can start when they're done.")).toBeTruthy();
-    expect(button.getAttribute("aria-describedby")).toBeTruthy();
-  });
-
-  it("won't start when a document's scanned pages couldn't be prepared, and says what to do", async () => {
-    hub(null, { docs: [doc({ scannedPages: [3], ocr: { status: "failed", pagesDone: 0, pagesTotal: 1, error: "The scanned pages couldn't be read. Upload the file again to try once more, or upload a clearer scan." } })] });
-    expect(((await screen.findByRole("button", { name: "Start reading" })) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("Contract.pdf couldn't be prepared. Upload it again to try once more, or remove it to go on.")).toBeTruthy();
-    expect(screen.getByText("The scanned pages couldn't be read. Upload the file again to try once more, or upload a clearer scan.")).toBeTruthy();
-  });
-
-  it("starts once every scanned page has been read", async () => {
-    hub(null, { docs: [doc({ scannedPages: [3], ocr: { status: "done", pagesDone: 1, pagesTotal: 1, error: null } })] });
+  it("starts reading even when the contract has scanned pages", async () => {
+    hub(null, { docs: [doc({ scannedPages: [3, 4, 5] })] });
     expect(((await screen.findByRole("button", { name: "Start reading" })) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -161,41 +146,29 @@ describe("documents", () => {
     expect(await screen.findByText("12 pages · 2.4 MB")).toBeTruthy();
   });
 
-  it("shows how far the scanned pages have got, and keeps checking until they are done", async () => {
-    let done = 12;
-    stubApi({
-      "GET /studies/s1": () =>
-        study({ documents: [doc({ scannedPages: [3, 4, 5], ocr: { status: done === 30 ? "done" : "running", pagesDone: done, pagesTotal: 30, error: null } })] }),
-    });
-    renderWithClient(<StudyHub id="s1" />);
-    expect(await screen.findByText("Preparing scanned pages: 12 of 30…")).toBeTruthy();
-    done = 30;
-    expect(await screen.findByText("Scanned pages 3–5 were read with OCR", {}, { timeout: 5000 })).toBeTruthy();
-    expect(screen.queryByText(/Preparing scanned pages/)).toBeNull();
-  }, 10_000);
-
-  it("says plainly, without a warning, that scanned pages were read with OCR", async () => {
-    hub(null, { docs: [doc({ scannedPages: [3], ocr: { status: "done", pagesDone: 1, pagesTotal: 1, error: null } })] });
-    expect(await screen.findByText("Scanned page 3 was read with OCR")).toBeTruthy();
-    expect(screen.queryByText(/hard to read/)).toBeNull();
+  it("says scanned pages are read from the image when the read starts, and what it costs", async () => {
+    hub(null, { docs: [doc({ scannedPages: [3, 4, 5, 6, 7] })] });
+    expect(await screen.findByText("Scanned pages 3–7 are read from the image when the read starts (about $0.40 a page, the first time only).")).toBeTruthy();
   });
 
-  it("warns about the pages that were hard to read, and where to check them", async () => {
-    hub(null, { docs: [doc({ scannedPages: [7, 8, 9], lowConfidencePages: [7, 9], ocr: { status: "done", pagesDone: 3, pagesTotal: 3, error: null } })] });
-    expect(await screen.findByText("Pages 7, 9 were hard to read; check them on the proof screen")).toBeTruthy();
+  it("says it of a single scanned page too, without a warning", async () => {
+    hub(null, { docs: [doc({ scannedPages: [3] })] });
+    expect(await screen.findByText("Scanned page 3 is read from the image when the read starts (about $0.40 a page, the first time only).")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("gives the reason when a document's scanned pages couldn't be prepared", async () => {
-    hub(null, { docs: [doc({ scannedPages: [3], ocr: { status: "failed", pagesDone: 0, pagesTotal: 1, error: "The scanned pages couldn't be read. Upload the file again." } })] });
-    expect((await screen.findByRole("alert")).textContent).toBe("The scanned pages couldn't be read. Upload the file again.");
+  it("says nothing about scanning for a document with no scanned pages", async () => {
+    hub(null);
+    await screen.findByText("Contract.pdf");
+    expect(screen.queryByText(/Scanned/)).toBeNull();
   });
 
-  it("shows the progress after an upload that brings in scanned pages", async () => {
+  it("lists the scanned pages of a document uploaded later", async () => {
     let docs = [doc()];
     const fetch = stubApi({
       "GET /studies/s1": () => study({ documents: docs }),
       "POST /studies/s1/documents": () => {
-        docs = [...docs, doc({ id: "d2", name: "Amendment.pdf", pageCount: 6, scannedPages: [3, 4, 5], ocr: { status: "queued", pagesDone: 0, pagesTotal: 3, error: null } })];
+        docs = [...docs, doc({ id: "d2", name: "Amendment.pdf", pageCount: 6, scannedPages: [3, 4, 5] })];
         return [{ id: "d2", name: "Amendment.pdf", pages: 6, scannedPages: [3, 4, 5], alreadyInStudy: false }];
       },
     });
@@ -203,9 +176,9 @@ describe("documents", () => {
     await screen.findByText("Contract.pdf");
     const file = new File(["%PDF-1.7"], "Amendment.pdf", { type: "application/pdf" });
     fireEvent.change(screen.getByLabelText("Contract PDFs"), { target: { files: [file] } });
-    expect(await screen.findByText("Preparing scanned pages: 0 of 3…")).toBeTruthy();
+    expect(await screen.findByText(/Scanned pages 3–5 are read from the image/)).toBeTruthy();
     expect(fetch.mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(1);
-    expect((screen.getByRole("button", { name: "Start reading" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Start reading" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("uploads several files one after another and reports the one that failed in plain words", async () => {

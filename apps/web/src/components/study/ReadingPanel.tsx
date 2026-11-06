@@ -71,7 +71,7 @@ function Meter({ read }: { read: Read }) {
 }
 
 /** The reader's feed under the next-step card, for a version that is being read, has just been read, or failed. */
-export function ReadingPanel({ studyId, version, canStart }: { studyId: string; version: VersionSummary; canStart: { ok: boolean; reason: string } }) {
+export function ReadingPanel({ studyId, version }: { studyId: string; version: VersionSummary }) {
   const queryClient = useQueryClient();
   const detail = useQuery({ queryKey: keys.version(version.id), queryFn: () => api.version(version.id) });
   const readId = detail.data?.read?.id;
@@ -103,7 +103,7 @@ export function ReadingPanel({ studyId, version, canStart }: { studyId: string; 
           <p className="mt-1 text-body text-muted">{data?.error ?? "The reading stopped before it was done."}</p>
         </div>
         {data && <Meter read={data} />}
-        <StartReading studyId={studyId} label="Start reading again" canStart={canStart} />
+        <StartReading studyId={studyId} label="Start reading again" />
         {feed}
       </div>
     );
