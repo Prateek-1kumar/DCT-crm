@@ -36,7 +36,7 @@ interface Spot {
   unproven: boolean;
   /** Set on a grid's row cell, so the totals check can tell whether a corrected one is covered. */
   rowCell?: [number, number];
-  /** The contract's arithmetic can prove it, so a second read's different figure may stand when the arithmetic then holds. */
+  /** A second read's different figure may stand when the arithmetic then holds, and only where the first read's arithmetic failed: sums that hold for both reads can't tell them apart. */
   checkable: boolean;
   patch(value: number | null): Patch;
 }
@@ -94,7 +94,7 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
       if (typeof cents !== "number" || settled.has(path) || cell === null) return;
       if (cell === undefined && onText.has(Math.abs(cents))) return;
       spots.push({
-        about: { target: "grid", id: g.id }, source: { doc: g.doc, page: cell ? pageOfCell(cell) : scanPage, quote: "" }, label, path, cents, cell, checkable: !unitCost,
+        about: { target: "grid", id: g.id }, source: { doc: g.doc, page: cell ? pageOfCell(cell) : scanPage, quote: "" }, label, path, cents, cell, checkable: !unitCost && failing,
         unproven: unitCost || failing || unproven.has(path), rowCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }),
       });
     };

@@ -107,6 +107,28 @@ describe("a second read's figure that makes the arithmetic hold leaves nothing t
   });
 });
 
+describe("a second read is applied only where the first read's arithmetic failed", () => {
+  const first = read(["T 0.1-0.5 | Budget", "H | Procedure | V1", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | Labs | $200.00", "R 0.24-0.25 | Subtotal | $300.00"]);
+  const swapped = read(["T 0.1-0.5 | Budget", "H | Procedure | V1", "R 0.2-0.21 | ECG | $200.00", "R 0.22-0.23 | Labs | $100.00", "R 0.24-0.25 | Subtotal | $300.00"]);
+  const grid = (cells: number[]): Grid => ({
+    id: "g1", name: "Budget", arm: null, doc: DOC, pages: [1], visits: ["V1"], overheadPct: null,
+    rows: [{ name: "ECG", code: null, unitCostCents: null, cells: [cells[0]!], printedRowTotalCents: null }, { name: "Labs", code: null, unitCostCents: null, cells: [cells[1]!], printedRowTotalCents: null }],
+    subtotal: [30000], overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false,
+    cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.1.cells.0": "p1.t1.r2.c1", "subtotal.0": "p1.t1.r3.c1" },
+  });
+
+  it("a second read that swaps two figures the first read had right is asked about, never applied", async () => {
+    const { rulebook } = await settle(book({ grids: [grid([10000, 20000])] }), [first], [swapped]);
+    expect(rulebook.grids[0]!.rows.map((r) => r.cells[0])).toEqual([10000, 20000]);
+    expect(rulebook.grids[0]!.cellsReadTwice).toEqual([]);
+    expect(rulebook.accounted).toEqual([]);
+    const q = open(rulebook).find((x) => x.about?.id === "g1")!;
+    expect(q.options.map((o) => o.label)).toEqual(["Use the first readings", "Use the second readings"]);
+    expect(q.readings.map((r) => r.answer)).toEqual(["row 'ECG' at visit 'V1': $100.00; row 'Labs' at visit 'V1': $200.00", "row 'ECG' at visit 'V1': $200.00; row 'Labs' at visit 'V1': $100.00"]);
+    expect(open(rulebook)).toHaveLength(1);
+  });
+});
+
 describe("an amount only the second read found is a person's to settle (C2)", () => {
   // the first read dropped the Labs row
   const truth = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | Labs | $250.00"]);

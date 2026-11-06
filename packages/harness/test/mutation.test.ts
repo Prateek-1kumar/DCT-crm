@@ -400,6 +400,20 @@ const slip: Mutate = (t, r) => {
   return true;
 };
 
+/** Two cells of one column trade places, so every sum down the column still holds. */
+const swap: Mutate = (t, r) => {
+  const columns = t.tables.flatMap((table) =>
+    (table.rows[0]?.cells ?? []).flatMap((_, k) => {
+      const at = table.rows.flatMap((row, i) => (amountsOf(row.cells[k]?.text ?? "").length && !row.cells[k]!.parts && !/total/i.test(row.label) ? [i] : []));
+      const [a, b] = [pick(r, at), pick(r, at)];
+      return at.length > 1 && table.rows[a]!.cells[k]!.text !== table.rows[b]!.cells[k]!.text ? [() => ([table.rows[a]!.cells[k], table.rows[b]!.cells[k]] = [table.rows[b]!.cells[k]!, table.rows[a]!.cells[k]!])] : [];
+    }),
+  );
+  if (!columns.length) return false;
+  pick(r, columns)();
+  return true;
+};
+
 const MUTATIONS: Record<string, Mutate> = {
   "glyph 3<->8": glyph("3", "8"),
   "glyph 1<->7": glyph("1", "7"),
@@ -408,6 +422,7 @@ const MUTATIONS: Record<string, Mutate> = {
   "duplicated row": duplicate,
   "struck mark removed": unstrike,
   "row slip": slip,
+  "two cells swapped": swap,
 };
 
 const NO_CALLS: Reader = {
