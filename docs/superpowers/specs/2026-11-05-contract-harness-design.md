@@ -50,7 +50,7 @@ A throwaway Python harness (Claude Opus 5.5, about 360 lines; kept for reference
 - **Stack:** TypeScript monorepo as today (pnpm, Node ≥ 24, Fastify 5, Postgres 16, Drizzle, pg-boss, zod, Next.js, vitest, Playwright). The harness is TypeScript; the Python spike is reference only.
 - **Licences:** permissive only (MIT, Apache-2.0, BSD). **No AGPL or GPL**, so no MuPDF and no Poppler. Default PDF stack: `pdfjs-dist` (Apache-2.0) for text with word positions, plus `@napi-rs/canvas` (MIT) for rendering. The builder may swap in PDFium (BSD/Apache, e.g. via WASM) if rendering fidelity requires it.
 - **Models:** Anthropic (primary) and OpenAI (second reader and reviewer), both approved by the user on 2026-11-05 for contract pages. Use them deliberately: **no model call without a reason, every call costed, a hard budget per read.** Model IDs come from configuration, never hard-coded. Defaults: compile **`claude-sonnet-5-5`** at effort `high` (owner's choice, about half Opus's cost); `claude-opus-5-5` is a setting, switched on only if Sonnet fails the golden set. The spike measured Opus, so the first golden run proves Sonnet. Second reader and reviewer come from `OPENAI_MODEL` (currently `gpt-5.5`). **Development spend:** test runs are capped at **$10 in total** until the owner allots more. Every paid run is announced beforehand, with a running total.
-- **Data handling:** only contract pages are sent to models, never patient data. Bank account, routing and similar numbers are masked in all text sent to models, and painted over in page images wherever their position is known from the text layer. *Known limit:* on image-only pages (scans, vector-outlined text), bank details can't be located and are sent unmasked. Real contracts and answer keys live in `data/`, which is gitignored; only synthetic fixtures are committed.
+- **Data handling:** only contract pages are sent to models, never patient data. Bank account, routing and similar numbers are masked in all text sent to models, and painted over in page images wherever their position is known from the text layer. *Known limit:* on image-only pages (scans, vector-outlined text), bank details can't be located and are sent unmasked. *Owner's decision, 2026-11-06:* scanned page images go to the transcribing model (OpenAI) unmasked for now; the text it returns is masked by the text-page rules before any other model sees it. Real contracts and answer keys live in `data/`, which is gitignored; only synthetic fixtures are committed.
 - **Money** is stored as integer cents.
 
 ## 4. How the accountant experiences it
@@ -77,6 +77,8 @@ For each PDF: check the file (`%PDF-` header, size and page limits, opens cleanl
 - the first line of each page
 
 Bank details are masked in the stored text that models see.
+
+**Scanned pages (decided 2026-11-06, replaces local OCR).** When a read starts, every `IMAGE` page not yet transcribed is read by **one vision model, the OpenAI model**, from the page image: the whole page plus zoomed strips, returned as lines and tables (one cell per column, `""` for a blank), each with its vertical position, an `unsure` flag, and marks (handwritten, struck out, initialed). A page reported sideways is turned and read again. The transcription is saved per file and page, so a file is paid for once; it is paid from the read's budget (§5.8). The words it yields make the page a `SCAN` page that the agent, the checks and the reviewer read like a text page. Measured on 4 money pages drawn as degraded scans from text contracts: GPT alone read 273 of 273 amounts exactly; Claude Sonnet at low effort skipped rows, and pairing the two models added cost and false disputes without catching anything. Tesseract (local OCR) is removed.
 
 ### 5.2 Compile (agent loop)
 One agent (compile model) runs a tool-use loop until it calls `finish` and the checks pass, or until it runs out of budget, turns or finish attempts. Tools (the spike's set, proven to work):
@@ -129,6 +131,8 @@ Each candidate question, from a failed check, the compile agent or the reviewer,
 | **elsewhere** | The answer may be in another clause or document | Search the bundle (and an amendment's supersession) and the house rules. If found, it is settled with the citation. If not, it becomes a **decision**. |
 | **decision** | The contract doesn't say | If a matching house rule exists, apply it and cite it. Otherwise it is a person's question. **Never settled by models agreeing.** |
 
+**On `SCAN` pages the second read is the same model looking again, closer** (decided 2026-11-06). Every amount that no arithmetic proves gets a zoomed crop of its spot read by the OpenAI model, which isn't shown the value. If it reads the same, the amount is settled (`two_reads`). If not, it is a person's question with the crop and both readings. A value transcribed as handwritten, struck out or initialed is never settled by reads; it goes straight to a person with the crop. A scanned grid whose arithmetic fails is read again at zoom; if the new reading makes every identity hold, the arithmetic proves it, and otherwise a person is asked. Claude does not read scans.
+
 Every automatic resolution is recorded with its evidence and visible on the rulebook line. A reading resolution changes a value only through the same checks; a `two_reads` value that breaks an identity becomes a person's question.
 
 ### 5.5a How an answer changes the rulebook
@@ -152,6 +156,7 @@ On a draft, the change applies to the draft. On a live version, it creates a new
 - Per read: a hard cap on model spend (default **$3**, configurable). When it's reached, the read stops and the version fails in plain words ("stopped at the $3 limit after reading 40 of 62 pages"). Spend is recorded per model call.
 - Compile: at most ~80 turns and 3 finish attempts. Prompt caching is on. Effort is tuned on the golden set: lower it wherever the golden metrics hold.
 - Reading resolutions crop small regions, about a cent each. The reviewer is one call per read.
+- Scanned pages add **$0.40 per page not yet transcribed** to the read's budget (measured: about $0.30 for a dense budget page, much less for prose). If the budget runs out part way, the pages already transcribed are kept, so starting again continues from there.
 
 ### 5.9 Trace
 Every read stores its full trace: model calls (model, tokens, cost), tool calls and results (images by reference), check results, reviewer findings and resolver decisions. It is used to debug, to audit "why does the rulebook say this", and for the golden-set reports.
@@ -178,7 +183,7 @@ Upload and study details · Reading (live progress feed) · Decisions (cards) ·
 
 ## 9. Golden set and evaluation
 - **Golden bundles** (local, in gitignored `data/`): CBT-CS301 (CTA + Amendment 1), MK-0616-015-0096, Shionogi 2402T1432, plus EFC18243 COPD. Existing answer keys in `data/keys/` and `data/golden/copd-native.json` may seed theirs after checking them against the new schema. **Building the keys is part of the build** (plan step 2), from the audited spike outputs; the owner reviews them. A key holds: (a) every expected value (terms and grid cells); (b) every expected billable item; (c) every **expected decision question**, by topic and page (e.g. "MK-0616 p.18: screen-fail pro-rating at Visit 1"). A key records which questions must be raised, not how a person answers them, so no business answers are needed to build it.
-- **Next to measure** (before claiming "any contract"): `APL_3007-GA-201_SPA` (vector-outlined, no text) and `TGC12301…CSA15SEP2023` (full scan). If scans need text for quote checks, add Tesseract (Apache-2.0) **only** after measuring.
+- **Next to measure** (before claiming "any contract"): `APL_3007-GA-201_SPA` (vector-outlined, no text) and `TGC12301…CSA15SEP2023` (full scan). Scans are transcribed by the vision model (§5.1); `pnpm --filter @dct/harness vision-bench` scores that transcription against text contracts drawn as degraded scans, and is rerun before changing the transcription model or prompt.
 - **Metrics per bundle:** wrong values, missed billables, questions (and how many are genuine), automatic resolutions by kind, cost and time.
 - **Gate:** no prompt, model, effort or check change merges without a golden run that keeps wrong values = 0 and missed billables = 0, raises **every** expected decision question, and raises **no** question that isn't in the key. Any extra question is reviewed by the owner: either it is genuine and added to the key, or it is noise and the change doesn't merge. The raw count isn't the gate; the key is. Golden runs cost money, so they run on demand before merging, not on every CI push. CI runs the deterministic checks and the API and web tests on synthetic fixtures, with the model calls faked.
 
@@ -194,6 +199,7 @@ Upload and study details · Reading (live progress feed) · Decisions (cards) ·
 - Keep the UI's design language (sidebar, pills); what each screen contains can change.
 - Build method: parallel Sonnet agents (effort high) do the implementation; the principal engineer (Claude, this session) reviews every change so the design stays intact. The owner also reviews. One step at a time, starting with the clean-up.
 - Work on a new branch. The old extraction code, review-question system, agent instruction files and old docs are deleted first, so old logic can't leak in.
+- **2026-11-06, scanned pages:** vision-first, with tesseract removed. One model reads scans: the OpenAI model, paid when a read starts and cached per file. Claude writes the rulebook. The OpenAI reviewer stays, because it settles what Claude left open. Amounts that no arithmetic proves get a zoomed re-look by the same model. Doubtful marks (handwriting, strike-throughs) always go to a person. Scan images are sent unmasked for now.
 
 ## 11. Calls made by the designer (check these)
 - TypeScript harness on the Anthropic and OpenAI SDKs with a hand-written loop (~100 lines), not an agent framework.

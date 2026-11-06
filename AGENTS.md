@@ -8,7 +8,7 @@ DCT Finance turns clinical-trial site contracts into an approved **rulebook**: e
 
 - Never commit, paste or log anything from `data/` (real contracts, answer keys, uploads) or `.env`. Tests and fixtures use synthetic PDFs only.
 - Only contract pages go to a model — never patient data. Bank/account numbers are masked before anything is sent: from the text layer on text pages, from local OCR (tesseract.js, never a cloud OCR) on scanned pages. A scanned page OCR reads poorly is still sent with whatever masking OCR allows (owner's decision, 2026-11-05: accuracy first); its low confidence is shown to the accountant.
-- **No AI spend without the owner's explicit approval.** Announce every paid run first, with its expected cost and the running total (development test cap: $15 since 2026-11-05, until the owner raises it).
+- **No AI spend without the owner's explicit approval.** Announce every paid run first, with its expected cost and the running total (development test cap: $21 since 2026-11-06, until the owner raises it).
 - Never stop the owner's dev servers (web 3100, API 4100) or their Postgres container, and never point a second API at the dev database `dct_finance`. Use other ports and the `_test` / `_e2e` databases.
 - Never discard uncommitted changes you didn't make (`git checkout -- .`, `git reset --hard`, `git clean`, `git stash`).
 - Live (approved) rulebooks are immutable; every change is a new version.
