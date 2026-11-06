@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Question, type Rulebook } from "@dct/shared";
-import { asPrintedQuestion, checks, coverage } from "@dct/harness";
+import { asPrintedQuestion, checks, coverage, printsTotals } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -125,7 +125,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       for (const g of next.grids) {
         const problems = report.grids[g.id]?.problems ?? [];
         // only asked when accepting would clear the grid: a row with the wrong number of values stays a problem either way
-        if (!problems.length || checks.checkGrid({ ...g, acceptedAsPrinted: true }, docs).problems.length || next.questions.some((q) => q.state === "open" && q.about?.target === "grid" && q.about.id === g.id)) continue;
+        if (!problems.length || !printsTotals(g) || checks.checkGrid({ ...g, acceptedAsPrinted: true }, docs).problems.length || next.questions.some((q) => q.state === "open" && q.about?.target === "grid" && q.about.id === g.id)) continue;
         let id = `read:${g.id}:printed`;
         for (let n = 2; next.questions.some((q) => q.id === id); n++) id = `read:${g.id}:printed${n}`;
         next.questions.push(asPrintedQuestion(g, id, "The figures still don't add up after that answer.", problems));

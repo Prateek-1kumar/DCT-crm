@@ -441,6 +441,17 @@ describe("answers that leave a scanned grid failing", () => {
     expect(res.rulebook.questions.filter((q: Question) => q.state === "open")).toEqual([]);
   });
 
+  it("a grid with no printed totals never asks 'use them as printed'", async () => {
+    const { documentIds, grid: bare } = await scannedGrid({ ...grid(false), subtotal: null });
+    const rb = rulebook({ terms: [], grids: [{ ...bare, cellsReadTwice: [[0, 0]] }], questions: [question("q1", { options: [{ label: "Nothing changes", patches: [] }] })] });
+    const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
+
+    // nothing there can fail to add up: the cell no read settled is left for the next read or a person
+    const res = (await answer(id, "q1", { option: 0, by: "Ana" })).json();
+    expect(res.problems.map((p: { message: string }) => p.message)).toEqual(["nothing printed proves these cells: capture the printed subtotal/total rows."]);
+    expect(res.rulebook.questions.filter((q: Question) => q.state === "open")).toEqual([]);
+  });
+
   it("asks only once while the question about the grid is still open", async () => {
     const change = question("q-change", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $260.00", patches: cellTo(26000) }] });
     const open = question("read:g1", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use them as printed", patches: [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }] }] });

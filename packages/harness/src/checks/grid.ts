@@ -34,6 +34,9 @@ export function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
   return new Set(pages.flatMap((p) => amountsIn(p.layout)));
 }
 
+/** A grid with none of these lines has nothing to add up: its cells are settled one by one, never accepted "as printed". */
+export const printsTotals = (grid: Grid) => !!grid.subtotal || !!grid.total || grid.grandTotalCents !== null || grid.rows.some((r) => r.printedRowTotalCents !== null);
+
 const onScan = (grid: Grid, docs: LoadedDoc[]) => docs.find((d) => d.name === grid.doc)?.pages.some((p) => p.kind === "scan" && grid.pages.includes(p.page)) ?? false;
 
 export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
@@ -100,13 +103,12 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
     }
   }
 
-  if (!subtotal && !total && grid.grandTotalCents === null && grid.rows.every((r) => r.printedRowTotalCents === null)) {
-    problems.push("nothing printed proves these cells: capture the printed subtotal/total rows.");
-  }
-
   grid.cellsReadTwice.forEach(([row, col]) => {
     if (covered[row]?.[col] !== undefined) covered[row]![col] = true;
   });
+  if (!printsTotals(grid) && numericCells(grid).some(({ row, col }) => !covered[row]![col])) {
+    problems.push("nothing printed proves these cells: capture the printed subtotal/total rows.");
+  }
   const printed = printedAmounts(grid, docs);
   const unproven = numericCells(grid).filter(({ row, col }) => !covered[row]![col]! && !printed.has(Math.abs(num(grid.rows[row]!.cells[col])!)));
   const byColumnOnly = unproven.filter(({ row, col }) => loose[row]![col]);

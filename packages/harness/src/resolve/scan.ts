@@ -1,7 +1,7 @@
 import { applyPatches, parseCents, type Patch, type Source } from "@dct/shared";
 import { checks, needsProof } from "../checks";
 import { checkCitations } from "../checks/cells";
-import { printedAmounts } from "../checks/grid";
+import { printedAmounts, printsTotals } from "../checks/grid";
 import { amountsIn, usd } from "../checks/text";
 import { pdfReader } from "../pdf";
 import { amountsOf, diffReads, verdictOf } from "../scan/diff";
@@ -221,7 +221,7 @@ function askAsPrinted(run: Run, report: CheckReport) {
   const open = (id: string) => run.rulebook.questions.some((q) => q.state === "open" && (q.id === id || q.id.startsWith(`${id}:`)));
   for (const g of run.rulebook.grids) {
     const problems = after.grids[g.id]?.problems ?? [];
-    if (!report.grids[g.id]?.problems.length || !problems.length || !onScan(run, g.doc, g.pages)) continue;
+    if (!report.grids[g.id]?.problems.length || !problems.length || !printsTotals(g) || !onScan(run, g.doc, g.pages)) continue;
     if (open(`read:${g.id}`) || checks.checkGrid({ ...g, acceptedAsPrinted: true }, run.docs).problems.length) continue;
     const lead = open(personId(g.id))
       ? "The figures shown are as first read from the image; the ones that are marked, or that a second read could not settle, are asked about in the other question."

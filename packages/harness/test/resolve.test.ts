@@ -377,6 +377,20 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(checks.checkGrid(g, []).unproven).toEqual([]);
   });
 
+  it("a grid with no printed totals never asks 'use them as printed'", async () => {
+    const { "subtotal.0": _s0, "subtotal.1": _s1, grandTotalCents: _g, ...ids } = IDS;
+    const bare: Grid = { ...grid(25000), subtotal: null, grandTotalCents: null, cellIds: ids };
+    const asPrinted = (b: Rulebook) => b.questions.filter((q) => q.question.includes("Use them as printed"));
+
+    const agreed = await resolveOn(scanned(), readers({ fail: true }, { verify: said(SHEET) }), rulebook({ grids: [bare] }));
+    expect(agreed.rulebook.questions).toEqual([]);
+    expect(checks.runChecks(agreed.rulebook, scanned()).grids["g1"]!.problems).toEqual([]);
+
+    const differ = await resolveOn(scanned(), readers({ fail: true }, { verify: said(swap(SHEET, "| $250.00", "| $260.00")) }), rulebook({ grids: [bare] }));
+    expect(differ.rulebook.questions.map((q) => q.id)).toEqual(["read:g1"]);
+    expect(asPrinted(differ.rulebook)).toEqual([]);
+  });
+
   it("a changed cell no total covers is asked, not accepted", async () => {
     const out = await resolveOn(scanned(), readers({ fail: true }, { verify: said(swap(SHEET, "| $50.00 | $50.00", "| $50.00 | $55.00")) }), rulebook({ grids: [open()] }));
 
