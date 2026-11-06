@@ -184,7 +184,13 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
   const seconds = rows.map((r) => centsOf(r.second));
   const usable = seconds.every((v) => v !== null);
   const use = rows.map((r, i) => r.s.patch(seconds[i]!));
-  const covered = (after: CheckReport) => rows.every(({ s: x }) => !x.rowCell || !after.grids[x.about.id]?.unproven.some((u) => u.row === x.rowCell![0] && u.col === x.rowCell![1]));
+  // a corrected cell rests on the second read, so a column total that adds up with it is enough
+  const covered = (after: CheckReport) =>
+    rows.every(({ s: x }) => {
+      const at = (u: { row: number; col: number }) => u.row === x.rowCell?.[0] && u.col === x.rowCell[1];
+      const grid = after.grids[x.about.id];
+      return !x.rowCell || !grid?.unproven.some(at) || !!grid.byColumnOnly?.some(at);
+    });
   if (usable && rows.every((r) => r.s.checkable) && tryApply(run, use, covered)) {
     run.log.push(`${place(s)}: the second read corrected ${values(rows.length)} and the totals now add up ✓`);
     return;

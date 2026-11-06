@@ -247,12 +247,23 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(texts(call!)).toContain('1. "Budget (maximum)"');
     expect(call!.parts.filter((p) => p.type === "image").length).toBeGreaterThan(1);
     expect(out.rulebook.terms[0]!.evidence).toBe("two_reads");
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 1], [1, 1]]);
+    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 0], [0, 1], [1, 0], [1, 1]]);
   });
 
   it("a value arithmetic or a person already proves needs no second read", async () => {
+    // on a scan only a row's own total pins its cells: a column total can't tell which row a figure is on
+    const rowTotals = [
+      ["H | Procedure | V1 | V2", "H | Procedure | V1 | V2 | Total"],
+      ["| Exam | $100.00 | $250.00", "| Exam | $100.00 | $250.00 | $350.00"],
+      ["| Labs | $50.00 | $50.00", "| Labs | $50.00 | $50.00 | $100.00"],
+    ].reduce((lines, [from, to]) => swap(lines, from!, to!), SHEET);
+    const g = cited(25000);
+    const totalled: Grid = {
+      ...g, rows: g.rows.map((row, i) => ({ ...row, printedRowTotalCents: [35000, 10000][i]! })),
+      cellIds: { ...IDS, "rows.0.printedRowTotalCents": "p1.t1.r1.c3", "rows.1.printedRowTotalCents": "p1.t1.r2.c3" },
+    };
     const r = readers({ fail: true }, { fail: true });
-    const out = await resolveOn(scanned(), r, rulebook({ terms: [fee({ evidence: "person" })], grids: [cited(25000)] }));
+    const out = await resolveOn(scanned({ 1: rowTotals }), r, rulebook({ terms: [fee({ evidence: "person" })], grids: [totalled] }));
 
     expect(r.openai.calls).toHaveLength(0);
     expect(out.rulebook.questions).toEqual([]);
@@ -344,12 +355,34 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(q.options[0]!.patches).toEqual<Patch[]>([{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }]);
   });
 
+  it("a value slipped into a blank cell of its column isn't proven by the column total on a scan page", async () => {
+    // printed: Exam V2 $250.00, Labs V2 blank; the first read slipped Exam's figure down a row
+    const truth = swap(swap(SHEET, "| Labs | $50.00 | $50.00", "| Labs | $50.00 |"), "| Subtotal | $150.00 | $300.00", "| Subtotal | $150.00 | $250.00");
+    const slipped = swap(swap(truth, "| Exam | $100.00 | $250.00", "| Exam | $100.00 |"), "| Labs | $50.00 |", "| Labs | $50.00 | $250.00");
+    const g: Grid = {
+      ...cited(25000), subtotal: [15000, 25000], grandTotalCents: 40000,
+      rows: [{ ...grid(0).rows[0]!, cells: [10000, null] }, { ...grid(0).rows[1]!, cells: [5000, 25000] }],
+    };
+    const { "rows.0.cells.1": _blank, ...ids } = IDS;
+    const book = rulebook({ grids: [{ ...g, cellIds: ids }] });
+    const scan = scanned({ 1: slipped });
+    expect(checks.runChecks(book, scan).grids["g1"]!.unproven).toContainEqual({ row: 1, col: 1 });
+
+    const r = readers({ fail: true }, { verify: said(truth) });
+    const out = await resolveOn(scan, r, book);
+    expect(verifies(r)).toHaveLength(1);
+    expect(out.rulebook.grids[0]!.cellsReadTwice).not.toContainEqual([1, 1]);
+    expect(question1(out.rulebook, "read:g1").readings.map((x) => x.answer)).toEqual(["row 'Labs' at visit 'V2': $250.00", "row 'Labs' at visit 'V2': blank"]);
+    // the same grid on a text page is still proven by its totals
+    expect(checks.checkGrid(g, []).unproven).toEqual([]);
+  });
+
   it("a changed cell no total covers is asked, not accepted", async () => {
     const out = await resolveOn(scanned(), readers({ fail: true }, { verify: said(swap(SHEET, "| $50.00 | $50.00", "| $50.00 | $55.00")) }), rulebook({ grids: [open()] }));
 
     expect(out.rulebook.grids[0]!.rows.map((row) => row.cells)).toEqual([[10000, 25000], [5000, 5000]]);
     expect(question1(out.rulebook, "read:g1").readings.map((x) => x.answer)).toEqual(["row 'Labs' at visit 'V2': $50.00", "row 'Labs' at visit 'V2': $55.00"]);
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 1]]);
+    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 0], [0, 1], [1, 0]]);
   });
 
   it("values the two reads can't line up go to a person, in one question per grid", async () => {
@@ -357,8 +390,9 @@ describe("scanned pages: a blind second read of the page", () => {
 
     expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
     const q = question1(out.rulebook, "person:g1");
-    expect(q.context).toContain("row 'Exam' at visit 'V2': $250.00 (the second read could not be lined up with it); row 'Labs' at visit 'V2': $50.00 (the second read could not be lined up with it)");
-    expect(q.options[0]).toEqual({ label: "Use the values as written", patches: [{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } }, { target: "grid", id: "g1", set: { "rows.1.cells.1": 5000 } }] });
+    expect(q.context).toContain("row 'Exam' at visit 'V2': $250.00 (the second read could not be lined up with it); row 'Labs' at visit 'V1': $50.00 (the second read could not be lined up with it)");
+    expect(q.options[0]!.patches).toHaveLength(4);
+    expect(q.options[0]!.patches).toContainEqual({ target: "grid", id: "g1", set: { "rows.1.cells.1": 5000 } });
   });
 
   it("a struck value seen by the second read only goes to a person", async () => {
@@ -381,7 +415,8 @@ describe("scanned pages: a blind second read of the page", () => {
   });
 
   it("a handwritten cell in a scanned grid whose totals add up is still asked", async () => {
-    const out = await resolveOn(scanned({ 1: swap(SHEET, "| $250.00", "| $250.00{hw}") }), readers({ fail: true }, { fail: true }), rulebook({ grids: [cited(25000)] }));
+    const sheet = swap(SHEET, "| $250.00", "| $250.00{hw}");
+    const out = await resolveOn(scanned({ 1: sheet }), readers({ fail: true }, { verify: said(sheet) }), rulebook({ grids: [cited(25000)] }));
 
     expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
     expect(question1(out.rulebook, "person:g1").context).toContain("row 'Exam' at visit 'V2': $250.00 (handwritten on the first read)");

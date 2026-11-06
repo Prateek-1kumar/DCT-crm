@@ -86,6 +86,8 @@ export interface GridResult {
   problems: string[];
   /** Cells (row index, visit index) no captured printed identity covers: they need cell-level evidence (§5.3.2). */
   unproven: { row: number; col: number }[];
+  /** Unproven cells of a scan that a column's total or the grand total does add up: a second read's figure may stand there. */
+  byColumnOnly?: { row: number; col: number }[];
 }
 
 export interface UnaccountedAmount {

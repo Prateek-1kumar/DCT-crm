@@ -470,15 +470,12 @@ async function tally(misread: "first" | "second") {
 const total = (rows: Tally[], of: (t: Tally) => number) => rows.reduce((n, t) => n + of(t), 0);
 
 describe("planted misreads", () => {
-  it("a misread in the first read is never proven by the second read or a relation", { timeout: 300_000 }, async () => {
+  it("a misread in the first read is never proven, by the second read, a relation or the totals", { timeout: 300_000 }, async () => {
     const rows = await tally("first");
     expect(total(rows, (t) => t.trials)).toBeGreaterThan(SEEDS * 20);
     expect(total(rows, (t) => t.cited)).toBeGreaterThan(0);
     expect(total(rows.filter((x) => x.mutation === "none"), (t) => t.cited + t.wrong)).toBe(0);
-    expect(total(rows, (t) => t.proven.reads + t.proven.relation)).toBe(0);
-    // a value slipped into a blank cell of the same column keeps every column total, so the grid check proves it;
-    // that is the printed-totals rule (§5.3.2), not the scan proof measured here, and changing it is the owner's call
-    expect(total(rows.filter((x) => x.mutation !== "row slip"), (t) => t.proven.totals)).toBe(0);
+    expect(total(rows, (t) => t.proven.reads + t.proven.relation + t.proven.totals)).toBe(0);
   });
 
   it("a misread in the second read only raises questions, fewer than one a page", { timeout: 300_000 }, async () => {

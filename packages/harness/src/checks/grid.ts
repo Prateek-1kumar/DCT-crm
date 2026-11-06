@@ -34,6 +34,8 @@ export function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
   return new Set(pages.flatMap((p) => amountsIn(p.layout)));
 }
 
+const onScan = (grid: Grid, docs: LoadedDoc[]) => docs.find((d) => d.name === grid.doc)?.pages.some((p) => p.kind === "scan" && grid.pages.includes(p.page)) ?? false;
+
 export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   const shape = shapeProblems(grid);
   if (shape.length) return { problems: shape, unproven: numericCells(grid) };
@@ -41,8 +43,13 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
 
   const problems: string[] = [];
   const covered = grid.rows.map((r) => r.cells.map(() => false));
+  // On a scan a figure that slipped into a blank cell of its own column keeps every column total and the grand total, so
+  // only a row's own total pins a cell there; the others leave it to the second read.
+  const scanned = onScan(grid, docs);
+  const loose = grid.rows.map((r) => r.cells.map(() => false));
   const coverRow = (i: number) => covered[i]!.fill(true);
-  const coverColumn = (j: number) => covered.forEach((r) => (r[j] = true));
+  const coverColumn = (j: number) => (scanned ? loose : covered).forEach((r) => (r[j] = true));
+  const coverAll = () => (scanned ? loose : covered).forEach((r) => r.fill(true));
   const subtotal = grid.subtotal;
   const total = grid.total;
 
@@ -88,7 +95,7 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
       if (s !== grid.grandTotalCents) problems.push(`the visit totals add up to ${usd(s)} but the printed grand total is ${usd(grid.grandTotalCents)}.`);
     } else if (grid.rows.length) {
       const s = grid.rows.reduce((a, r) => a + sum(r.cells), 0);
-      if (s === grid.grandTotalCents) grid.rows.forEach((_, i) => coverRow(i));
+      if (s === grid.grandTotalCents) coverAll();
       else problems.push(`all the rows add up to ${usd(s)} but the printed grand total is ${usd(grid.grandTotalCents)}.`);
     }
   }
@@ -102,5 +109,6 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   });
   const printed = printedAmounts(grid, docs);
   const unproven = numericCells(grid).filter(({ row, col }) => !covered[row]![col]! && !printed.has(Math.abs(num(grid.rows[row]!.cells[col])!)));
-  return { problems, unproven };
+  const byColumnOnly = unproven.filter(({ row, col }) => loose[row]![col]);
+  return { problems, unproven, ...(byColumnOnly.length > 0 && { byColumnOnly }) };
 }
