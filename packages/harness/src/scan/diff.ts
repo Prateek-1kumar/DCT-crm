@@ -48,26 +48,30 @@ function align(n: number, m: number, like: (i: number, j: number) => boolean): M
   return pairs;
 }
 
+const hasAmounts = (t: Table) => t.rows.some((r) => r.cells.some((c) => amountsOf(c.text).length));
+
 /**
- * Tables by their order on the page when both reads found as many and every pair agrees: titled alike with a title no other
- * table shares, or else (untitled, or titled like several tables) most of their rows lining up with each other's and with no
- * other table's. Otherwise by a title only those two tables share. Tables printed alike under one title, or under none, can't
- * be told apart, and a table one read missed would shift the rest onto their neighbours.
+ * Tables one by one, each only with the one table of the other read it can be: titled alike with a title no other table on
+ * either side is near, or else (untitled, or titled like several tables) most of their rows lining up with each other's
+ * and with no other table's. Tables printed alike under one title, or under none, can't be told apart, so they stay
+ * unpaired. A table with no amounts (a box read as a table, an empty one) is left out, so it can't make a look-alike.
  */
-function alignTables(a: Table[], b: Table[]): Map<number, number> {
+function alignTables(first: Table[], second: Table[]): Map<number, number> {
+  const [ia, ib] = [first, second].map((ts) => range(ts.length).filter((i) => hasAmounts(ts[i]!))) as [number[], number[]];
   const title = (t: Table) => looseKey(withoutAmounts(t.title));
   const near = (x: string, y: string) => !!x && !!y && (x.includes(y) || y.includes(x));
-  const nearIn = (x: string, tables: Table[]) => tables.filter((t) => near(x, title(t))).length;
-  const unique = (i: number, j: number) => nearIn(title(a[i]!), b) === 1 && nearIn(title(b[j]!), a) === 1;
-  const pairs = (i: number) => {
-    const [x, y] = [title(a[i]!), title(b[i]!)];
-    if (x && y && !near(x, y)) return false;
-    if (near(x, y) && unique(i, i)) return true;
-    const only = range(b.length).every((j) => j === i || !mostRowsAlign(a[i]!, b[j]!)) && range(a.length).every((k) => k === i || !mostRowsAlign(a[k]!, b[i]!));
-    return only && mostRowsAlign(a[i]!, b[i]!);
+  const only = <T>(xs: T[]) => (xs.length === 1 ? xs[0] : undefined);
+  const both = (like: (a: Table, b: Table) => boolean, i: number) => {
+    const j = only(ib.filter((y) => like(first[i]!, second[y]!)));
+    return j !== undefined && only(ia.filter((x) => like(first[x]!, second[j]!))) === i ? j : undefined;
   };
-  if (a.length === b.length && range(a.length).every(pairs)) return new Map(range(a.length).map((i) => [i, i]));
-  return align(a.length, b.length, (i, j) => near(title(a[i]!), title(b[j]!)) && unique(i, j));
+  const clash = (a: Table, b: Table) => !!title(a) && !!title(b) && !near(title(a), title(b));
+  const chosen = ia.flatMap((i) => {
+    const j = both((a, b) => near(title(a), title(b)), i) ?? both((a, b) => mostRowsAlign(a, b), i);
+    return j === undefined || clash(first[i]!, second[j]!) ? [] : [[i, j] as const];
+  });
+  // a table two of the other read's could be is neither's
+  return new Map(chosen.filter(([, j]) => chosen.filter(([, y]) => y === j).length === 1));
 }
 
 const width = (t: Table) => Math.max(t.columns.length - 1, ...t.rows.map((r) => r.cells.length));

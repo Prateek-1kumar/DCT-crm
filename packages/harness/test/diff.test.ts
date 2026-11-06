@@ -175,6 +175,9 @@ describe("diffReads", () => {
     // the second read lost arm A's table and its title, and found an untitled table of its own
     const lost = read("T |", "H | Procedure | Fee", "R | Physical exam | $210.00", "T |", "H | Item | Fee", "R | Archiving | $300.00");
     expect(diffReads(1, arms, lost).get("p1.t1.r1.c1")!.outcome).not.toBe("agree");
+    // each read found one arm only: rows alike under titles that disagree are two tables
+    const armA = read("T | Arm A", "H | Procedure | Fee", "R | Physical exam | $210.00");
+    expect(diffReads(1, armA, read("T | Arm B", "H | Procedure | Fee", "R | Physical exam | $210.00")).get("p1.t1.r1.c1")!.outcome).not.toBe("agree");
 
     // the second read only missed the titles of tables that print different rows: each still lines up with its own
     const titled = read("T | Arm A", "H | Procedure | Fee", "R | Physical exam | $210.00", "T | Other fees", "H | Item | Fee", "R | Archiving | $300.00");
@@ -182,6 +185,29 @@ describe("diffReads", () => {
     const diff = diffReads(1, titled, untitled);
     expect(diff.get("p1.t1.r1.c1")).toEqual({ outcome: "differ", second: "$200.00" });
     expect(diff.get("p1.t2.r1.c1")).toEqual({ outcome: "agree", second: "$300.00" });
+  });
+
+  it("an extra empty table in one read doesn't unalign the page's other tables", () => {
+    const budget = ["T |", "H | Procedure | V1 | V2", "R | Physical exam | $100.00 | $120.00", "R | Labs | $50.00 |"];
+    const box = ["T |", "R | Site name |", "R | Investigator |", "R | Address |"];
+    for (const [first, second] of [[read(...budget), read(...box, ...budget)], [read(...box, ...budget), read(...budget)]] as const) {
+      const diff = diffReads(1, first, second);
+      const t = first.tables.length;
+      expect(diff.get(`p1.t${t}.r1.c1`)).toEqual({ outcome: "agree", second: "$100.00" });
+      expect(diff.get(`p1.t${t}.r2.c1`)).toEqual({ outcome: "agree", second: "$50.00" });
+    }
+  });
+
+  it("an extra small table that matches nothing is left out, and the rest still pair", () => {
+    const budget = (exam: string) => ["T |", "H | Procedure | Fee", `R | Physical exam | ${exam}`, "R | Labs | $50.00", "R | ECG | $75.00"];
+    const fees = ["T | Other fees", "H | Item | Fee", "R | Archiving | $300.00"];
+    const small = ["T |", "R | Wire fee | $25.00"];
+    const diff = diffReads(1, read(...budget("$100.00"), ...fees), read(...small, ...budget("$110.00"), ...fees));
+    expect(diff.get("p1.t1.r1.c1")).toEqual({ outcome: "differ", second: "$110.00" });
+    expect(diff.get("p1.t1.r2.c1")).toEqual({ outcome: "agree", second: "$50.00" });
+    expect(diff.get("p1.t2.r1.c1")).toEqual({ outcome: "agree", second: "$300.00" });
+    // the small table read once is unaligned itself, and never stands in for another
+    expect(diffReads(1, read(...small, ...budget("$100.00")), read(...budget("$100.00"))).get("p1.t1.r1.c1")).toEqual({ outcome: "unaligned" });
   });
 
   it("columns whose headings line up are compared by heading, even when one read has a column more", () => {
