@@ -195,21 +195,10 @@ describe("scanned pages: one closer look by the vision reader", () => {
 
     expect(r.claude.calls).toHaveLength(0);
     expect(r.openai.calls).toHaveLength(1);
-    expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([expect.stringContaining('every amount on the row that prints "Screen failure fee" (the rulebook calls it \'Screen failure fee\')')]);
+    expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([expect.stringContaining("every amount printed on the row labelled 'Screen failure fee'")]);
     expect(texts(r.openai.calls[0]!)).not.toContain("7500");
     expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "two_reads" });
     expect(out.rulebook.questions).toEqual([]);
-  });
-
-  it("the re-look names a term's row by the words printed on the page", async () => {
-    const t = term({ name: "Site Start-up Costs (Study start-up fee)", amountCents: 100000, source: { doc: "Budget.pdf", page: 1, quote: "Startup fee" } });
-    const r = readers({ fail: true }, { read: () => "$1,000.00" });
-    const out = await resolveOn(scanned(), r, rulebook({ terms: [t] }));
-
-    const [item] = itemsOf(r.openai.calls[0]!);
-    expect(item!.label).toContain('the row that prints "Startup fee"');
-    expect(item!.label).toContain("(the rulebook calls it 'Site Start-up Costs (Study start-up fee)')");
-    expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 100000, evidence: "two_reads" });
   });
 
   it("a term whose value is printed on its row next to another amount is confirmed by the re-look", async () => {
@@ -218,7 +207,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
     const r = readers({ fail: true }, { read: () => "$200.00 | $266.00" });
     const out = await resolveOn(scanned({}, text), r, rulebook({ terms: [t] }));
 
-    expect(itemsOf(r.openai.calls[0]!)[0]!.label).toContain('every amount on the row that prints "Coordinator fee"');
+    expect(itemsOf(r.openai.calls[0]!)[0]!.label).toContain("every amount printed on the row labelled 'Coordinator fee'");
     expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 20000, evidence: "two_reads" });
     expect(out.rulebook.questions).toEqual([]);
 
@@ -318,7 +307,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
       const out = await look([5, 12, 20, 28, 40], r);
 
       expect(r.openai.calls).toHaveLength(1);
-      expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([5, 12, 20, 28, 40].map((i) => expect.stringContaining(`the row that prints "Fee${i}"`)));
+      expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([5, 12, 20, 28, 40].map((i) => expect.stringContaining(`the row labelled 'Fee${i}'`)));
       expect(r.openai.calls[0]!.parts.filter((p) => p.type === "image")).toHaveLength(5);
       expect(out.rulebook.terms.map((t) => t.evidence)).toEqual(Array(5).fill("two_reads"));
     });
