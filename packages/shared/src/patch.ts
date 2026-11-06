@@ -38,10 +38,17 @@ function patchTerm(rulebook: Rulebook, { id, set }: Patch) {
   Object.assign(term, set);
 }
 
+const CITE = "cellIds.";
+
 function patchGrid(rulebook: Rulebook, { id, set }: Patch) {
   const grid = rulebook.grids.find((g) => g.id === id);
   if (!grid) throw new Error(`There is no grid '${id}' to change.`);
-  for (const [path, value] of Object.entries(set)) setPath(grid, path, value);
+  for (const [path, value] of Object.entries(set)) {
+    if (!path.startsWith(CITE)) setPath(grid, path, value);
+    // keyed by the cited value's own dotted path, so the rest of the key is one key, not a path to walk
+    else if (value === null) delete grid.cellIds?.[path.slice(CITE.length)];
+    else (grid.cellIds ??= {})[path.slice(CITE.length)] = value as string;
+  }
 }
 
 /** Returns a new rulebook with the patches applied in order; the input is never changed. Throws in plain English if a patch doesn't fit or the result isn't a valid rulebook. */

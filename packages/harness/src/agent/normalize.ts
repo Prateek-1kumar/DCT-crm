@@ -21,8 +21,6 @@ function cell(v: unknown, where: string, issues: string[]): unknown {
   return v ?? null;
 }
 
-const cells = (v: unknown, where: string, issues: string[]) => list(v, (c, i) => cell(c, `${where} #${i + 1}`, issues), null);
-
 function parse<T>(schema: z.ZodType<T>, value: unknown, issues: string[]): Parsed<T> {
   const result = schema.safeParse(value);
   if (!result.success) issues.push(...result.error.issues.map((i) => `${i.path.join(".") || "this item"}: ${i.message}`));
@@ -53,22 +51,34 @@ export function normalizeTerm(raw: unknown): Parsed<Term> {
 export function normalizeGrid(raw: unknown): Parsed<Grid> {
   if (!isObject(raw)) return notAnObject;
   const issues: string[] = [];
-  const line = (k: string) => (raw[k] == null ? null : cells(raw[k], k, issues));
+  const cellIds: Record<string, string> = {};
+  // on a scanned page an amount comes as {value, cell}: the value as printed, and the id of the cell it is printed in
+  const cited = (v: unknown, path: string) => {
+    if (!isObject(v) || !("value" in v)) return v;
+    if (typeof v.cell === "string") cellIds[path] = v.cell;
+    return v.value;
+  };
+  const amount = (v: unknown, path: string, where: string) => cents(cited(v, path), where, issues);
+  const cells = (v: unknown, path: string, where: string) => list(v, (c, i) => cell(cited(c, `${path}.${i}`), `${where} #${i + 1}`, issues), null);
+  const line = (k: string) => (raw[k] == null ? null : cells(raw[k], k, k));
   const rows = list(
     raw.rows,
     (r, i) => {
       if (!isObject(r)) return r;
       const where = `row '${typeof r.name === "string" ? r.name : i + 1}'`;
-      return { code: null, ...r, unitCostCents: cents(r.unitCost, `${where} unitCost`, issues), printedRowTotalCents: cents(r.printedRowTotal, `${where} printedRowTotal`, issues), cells: cells(r.cells, where, issues) };
+      return {
+        code: null, ...r, unitCostCents: amount(r.unitCost, `rows.${i}.unitCostCents`, `${where} unitCost`),
+        printedRowTotalCents: amount(r.printedRowTotal, `rows.${i}.printedRowTotalCents`, `${where} printedRowTotal`), cells: cells(r.cells, `rows.${i}.cells`, where),
+      };
     },
     undefined,
   );
-  const additions = list(raw.additions, (a) => (isObject(a) ? { ...a, cells: cells(a.cells, `added line '${String(a.name)}'`, issues) } : a), []);
+  const additions = list(raw.additions, (a, i) => (isObject(a) ? { ...a, cells: cells(a.cells, `additions.${i}.cells`, `added line '${String(a.name)}'`) } : a), []);
   const pct = typeof raw.overheadPct === "string" ? parsePercent(raw.overheadPct) : (raw.overheadPct ?? null);
   if (pct === null && raw.overheadPct != null) issues.push(`overheadPct: "${String(raw.overheadPct)}" is not a percentage`);
   const grid = {
     arm: null, ...raw, cellsReadTwice: [], acceptedAsPrinted: false, overheadPct: pct, rows, subtotal: line("subtotal"), overhead: line("overhead"), total: line("total"), additions,
-    grandTotalCents: cents(raw.grandTotal, "grandTotal", issues),
+    grandTotalCents: amount(raw.grandTotal, "grandTotalCents", "grandTotal"), cellIds,
   };
   return parse(Grid, grid, issues);
 }

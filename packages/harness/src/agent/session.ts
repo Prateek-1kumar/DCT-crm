@@ -1,6 +1,7 @@
 import { Region, type Accounted, type Grid, type Question, type Rulebook, type Study, type Term } from "@dct/shared";
 import { z } from "zod";
 import { SCAN_PAGE_REASON, checks } from "../checks";
+import { citeGrid, citeTerm } from "../checks/cells";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
 import { SCAN_NOTE } from "./prompt";
@@ -160,9 +161,14 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       if (!args.success) return rejected("put_terms", argIssues(args.error));
       let saved = 0;
       const notFound: string[] = [];
+      const cited = (raw: unknown): Parsed<Term> => {
+        const result = normalizeTerm(raw);
+        const why = result.ok && citeTerm(result.value, docs);
+        return why ? { ok: false, issues: [why] } : result;
+      };
       const failures = storeAll(
         args.data.terms,
-        normalizeTerm,
+        cited,
         (t) => {
           const problem = checks.checkQuote(t.source, docs);
           const onText = findDoc(t.source.doc)?.pages.find((p) => p.page === t.source.page)?.kind === "text";
@@ -184,6 +190,8 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       const result = normalizeGrid(args.data.grid);
       if (!result.ok) return rejected("put_grid", result.issues);
       const grid = result.value;
+      const uncited = citeGrid(grid, docs);
+      if (uncited.length) return rejected("put_grid", uncited);
       grids.set(grid.id, grid);
       const where = `Budget '${grid.name}' on p.${grid.pages[0]}`;
       const { problems, unproven } = checks.checkGrid(grid, docs);

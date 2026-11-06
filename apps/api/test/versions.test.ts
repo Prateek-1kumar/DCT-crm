@@ -76,16 +76,36 @@ async function otherDoc() {
   return doc!.id;
 }
 
+type Table = Parameters<typeof scanStore.put>[1]["transcription"]["tables"][number];
+
 /** A document with one scanned page: no text layer in the PDF, and a transcription saved for it. */
-async function scannedDoc() {
+async function scannedDoc(tables: Table[] = []) {
   const pdf = await PDFDocument.create();
   pdf.addPage([612, 792]);
   pdf.setTitle(randomUUID());
   const sha256 = await savePdf(Buffer.from(await pdf.save()));
   const lines = [{ text: "Exhibit A", top: 0.05, bottom: 0.06, unsure: false, marks: [] }];
-  await scanStore.put(sha256, { page: 1, version: "test", rotation: 0, transcription: { rotation: 0, lines, tables: [] } });
+  await scanStore.put(sha256, { page: 1, version: "test", rotation: 0, transcription: { rotation: 0, lines, tables } });
   const [doc] = await db().insert(documents).values({ sha256, name: "scan.pdf", bytes: 1, pages: [{ page: 1, kind: "scan", chars: 9, firstLine: "Exhibit A" }], createdBy: "test" }).returning();
   return doc!.id;
+}
+
+const field = (text: string) => ({ text, unsure: false, marks: [] });
+const printed = (cents: Rulebook["grids"][number]["subtotal"]) => (cents ?? []).map((c) => field(typeof c === "number" ? `$${(c / 100).toFixed(2)}` : ""));
+const table = (rows: [string, Table["rows"][number]["cells"]][]): Table => ({
+  title: "Budget", top: 0.1, bottom: 0.5, columns: [],
+  rows: rows.map(([label, cells], i) => ({ label, top: 0.1 + i * 0.02, bottom: 0.11 + i * 0.02, cells })),
+});
+
+/** A scanned page that prints the grid's rows and subtotal as its one table, and the grid citing each of its amounts there. */
+async function scannedGrid(g: Rulebook["grids"][number]) {
+  const cellIds: Record<string, string> = {};
+  const lines = [...g.rows.map((r) => r.cells), g.subtotal];
+  lines.forEach((cells, i) => cells?.forEach((c, j) => {
+    if (typeof c === "number") cellIds[i < g.rows.length ? `rows.${i}.cells.${j}` : `subtotal.${j}`] = `p1.t1.r${i + 1}.c${j + 1}`;
+  }));
+  const documentIds = [await scannedDoc([table([...g.rows.map((r): [string, Table["rows"][number]["cells"]] => [r.name, printed(r.cells)]), ["Subtotal", printed(g.subtotal)]])])];
+  return { documentIds, grid: { ...g, cellIds } };
 }
 
 async function study() {
@@ -308,9 +328,10 @@ describe("answering a question about a scanned grid", () => {
   const gridQuestion = (id: string, label: string, patches: Question["options"][number]["patches"]) =>
     question(id, { about: { target: "grid", id: "g1" }, source: { doc: "scan.pdf", page: 1, quote: "" }, options: [{ label, patches }, { label: "Neither, I'll type the right value", patches: [] }] });
   const seedScan = async (rb: Rulebook) => {
-    const documentIds = [await scannedDoc()];
-    const checked = checks.runChecks(rb, await loadDocs(db(), documentIds));
-    return seed({ documentIds, rulebook: rb, problems: checked.problems });
+    const { documentIds, grid } = await scannedGrid(rb.grids[0]!);
+    const cited = { ...rb, grids: [grid] };
+    const checked = checks.runChecks(cited, await loadDocs(db(), documentIds));
+    return seed({ documentIds, rulebook: cited, problems: checked.problems });
   };
 
   it("answering the marked-values question on a scanned grid lets the version be approved", async () => {
@@ -355,11 +376,14 @@ describe("answers that leave a scanned grid failing", () => {
     }) as Rulebook["grids"][number];
   const source = { doc: "scan.pdf", page: 1, quote: "" };
   const seedGrid = async (accepted: boolean, questions: Question[]) => {
-    const documentIds = [await scannedDoc()];
-    const rb = rulebook({ terms: [], grids: [grid(accepted)], questions });
+    const { documentIds, grid: cited } = await scannedGrid(grid(accepted));
+    // the transcribed $250.00 stays on the page when an answer replaces it
+    const accounted = [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the whole-page reading" }];
+    const rb = rulebook({ terms: [], grids: [cited], questions, accounted });
     return seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
   };
-  const cellTo = (cents: number) => [{ target: "grid" as const, id: "g1", set: { "rows.0.cells.1": cents } }];
+  // a value other than the one transcribed can't keep citing that cell
+  const cellTo = (cents: number) => [{ target: "grid" as const, id: "g1", set: { "rows.0.cells.1": cents, ...(cents !== 25000 && { "cellIds.rows.0.cells.1": null }) } }];
 
   it("after answering a zoomed disagreement on a grid whose totals still fail, the person is asked to use them as printed, then can approve", async () => {
     const zoomed = question("read:g1", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use the whole-page reading ($250.00)", patches: cellTo(25000) }, { label: "Use the zoomed reading ($260.00)", patches: cellTo(26000) }, { label: "Neither, I'll type the right value", patches: [] }] });
@@ -397,8 +421,7 @@ describe("answers that leave a scanned grid failing", () => {
 
   it("a grid with the wrong number of visit values isn't offered 'use as printed' again and again", async () => {
     const rename = question("q-rename", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Rename it", patches: [{ target: "grid", id: "g1", set: { name: "Budget 2" } }] }] });
-    const documentIds = [await scannedDoc()];
-    const short = { ...grid(false), rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000], printedRowTotalCents: null }] };
+    const { documentIds, grid: short } = await scannedGrid({ ...grid(false), rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000], printedRowTotalCents: null }] });
     const rb = rulebook({ terms: [], grids: [short], questions: [rename] });
     const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
 
@@ -413,6 +436,33 @@ describe("answers that leave a scanned grid failing", () => {
     const { id } = await seedGrid(false, [change, open]);
     const res = (await answer(id, "q-change", { option: 0, by: "Ana" })).json();
     expect(res.rulebook.questions.map((q: Question) => q.id)).toEqual(["q-change", "read:g1"]);
+  });
+});
+
+describe("an answer that changes a scanned term's amount", () => {
+  const scanSource = { doc: "scan.pdf", page: 1, quote: "Exam" };
+  const options = [
+    { label: "Use $260.00, still citing the $250.00 cell", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000 } }] },
+    { label: "Use $260.00, which the page doesn't print as read", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000, source: scanSource } }] },
+    { label: "Use the fee with overhead", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000, source: { ...scanSource, cell: "p1.t1.r1.c2" } } }] },
+  ];
+
+  it.each([
+    [0, 409],
+    [1, 200],
+    [2, 200],
+  ])("must change or clear its citation: option %i, approval %i", async (option, status) => {
+    const documentIds = [await scannedDoc([table([["Exam", [field("$250.00"), field("$260.00")]]])])];
+    const rb = rulebook({
+      terms: [term("t9", { amountCents: 25000, evidence: "none", source: { ...scanSource, cell: "p1.t1.r1.c1" } })],
+      accounted: [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the fee before overhead" }],
+      questions: [question("read:t9", { kind: "reading", about: { target: "term", id: "t9" }, source: scanSource, options })],
+    });
+    const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
+
+    const res = (await answer(id, "read:t9", { option, by: "Ana" })).json();
+    expect(res.problems.map((p: { check: string }) => p.check)).toEqual(status === 200 ? [] : ["cell"]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(status);
   });
 });
 

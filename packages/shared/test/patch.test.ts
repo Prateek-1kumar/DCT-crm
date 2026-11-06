@@ -88,3 +88,23 @@ describe("applyPatches", () => {
     expect(() => applyPatches(rulebook, [termPatch("t1", { amountCents: 1.5 })])).toThrow(/would leave the rulebook invalid: terms\.0\.amountCents/);
   });
 });
+
+describe("a scanned value's citation", () => {
+  it("is kept on a term's source, and a patch re-points or clears it with the source", () => {
+    const cited = applyPatches(rulebook, [termPatch("t1", { source: { ...term.source, cell: "p1.t1.r1.c1" } })]);
+    expect(cited.terms[0]!.source.cell).toBe("p1.t1.r1.c1");
+    expect(applyPatches(cited, [termPatch("t1", { amountCents: 5, source: term.source })]).terms[0]!.source).toEqual(term.source);
+  });
+
+  it("of a grid value is set, re-pointed and cleared at the value's path under cellIds", () => {
+    const cited = applyPatches(rulebook, [gridPatch({ "cellIds.rows.0.cells.1": "p1.t1.r1.c2", "cellIds.grandTotalCents": "p1.t1.r3.c1" })]);
+    expect(cited.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": "p1.t1.r1.c2", grandTotalCents: "p1.t1.r3.c1" });
+    const next = applyPatches(cited, [gridPatch({ "rows.0.cells.1": 250, "cellIds.rows.0.cells.1": "p2.t1.r1.c1", "cellIds.grandTotalCents": null })]);
+    expect(next.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": "p2.t1.r1.c1" });
+    expect(cellProofPatches(rulebook, [gridPatch({ "cellIds.rows.0.cells.1": "p1.t1.r1.c2" })])).toEqual([]);
+  });
+
+  it("of a grid value must be an id", () => {
+    expect(() => applyPatches(rulebook, [gridPatch({ "cellIds.rows.0.cells.1": 5 })])).toThrow(/would leave the rulebook invalid: grids\.0\.cellIds/);
+  });
+});

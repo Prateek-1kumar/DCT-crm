@@ -1,5 +1,6 @@
 import type { Rulebook } from "@dct/shared";
 import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
+import { checkCitations } from "./cells";
 import { checkGrid } from "./grid";
 import { checkQuote } from "./quote";
 import { requiredDecisions } from "./required";
@@ -36,6 +37,8 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
     quotes[t.id] = reason;
     problems.push({ check: "quote", id: t.id, doc: t.source.doc, page: t.source.page, message: reason });
   }
+
+  problems.push(...checkCitations(rulebook, docs).problems);
 
   const stray = unaccounted(rulebook, docs);
   for (const u of stray) {

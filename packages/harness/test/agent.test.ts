@@ -8,7 +8,7 @@ import { compile, type CompileOptions } from "../src/agent";
 import { withScans } from "../src/scan";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
-import type { Transcription } from "../src/scan/transcribe";
+import { parseTranscription, type Transcription } from "../src/scan/transcribe";
 import type { LoadedDoc } from "../src/types";
 import { wordsOf } from "./words";
 
@@ -198,7 +198,7 @@ describe("scan pages", () => {
   };
   const transcribed = (lines: Transcription["lines"]) =>
     withScans({ ...textDoc("x"), pages: [{ ...textDoc("x").pages[0]!, kind: "image", words: [] }] }, [{ page: 1, version: "v", rotation: 0, transcription: { rotation: 0, lines, tables: [] } }]);
-  const NOTE = "SCAN: text read from the page image by a vision model; amounts the contract's arithmetic doesn't prove are re-read at zoom after you finish. Quote the words as transcribed.";
+  const NOTE = "SCAN: read from the page image by a vision model. Every amount you take from it cites the id of the cell or line it is printed in; quote the printed words without ids, | or marks.";
   const read = async (doc: LoadedDoc) => {
     const { calls } = await run([doc], [reply([call("read_pages", { doc: "A.pdf", pages: [1] })]), reply([])], { maxTurns: 2 });
     return calls;
@@ -293,5 +293,70 @@ describe("view_page", () => {
     expect(Buffer.from(image.source.data, "base64").subarray(1, 4).toString()).toBe("PNG");
     expect(bad).toMatchObject({ is_error: true });
     expect(result.trace[0]!.toolCalls[0]!.resultSummary).toMatch(/^image of p1/);
+  });
+});
+
+describe("scanned values cite cells", () => {
+  const scanned = (...pages: string[]): LoadedDoc => {
+    const blank = textDoc("x").pages[0]!;
+    return withScans(
+      { ...textDoc("x"), pages: pages.map((_, i) => ({ ...blank, page: i + 1, kind: "image" as const, words: [] })) },
+      pages.map((text, i) => ({ page: i + 1, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text }) })),
+    );
+  };
+  const fees = scanned(["T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead", "R 0.31-0.32 | Exam | $1,520.00 | $1,976.00"].join("\n"));
+  const exam = (amount: string, cell?: string) => ({ ...startup, name: "Exam", amount, source: { doc: "A.pdf", page: 1, quote: "Exam", ...(cell && { cell }) } });
+  const putTerms = async (doc: LoadedDoc, ...terms: unknown[]) => {
+    const { result, calls } = await run([doc], [reply([call("put_terms", { terms })]), reply([])], { maxTurns: 2 });
+    return { saved: result.rulebook.terms, answer: resultsAfter(calls[1]!.messages)[0]! };
+  };
+
+  it("a scanned term whose value differs from its cited cell is refused at put_terms", async () => {
+    const { saved, answer } = await putTerms(fees, exam("$1,250.00", "p1.t1.r1.c1"));
+    expect(answer.is_error).toBe(true);
+    expect(answer.content).toContain(`Term t1: the amount is $1,250.00, but cell p1.t1.r1.c1 prints "$1,520.00"`);
+    expect(saved).toEqual([]);
+  });
+
+  it("a scanned term must cite a cell", async () => {
+    const { saved, answer } = await putTerms(fees, exam("$1,520.00"), { ...exam("$1,520.00", "p1.t1.r2.c1"), id: "t2" });
+    expect(answer.is_error).toBe(true);
+    expect(answer.content).toContain("Term t1: the amount is on a scanned page, so it has to cite the cell or line it is printed in (source.cell)");
+    expect(answer.content).toContain("Term t2: the amount cites p1.t1.r2.c1, but A.pdf has no cell or line with that id");
+    expect(saved).toEqual([]);
+  });
+
+  it("a term may cite the fee column next to a fee-with-overhead column", async () => {
+    const { saved, answer } = await putTerms(fees, exam("$1,520.00", "p1.t1.r1.c1"));
+    expect(answer.is_error).toBe(false);
+    expect(saved[0]!.source.cell).toBe("p1.t1.r1.c1");
+    expect(saved[0]!.amountCents).toBe(152000);
+    expect((await putTerms(fees, exam("$1,520.00", "p1.t1.r1.c2"))).answer.content).toContain(`but cell p1.t1.r1.c2 prints "$1,976.00"`);
+  });
+
+  it("text-page terms need no citation", async () => {
+    const { saved, answer } = await putTerms(textDoc(...BUDGET), startup);
+    expect(answer.is_error).toBe(false);
+    expect(saved[0]!.source).toEqual(startup.source);
+  });
+
+  it("a grid split over two pages cites each value on its own page", async () => {
+    const split = scanned(
+      ["T 0.1-0.5 | Budget", "H | Procedure | V1 | V2", "R 0.11-0.12 | Exam | $100.00 | $250.00"].join("\n"),
+      ["T 0.1-0.5 | Budget (continued)", "H | Procedure | V3 | Total", "R 0.11-0.12 | Exam | $300.00 | $650.00"].join("\n"),
+    );
+    const at = (value: string, cell: string) => ({ value, cell });
+    const twoPages = (v3: string) => ({
+      id: "g1", name: "Main", doc: "A.pdf", pages: [1, 2], visits: ["V1", "V2", "V3"],
+      rows: [{ name: "Exam", cells: [at("$100.00", "p1.t1.r1.c1"), at("$250.00", "p1.t1.r1.c2"), at("$300.00", v3)], printedRowTotal: at("$650.00", "p2.t1.r1.c2") }],
+    });
+    const { result, calls } = await run([split], [reply([call("put_grid", { grid: twoPages("p1.t1.r1.c2") })]), reply([call("put_grid", { grid: twoPages("p2.t1.r1.c1") })]), reply([])], { maxTurns: 3 });
+
+    const refused = resultsAfter(calls[1]!.messages)[0]!;
+    expect(refused.is_error).toBe(true);
+    expect(refused.content).toContain(`row 'Exam' at visit 'V3' is $300.00, but cell p1.t1.r1.c2 prints "$250.00"`);
+    expect(resultsAfter(calls[2]!.messages)[0]!.content).toContain("PROVEN");
+    expect(result.rulebook.grids[0]!.cellIds).toEqual({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2", "rows.0.cells.2": "p2.t1.r1.c1", "rows.0.printedRowTotalCents": "p2.t1.r1.c2" });
+    expect(result.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000, 30000]);
   });
 });

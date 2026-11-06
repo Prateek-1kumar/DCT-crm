@@ -1,4 +1,5 @@
 import type { Question, Region, Rulebook } from "@dct/shared";
+import type { ScanCell } from "./scan/cells";
 import type { Transcription } from "./scan/transcribe";
 
 /** A word on a page, positioned as fractions 0–1 of the page, origin top-left. */
@@ -35,6 +36,8 @@ export interface Page {
    * all in the turned (readable) frame.
    */
   rotation: number;
+  /** A transcribed scan's cells and lines with their ids: what its amounts cite. */
+  cells?: ScanCell[];
 }
 
 /** What the vision model transcribed from one page: kept per file, so each scan is paid for once. The words are derived on load, so a fix to `toWords` reaches pages already saved. */
@@ -66,7 +69,7 @@ export interface PdfReader {
 }
 
 export interface Problem {
-  check: "grid" | "quote" | "unaccounted" | "schema";
+  check: "grid" | "quote" | "cell" | "unaccounted" | "schema";
   id?: string;
   doc?: string;
   page?: number;

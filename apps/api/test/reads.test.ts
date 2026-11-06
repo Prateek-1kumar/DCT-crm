@@ -48,7 +48,9 @@ const reply = (...content: Block[]) =>
 
 const study = { protocol: "P-1", sponsor: "Acme Pharma", siteEntity: "Site LLC", documents: [{ doc: "CTA.pdf", role: "cta" }] };
 const startup = { id: "t1", category: "site_fee", name: "Startup fee", amount: "$500.00", unit: "one time", billing: "invoice", source: { doc: "CTA.pdf", page: 1, quote: "Startup fee of $500.00 is payable on signature" } };
-const goodScript = (st: object = study) => [reply(call("put_study", { study: st })), reply(call("put_terms", { terms: [startup] })), reply(call("finish"))];
+const goodScript = (st: object = study, term: object = startup) => [reply(call("put_study", { study: st })), reply(call("put_terms", { terms: [term] })), reply(call("finish"))];
+// a scanned page's amount cites the line it is printed in, the fake transcription's first
+const scanScript = () => goodScript(study, { ...startup, source: { ...startup.source, cell: "p1.l1" } });
 
 /** A compile model that plays the script, one reply per call; a step can be a function (wait, or fail) instead. */
 function scripted(script: (ModelMessage | (() => Promise<ModelMessage>))[]): ModelClient {
@@ -217,7 +219,7 @@ describe("starting a read", () => {
 
   it("after a read, the scanned pages show as scan with words", async () => {
     const s = await seedStudy({ scanPages: 2 });
-    use(fakes());
+    use(fakes(scanScript()));
     transcriptions = 0;
     const read = await finished(built, (await post(built, s.id)).json().readId);
     expect(read.status).toBe("done");
@@ -237,9 +239,9 @@ describe("starting a read", () => {
 
   it("a second read of the same file adds nothing to the budget and transcribes nothing again", async () => {
     const s = await seedStudy({ scanPages: 2 });
-    use(fakes());
+    use(fakes(scanScript()));
     expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");
-    use(fakes());
+    use(fakes(scanScript()));
     transcriptions = 0;
     const again = (await post(built, s.id)).json();
     expect((await get(built, again.readId)).budgetUsd).toBe(3);
@@ -252,7 +254,7 @@ describe("starting a read", () => {
     const { sha256 } = await contractOf(s.id);
     await scanStore.put(sha256, { page: 1, version: "an-earlier-model", rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
     await scanStore.put(sha256, { page: 2, version: scanVersion(fakes().openai), rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
-    use(fakes());
+    use(fakes(scanScript()));
     transcriptions = 0;
     const { readId } = (await post(built, s.id)).json();
     expect((await get(built, readId)).budgetUsd).toBe(3.4);

@@ -9,7 +9,14 @@ const nullableText = z.string().nullable();
 export const Region = z.tuple([z.number(), z.number(), z.number(), z.number()]);
 export type Region = z.infer<typeof Region>;
 
-export const Source = z.object({ doc: text, page: z.number().int().positive(), quote: z.string(), region: Region.optional() });
+export const Source = z.object({
+  doc: text,
+  page: z.number().int().positive(),
+  quote: z.string(),
+  region: Region.optional(),
+  /** On a scanned page, the id of the transcribed cell or line the term's amount is printed in ("p7.t1.r5.c3", "p7.l2"). */
+  cell: z.string().optional(),
+});
 export type Source = z.infer<typeof Source>;
 
 export const Evidence = z.enum(["math", "quote", "two_reads", "house_rule", "person", "none"]);
@@ -90,6 +97,8 @@ export const Grid = z.object({
   cellsReadTwice: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
   /** A person accepted the grid's figures as the contract prints them, though they don't add up. Only an answer sets it, never the agent. */
   acceptedAsPrinted: z.boolean().default(false),
+  /** On a scanned page, the cell each amount is printed in, by the amount's place as a patch names it ("rows.3.cells.5", "total.2", "grandTotalCents"). */
+  cellIds: z.record(z.string(), z.string()).optional(),
 });
 export type Grid = z.infer<typeof Grid>;
 
