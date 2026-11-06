@@ -2,7 +2,7 @@ import { Region, type Accounted, type Grid, type Question, type Relation, type R
 import { z } from "zod";
 import { SCAN_PAGE_REASON, checks } from "../checks";
 import { citeGrid, citeTerm } from "../checks/cells";
-import { checkRelation } from "../checks/relations";
+import { checkRelations, evaluateRelation, lessRelationProven, provenText, withRelationProof } from "../checks/relations";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
 import { SCAN_NOTE } from "./prompt";
@@ -39,7 +39,7 @@ const StudyArgs = z.object({ study: z.unknown() });
 const TermsArgs = z.object({ terms: z.array(z.unknown()) });
 const GridArgs = z.object({ grid: z.unknown() });
 const RelationsArgs = z.object({ relations: z.array(z.unknown()) });
-const AccountedArgs =z.object({ items: z.array(z.unknown()) });
+const AccountedArgs = z.object({ items: z.array(z.unknown()) });
 const QuestionsArgs = z.object({ questions: z.array(z.unknown()) });
 
 const argIssues = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
@@ -198,11 +198,11 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       if (uncited.length) return rejected("put_grid", uncited);
       grids.set(grid.id, grid);
       const where = `Budget '${grid.name}' on p.${grid.pages[0]}`;
-      const { problems, unproven } = checks.checkGrid(grid, docs);
+      const { problems, unproven } = lessRelationProven(grid, checks.checkGrid(grid, docs), checkRelations(rulebook(), docs).proven, docs);
       if (!problems.length && !unproven.length) return text("PROVEN: all printed arithmetic holds and every cell is covered.", `${where}: all printed totals add up`);
       const lines = [
         ...(problems.length ? ["Arithmetic problems:", ...problems.slice(0, 40)] : []),
-        ...(unproven.length ? [`${plural(unproven.length, "cell")} not proven: no printed total covers them. Capture the printed row, subtotal or total lines.`] : []),
+        ...(unproven.length ? [`${plural(unproven.length, "cell")} not proven: no printed total covers them. Capture the printed row, subtotal or total lines, or write the arithmetic the page prints with put_relations.`] : []),
       ];
       return text(lines.join("\n"), problems.length ? `${where}: ${plural(problems.length, "problem")} with the totals` : `${where}: totals add up, but ${plural(unproven.length, "cell")} have no printed total backing them`);
     },
@@ -212,13 +212,18 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       if (!args.success) return rejected("put_relations", argIssues(args.error));
       let saved = 0;
       // only a relation that holds is kept: one that fails would prove nothing and could never be fixed after the compile
-      const holding = (raw: unknown): Parsed<Relation> => {
-        const result = normalizeRelation(raw);
-        const why = result.ok ? checkRelation(result.value, rulebook(), docs) : null;
-        return why ? { ok: false, issues: [why] } : result;
-      };
-      const failures = storeAll(args.data.relations, holding, (r) => (relations.set(`${r.doc} ${r.result}`, r), saved++), "Relation");
-      return storedReport("relation", saved, failures, relations.size);
+      const lines = args.data.relations.map((raw, i) => {
+        const parsed = normalizeRelation(raw);
+        if (!parsed.ok) return `Relation #${i + 1}: ${parsed.issues.slice(0, 3).join("; ")}. Not saved.`;
+        const out = evaluateRelation(parsed.value, rulebook(), docs);
+        if ("problem" in out) return `Relation #${i + 1}: ${out.problem} Not saved.`;
+        relations.set(JSON.stringify(parsed.value), parsed.value);
+        saved++;
+        return `Relation #${i + 1}: ${provenText(parsed.value, out.proven)}`;
+      });
+      const failed = lines.length - saved;
+      const head = `Saved ${plural(saved, "relation")} (${relations.size} in all).${failed ? ` ${failed} NOT saved, fix and send again.` : ""}`;
+      return text([head, ...withMore(lines, MAX_PROBLEM_LINES)].join("\n"), failed ? `Saved ${plural(saved, "relation")}; ${failed} needed fixing` : `Saved ${plural(saved, "relation")}`, failed > 0);
     },
 
     put_accounted(input) {
@@ -242,15 +247,17 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       state.finishes++;
       // proving amounts on scanned pages is the harness's job after the compile, so it can't be fixed here
       const problems = checks.runChecks(rulebook(), docs).problems.filter((p) => p.message !== SCAN_PAGE_REASON);
+      const byMath = withRelationProof(rulebook(), docs).terms.filter((t) => t.evidence === "math");
+      const proven = byMath.length ? `\nProven by arithmetic between cells: ${byMath.map((t) => `term ${t.id}`).join(", ")}.` : "";
       if (!problems.length) {
         state.ending = "done";
-        return text("ALL CHECKS PASS. Done.", "Checking the whole rulebook: all checks pass");
+        return text(`ALL CHECKS PASS. Done.${proven}`, "Checking the whole rulebook: all checks pass");
       }
       const last = state.finishes >= maxFinishes;
       if (last) state.ending = "finishes_exhausted";
       const lines = problems.map((p) => `${p.check === "unaccounted" ? "UNACCOUNTED" : `${p.check.toUpperCase()} ${p.id}`}: ${p.message}`);
       const head = `Finish ${state.finishes} of ${maxFinishes}: ${plural(problems.length, "thing")} to fix. ` + (last ? "That was the last finish: what remains goes to the accountant." : "Fix these, then call finish again.");
-      return text([head, ...withMore(lines, MAX_PROBLEM_LINES)].join("\n"), `Checking the whole rulebook: ${plural(problems.length, "thing")} to fix`);
+      return text([head, ...withMore(lines, MAX_PROBLEM_LINES)].join("\n") + proven, `Checking the whole rulebook: ${plural(problems.length, "thing")} to fix`);
     },
   };
 

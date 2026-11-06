@@ -497,8 +497,11 @@ describe("checkCitations", () => {
 
 describe("relations", () => {
   type Relation = NonNullable<Rulebook["relations"]>[number];
-  const scanned = (text: string): LoadedDoc =>
-    withScans(doc("A.pdf", page(1, "image", "")), [{ page: 1, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text }) }]);
+  const scanned = (...texts: string[]): LoadedDoc =>
+    withScans(
+      doc("A.pdf", ...texts.map((_, i) => page(i + 1, "image", ""))),
+      texts.map((text, i) => ({ page: i + 1, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text }) })),
+    );
   const fees = scanned(
     [
       "L 0.1-0.12 | Institutional overhead of 30% is added to every fee",
@@ -590,19 +593,79 @@ describe("relations", () => {
     expect(problems([rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.t1.r1.c1"] })], [fees], { terms: [exam] })).toEqual([
       "p1.t1.r1.c1 = p1.t1.r1.c1: a relation needs different cells; 'same' is for one fee printed in two different places.",
     ]);
-    // the fee printed again in a line is the same fee, cited once
-    const twice = rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.l2"] });
-    expect(proven([twice], [fees], { terms: [exam] })).toEqual(keys("p1.t1.r1.c1", "p1.l2"));
+  });
+
+  const exam = cited("exam", 10000, "p1.t1.r1.c1", "Exam");
+  const twoPages = scanned(["T 0.3-0.6 | Fees", "H | Item | Fee", "R 0.31-0.32 | Exam | $100.00", "L 0.7-0.72 | Exam fee $100.00 per visit"].join("\n"), "L 0.1-0.12 | Exam fee $100.00 per visit");
+
+  it("same on one page proves nothing; on two pages it proves both", () => {
+    const onePage = rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.l1"] });
+    expect(proven([onePage], [twoPages], { terms: [exam] })).toEqual([]);
+    expect(problems([onePage], [twoPages], { terms: [exam] })).toEqual([
+      "p1.t1.r1.c1 = p1.l1: both cells are on p.1, which was read in one go, so one misread could repeat in both: 'same' proves only one value printed on two different pages.",
+    ]);
+    expect(proven([rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p2.l1"] })], [twoPages], { terms: [exam] })).toEqual(keys("p1.t1.r1.c1", "p2.l1"));
   });
 
   it("'same' never proves two different values that print one amount", () => {
-    const twice = rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.l2"] });
-    const both = { terms: [cited("exam", 10000, "p1.t1.r1.c1", "Exam"), cited("fee", 10000, "p1.l2", "Exam fee")] };
-    expect(proven([twice], [fees], both)).toEqual([]);
-    expect(problems([twice], [fees], both)).toEqual([
-      "p1.t1.r1.c1 = p1.l2: these cells are cited by different rulebook values (term exam, term fee); 'same' only shows one value printed twice.",
+    const twice = rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p2.l1"] });
+    const fee = term({ id: "fee", amountCents: 10000, evidence: "none", source: { doc: "A.pdf", page: 2, quote: "Exam fee", cell: "p2.l1" } });
+    const both = { terms: [exam, fee] };
+    expect(proven([twice], [twoPages], both)).toEqual([]);
+    expect(problems([twice], [twoPages], both)).toEqual([
+      "p1.t1.r1.c1 = p2.l1: these cells are cited by different rulebook values (term exam, term fee); 'same' only shows one value printed twice.",
     ]);
-    expect(problems([twice], [fees])).toEqual(["p1.t1.r1.c1 = p1.l2: no rulebook value cites either cell; 'same' proves the one value that cites one of them, so write that first."]);
-    expect(proven([rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.t1.r2.c1"] })], [fees], { terms: [cited("exam", 10000, "p1.t1.r1.c1", "Exam")] })).toEqual([]);
+    expect(problems([twice], [twoPages])).toEqual(["p1.t1.r1.c1 = p2.l1: no rulebook value cites either cell; 'same' proves the one value that cites one of them, so write that first."]);
+  });
+
+  it("a cents misread doesn't pass a percent relation", () => {
+    const misread = scanned(
+      ["L 0.1-0.12 | Overhead of 30% is added to every fee", "T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead", "R 0.31-0.32 | Visit | $123.75 | $160.49", "R 0.33-0.34 | Exam | $123.45 | $160.00", "R 0.35-0.36 | Labs | $123.75 | $160.00"].join("\n"),
+    );
+    const row = (r: number) => rel({ result: `p1.t1.r${r}.c2`, operands: [`p1.t1.r${r}.c1`], rate: "p1.l1" });
+    expect(proven([row(1)], [misread])).toEqual([]);
+    expect(problems([row(1)], [misread])).toEqual(["p1.t1.r1.c2 = p1.t1.r1.c1 plus p1.l1 on top doesn't hold: the cells it is made of come to $160.88, but p1.t1.r1.c2 prints $160.49."]);
+    // $160.485 printed in whole dollars holds, but a fee a few cents off would round to the same dollar, so the fee isn't proven
+    expect(proven([row(2)], [misread])).toEqual(keys("p1.t1.r2.c2", "p1.l1"));
+    expect(proven([row(3)], [misread])).toEqual([]);
+  });
+
+  it("a zero rate proves nothing", () => {
+    const zero = scanned(["T 0.3-0.6 | Fees", "H | Item | Fee | Qty | Total", "R 0.31-0.32 | Visit | $123.75 | 0 | $0.00", "R 0.33-0.34 | Exam | $100.00 | 0% | $50.00"].join("\n"));
+    const zeroed = [
+      rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r1.c2" }),
+      rel({ kind: "product", result: "p1.t1.r2.c3", operands: ["p1.t1.r2.c1"], rate: "p1.t1.r2.c2" }),
+    ];
+    expect(proven(zeroed, [zero])).toEqual([]);
+    expect(problems(zeroed, [zero])).toEqual([
+      "p1.t1.r1.c3 = p1.t1.r1.c1 × p1.t1.r1.c2: p1.t1.r1.c3 prints $0.00, and a zero total proves nothing.",
+      "p1.t1.r2.c3 = p1.t1.r2.c1 × p1.t1.r2.c2: p1.t1.r2.c2 prints \"0%\", and a rate has to be above zero.",
+    ]);
+  });
+
+  it("a sum over cells from different columns proves nothing", () => {
+    const lab = scanned(
+      ["T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead | Extra | Total", "R 0.31-0.32 | Lab | $1,650.00 | $1,500.00 | $150.00 | $1,650.00", "R 0.33-0.34 | Visit | $1.00 | $2.00 | $1,500.00 | $3.00"].join("\n"),
+      "L 0.1-0.12 | Total $3.00",
+    );
+    const across = [
+      rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c2", "p1.t1.r2.c3"] }),
+      rel({ result: "p2.l1", operands: ["p1.t1.r2.c1", "p1.t1.r2.c2"] }),
+      // unrelated cells of one row that happen to add up, the "total" printed before them
+      rel({ result: "p1.t1.r1.c1", operands: ["p1.t1.r1.c2", "p1.t1.r1.c3"] }),
+    ];
+    const ALIGNED = "the result and the cells it is made of have to be in one printed row or one printed column of one table, with the result after them (a row total, a column total, or a fee followed by the fee with overhead).";
+    expect(proven(across, [lab])).toEqual([]);
+    expect(problems(across, [lab])).toEqual([`p1.t1.r1.c4 = p1.t1.r1.c2 + p1.t1.r2.c3: ${ALIGNED}`, `p2.l1 = p1.t1.r2.c1 + p1.t1.r2.c2: ${ALIGNED}`, `p1.t1.r1.c1 = p1.t1.r1.c2 + p1.t1.r1.c3: ${ALIGNED}`]);
+    // along one printed row it is a row total, and every cell in it is proven
+    expect(proven([rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c2", "p1.t1.r1.c3"] })], [lab])).toEqual(keys("p1.t1.r1.c4", "p1.t1.r1.c2", "p1.t1.r1.c3"));
+  });
+
+  it("×30% proves the overhead cell, not the fee", () => {
+    const overhead = scanned(["L 0.1-0.12 | Overhead is 30% of the subtotal", "T 0.3-0.6 | Budget", "H | Item | Subtotal | Overhead", "R 0.31-0.32 | Visit | $1,000.00 | $300.00"].join("\n"), "L 0.1-0.12 | Overhead is 30%");
+    expect(proven([rel({ kind: "product", result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], rate: "p1.l1" })], [overhead])).toEqual(keys("p1.t1.r1.c2", "p1.l1"));
+    expect(problems([rel({ kind: "product", result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], rate: "p2.l1" })], [overhead])).toEqual([
+      "p1.t1.r1.c2 = p1.t1.r1.c1 × p2.l1: the rate p2.l1 is on p.2: use one printed on p.1, the page of the result.",
+    ]);
   });
 });

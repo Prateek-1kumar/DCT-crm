@@ -3,7 +3,7 @@ import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
 import { checkCitations } from "./cells";
 import { checkGrid } from "./grid";
 import { checkQuote } from "./quote";
-import { checkRelations, lessRelationProven } from "./relations";
+import { checkRelations, lessRelationProven, withRelationProof } from "./relations";
 import { requiredDecisions } from "./required";
 import { unaccounted } from "./unaccounted";
 import { usd } from "./text";
@@ -33,7 +33,8 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   }
 
   const quotes: CheckReport["quotes"] = {};
-  for (const t of rulebook.terms) {
+  // re-derived, so a "math" the relations no longer back can't excuse a term from proof
+  for (const t of withRelationProof(rulebook, docs, proven).terms) {
     const page = docs.find((d) => d.name === t.source.doc)?.pages.find((p) => p.page === t.source.page);
     const reason = checkQuote(t.source, docs) ?? (needsProof(t, page) ? SCAN_PAGE_REASON : null);
     if (!reason) continue;

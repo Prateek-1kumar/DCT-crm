@@ -194,6 +194,7 @@ export const Rulebook = z.object({
   grids: z.array(Grid),
   accounted: z.array(Accounted),
   questions: z.array(Question),
+  /** What proves scanned terms' "math" evidence and some grid cells: a copy of the rulebook without them loses that proof. */
   relations: z.array(Relation).optional(),
 });
 export type Rulebook = z.infer<typeof Rulebook>;

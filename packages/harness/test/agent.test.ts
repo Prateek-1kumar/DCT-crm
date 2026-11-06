@@ -364,8 +364,26 @@ describe("scanned values cite cells", () => {
     const answer = resultsAfter(calls[2]!.messages)[0]!;
     expect(answer.is_error).toBe(true);
     expect(answer.content).toContain("Relation #2: p1.t1.r2.c2 = p1.t1.r2.c1 plus p1.l1 on top doesn't hold: the cells it is made of come to $130.00, but p1.t1.r2.c2 prints $140.00.");
+    expect(answer.content).toContain("Relation #1: p1.t1.r1.c2 = p1.t1.r1.c1 plus p1.l1 on top proves all 3 of its cells.");
     expect(result.rulebook.relations).toEqual([holds]);
     expect(result.rulebook.terms.map((t) => t.evidence)).toEqual(["math", "none"]);
+  });
+
+  it("two relations on one result cell both count, and finish says what arithmetic proved", async () => {
+    const totals = scanned(
+      ["T 0.3-0.6 | Budget", "H | Item | V1 | V2 | Total", "R 0.31-0.32 | Exam | $100.00 | $200.00 | $300.00", "R 0.33-0.34 | Labs | $50.00 | $70.00 | $120.00", "R 0.35-0.36 | Total | $150.00 | $270.00 | $420.00"].join("\n"),
+    );
+    const grand = { ...exam("$420.00", "p1.t1.r3.c3"), name: "Total", source: { doc: "A.pdf", page: 1, quote: "Total", cell: "p1.t1.r3.c3" } };
+    const byRow = { kind: "sum", doc: "A.pdf", result: "p1.t1.r3.c3", operands: ["p1.t1.r3.c1", "p1.t1.r3.c2"] };
+    const byColumn = { ...byRow, operands: ["p1.t1.r1.c3", "p1.t1.r2.c3"] };
+    const { result, calls } = await run(
+      [totals],
+      [reply([call("put_study", { study }), call("put_terms", { terms: [grand] })]), reply([call("put_relations", { relations: [byRow, byColumn] })]), reply([call("finish")]), reply([])],
+      { maxTurns: 4 },
+    );
+    expect(String(resultsAfter(calls[2]!.messages)[0]!.content)).toContain("Saved 2 relations (2 in all).");
+    expect(result.rulebook.relations).toEqual([byRow, byColumn]);
+    expect(String(resultsAfter(calls[3]!.messages)[0]!.content)).toContain("Proven by arithmetic between cells: term t1.");
   });
 
   it("text-page terms need no citation", async () => {
