@@ -246,21 +246,13 @@ describe("coverage on a scanned page", () => {
   const scan: LoadedDoc = { name: "scan.pdf", path: "/x/scan.pdf", sha256: "0", pages: [{ page: 1, kind: "scan", layout, raw: layout, words, maskBoxes: [], firstLine: "", rotation: 0 }] };
   const amounts = (rb: Rulebook) => coverage(rb, [scan]).pages[0]!.amounts;
 
-  it("matches rulebook values despite reading slips, and carries the reader's doubt for each amount", () => {
-    const rb = rulebook({ terms: [term("fee", { amountCents: 120000, source: { doc: "scan.pdf", page: 1, quote: "Startup fee" } })] });
-    expect(amounts(rb).map((a) => [a.cents, a.status, a.doubt])).toEqual([[120000, "captured", "unsure"], [120000, "captured", null], [999, "missing", "handwritten"]]);
-  });
-
-  it("is null on a page with a text layer", () => {
-    expect(page1(rulebook()).amounts.every((a) => a.doubt === null)).toBe(true);
-  });
-
-  it("amount boxes on a scan page span the full width, since the words' horizontal positions are made up", () => {
-    const rb = rulebook({ terms: [term("fee", { amountCents: 120000, source: { doc: "scan.pdf", page: 1, quote: "Startup fee" } })] });
-    const boxes = amounts(rb).map((a) => a.box);
-    expect(boxes.map(([x0, , x1]) => [x0, x1])).toEqual([[0, 1], [0, 1], [0, 1]]);
-    expect(boxes[0]![1]).toBeCloseTo(0);
-    expect(boxes[1]![1]).toBeCloseTo(0.01);
+  it("carries the reader's doubt for each amount, in full-width boxes, since the words' horizontal positions are made up", () => {
+    const read = withScans({ ...scan, pages: [{ ...scan.pages[0]!, kind: "image" }] }, [
+      { page: 1, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text: "T 0.1-0.2 | Fees\nH | Item | Fee\nR 0.11-0.12 | Startup fee | $1,200.00{?}\nL 0.3-0.31 | Visit 1 200.00 and $9.99{hw} extra" }) },
+    ]);
+    const found = coverage(rulebook(), [read]).pages[0]!.amounts;
+    expect(found.map((a) => [a.cents, a.doubt])).toEqual([[120000, "unsure"], [20000, "handwritten"], [999, "handwritten"]]);
+    expect(found.map((a) => [a.box[0], a.box[2]])).toEqual([[0, 1], [0, 1], [0, 1]]);
   });
 
   it("a quote's boxes on a scan page span the full width of their lines", () => {

@@ -1,7 +1,7 @@
-import { SET_ASIDE, parseCents, type Region, type Rulebook } from "@dct/shared";
+import { SET_ASIDE, parseCents, valueAt, type Region, type Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
-import { cellsOf, type ScanCell } from "../scan/cells";
-import { alignTables, amountsOf, diffReads } from "../scan/diff";
+import { amountsOf, cellsOf, type ScanCell } from "../scan/cells";
+import { alignTables, diffReads } from "../scan/diff";
 import { bandsOf } from "../scan/words";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
 import { amountsAt, amountsIn, looseAmounts, looseCents, looseContains, looseFind, looseKey } from "./text";
@@ -102,14 +102,8 @@ function candidates(rulebook: Rulebook): Map<number, Candidate[]> {
   return byCents;
 }
 
-/** The amounts printed on one line with the words they sit in; on a scanned page, read with slips allowed. */
-function amountsOn(page: Page, line: Word[], known: Map<number, Candidate[]>): { text: string; cents: number; printed: Word[] }[] {
-  if (page.kind === "scan") {
-    return looseAmounts(line.map((w) => w.text), (c) => known.has(Math.abs(c))).map(({ cents, from, to }) => {
-      const printed = line.slice(from, to + 1);
-      return { text: printed.map((w) => w.text).join(" "), cents: Math.abs(cents), printed };
-    });
-  }
+/** The amounts printed on one line of a text page with the words they sit in. */
+function amountsOn(line: Word[]): { text: string; cents: number; printed: Word[] }[] {
   let at = 0;
   const spans = line.map((w) => {
     const span = { w, start: at, end: at + w.text.length };
@@ -131,8 +125,6 @@ function placeOf(path: string): { row: number; col: number } {
   const col = /\.(\d+)$/.exec(path);
   return { row: row ? Number(row[1]) : -1, col: col && (!row || row[2] === "cells") ? Number(col[1]) : -1 };
 }
-
-const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
 
 /** Every scanned cell or line a rulebook value cites, with the values that cite it. */
 function citations(rulebook: Rulebook): Map<string, Cited[]> {
@@ -231,7 +223,6 @@ function excusedColumns(pages: Page[], index: number): Map<string, Excused> {
   return excused;
 }
 
-/** The row a cell is on ("p7.t1.r5", "p7.t1.h"), or the line itself. */
 const rowOf = (id: string) => id.replace(/\.c\d+$/, "").replace(/\.h\d+$/, ".h");
 
 /** The padded, full-width band of the row a scanned cell is on, where its words are shown. */
@@ -242,7 +233,6 @@ function cellBand(page: Page, id: string): Region {
   return [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)];
 }
 
-/** Each cell and line of a page's read, with the amounts it prints and the printed row or line it is on. */
 function printedCells(pages: Page[], index: number) {
   const cells = pages[index]!.cells ?? [];
   const excused = excusedColumns(pages, index);
@@ -336,7 +326,7 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
           rulebook.accounted.find((a) => a.amountCents !== undefined && Math.abs(a.amountCents) === cents);
         for (const line of groupLines(page.words)) {
           const printedLine = rawLine(line);
-          for (const a of amountsOn(page, line, known)) {
+          for (const a of amountsOn(line)) {
             if (a.cents === 0) continue;
             const matches = wholePage ? [] : (known.get(a.cents) ?? []);
             const match = matches.find((c) => c.doc === doc.name && c.pages.includes(page.page)) ?? matches[0];

@@ -41,7 +41,7 @@ export class ReadFailed extends Error {
 }
 
 const COMPILED = new Set(["done", "finishes_exhausted"]);
-// Of what is left once the reviewer and the closer reads are set aside; the rest absorbs compile's last turn past its
+// Of what is left once the reviewer and the second reads are set aside; the rest absorbs compile's last turn past its
 // limit, and the resolver's reads. A scan-free compile has used about a third of $3.
 const COMPILE_SHARE = 0.7;
 /**
@@ -60,7 +60,8 @@ const notReviewed = (docs: LoadedDoc[]): Question => ({
   source: { doc: docs[0]!.name, page: 1, quote: "" }, options: [], suggestion: null, state: "open", blocking: true, readings: [], resolution: null,
 });
 
-const scannedPages = (docs: LoadedDoc[]) => docs.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0);
+/** Pages with no text layer, transcribed or not: each may print money, so each gets its second read reserved. */
+export const scannedPages = (docs: LoadedDoc[]) => docs.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0);
 
 function withRequired(rulebook: Rulebook, report: CheckReport): Rulebook {
   const known = new Set(rulebook.questions.map((q) => q.id));
@@ -77,8 +78,10 @@ export function defaultMaxUsd(): number {
  * cost, a blind second read of every scanned page (each read may pay for it again), and the review (`reviewUsd`), so compile's
  * share isn't what pays for them.
  */
-export const readBudget = (maxUsd: number | undefined, untranscribedPages: number, scanned: number, reviewUsd: number) =>
-  maxUsd ?? defaultMaxUsd() + SCAN_PAGE_USD * untranscribedPages + VERIFY_PAGE_USD * scanned + reviewUsd;
+export const readBudget = (maxUsd: number | undefined, untranscribedPages: number, scanned: number, reviewUsd: number) => maxUsd ?? defaultMaxUsd() + scanExtraUsd(untranscribedPages, scanned, reviewUsd);
+
+/** What a read adds to its base budget for its scanned pages and its review. */
+export const scanExtraUsd = (untranscribedPages: number, scanned: number, reviewUsd: number) => SCAN_PAGE_USD * untranscribedPages + VERIFY_PAGE_USD * scanned + reviewUsd;
 
 export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadResult> {
   if (!opts.scans && docs.some((d) => d.pages.some((p) => p.kind === "image"))) {
@@ -105,7 +108,7 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
   let rulebook = opts.rulebook;
   let compiled: CompileResult | undefined;
   if (!rulebook) {
-    // the reviewer and the closer reads are what make a draft safe to approve, so compile can't spend their share
+    // the reviewer and the second reads are what make a draft safe to approve, so compile can't spend their share
     const reserved = (await reviewUsd(opts.openai, docs)) + VERIFY_PAGE_USD * scannedPages(docs);
     const maxUsd = Math.max(0, budget.limit - budget.spent - reserved) * COMPILE_SHARE;
     compiled = await compile(docs, { client: opts.anthropic, model: opts.claude.model, maxUsd, onProgress: say });

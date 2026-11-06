@@ -100,7 +100,7 @@ export function cellProofPatches(rulebook: Rulebook, patches: Patch[]): Patch[] 
   return [...cells].map(([id, set]): Patch => ({ target: "grid", id, set: { cellsReadTwice: set } }));
 }
 
-const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
+export const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
 const capAmount = (cap: unknown) => (typeof cap === "object" && cap !== null && "kind" in cap && cap.kind === "amount" && "value" in cap ? cap.value : null);
 
 /**
@@ -128,6 +128,9 @@ export function citationPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
   return dropped;
 }
 
+/** The page a scanned cell or line id is on ("p7.t1.r5.c3" is on p.7); NaN for anything else. */
+export const pageOfCell = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
+
 export const CORRECTED = "corrected by a person";
 export const CORRECTED_BY_SECOND_READ = "corrected by a second read";
 /** An amount only a page's second read found, that a person said isn't a separate amount. */
@@ -146,7 +149,7 @@ export function correctedCells(rulebook: Rulebook, dropped: Patch[], reason = CO
       const grid = target === "grid" ? rulebook.grids.find((g) => g.id === id) : undefined;
       const cell = term ? { [SOURCE_CELL]: term.source.cell, [SOURCE_CAP_CELL]: term.source.capCell }[key] : key.startsWith(CITE) ? grid?.cellIds?.[key.slice(CITE.length)] : undefined;
       const doc = term?.source.doc ?? grid?.doc;
-      const page = Number(/^p(\d+)\./.exec(cell ?? "")?.[1]);
+      const page = pageOfCell(cell ?? "");
       return cell && doc && page > 0 ? [{ doc, page, cell, reason }] : [];
     }),
   );

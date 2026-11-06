@@ -1,16 +1,17 @@
 import type { Rulebook } from "@dct/shared";
 import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
 import { checkCitations } from "./cells";
-import { checkGrid } from "./grid";
+import { NOT_PRINTED, checkGrid } from "./grid";
 import { checkQuote } from "./quote";
 import { checkRelations, lessRelationProven, withRelationProof } from "./relations";
 import { requiredDecisions } from "./required";
 import { unaccounted } from "./unaccounted";
 import { usd } from "./text";
 
-export const SCAN_PAGE_REASON = "scanned page: this amount needs the contract's arithmetic or a closer second read";
+export const SCAN_PAGE_REASON = "scanned page: this amount needs the contract's own arithmetic or a second reading of the page";
 
 type Term = Rulebook["terms"][number];
+const ACCOUNT_IT = ": add it to a term or grid, or list it as accounted with a reason.";
 const PROVEN = new Set<Term["evidence"]>(["math", "two_reads", "person"]);
 
 export const needsProof = (t: Term, page: Page | undefined) => page !== undefined && page.kind !== "text" && t.amountCents !== null && !PROVEN.has(t.evidence);
@@ -49,11 +50,23 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
     problems.push(
       u.secondRead
         ? { check: "unaccounted", doc: u.doc, page: u.page, afterCompile: true, message: `${usd(u.amountCents)} on p.${u.page} of ${u.doc} was found only by a second reading of the page ("${u.context}"): answer the question about it.` }
-        : { check: "unaccounted", doc: u.doc, page: u.page, message: `${usd(u.amountCents)} on p.${u.page} of ${u.doc} is not in the rulebook ("${u.context}"): add it to a term or grid, or list it as accounted with a reason.` },
+        : { check: "unaccounted", doc: u.doc, page: u.page, message: `${usd(u.amountCents)} on p.${u.page} of ${u.doc} is not in the rulebook ("${u.context}")${ACCOUNT_IT}` },
     );
   }
 
   return { grids, quotes, unaccounted: stray, required: requiredDecisions(rulebook), problems };
+}
+
+/**
+ * A problem in words for the accountant: what tells the compile agent which ids and tools to use becomes what a person can
+ * do, which is answer a question or start the read again.
+ */
+export function forPerson(p: Pick<Problem, "doc" | "page" | "message"> & { check: string }): string {
+  const where = p.page === undefined ? (p.doc ?? "the contract") : `p.${p.page} of ${p.doc}`;
+  if (p.check === "cell") return `A scanned amount on ${where} doesn't match what the page prints yet; start the read again or answer its question.`;
+  if (p.check === "unaccounted" && p.message.endsWith(ACCOUNT_IT)) return `${p.message.slice(0, -ACCOUNT_IT.length)}: start the read again, or answer its question.`;
+  if (p.check === "grid" && p.message === NOT_PRINTED) return `Some figures of a budget on ${where} aren't proven by a printed total or a second reading yet; start the read again.`;
+  return p.message;
 }
 
 export const checks: Checks = { checkGrid, checkQuote, unaccounted, requiredDecisions, runChecks };

@@ -1,7 +1,25 @@
+import { parseCents } from "@dct/shared";
+import { amountsAt } from "../checks/text";
 import { isBankHeading, maskBankDetails } from "../pdf/lines";
 import type { Doubt, Word } from "../types";
 import { DOUBTS, type Field, type Transcription } from "./transcribe";
 import { hide } from "./words";
+
+/**
+ * What a scanned cell or line prints, the one reading of it every check shares: each amount-shaped figure, or the one bare
+ * number it is ("1500") when it prints nothing else.
+ */
+export const amountsOf = (text: string) => {
+  const found = amountsAt(text).map((a) => a.cents);
+  const bare = parseCents(text);
+  return found.length || bare === null ? found : [bare];
+};
+
+/** The one amount a cell prints, words beside it allowed ("$260.00 per visit"); null when it prints none or several. */
+export const centsOf = (text: string) => {
+  const found = amountsOf(text);
+  return found.length === 1 ? found[0]! : null;
+};
 
 /** One cell, heading or line of a transcribed page, with an id derived from where it sits in the transcription. */
 export interface ScanCell {

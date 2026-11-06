@@ -2,7 +2,9 @@ import { amountsAt } from "../checks/text";
 import { estimateUsd, spentOn, type Budget, type Part, type Reader } from "../models";
 import { pageParts, parseTranscription, transcribeAsk, type Transcription } from "./transcribe";
 
-export const verifyVersion = (reader: Reader) => `verify-1 ${reader.model}`;
+/** Names the second read's prompt, so a read kept under an earlier one is never compared. */
+export const VERIFY_PROMPT = "verify-1";
+export const verifyVersion = (reader: Reader) => `${VERIFY_PROMPT} ${reader.model}`;
 
 /** A reported turn as a quarter turn, 0 to 270. */
 export const quarterTurn = (degrees: number) => (((Math.round(degrees / 90) * 90) % 360) + 360) % 360;

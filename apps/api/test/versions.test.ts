@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checks, resolve, type Reader } from "@dct/harness";
+import { checks, resolve, scanVersion, type Reader } from "@dct/harness";
 import { buildApp } from "../src/app.js";
 import { answers, auditLog, documents, parties, reads, studies, versions } from "../src/db/schema.js";
 import { loadDocs } from "../src/lib/docs.js";
@@ -448,7 +448,9 @@ describe("answers that leave a scanned grid failing", () => {
 
     // nothing there can fail to add up: the cell no read settled is left for the next read or a person
     const res = (await answer(id, "q1", { option: 0, by: "Ana" })).json();
-    expect(res.problems.map((p: { message: string }) => p.message)).toEqual(["nothing printed proves these cells: capture the printed subtotal/total rows."]);
+    // shown in words for the accountant, not the compile agent's
+    expect(res.problems.map((p: { message: string }) => p.message)).toEqual(["Some figures of a budget on p.1 of scan.pdf aren't proven by a printed total or a second reading yet; start the read again."]);
+    expect((await approve(id, { by: "Ben" })).json().message).toBe("1 problem still to fix before this can be approved. First: Some figures of a budget on p.1 of scan.pdf aren't proven by a printed total or a second reading yet; start the read again.");
     expect(res.rulebook.questions.filter((q: Question) => q.state === "open")).toEqual([]);
   });
 
@@ -556,6 +558,22 @@ describe("an amount only a second reading of the page found", () => {
     const billed = (await answer(id, "rule:billing", { option: 0, by: "Ana" })).json();
     expect(billed.rulebook.terms[1].billing).toBe("auto_paid");
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("a second read kept under another prompt's version isn't attached to the page", async () => {
+    const documentIds = [await scannedDoc([table([["Exam", [field("$250.00")]]])])];
+    const [{ sha256 }] = (await db().select({ sha256: documents.sha256 }).from(documents).where(eq(documents.id, documentIds[0]!))) as [{ sha256: string }];
+    const second = { page: 1, rotation: 0, transcription: { rotation: 0, lines: [], tables: [table([["Exam", [field("$250.00")]], ["Labs", [field("$75.00")]]])] } };
+    await scanStore.verify!.put(sha256, { ...second, version: "verify-0 fake-openai" });
+    expect((await loadDocs(db(), documentIds))[0]!.pages[0]!.second).toBeUndefined();
+    await scanStore.verify!.put(sha256, { ...second, version: "verify-1 fake-openai" });
+    expect((await loadDocs(db(), documentIds))[0]!.pages[0]!.second).toBeDefined();
+    // a read with its reader known takes only pages that reader made
+    const [first] = await scanStore.get(sha256);
+    await scanStore.put(sha256, { ...first!, version: scanVersion(reader({})) });
+    expect((await loadDocs(db(), documentIds, reader({})))[0]!.pages[0]!.second).toBeDefined();
+    await scanStore.put(sha256, { ...first!, version: scanVersion({ ...reader({}), model: "another-model" }) });
+    expect((await loadDocs(db(), documentIds, { ...reader({}), model: "another-model" }))[0]!.pages[0]!.second).toBeUndefined();
   });
 
   it("can be set aside by a person, and the version approved", async () => {

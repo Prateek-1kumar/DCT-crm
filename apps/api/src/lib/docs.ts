@@ -1,4 +1,4 @@
-import { pdfReader, scanVersion, withScans, type LoadedDoc, type Reader } from "@dct/harness";
+import { VERIFY_PROMPT, pdfReader, scanVersion, verifyVersion, withScans, type LoadedDoc, type Reader } from "@dct/harness";
 import { inArray } from "drizzle-orm";
 import type { Tx } from "../db/index.js";
 import { documents, type PageInfo } from "../db/schema.js";
@@ -10,7 +10,9 @@ const cache = new Map<string, Promise<{ raw: LoadedDoc; shown: LoadedDoc }>>();
 
 export const forgetStored = (sha256: string) => cache.delete(sha256);
 
-const verified = async (sha256: string) => (await scanStore.verify?.get(sha256)) ?? [];
+// a second read made under another prompt saw the page differently; with the reader known, under another model too
+const verified = async (sha256: string, reader?: Reader) =>
+  ((await scanStore.verify?.get(sha256)) ?? []).filter((v) => (reader ? v.version === verifyVersion(reader) : v.version.startsWith(`${VERIFY_PROMPT} `)));
 
 function loadBoth(sha256: string) {
   let entry = cache.get(sha256);
@@ -39,7 +41,7 @@ export async function loadDocs(tx: Tx, ids: string[], reader?: Reader): Promise<
       const saved = await scanStore.get(row.sha256);
       const current = reader ? saved.filter((p) => p.version === scanVersion(reader)) : saved;
       // second reads are read fresh each time: a re-run can add one to a page whose transcription is cached
-      return { ...withScans(raw, current, await verified(row.sha256)), name: row.name };
+      return { ...withScans(raw, current, await verified(row.sha256, reader)), name: row.name };
     }),
   );
 }

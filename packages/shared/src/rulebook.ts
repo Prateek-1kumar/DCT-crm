@@ -101,7 +101,7 @@ export const Grid = z.object({
   acceptedAsPrinted: z.boolean().default(false),
   /**
    * On a scanned page, the cell each amount is printed in, by the amount's place as a patch names it ("rows.3.cells.5",
-   * "total.2", "grandTotalCents"). null once an answer or a closer read changed the amount: it no longer rests on that cell.
+   * "total.2", "grandTotalCents"). null once an answer or a second read changed the amount: it no longer rests on that cell.
    */
   cellIds: z.record(z.string(), z.string().nullable()).optional(),
 });

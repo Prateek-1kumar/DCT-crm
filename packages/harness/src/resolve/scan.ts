@@ -1,18 +1,18 @@
-import { CORRECTED_BY_SECOND_READ, SET_ASIDE, applyPatches, cellProofPatches, citationPatches, correctedCells, parseCents, type Patch, type Source } from "@dct/shared";
+import { CORRECTED_BY_SECOND_READ, SET_ASIDE, applyPatches, cellProofPatches, citationPatches, correctedCells, pageOfCell, valueAt, type Patch, type Source } from "@dct/shared";
 import { checks, needsProof } from "../checks";
-import { checkCitations } from "../checks/cells";
-import { printedAmounts, printsTotals } from "../checks/grid";
+import { MARKS, checkCitations } from "../checks/cells";
+import { onScan, printedAmounts, printsTotals } from "../checks/grid";
 import { coverage, secondReadCell } from "../checks/coverage";
-import { amountsAt, amountsIn, usd } from "../checks/text";
+import { amountsAt, usd } from "../checks/text";
 import { pdfReader } from "../pdf";
-import { amountsOf, diffReads, printsAmounts, verdictOf } from "../scan/diff";
+import { amountsOf, centsOf } from "../scan/cells";
+import { diffReads, printsAmounts, verdictOf } from "../scan/diff";
 import { MAX_SCAN_PIXELS, SCAN_DPI, type Transcription } from "../scan/transcribe";
 import { SecondReadFailed, quarterTurn, verifyRead, verifyVersion } from "../scan/verify";
 import type { CheckReport, Doubt, LoadedDoc, Page } from "../types";
-import { asPrinted, cellLabel, onScan, personId, proven, raise, termLabel, tryApply, values } from "./read";
+import { asPrinted, cellLabel, personId, proven, raise, termLabel, tryApply, values } from "./read";
 import type { Run } from "./run";
 
-const MARKS: Partial<Record<Doubt, string>> = { handwritten: "handwritten", struck_out: "struck out", initialed: "initialed" };
 const marksText = (doubts: Doubt[]) => doubts.flatMap((d) => MARKS[d] ?? []).join(" and ") || "marked";
 
 const NOT_CITED = "the rulebook does not say which cell of the page it was read from";
@@ -41,14 +41,8 @@ interface Spot {
   patch(value: number | null): Patch;
 }
 
-const pageOfCell = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
 const place = (s: Spot) => `p.${s.source.page} (${s.source.doc})`;
 
-/** A printed amount as one number: a cell with words beside its one amount ("$260.00 per visit") counts; null otherwise. */
-const centsOf = (text: string) => {
-  const found = amountsIn(text);
-  return found.length === 1 ? found[0]! : parseCents(text);
-};
 
 const grouped = <T>(items: T[], key: (t: T) => string) => {
   const groups = new Map<string, T[]>();
@@ -86,7 +80,7 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   }
 
   for (const g of run.rulebook.grids) {
-    if (!onScan(run, g.doc, g.pages)) continue;
+    if (!onScan(run.docs, g.doc, g.pages)) continue;
     const result = report.grids[g.id];
     const failing = (result?.problems.length ?? 0) > 0;
     const unproven = new Set((result?.unproven ?? []).map(({ row, col }) => `rows.${row}.cells.${col}`));
@@ -115,8 +109,6 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   }
   return spots;
 }
-
-const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
 
 /**
  * A question a person answered settles a value it set to what the rulebook still has: it isn't asked again, whatever a later
@@ -238,7 +230,7 @@ function askAsPrinted(run: Run, report: CheckReport) {
   const open = (id: string) => run.rulebook.questions.some((q) => q.state === "open" && (q.id === id || q.id.startsWith(`${id}:`)));
   for (const g of run.rulebook.grids) {
     const problems = after.grids[g.id]?.problems ?? [];
-    if (!report.grids[g.id]?.problems.length || !problems.length || !printsTotals(g) || !onScan(run, g.doc, g.pages)) continue;
+    if (!report.grids[g.id]?.problems.length || !problems.length || !printsTotals(g) || !onScan(run.docs, g.doc, g.pages)) continue;
     if (open(`read:${g.id}`) || checks.checkGrid({ ...g, acceptedAsPrinted: true }, run.docs).problems.length) continue;
     const lead = open(personId(g.id))
       ? "The figures shown are as first read from the image; the ones that are marked, or that a second read could not settle, are asked about in the other question."

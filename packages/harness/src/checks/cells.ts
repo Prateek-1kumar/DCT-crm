@@ -1,5 +1,5 @@
-import { parseCents, type Rulebook } from "@dct/shared";
-import type { ScanCell } from "../scan/cells";
+import { pageOfCell, type Rulebook } from "@dct/shared";
+import { amountsOf, centsOf, type ScanCell } from "../scan/cells";
 import type { Doubt, LoadedDoc, Problem } from "../types";
 import { printedAmounts } from "./grid";
 import { amountsIn, looseContains, usd } from "./text";
@@ -16,27 +16,23 @@ export interface Marked {
   doubts: Doubt[];
 }
 
-const MARKS = new Set<Doubt>(["handwritten", "struck_out", "initialed"]);
+/** The marks that send a value to a person, in words. */
+export const MARKS: Partial<Record<Doubt, string>> = { handwritten: "handwritten", struck_out: "struck out", initialed: "initialed" };
 
 export const cellsOn = (doc: LoadedDoc, page: number) => doc.pages.find((p) => p.page === page)?.cells;
-const pageOf = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
-export const cellOf = (doc: LoadedDoc, id: string) => cellsOn(doc, pageOf(id))?.find((c) => c.id === id);
-export const isMarked = (cell: ScanCell) => cell.doubts.some((d) => MARKS.has(d));
+export const cellOf = (doc: LoadedDoc, id: string) => cellsOn(doc, pageOfCell(id))?.find((c) => c.id === id);
+export const isMarked = (cell: ScanCell) => cell.doubts.some((d) => MARKS[d] !== undefined);
 
 // A line's amount sits among its words, and a marked cell can hold a struck value and its replacement; any other cell prints
 // one amount, maybe with words ("$1,500.00 per visit") or bare ("1500").
-function prints(cell: ScanCell, cents: number) {
-  const amounts = amountsIn(cell.text);
-  if (cell.table === null || isMarked(cell)) return [parseCents(cell.text), ...amounts].includes(cents);
-  return amounts.length ? amounts.length === 1 && amounts[0] === cents : parseCents(cell.text) === cents;
-}
+const prints = (cell: ScanCell, cents: number) => (cell.table === null || isMarked(cell) ? amountsOf(cell.text).includes(cents) : centsOf(cell.text) === cents);
 
 interface Cite {
   what: string;
   /** Where the citation goes, for the message that asks for one. */
   how: string;
   cents: number;
-  /** undefined when nothing is cited; null when an answer or a closer read changed the amount, so it no longer rests on a cell. */
+  /** undefined when nothing is cited; null when an answer or a second read changed the amount, so it no longer rests on a cell. */
   id: string | null | undefined;
   /** It may cite nothing: a person settled it, or the grid's text pages print it. */
   optional: boolean;
@@ -98,7 +94,7 @@ interface Amount {
 }
 
 /** Every amount of a grid, by its place as a patch names it, in plain words. */
-function amountsOf(g: Grid): Amount[] {
+function gridAmounts(g: Grid): Amount[] {
   const at = (v: unknown, path: string, what: string, line?: Amount["line"], visit?: number): Amount[] => (typeof v === "number" ? [{ path, cents: v, what, line, visit }] : []);
   const cells = (values: Grid["subtotal"], path: string, line: NonNullable<Amount["line"]>) =>
     (values ?? []).flatMap((c, j) => at(c, `${path}.${j}`, `${line.name} at visit '${g.visits[j]}'`, line, j));
@@ -167,7 +163,6 @@ function shapeIssues(doc: LoadedDoc, cited: { amount: Amount; id: string }[], vi
     if (m) tables.set(m[1]!, [...(tables.get(m[1]!) ?? []), { amount, row: `${m[1]}.r${m[2]}`, col: `${m[1]}.c${m[3]}`, cell: cellOf(doc, id) }]);
   }
   return [...tables].flatMap(([table, cells]) => {
-    // each grid line or visit that cites more than one printed row (or column) of this table
     const spread = (of: (a: Amount) => { key: string; name: string } | undefined, at: "row" | "col") => {
       const groups = new Map<string, { name: string; ids: Set<string> }>();
       for (const c of cells) {
@@ -201,7 +196,7 @@ export function citeGrid(g: Grid, docs: LoadedDoc[], marked: Marked[] = []): str
   // an amount printed on one of the grid's pages with a text layer needs no citation
   const onText = printedAmounts(g, docs);
   const settled = new Set(g.cellsReadTwice.map(([row, col]) => `rows.${row}.cells.${col}`));
-  const amounts = amountsOf(g);
+  const amounts = gridAmounts(g);
   const cited = amounts.flatMap((amount) => {
     const id = g.cellIds?.[amount.path];
     return typeof id === "string" ? [{ amount, id }] : [];

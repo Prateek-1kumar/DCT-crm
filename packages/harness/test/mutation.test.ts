@@ -1,4 +1,4 @@
-import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Accounted, type Cell, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, valueAt, type Accounted, type Cell, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
 import { printsTotals } from "../src/checks/grid";
@@ -10,7 +10,7 @@ import { buildPage } from "../src/pdf/page";
 import { resolve } from "../src/resolve";
 import { asPrintedQuestion } from "../src/resolve/read";
 import { withScans } from "../src/scan";
-import { amountsOf } from "../src/scan/diff";
+import { amountsOf } from "../src/scan/cells";
 import { parseTranscription, type Field, type Transcription } from "../src/scan/transcribe";
 import { verifyVersion } from "../src/scan/verify";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
@@ -436,8 +436,6 @@ const rulebookOf = (book: Book): Rulebook => ({
   },
   terms: book.terms, grids: book.grids, accounted: book.accounted ?? [], questions: [], relations: book.relations,
 });
-
-const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
 
 type Proof = "reads" | "relation" | "totals";
 

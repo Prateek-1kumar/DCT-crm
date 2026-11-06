@@ -5,7 +5,7 @@ import { Rulebook } from "@dct/shared";
 import OpenAI from "openai";
 import { claudeReader, openaiReader } from "./models";
 import { pdfReader } from "./pdf";
-import { ReadFailed, read, readBudget, type ReadResult } from "./read";
+import { ReadFailed, read, readBudget, scannedPages, type ReadResult } from "./read";
 import { reviewUsd } from "./review";
 import { fileScanStore, untranscribed } from "./scan";
 import type { LoadedDoc } from "./types";
@@ -77,7 +77,7 @@ async function main() {
     claude: claudeReader(anthropic, process.env.HARNESS_MODEL ?? "claude-sonnet-5-5"),
     openai,
     scans,
-    maxUsd: readBudget(maxUsd, await untranscribed(docs, scans, openai), docs.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0), await reviewUsd(openai, docs)),
+    maxUsd: readBudget(maxUsd, await untranscribed(docs, scans, openai), scannedPages(docs), await reviewUsd(openai, docs)),
     onProgress: console.log,
     ...(from && { rulebook: await earlier(resolve(base, from)) }),
   });

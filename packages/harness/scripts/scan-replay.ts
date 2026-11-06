@@ -11,7 +11,8 @@ import type { Rulebook } from "@dct/shared";
 import { coverage, findQuote } from "../src/checks/coverage";
 import { buildPage } from "../src/pdf/page";
 import { withScans } from "../src/scan";
-import { amountsOf, diffReads, type Verdict } from "../src/scan/diff";
+import { amountsOf } from "../src/scan/cells";
+import { diffReads, type Verdict } from "../src/scan/diff";
 import { Compact, parseTranscription, Transcription } from "../src/scan/transcribe";
 import type { LoadedDoc, ScanPage } from "../src/types";
 

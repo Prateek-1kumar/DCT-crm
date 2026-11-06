@@ -138,7 +138,7 @@ it("reports what was spent when a read breaks part way, with a plain message", a
   expect((failure as ReadFailed).usd).toBeCloseTo(0.5);
 });
 
-it("a given --max-usd is the whole budget; otherwise the default plus an allowance for each page still to read, each scanned page's closer read, and the review", () => {
+it("a given --max-usd is the whole budget; otherwise the default plus an allowance for each page still to read, each scanned page's second read, and the review", () => {
   expect(readBudget(1.5, 10, 10, 1)).toBe(1.5);
   expect(readBudget(undefined, 2, 5, 0.9)).toBeCloseTo(defaultMaxUsd() + 2 * SCAN_PAGE_USD + 5 * VERIFY_PAGE_USD + 0.9);
 });
@@ -161,7 +161,7 @@ it("a read whose reviewer couldn't run can't be approved: it carries a blocking 
   expect(reviewed.rulebook.questions).toEqual([]);
 });
 
-it("the review leaves the closer reads' allowance in place", async () => {
+it("the review leaves the second reads' allowance in place", async () => {
   const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "scan" as const })) };
   const openai = fake("gpt", { review: { findings: [] }, read_values: { answers: [{ item: 0, answer: "$500.00" }] } }, 0);
   // the review's estimate is about $0.03 at $1 a million tokens: it fits in $0.10, but not beside one page's $0.08

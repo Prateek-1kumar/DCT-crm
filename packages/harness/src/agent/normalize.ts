@@ -52,7 +52,6 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
   if (!isObject(raw)) return notAnObject;
   const issues: string[] = [];
   const cellIds: Record<string, string> = {};
-  // on a scanned page an amount comes as {value, cell}: the value as printed, and the id of the cell it is printed in
   const cited = (v: unknown, path: string) => {
     if (!isObject(v) || !("value" in v)) return v;
     if (typeof v.cell === "string") cellIds[path] = v.cell;

@@ -1,6 +1,7 @@
 import { applyPatches, cellProofPatches, citationPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Rulebook, type Source, type Term } from "@dct/shared";
 import { z } from "zod";
 import { SCAN_PAGE_REASON, checks } from "../checks";
+import { onScan } from "../checks/grid";
 import { usd } from "../checks/text";
 import type { Part, Reader } from "../models/reader";
 import { pdfReader } from "../pdf";
@@ -27,7 +28,6 @@ interface Item {
 }
 
 interface ValueItem extends Item {
-  id: string;
   current: Cell;
   patch(value: Cell): Patch;
 }
@@ -241,7 +241,7 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
 function termsJob(terms: Term[]): Job {
   const { doc, page } = terms[0]!.source;
   const items = terms.map((t): ValueItem => ({
-    id: t.id, label: termLabel(t), current: t.amountCents, read: readAmount, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
+    label: termLabel(t), current: t.amountCents, read: readAmount, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
   }));
   const one = terms.length === 1 ? terms[0]! : null;
   return valuesJob(
@@ -261,7 +261,7 @@ function gridJob(g: Grid): Job {
   const visit = (j: number) => g.visits[j] ?? `#${j + 1}`;
   const add = (label: string, path: string, current: Cell) => {
     if (typeof current !== "number") return;
-    items.push({ id: `read:${g.id}:${path}`, label, current, read: readCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }) });
+    items.push({ label, current, read: readCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }) });
   };
   g.rows.forEach((r, i) => r.cells.forEach((c, j) => add(cellLabel(g, i, j), `rows.${i}.cells.${j}`, c)));
   for (const line of ["subtotal", "overhead", "total"] as const) g[line]?.forEach((c, j) => add(`the ${line} line at visit '${visit(j)}'`, `${line}.${j}`, c));
@@ -270,20 +270,15 @@ function gridJob(g: Grid): Job {
   return valuesJob({ id: g.id, what: `the figures of '${g.name}'`, about: { target: "grid", id: g.id }, source, pages: g.pages }, items);
 }
 
-/** One rule for terms and grids: a scan on any of the pages makes it a scan's, settled by a second read of the page instead. */
-export const onScan = (run: Run, doc: string, pages: number[]) => {
-  const all = run.docs.find((d) => d.name === doc)?.pages ?? [];
-  return pages.some((n) => all.find((p) => p.page === n)?.kind === "scan");
-};
 
 /** Scanned pages are left out: `settleScans` settles them with a second read of the page. */
 export function readJobs(run: Run, report: CheckReport): Job[] {
   const onPage = new Map<string, Term[]>();
-  for (const t of run.rulebook.terms.filter((x) => report.quotes[x.id] === SCAN_PAGE_REASON && !onScan(run, x.source.doc, [x.source.page]))) {
+  for (const t of run.rulebook.terms.filter((x) => report.quotes[x.id] === SCAN_PAGE_REASON && !onScan(run.docs, x.source.doc, [x.source.page]))) {
     const key = `${t.source.doc}\u0000${t.source.page}`;
     onPage.set(key, [...(onPage.get(key) ?? []), t]);
   }
-  const grids = run.rulebook.grids.filter((g) => (report.grids[g.id]?.problems.length || report.grids[g.id]?.unproven.length) && !onScan(run, g.doc, g.pages));
+  const grids = run.rulebook.grids.filter((g) => (report.grids[g.id]?.problems.length || report.grids[g.id]?.unproven.length) && !onScan(run.docs, g.doc, g.pages));
   return [...[...onPage.values()].map(termsJob), ...grids.map(gridJob)];
 }
 

@@ -234,7 +234,7 @@ describe("starting a read", () => {
     expect((await post(built, s.id, { by: " " })).json().message).toMatch(/pick your name/);
   });
 
-  it("starting a read on a 2-page scan records budget 3 + 0.80 to read them + 0.16 for their closer reads + the review (0.05 at the fake price)", async () => {
+  it("starting a read on a 2-page scan records budget 3 + 0.80 to read them + 0.16 for their second reads + the review (0.05 at the fake price)", async () => {
     const s = await seedStudy({ scanPages: 2 });
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
@@ -272,7 +272,7 @@ describe("starting a read", () => {
     expect(detail.documents[0]).toMatchObject({ scannedPages: [], scansRead: [1, 2] });
   });
 
-  it("a second read of the same file adds only the closer reads and the review to the budget and transcribes nothing again", async () => {
+  it("a second read of the same file adds only the second reads and the review to the budget and transcribes nothing again", async () => {
     const s = await seedStudy({ scanPages: 2 });
     use(fakes(scanScript()));
     expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Question, type Rulebook } from "@dct/shared";
-import { asPrintedQuestion, checks, coverage, printsTotals } from "@dct/harness";
+import { asPrintedQuestion, checks, coverage, forPerson, printsTotals } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -49,7 +49,7 @@ async function present(tx: Tx, v: Version) {
     documentIds: v.documentIds,
     documents: docs.map((d) => ({ id: d.id, name: d.name, pageCount: d.pages.length })),
     rulebook: v.rulebook,
-    problems: v.problems,
+    problems: v.problems.map((p) => ({ ...p, message: forPerson(p) })),
     createdAt: v.createdAt,
     createdBy: v.createdBy,
     approvedAt: v.approvedAt,
@@ -149,7 +149,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
 
       const blocking = v.rulebook!.questions.filter((q) => q.state === "open" && q.blocking);
       if (blocking[0]) throw new HttpError(409, `${plural(blocking.length, "question")} still need${blocking.length === 1 ? "s" : ""} an answer before this can be approved. First: "${blocking[0].question}"`);
-      if (v.problems[0]) throw new HttpError(409, `${plural(v.problems.length, "problem")} still to fix before this can be approved. First: ${v.problems[0].message}`);
+      if (v.problems[0]) throw new HttpError(409, `${plural(v.problems.length, "problem")} still to fix before this can be approved. First: ${forPerson(v.problems[0])}`);
       const given = await tx.select({ by: answers.by }).from(answers).where(eq(answers.versionId, id));
       if (given.some((a) => a.by.toLowerCase() === by.toLowerCase())) throw new HttpError(409, "Someone who answered this version's questions can't also approve it: ask a colleague.");
 

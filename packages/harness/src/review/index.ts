@@ -46,7 +46,7 @@ export async function reviewUsd(reader: Reader, docs: LoadedDoc[]): Promise<numb
   return estimateUsd(reader, [...pages, ...unread, ...text], OUTPUT_TOKENS);
 }
 
-/** `keep` is left in the budget for what has to run after the review, the closer reads of scanned pages. */
+/** `keep` is left in the budget for what has to run after the review, the second reads of scanned pages. */
 export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { reader: Reader; budget: Budget; keep?: number }): Promise<ReviewResult> {
   const { reader, budget, keep = 0 } = opts;
 

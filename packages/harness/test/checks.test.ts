@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
-import { checks } from "../src/checks";
+import { checks, forPerson } from "../src/checks";
 import { checkCitations } from "../src/checks/cells";
 import { cellKey, checkRelations, withRelationProof } from "../src/checks/relations";
 import { withScans } from "../src/scan";
@@ -184,7 +184,7 @@ describe("an amount on a scanned page", () => {
     });
     const { quotes } = checks.runChecks(rb, docs);
     expect(Object.keys(quotes)).toEqual(["t1"]);
-    expect(quotes.t1).toMatch(/^scanned page.*closer second read/);
+    expect(quotes.t1).toMatch(/^scanned page.*a second reading of the page$/);
   });
 });
 
@@ -314,6 +314,17 @@ describe("runChecks", () => {
     const r = checks.runChecks(rulebook({ grids: [partly] }), [doc("A.pdf", page(1, "text", ""))]);
     expect(r.problems).toHaveLength(1);
     expect(r.problems[0]).toMatchObject({ check: "grid", id: "g1" });
+  });
+});
+
+describe("problems in words for the accountant", () => {
+  it("never shows the compile agent's ids and tools", () => {
+    const cell = { check: "cell" as const, id: "g1", doc: "A.pdf", page: 7, message: "row 'Exam' at visit 'V1' cites p7.t1.r9.c1, but A.pdf has no cell or line with that id: copy the id as read_pages shows it." };
+    expect(forPerson(cell)).toBe("A scanned amount on p.7 of A.pdf doesn't match what the page prints yet; start the read again or answer its question.");
+    const [stray] = checks.runChecks(rulebook({}), [doc("A.pdf", page(1, "text", "Parking $45.00"))]).problems;
+    expect(stray!.message).toContain("list it as accounted");
+    expect(forPerson(stray!)).toBe('$45.00 on p.1 of A.pdf is not in the rulebook ("Parking $45.00"): start the read again, or answer its question.');
+    expect(forPerson({ check: "quote", doc: "A.pdf", page: 1, message: "quote not found on p.1 of A.pdf" })).toBe("quote not found on p.1 of A.pdf");
   });
 });
 

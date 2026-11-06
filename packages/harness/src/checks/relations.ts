@@ -1,5 +1,5 @@
 import { parseCents, parsePercent, type Relation, type Rulebook } from "@dct/shared";
-import type { ScanCell } from "../scan/cells";
+import { centsOf, type ScanCell } from "../scan/cells";
 import type { GridResult, LoadedDoc, Problem } from "../types";
 import { cellOf, cellsOn, citeGrid, citeTerm, isMarked, rowText } from "./cells";
 import { amountsIn, looseContains, usd } from "./text";
@@ -36,12 +36,7 @@ function formula(r: Relation): string {
   return `${r.result} = ${r.operands.join(" + ")}${r.rate ? ` plus ${r.rate} on top` : ""}`;
 }
 
-function amountOf(cell: ScanCell): number | string {
-  if (isMarked(cell)) return MARKED(cell.id);
-  const amounts = amountsIn(cell.text);
-  const cents = amounts.length === 1 ? amounts[0]! : amounts.length ? null : parseCents(cell.text);
-  return cents ?? `${cell.id} prints "${cell.text}", not one amount.`;
-}
+const amountOf = (cell: ScanCell): number | string => (isMarked(cell) ? MARKED(cell.id) : (centsOf(cell.text) ?? `${cell.id} prints "${cell.text}", not one amount.`));
 
 // a line prints its rate among words ("overhead of 30% is added"); a cell prints it bare ("30%", "8.00")
 function rateText(cell: ScanCell) {
@@ -103,7 +98,6 @@ function holds(kind: Relation["kind"], result: number, operands: number[], rate:
   return dollars ? result % 100 === 0 && result === rounded(n, d, 100n) : result === rounded(n, d, 1n);
 }
 
-/** Every rulebook value that cites a cell, in words. */
 function citersOf(rulebook: Rulebook, doc: string, id: string): string[] {
   return [
     ...rulebook.terms.filter((t) => t.source.doc === doc).flatMap((t) => [...(t.source.cell === id ? [`term ${t.id}`] : []), ...(t.source.capCell === id ? [`the cap of term ${t.id}`] : [])]),

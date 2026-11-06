@@ -1,5 +1,5 @@
-import { parseCents } from "@dct/shared";
 import { amountsAt, looseKey } from "../checks/text";
+import { amountsOf } from "./cells";
 import type { Field, Mark, Transcription } from "./transcribe";
 
 export interface Verdict {
@@ -17,12 +17,6 @@ const UNALIGNED: Verdict = { outcome: "unaligned" };
 const WORST: Verdict["outcome"][] = ["agree", "differ", "unaligned", "marked"];
 const worse = (a: Verdict | undefined, b: Verdict) => (a && WORST.indexOf(a.outcome) >= WORST.indexOf(b.outcome) ? a : b);
 
-// a cell that prints one bare number ("1500") is an amount too, as the citation check reads it
-export const amountsOf = (text: string) => {
-  const found = amountsAt(text).map((a) => a.cents);
-  const bare = parseCents(text);
-  return found.length || bare === null ? found : [bare];
-};
 const withoutAmounts = (text: string) => amountsAt(text).reduceRight((t, a) => t.slice(0, a.start) + t.slice(a.end), text);
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 

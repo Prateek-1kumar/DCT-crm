@@ -101,7 +101,7 @@ The system prompt is the spike's prompt (`docs/superpowers/spike/harness.py`, th
 
 ### 5.3 Checks (deterministic code, the "unit tests")
 1. **Grid arithmetic:** row cells sum to the printed row total; column cells sum to the printed subtotal; overhead = subtotal × rate (within $0.50 for whole-dollar rounding, flagged as rounded); subtotal + overhead + additions = printed visit total; visit totals sum to the printed grand total. Lengths must match the visit count.
-2. **"Proven" means really cross-checked.** A grid is proven only if every numeric cell takes part in at least one identity whose printed side was captured and holds. Cells not covered need cell-level evidence instead: on `TEXT` pages, the value at that position in the text layer; on `IMAGE` pages, two independent reads (§5.5). *This fixes the spike's MK-0616 home-health grid, which was marked proven with nothing to check it against.*
+2. **"Proven" means really cross-checked.** A grid is proven only if every numeric cell takes part in at least one identity whose printed side was captured and holds. Cells not covered need cell-level evidence instead: on `TEXT` pages, the value at that position in the text layer; on `IMAGE` pages, two independent reads (§5.5). *This fixes the spike's MK-0616 home-health grid, which was marked proven with nothing to check it against.* On `SCAN` pages a sum identity alone (a row total, a column subtotal or total, the grand total, or a `sum` relation of two or more cells) proves no cell: a figure that slipped into a blank cell along the summed row or column keeps the sum. Such a cell rests on the second read, whose different figure stands only while the sums then hold. A fee plus a printed rate, or a product by a printed rate or count, still proves, since a slip breaks it.
 3. **Quote on page:** each term's quote is found on its page (whitespace- and case-insensitive). On `IMAGE` pages, quotes can't be text-checked, so the term's amounts need arithmetic proof or two independent reads.
 4. **Every dollar accounted for:** every amount-shaped string on every money-bearing page (`$`, `US$`, `USD`, or `#,###.##`) appears in the rulebook or in `accounted`. Documents marked as having no money (e.g. a protocol) are skipped. *Known weakness:* a coincidental number match counts as accounted. Acceptable for now; the golden set measures it.
 5. **Required-decision rules**, which make silent assumptions impossible by construction:
@@ -137,7 +137,9 @@ Each candidate question, from a failed check, the compile agent or the reviewer,
 - Proof on scans, in order:
   1. arithmetic over cited cells (grid totals, plus fixed relations: sum, product by a printed rate or count, the same fee printed twice);
   2. otherwise one blind re-read of the page's tables. It is given no labels and no values, and its strips are offset from the first read's. The two reads are compared cell by cell by structure, never by position.
-- Settling: agreement proves (`two_reads`). A difference is retried against the arithmetic, then asked. A mark seen by either read is asked. Anything that can't be aligned is asked.
+- Settling: agreement proves (`two_reads`). A difference is retried against the arithmetic: when the second read's figures make it hold they are proven, and the cells that print the first read's figures are set aside ("corrected by a second read"); otherwise it is asked. A mark seen by either read is asked. Anything that can't be aligned is asked.
+- An amount only the second read found (a row or line the first read dropped, or a cell it left blank) is one person's question per page: add it as a fee (a term with evidence `person`, its billing then asked), or set it aside ("set aside by a person"). Only that answer sets it aside: the compile agent's own listing of it never counts, and no agent or reviewer option can carry a set-aside.
+- A question about a scanned value offers only answers that set a value; a question only a re-run can settle offers none and says to start the read again.
 - Positions are for display only.
 - A read whose reviewer can't run within its budget can't be approved.
 - The blind re-read counts as proof only after free measurements show the two reads rarely share a mistake: a planted-misread test, and two saved reads of the same page.
@@ -168,6 +170,7 @@ On a draft, the change applies to the draft. On a live version, it creates a new
 - Compile: at most ~80 turns and 3 finish attempts. Prompt caching is on. Effort is tuned on the golden set: lower it wherever the golden metrics hold.
 - Reading resolutions crop small regions, about a cent each. The reviewer is one call per read.
 - Scanned pages add **$0.40 per page not yet transcribed** to the read's budget (measured: about $0.30 for a dense budget page, much less for prose). If the budget runs out part way, the pages already transcribed are kept, so starting again continues from there.
+- The second reads and the reviewer are reserved up front: the budget adds $0.08 for each scanned page's second read and the reviewer's estimate, and compile can't spend them. Every scanned page with money gets one second read, even where arithmetic proves every value, so a row the first read dropped is found.
 
 ### 5.9 Trace
 Every read stores its full trace: model calls (model, tokens, cost), tool calls and results (images by reference), check results, reviewer findings and resolver decisions. It is used to debug, to audit "why does the rulebook say this", and for the golden-set reports.

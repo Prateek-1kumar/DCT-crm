@@ -34,10 +34,13 @@ export function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
   return new Set(pages.flatMap((p) => amountsIn(p.layout)));
 }
 
+export const NOT_PRINTED = "nothing printed proves these cells: capture the printed subtotal/total rows.";
+
 /** A grid with none of these lines has nothing to add up: its cells are settled one by one, never accepted "as printed". */
 export const printsTotals = (grid: Grid) => !!grid.subtotal || !!grid.total || grid.grandTotalCents !== null || grid.rows.some((r) => r.printedRowTotalCents !== null);
 
-const onScan = (grid: Grid, docs: LoadedDoc[]) => docs.find((d) => d.name === grid.doc)?.pages.some((p) => p.kind === "scan" && grid.pages.includes(p.page)) ?? false;
+/** Whether any of a document's pages listed is a transcribed scan: one rule for grids and terms alike. */
+export const onScan = (docs: LoadedDoc[], doc: string, pages: number[]) => docs.find((d) => d.name === doc)?.pages.some((p) => p.kind === "scan" && pages.includes(p.page)) ?? false;
 
 export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   const shape = shapeProblems(grid);
@@ -48,7 +51,7 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   const covered = grid.rows.map((r) => r.cells.map(() => false));
   // On a scan a figure that slipped into a blank cell along a row or column keeps that line's total, so no sum pins a cell
   // there: a summed cell rests on the second read, whose different figure may stand when the sums then hold.
-  const scanned = onScan(grid, docs);
+  const scanned = onScan(docs, grid.doc, grid.pages);
   const loose = grid.rows.map((r) => r.cells.map(() => false));
   const coverRow = (i: number) => (scanned ? loose : covered)[i]!.fill(true);
   const coverColumn = (j: number) => (scanned ? loose : covered).forEach((r) => (r[j] = true));
@@ -107,7 +110,7 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
     if (covered[row]?.[col] !== undefined) covered[row]![col] = true;
   });
   if (!printsTotals(grid) && numericCells(grid).some(({ row, col }) => !covered[row]![col])) {
-    problems.push("nothing printed proves these cells: capture the printed subtotal/total rows.");
+    problems.push(NOT_PRINTED);
   }
   // a text page's amount stands for a cell only when the cell doesn't say it was read from a scan
   const printed = printedAmounts(grid, docs);
