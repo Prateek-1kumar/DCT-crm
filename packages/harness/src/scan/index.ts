@@ -60,16 +60,21 @@ async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Pr
   }
 }
 
-async function transcribePage(doc: LoadedDoc, page: Page, reader: Reader, budget: Budget): Promise<ScanPage | undefined> {
-  const render = (of: LoadedDoc) => pdfReader.render(of, page.page, { dpi: SCAN_DPI, maxPixels: MAX_SCAN_PIXELS });
-  const first = await transcribeWithin(reader, budget, await render(doc));
-  if (!first) return undefined;
-  const rotation = quarterTurn(first.rotation);
-  if (rotation === 0) return { page: page.page, version: scanVersion(reader), rotation, transcription: first };
+const MAX_READS = 3;
 
-  const turned = { ...doc, pages: doc.pages.map((p) => (p.page === page.page ? { ...p, rotation } : p)) };
-  const second = await transcribeWithin(reader, budget, await render(turned));
-  return second && { page: page.page, version: scanVersion(reader), rotation, transcription: second };
+async function transcribePage(doc: LoadedDoc, page: Page, reader: Reader, budget: Budget, onProgress?: (line: string) => void): Promise<ScanPage | undefined> {
+  const render = (of: LoadedDoc) => pdfReader.render(of, page.page, { dpi: SCAN_DPI, maxPixels: MAX_SCAN_PIXELS });
+  let rotation = 0;
+  let read = await transcribeWithin(reader, budget, await render(doc));
+  // each read reports the turn still needed on the picture it was given, so the page's turn is their sum
+  for (let reads = 1; read && quarterTurn(read.rotation) !== 0 && reads < MAX_READS; reads++) {
+    rotation = (rotation + quarterTurn(read.rotation)) % 360;
+    const turned = { ...doc, pages: doc.pages.map((p) => (p.page === page.page ? { ...p, rotation } : p)) };
+    read = await transcribeWithin(reader, budget, await render(turned));
+  }
+  if (!read) return undefined;
+  if (quarterTurn(read.rotation) !== 0) onProgress?.(`p.${page.page} of ${doc.name} may still be turned the wrong way`);
+  return { page: page.page, version: scanVersion(reader), rotation, transcription: read };
 }
 
 export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store: ScanStore; budget: Budget; onProgress?: (line: string) => void }): Promise<LoadedDoc[]> {
@@ -88,7 +93,7 @@ export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store:
     while (!outOfBudget && !failure && next < todo.length) {
       const job = todo[next++]!;
       try {
-        const scan = await transcribePage(job.doc, job.page, reader, budget);
+        const scan = await transcribePage(job.doc, job.page, reader, budget, opts.onProgress);
         if (!scan) {
           outOfBudget = true;
           return;

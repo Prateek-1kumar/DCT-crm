@@ -20,6 +20,7 @@ interface Element {
 }
 
 type Doubtful = { unsure: boolean; marks: Doubt[] };
+type Piece = Doubtful & { text: string };
 const doubtOf = ({ unsure, marks }: Doubtful): Doubt | undefined => marks[0] ?? (unsure ? "unsure" : undefined);
 
 const hide = (word: string) => (isAmount(word) ? word : word.replace(/[A-Za-z0-9]/g, "#"));
@@ -33,12 +34,17 @@ function place(text: string, column: number, doubt: Doubt | undefined, into: Ele
   }
 }
 
+/** A field that holds several values, each with its own doubt, places each one's words with its own. */
+function placeField(f: Piece & { parts?: Piece[] }, column: number, into: Element["words"], masked = false) {
+  for (const part of f.parts ?? [f]) place(part.text, column, doubtOf(part), into, masked);
+}
+
 const centreOf = (e: { top: number; bottom: number }) => (e.top + e.bottom) / 2;
 
 function elementsOf(t: Transcription, height: number): Element[] {
   const lines = t.lines.map((l) => {
     const words: Element["words"] = [];
-    place(l.text, 0, doubtOf(l), words);
+    placeField(l, 0, words);
     return { centre: centreOf(l), words };
   });
   const tables = t.tables.flatMap((table) => {
@@ -63,7 +69,7 @@ function elementsOf(t: Transcription, height: number): Element[] {
     for (const r of table.rows) {
       const words: Element["words"] = [];
       place(r.label, 0, undefined, words, bank[0]);
-      r.cells.forEach((c, i) => place(c.text, (i + 1) * slotWidth, doubtOf(c), words, bank[i + 1]));
+      r.cells.forEach((c, i) => placeField(c, (i + 1) * slotWidth, words, bank[i + 1]));
       out.push({ centre: centreOf(r), words });
     }
     return out;

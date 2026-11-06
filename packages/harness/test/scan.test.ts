@@ -208,6 +208,26 @@ describe("scanDocs", () => {
     expect(scanned!.pages[0]!.rotation).toBe(90);
   });
 
+  it("a page still reported turned after the second read is turned again and read a third time", async () => {
+    const doc = await imagePdf("upside.pdf", [[612, 792]]);
+    const { reader, sent } = fakeReader((call) => compact([270, 180, 0][call - 1]!));
+    const budget = budgetOf(3);
+    const progress: string[] = [];
+    const [scanned] = await scanDocs([doc], { reader, store: memoryStore(), budget, onProgress: (l) => progress.push(l) });
+
+    expect(sent).toHaveLength(3);
+    expect(sent.map((png) => sizeOf(png).width > sizeOf(png).height)).toEqual([false, true, true]);
+    expect(scanned!.pages[0]!.rotation).toBe(90);
+    expect(budget.spent).toBeCloseTo(0.3);
+    expect(progress.join("\n")).not.toContain("turned the wrong way");
+
+    const stuck = fakeReader(() => compact(90));
+    const [kept] = await scanDocs([doc], { reader: stuck.reader, store: memoryStore(), budget: budgetOf(3), onProgress: (l) => progress.push(l) });
+    expect(stuck.sent).toHaveLength(3);
+    expect(kept!.pages[0]!.rotation).toBe(180);
+    expect(progress).toContain("p.1 of upside.pdf may still be turned the wrong way");
+  });
+
   it("keeps finished pages when the budget runs out", async () => {
     const doc = await imagePdf("budget.pdf", [[612, 792], [612, 792], [612, 792]]);
     const { reader, sent } = fakeReader(() => compact());
@@ -308,6 +328,21 @@ describe("parseTranscription", () => {
         ],
       },
     ]);
+  });
+
+  it("a struck value with its handwritten replacement in one cell keeps both, each with its mark", () => {
+    const t = parse("T 0.3-0.4 | Fees\nH | Item | Fee | Total\nR 0.31-0.32 | Visit 1 | $900.00{x} $1,050.00{hw}{?} | $1,050.00");
+    const [fee, total] = t.tables[0]!.rows[0]!.cells;
+    expect(fee).toMatchObject({ text: "$900.00 $1,050.00", unsure: true, marks: ["struck_out", "handwritten"] });
+    expect(fee!.parts).toEqual([
+      { text: "$900.00", unsure: false, marks: ["struck_out"] },
+      { text: "$1,050.00", unsure: true, marks: ["handwritten"] },
+    ]);
+    expect(total).toEqual(cell("$1,050.00"));
+
+    const words = toWords(t);
+    expect(words.filter((w) => w.text.startsWith("$")).map((w) => [w.text, w.doubt])).toEqual([["$900.00", "struck_out"], ["$1,050.00", "handwritten"], ["$1,050.00", undefined]]);
+    expect(groupLines(words).map(rawLine)).toContain("Visit 1 $900.00 $1,050.00 $1,050.00");
   });
 
   it("a line the parser can't read is kept as an unsure line at the previous element's position", () => {

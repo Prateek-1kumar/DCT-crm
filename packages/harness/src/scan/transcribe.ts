@@ -4,8 +4,10 @@ import type { Answer, Part, Reader } from "../models";
 
 /** A scanned page drawn as an image, read by a vision model into lines and tables. Vertical positions are fractions of the page. */
 const Mark = z.enum(["handwritten", "struck_out", "initialed"]);
-const Cell = z.object({ text: z.string(), unsure: z.boolean(), marks: z.array(Mark) });
-const Line = z.object({ text: z.string(), top: z.number(), bottom: z.number(), unsure: z.boolean(), marks: z.array(Mark) });
+const Piece = z.object({ text: z.string(), unsure: z.boolean(), marks: z.array(Mark) });
+// `parts` is set when one field holds several values with their own doubts, such as a struck value and its handwritten replacement; text, unsure and marks then sum them up
+const Cell = Piece.extend({ parts: z.array(Piece).optional() });
+const Line = Cell.extend({ top: z.number(), bottom: z.number() });
 const Row = z.object({ label: z.string(), top: z.number(), bottom: z.number(), cells: z.array(Cell) });
 const Table = z.object({ title: z.string(), top: z.number(), bottom: z.number(), columns: z.array(z.string()), rows: z.array(Row) });
 
@@ -26,7 +28,7 @@ const SYSTEM = `You transcribe one scanned page of a clinical-trial contract exa
 You get the whole page, then zoomed strips of it from top to bottom (they overlap a little). Read small print from the strips; use the whole page for layout.
 
 Answer with two fields.
-- rotation: degrees clockwise the page must be turned to read normally (0, 90, 180 or 270). If it is not 0, still transcribe what you can.
+- rotation: how many degrees the page image must be turned clockwise so its text reads left to right, top to bottom (0, 90, 180 or 270). Text running upwards needs 90; text running downwards needs 270; upside-down text needs 180. If it is not 0, still transcribe what you can.
 - text: the page as one element per line, in reading order, in this form:
 
 L 0.120-0.138 | a line of text
@@ -40,28 +42,41 @@ Rules:
 - Positions are where the element sits as fractions of the page height, top-bottom, with 3 decimals (0.000 = top edge, 1.000 = bottom edge).
 - Fields are separated by "|". Write "/" for a "|" printed on the page.
 - Copy characters exactly: amounts with their $ signs, commas, periods and brackets; never compute, round or correct a value.
-- Doubts go as suffixes on the field or line they apply to, only where they occur: {?} when you can't read every character with certainty (faint, blurred, cut off). Be honest: an unsure flag costs a second look, a wrong value costs money. {hw} writing by hand, {x} printed text crossed out, {in} initials beside a change. Combine them when needed, e.g. $900.00{hw}{?}. For a struck-out value, transcribe the struck value and mark it {x}; a handwritten replacement is a separate field or line marked {hw}.
+- Doubts go as suffixes on the field or line they apply to, only where they occur: {?} when you can't read every character with certainty (faint, blurred, cut off). Be honest: an unsure flag costs a second look, a wrong value costs money. {hw} writing by hand, {x} printed text crossed out, {in} initials beside a change. Combine them when needed, e.g. $900.00{hw}{?}. For a struck-out value, transcribe the struck value and mark it {x}; inside a table, put the handwritten replacement in the same field after the struck value, e.g. $900.00{x} $1,050.00{hw}; outside a table, put it on its own line marked {hw}.
 - Write only these lines: no commentary, no code fences.`;
 
 const MARK_TAGS = { hw: "handwritten", x: "struck_out", in: "initialed" } as const;
-const DOUBTS = /(?:\{(?:\?|hw|x|in)\})+$/;
+const DOUBTS = /(?:\{(?:\?|hw|x|in)\})+/g;
 const ELEMENT = /^([LTRH])(?=[\s\d.|])([^|]*)\|(.*)$/;
 const SPAN = /^(\d*\.?\d+)\s*[-\u2013]\s*(\d*\.?\d+)$/;
 
 type Span = [top: number, bottom: number];
-type Field = { text: string; unsure: boolean; marks: Mark[] };
+type Piece = z.infer<typeof Piece>;
+type Field = z.infer<typeof Cell>;
 type Item =
   | ({ kind: "L"; span?: Span } & Field)
   | { kind: "T"; span?: Span; title: string }
   | { kind: "H"; columns: string[] }
   | { kind: "R"; span?: Span; label: string; cells: Field[] };
 
-function field(raw: string): Field {
-  const trimmed = raw.trim();
-  const tail = DOUBTS.exec(trimmed)?.[0] ?? "";
+function piece(text: string, tail: string): Piece {
   const tags = [...tail.matchAll(/\{(.+?)\}/g)].map((m) => m[1]!);
   const marks = tags.flatMap((tag) => (tag in MARK_TAGS ? [MARK_TAGS[tag as keyof typeof MARK_TAGS]] : []));
-  return { text: trimmed.slice(0, trimmed.length - tail.length).trim(), unsure: tags.includes("?"), marks: [...new Set(marks)] };
+  return { text: text.trim(), unsure: tags.includes("?"), marks: [...new Set(marks)] };
+}
+
+function field(raw: string): Field {
+  const trimmed = raw.trim();
+  const pieces: Piece[] = [];
+  let from = 0;
+  for (const match of trimmed.matchAll(DOUBTS)) {
+    pieces.push(piece(trimmed.slice(from, match.index), match[0]));
+    from = match.index + match[0].length;
+  }
+  pieces.push(piece(trimmed.slice(from), ""));
+  const kept = pieces.filter((p) => p.text);
+  if (kept.length < 2) return kept[0] ?? { text: "", unsure: pieces.some((p) => p.unsure), marks: [...new Set(pieces.flatMap((p) => p.marks))] };
+  return { text: kept.map((p) => p.text).join(" "), unsure: kept.some((p) => p.unsure), marks: [...new Set(kept.flatMap((p) => p.marks))], parts: kept };
 }
 
 function spanOf(text: string): Span | undefined {
@@ -98,7 +113,7 @@ export function parseTranscription({ rotation, text }: Compact): Transcription {
 
   for (const item of items) {
     if ("span" in item) at = item.span ??= at;
-    if (item.kind === "L") lines.push({ text: item.text, top: at[0], bottom: at[1], unsure: item.unsure, marks: item.marks });
+    if (item.kind === "L") lines.push({ text: item.text, top: at[0], bottom: at[1], unsure: item.unsure, marks: item.marks, ...(item.parts && { parts: item.parts }) });
     else if (item.kind === "T") open(item.title);
     else if (item.kind === "H") {
       if (!table || table.columns.length || table.rows.length) open("");
