@@ -1,4 +1,4 @@
-import { SCAN_PAGE_USD, untranscribed } from "@dct/harness";
+import { SCAN_PAGE_USD, VERIFY_PAGE_USD, untranscribed } from "@dct/harness";
 import { asc, eq, max } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -31,8 +31,10 @@ export async function readsRoutes(api: FastifyInstance, { db, boss, log, models 
       .orderBy(asc(studyDocuments.addedAt), asc(documents.name));
     if (!docs.length) throw new HttpError(409, "Upload the contract first.");
     const { openai } = models();
-    const scans = await untranscribed(await loadDocs(db, docs.map((d) => d.id), openai), scanStore, openai);
-    const budgetUsd = Math.min(Math.round((config.readBudgetUsd + SCAN_PAGE_USD * scans) * 100) / 100, config.readBudgetMaxUsd);
+    const loaded = await loadDocs(db, docs.map((d) => d.id), openai);
+    const scans = await untranscribed(loaded, scanStore, openai);
+    const scanned = loaded.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0);
+    const budgetUsd = Math.min(Math.round((config.readBudgetUsd + SCAN_PAGE_USD * scans + VERIFY_PAGE_USD * scanned) * 100) / 100, config.readBudgetMaxUsd);
 
     const started = await db
       .transaction(async (tx) => {

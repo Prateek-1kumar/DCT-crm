@@ -1,6 +1,6 @@
 import { HttpError } from "../src/lib/http.js";
 import type { ModelClient, Reader } from "@dct/harness";
-import { pdfReader, scanVersion } from "@dct/harness";
+import { NOT_REVIEWED, pdfReader, scanVersion } from "@dct/harness";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { eq } from "drizzle-orm";
 import { mkdtemp } from "node:fs/promises";
@@ -49,8 +49,12 @@ const reply = (...content: Block[]) =>
 const study = { protocol: "P-1", sponsor: "Acme Pharma", siteEntity: "Site LLC", documents: [{ doc: "CTA.pdf", role: "cta" }] };
 const startup = { id: "t1", category: "site_fee", name: "Startup fee", amount: "$500.00", unit: "one time", billing: "invoice", source: { doc: "CTA.pdf", page: 1, quote: "Startup fee of $500.00 is payable on signature" } };
 const goodScript = (st: object = study, term: object = startup) => [reply(call("put_study", { study: st })), reply(call("put_terms", { terms: [term] })), reply(call("finish"))];
-// a scanned page's amount cites the line it is printed in, the fake transcription's first
-const scanScript = () => goodScript(study, { ...startup, source: { ...startup.source, cell: "p1.l1" } });
+// a scanned page's amount cites the line it is printed in, the fake transcription's first; every page reads the same, so
+// page 2's copy of the fee is set aside: a match on another page doesn't account for it
+const scanScript = () => {
+  const [study_, terms, finish] = goodScript(study, { ...startup, source: { ...startup.source, cell: "p1.l1" } });
+  return [study_!, terms!, reply(call("put_accounted", { items: [{ doc: "CTA.pdf", page: 2, cell: "p2.l1", reason: "the same fee, printed again" }] })), finish!];
+};
 
 /** A compile model that plays the script, one reply per call; a step can be a function (wait, or fail) instead. */
 function scripted(script: (ModelMessage | (() => Promise<ModelMessage>))[]): ModelClient {
@@ -188,6 +192,36 @@ describe("starting a read", () => {
     expect((await versionOf(second.versionId)).number).toBe(2);
   });
 
+  it("a read whose reviewer couldn't run can't be approved; reading it again pays only for what's missing", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    const models = fakes(scanScript());
+    const openai: Reader = {
+      ...models.openai,
+      ask: (async (req: Parameters<Reader["ask"]>[0]) => (req.name === "review" ? Promise.reject(new Error("the provider fell over")) : models.openai.ask(req))) as Reader["ask"],
+    };
+    use({ ...models, openai });
+    const first = (await post(built, s.id)).json();
+    expect((await finished(built, first.readId)).status).toBe("done");
+    const draft = await versionOf(first.versionId);
+    expect(draft.status).toBe("draft");
+    const open = draft.rulebook!.questions.filter((q) => q.state === "open");
+    expect(open.map((q) => [q.question, q.blocking, q.options.length])).toContainEqual([NOT_REVIEWED, true, 0]);
+
+    const answer = (questionId: string) => built.app.inject({ method: "POST", url: `/api/v1/versions/${first.versionId}/questions/${encodeURIComponent(questionId)}/answer`, payload: { option: 0, by: "Ben" } });
+    for (const q of open.filter((q) => q.id !== "review:not-run")) expect((await answer(q.id)).statusCode).toBe(200);
+    expect((await answer("review:not-run")).statusCode).toBe(400);
+    const refused = await built.app.inject({ method: "POST", url: `/api/v1/versions/${first.versionId}/approve`, payload: { by: "Ben" } });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().message).toContain(NOT_REVIEWED);
+
+    use(fakes(scanScript()));
+    transcriptions = 0;
+    const again = (await post(built, s.id)).json();
+    expect((await finished(built, again.readId)).status).toBe("done");
+    expect(transcriptions).toBe(0);
+    expect((await versionOf(again.versionId)).rulebook!.questions.map((q) => q.id)).not.toContain("review:not-run");
+  });
+
   it("refuses a study that doesn't exist, has no contract, or a missing name", async () => {
     use(fakes());
     expect((await post(built, "5b4c3a2d-1111-4222-8333-444455556666")).json().message).toBe("There is no such study.");
@@ -199,13 +233,13 @@ describe("starting a read", () => {
     expect((await post(built, s.id, { by: " " })).json().message).toMatch(/pick your name/);
   });
 
-  it("starting a read on a 2-page scan records budget 3 + 0.80", async () => {
+  it("starting a read on a 2-page scan records budget 3 + 0.80 to read them + 0.16 for their closer reads", async () => {
     const s = await seedStudy({ scanPages: 2 });
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3.8);
+    expect((await get(built, readId)).budgetUsd).toBe(3.96);
     const entries = await built.ctx.db.select().from(auditLog).where(eq(auditLog.entityId, readId));
-    expect(entries).toMatchObject([{ detail: { budgetUsd: 3.8 } }]);
+    expect(entries).toMatchObject([{ detail: { budgetUsd: 3.96 } }]);
     await finished(built, readId);
   });
 
@@ -237,14 +271,14 @@ describe("starting a read", () => {
     expect(detail.documents[0]).toMatchObject({ scannedPages: [], scansRead: [1, 2] });
   });
 
-  it("a second read of the same file adds nothing to the budget and transcribes nothing again", async () => {
+  it("a second read of the same file adds only the closer reads to the budget and transcribes nothing again", async () => {
     const s = await seedStudy({ scanPages: 2 });
     use(fakes(scanScript()));
     expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");
     use(fakes(scanScript()));
     transcriptions = 0;
     const again = (await post(built, s.id)).json();
-    expect((await get(built, again.readId)).budgetUsd).toBe(3);
+    expect((await get(built, again.readId)).budgetUsd).toBe(3.16);
     expect((await finished(built, again.readId)).status).toBe("done");
     expect(transcriptions).toBe(0);
   });
@@ -257,7 +291,7 @@ describe("starting a read", () => {
     use(fakes(scanScript()));
     transcriptions = 0;
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3.4);
+    expect((await get(built, readId)).budgetUsd).toBe(3.56);
     expect((await finished(built, readId)).status).toBe("done");
     expect(transcriptions).toBe(1);
     expect((await scanStore.get(sha256)).find((p) => p.page === 1)!.version).toBe(scanVersion(fakes().openai));
@@ -311,7 +345,7 @@ describe("starting a read", () => {
     await scanStore.put((await contractOf(s.id)).sha256, { page: 1, version: scanVersion(fakes().openai), rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3.4);
+    expect((await get(built, readId)).budgetUsd).toBe(3.56);
     await finished(built, readId);
   });
 
@@ -439,7 +473,7 @@ describe("a read that fails", () => {
     use(fakes([big as unknown as ModelMessage]));
     const read = await finished(built, (await post(built, s.id)).json().readId);
     expect(read.status).toBe("failed");
-    expect(read.error).toBe("The read reached its spending limit of $3.80 before it finished, so the rulebook wasn't kept. The scanned pages it read are saved, so the next read costs less. Start it again to try once more.");
+    expect(read.error).toBe("The read reached its spending limit of $3.96 before it finished, so the rulebook wasn't kept. The scanned pages it read are saved, so the next read costs less. Start it again to try once more.");
     expect(await scanStore.get((await contractOf(s.id)).sha256)).toHaveLength(2);
   });
 

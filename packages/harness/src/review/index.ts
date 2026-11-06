@@ -17,17 +17,26 @@ export interface ReviewResult {
   error?: string;
 }
 
-async function pagesOf(doc: LoadedDoc): Promise<Part[]> {
+async function pagesOf(doc: LoadedDoc, render = (n: number) => pdfReader.render(doc, n)): Promise<Part[]> {
   const parts: Part[] = [];
   for (const page of doc.pages) {
     const label = `=== ${doc.name} p${page.page} ===`;
     if (page.kind === "text") parts.push({ type: "text", text: `${label}\n${page.layout}` });
     else {
       const heading = page.kind === "scan" ? `${label} (scan: the text below was transcribed from the image, which is attached)\n${page.layout}` : `${label} (scan, shown as an image)`;
-      parts.push({ type: "text", text: heading }, { type: "image", png: await pdfReader.render(doc, page.page) });
+      parts.push({ type: "text", text: heading }, { type: "image", png: await render(page.page) });
     }
   }
   return parts;
+}
+
+/**
+ * What the review of these documents is expected to cost, before the rulebook is written: that is taken to be as long as
+ * the pages' text, and an estimate counts an image without looking at it.
+ */
+export async function reviewUsd(reader: Reader, docs: LoadedDoc[]): Promise<number> {
+  const pages = (await Promise.all(docs.map((d) => pagesOf(d, async () => Buffer.alloc(0))))).flat();
+  return estimateUsd(reader, [...pages, ...pages.filter((p) => p.type === "text")], OUTPUT_TOKENS);
 }
 
 export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { reader: Reader; budget: Budget }): Promise<ReviewResult> {
@@ -40,7 +49,7 @@ export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { read
   const parts: Part[] = [
     { type: "text", text: `Rulebook:\n${JSON.stringify({ study, terms, grids, accounted })}` },
     { type: "text", text: `Questions already open:\n${JSON.stringify(open)}` },
-    ...(await Promise.all(moneyDocs.map(pagesOf))).flat(),
+    ...(await Promise.all(moneyDocs.map((d) => pagesOf(d)))).flat(),
   ];
 
   if (budget.spent + estimateUsd(reader, parts, OUTPUT_TOKENS) > budget.limit) {

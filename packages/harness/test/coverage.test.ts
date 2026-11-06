@@ -7,6 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
 import { coverage, findQuote, quoteBoxes } from "../src/checks/coverage";
 import { pdfReader } from "../src/pdf";
+import { withScans } from "../src/scan";
+import { parseTranscription } from "../src/scan/transcribe";
 import type { LoadedDoc, Word } from "../src/types";
 import { wordsOf } from "./words";
 
@@ -266,5 +268,103 @@ describe("coverage on a scanned page", () => {
     expect(coverage(rb, [scan]).pages[0]!.clauses).toEqual([{ termId: "fee", boxes: [[0, expect.closeTo(0, 3), 1, expect.closeTo(0.008, 3)]] }]);
     expect(quoteBoxes(scan.pages[0]!, "and S9.99")).toEqual([[0, expect.any(Number), 1, expect.any(Number)]]);
     expect(quoteBoxes({ ...scan.pages[0]!, kind: "text" }, "and S9.99")[0]![0]).toBeGreaterThan(0);
+  });
+});
+
+describe("coverage on a scanned page, by cell", () => {
+  const imageDoc = (pages: number): LoadedDoc => ({
+    name: "s.pdf", path: "/x/s.pdf", sha256: "0",
+    pages: Array.from({ length: pages }, (_, i) => ({ page: i + 1, kind: "image" as const, layout: "", raw: "", words: [], maskBoxes: [], firstLine: "", rotation: 0 })),
+  });
+  const scanned = (...texts: string[]): LoadedDoc =>
+    withScans(imageDoc(texts.length), texts.map((text, i) => ({ page: i + 1, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text }) })));
+  const BUDGET = [
+    "L 0.050-0.060 | Exhibit A",
+    "L 0.080-0.090 | Startup fee $2,000.00 due on signing and $300.00 at close-out",
+    "T 0.100-0.300 | Budget",
+    "H | Procedure | Fee | Visits",
+    "R 0.120-0.130 | Physical exam | 1,500 | 2",
+    "R 0.140-0.150 | ECG | $150.00 | 1",
+  ].join("\n");
+  const source = (cell?: string) => ({ doc: "s.pdf", page: 1, quote: "Physical exam 1,500", ...(cell && { cell }) });
+  const amountsOf = (rb: Rulebook, doc = scanned(BUDGET), page = 1) => coverage(rb, [doc]).pages[page - 1]!.amounts;
+  const at = (rb: Rulebook, cents: number, doc?: LoadedDoc, page?: number) => amountsOf(rb, doc, page).find((a) => a.cents === cents);
+
+  it("a bare 1,500 in a money column on a scan page must be accounted for", () => {
+    expect(at(rulebook(), 150000)).toMatchObject({ status: "missing", text: "1,500" });
+    expect(checks.unaccounted(rulebook(), [scanned(BUDGET)]).map((u) => u.amountCents)).toContain(150000);
+    const cited = rulebook({ terms: [term("exam", { amountCents: 150000, source: source("p1.t1.r1.c1") })] });
+    expect(at(cited, 150000)).toMatchObject({ status: "captured", ref: { target: "term", id: "exam" } });
+  });
+
+  it("a count column isn't money, and every amount-shaped token of a line counts", () => {
+    expect(amountsOf(rulebook()).map((a) => a.cents)).toEqual([200000, 30000, 150000, 15000]);
+  });
+
+  it("a column is money by its heading, the table's title, or any amount in it", () => {
+    const doc = (title: string, heading: string, other: string) => scanned(`T 0.1-0.3 | ${title}\nH | Item | ${heading}\nR 0.12-0.13 | A | 1,500\nR 0.14-0.15 | B | ${other}`);
+    const bare = (title: string, heading: string, other = "7") => amountsOf(rulebook(), doc(title, heading, other)).map((a) => a.cents);
+    expect(bare("Schedule", "Visit 1")).toEqual([]);
+    expect(bare("Schedule", "Cost")).toEqual([150000, 700]);
+    expect(bare("Payment schedule", "Visit 1")).toEqual([150000, 700]);
+    expect(bare("Schedule", "Visit 1", "$7.00")).toEqual([150000, 700]);
+  });
+
+  it("a quantity column on a scan page isn't counted as money", () => {
+    const doc = scanned([
+      "T 0.1-0.3 | Payment schedule",
+      "H | Procedure | Fee | Quantity | Total Quantity | Visits | Overhead % | Units | Unit cost",
+      "R 0.12-0.13 | Exam | $100.00 | 8.00 | 16.00 | 2 | 25.00 | 3.00 | 40.00",
+      "R 0.14-0.15 | ECG | 1,500 | $5.00 | | | | | ",
+    ].join("\n"));
+    expect(amountsOf(rulebook(), doc).map((a) => a.cents)).toEqual([10000, 4000, 150000, 500]);
+  });
+
+  it("a matching amount on another page doesn't account for this one", () => {
+    const doc = scanned(BUDGET, BUDGET);
+    const rb = rulebook({
+      terms: [term("exam", { amountCents: 150000, source: source("p1.t1.r1.c1") })],
+      accounted: [{ doc: "s.pdf", page: 1, amountCents: 15000, reason: "insurance" }],
+    });
+    expect(at(rb, 150000, doc, 1)!.status).toBe("captured");
+    expect(at(rb, 150000, doc, 2)!.status).toBe("missing");
+    expect(at(rb, 15000, doc, 1)).toMatchObject({ status: "set_aside", reason: "insurance" });
+    expect(at(rb, 15000, doc, 2)!.status).toBe("missing");
+  });
+
+  it("an uncited value that matches a printed amount doesn't capture it", () => {
+    expect(at(rulebook({ terms: [term("exam", { amountCents: 150000, source: source() })] }), 150000)!.status).toBe("missing");
+  });
+
+  it("a line's citation captures only the amount it cites; the other one needs its own", () => {
+    const rb = rulebook({ terms: [term("startup", { amountCents: 200000, source: { doc: "s.pdf", page: 1, quote: "Startup fee", cell: "p1.l2" } })] });
+    expect(at(rb, 200000)!.status).toBe("captured");
+    expect(at(rb, 30000)!.status).toBe("missing");
+  });
+
+  it("a cell can be set aside by its id, with the reason", () => {
+    const rb = rulebook({ accounted: [{ doc: "s.pdf", page: 1, cell: "p1.t1.r2.c1", reason: "corrected by a person" }] });
+    expect(at(rb, 15000)).toMatchObject({ status: "set_aside", reason: "corrected by a person" });
+    expect(at(rb, 150000)!.status).toBe("missing");
+  });
+
+  it("grid citations capture their cells, and a person's term is decided", () => {
+    const g = grid({ doc: "s.pdf", pages: [1], visits: ["V1"], rows: [{ name: "ECG", code: null, unitCostCents: null, cells: [15000], printedRowTotalCents: null }], cellIds: { "rows.0.cells.0": "p1.t1.r2.c1" } });
+    const rb = rulebook({ grids: [g], terms: [term("exam", { amountCents: 150000, evidence: "person", source: source("p1.t1.r1.c1") })] });
+    expect(at(rb, 15000)).toMatchObject({ status: "captured", ref: { target: "grid", id: "g1", row: 0, col: 0 } });
+    expect(at(rb, 150000)).toMatchObject({ status: "decided", ref: { target: "term", id: "exam" } });
+  });
+
+  it("highlights the cited row as a padded, full-width band, and a term without a citation by its quote's lines", () => {
+    const doc = scanned(BUDGET);
+    const page = doc.pages[0]!;
+    const row = page.words.find((w) => w.text === "ECG")!;
+    const rb = rulebook({ terms: [term("ecg", { amountCents: 15000, source: { doc: "s.pdf", page: 1, quote: "ECG $150.00", cell: "p1.t1.r2.c1" } }), term("startup", { source: { doc: "s.pdf", page: 1, quote: "Startup fee" } })] });
+    const out = coverage(rb, [doc]).pages[0]!;
+    const band = out.amounts.find((a) => a.cents === 15000)!.box;
+    expect([band[0], band[2]]).toEqual([0, 1]);
+    expect(band[1]).toBeLessThan(row.y0);
+    expect(band[3]).toBeGreaterThan(row.y1);
+    expect(out.clauses).toEqual([{ termId: "ecg", boxes: [band] }, { termId: "startup", boxes: quoteBoxes(page, "Startup fee") }]);
   });
 });

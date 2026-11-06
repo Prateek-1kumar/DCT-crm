@@ -14,6 +14,8 @@ const NUDGE = 0.55;
 const ROOM = 1.1;
 
 interface Element {
+  /** The id of the line or row it shows, without the page: "l2", "t1" (a title), "t1.h" (headings), "t1.r5". */
+  key: string;
   centre: number;
   /** Words with the character column each starts at. */
   words: { text: string; column: number; doubt?: Doubt }[];
@@ -42,12 +44,13 @@ function placeField(f: Piece & { parts?: Piece[] }, column: number, into: Elemen
 const centreOf = (e: { top: number; bottom: number }) => (e.top + e.bottom) / 2;
 
 function elementsOf(t: Transcription, height: number): Element[] {
-  const lines = t.lines.map((l) => {
+  const lines = t.lines.map((l, i) => {
     const words: Element["words"] = [];
     placeField(l, 0, words);
-    return { centre: centreOf(l), words };
+    return { key: `l${i + 1}`, centre: centreOf(l), words };
   });
-  const tables = t.tables.flatMap((table) => {
+  const tables = t.tables.flatMap((table, i) => {
+    const key = `t${i + 1}`;
     const slots = Math.max(table.columns.length, ...table.rows.map((r) => r.cells.length + 1));
     const texts = [...table.columns, ...table.rows.flatMap((r) => [r.label, ...r.cells.map((c) => c.text)])];
     const slotWidth = Math.min(Math.max(0, ...texts.map((s) => s.length)) + SLOT_GAP, Math.floor(PAGE_CHARS / slots));
@@ -59,19 +62,19 @@ function elementsOf(t: Transcription, height: number): Element[] {
     if (table.title.trim()) {
       const words: Element["words"] = [];
       place(table.title, 0, undefined, words);
-      out.push({ centre: Math.min(table.top, headerCentre - height), words });
+      out.push({ key, centre: Math.min(table.top, headerCentre - height), words });
     }
     if (table.rows.length) {
       const words: Element["words"] = [];
       table.columns.forEach((c, i) => place(c, i * slotWidth, undefined, words));
-      out.push({ centre: headerCentre, words });
+      out.push({ key: `${key}.h`, centre: headerCentre, words });
     }
-    for (const r of table.rows) {
+    table.rows.forEach((r, j) => {
       const words: Element["words"] = [];
       place(r.label, 0, undefined, words, bank[0]);
-      r.cells.forEach((c, i) => placeField(c, (i + 1) * slotWidth, words, bank[i + 1]));
-      out.push({ centre: centreOf(r), words });
-    }
+      r.cells.forEach((c, k) => placeField(c, (k + 1) * slotWidth, words, bank[k + 1]));
+      out.push({ key: `${key}.r${j + 1}`, centre: centreOf(r), words });
+    });
     return out;
   });
   return [...lines, ...tables];
@@ -84,7 +87,15 @@ function elementsOf(t: Transcription, height: number): Element[] {
  * close together stay apart. Only an element that would land on or too near the one before it is moved down, by just
  * enough to stay its own line, so a dense table's rows don't drift down the page.
  */
-export function toWords(t: Transcription): Word[] {
+export const toWords = (t: Transcription): Word[] =>
+  placed(t).flatMap(({ words, y0, y1 }) =>
+    words.map((w) => ({ text: w.text, x0: LEFT + w.column * CHAR, x1: LEFT + (w.column + w.text.length) * CHAR, y0, y1, ...(w.doubt && { doubt: w.doubt }) })),
+  );
+
+/** Where toWords puts each line and row, top and bottom, by its key ("l2", "t1.r5"): for display only. */
+export const bandsOf = (t: Transcription) => new Map(placed(t).map((e): [string, [number, number]] => [e.key, [e.y0, e.y1]]));
+
+function placed(t: Transcription): (Element & { y0: number; y1: number })[] {
   const reported = [...t.lines, ...t.tables.flatMap((table) => table.rows)];
   const centres = reported.map(centreOf).sort((a, b) => a - b);
   const gaps = centres.slice(1).map((c, i) => c - centres[i]!).filter((g) => g > SAME_CENTRE);
@@ -92,16 +103,9 @@ export function toWords(t: Transcription): Word[] {
   let previous = -Infinity;
   return elementsOf(t, height)
     .sort((a, b) => a.centre - b.centre)
-    .flatMap((e) => {
+    .map((e) => {
       const centre = Math.min(Math.max(e.centre, height / 2, previous + NUDGE * height), 1 - height / 2);
       previous = centre;
-      return e.words.map((w) => ({
-        text: w.text,
-        x0: LEFT + w.column * CHAR,
-        x1: LEFT + (w.column + w.text.length) * CHAR,
-        y0: centre - height / 2,
-        y1: centre + height / 2,
-        ...(w.doubt && { doubt: w.doubt }),
-      }));
+      return { ...e, y0: centre - height / 2, y1: centre + height / 2 };
     });
 }

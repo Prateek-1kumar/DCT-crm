@@ -1,4 +1,4 @@
-import { Rulebook, Term, type Patch } from "./rulebook";
+import { Rulebook, Term, type Accounted, type Patch } from "./rulebook";
 
 type Grid = Rulebook["grids"][number];
 
@@ -119,4 +119,23 @@ export function citationPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
     }
   }
   return dropped;
+}
+
+export const CORRECTED = "corrected by a person";
+
+/**
+ * The cells the given citationPatches drop, set aside: each still prints the amount a person's answer replaced, which
+ * would otherwise count as printed money nobody captured and block approval for good.
+ */
+export function correctedCells(rulebook: Rulebook, dropped: Patch[]): Accounted[] {
+  return dropped.flatMap(({ target, id, set }) =>
+    Object.keys(set).flatMap((key) => {
+      const term = target === "term" ? rulebook.terms.find((t) => t.id === id) : undefined;
+      const grid = target === "grid" ? rulebook.grids.find((g) => g.id === id) : undefined;
+      const cell = term ? { [SOURCE_CELL]: term.source.cell, [SOURCE_CAP_CELL]: term.source.capCell }[key] : key.startsWith(CITE) ? grid?.cellIds?.[key.slice(CITE.length)] : undefined;
+      const doc = term?.source.doc ?? grid?.doc;
+      const page = Number(/^p(\d+)\./.exec(cell ?? "")?.[1]);
+      return cell && doc && page > 0 ? [{ doc, page, cell, reason: CORRECTED }] : [];
+    }),
+  );
 }

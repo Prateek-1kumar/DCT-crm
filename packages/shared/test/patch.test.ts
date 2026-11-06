@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, cellProofPatches, citationPatches, isLockedField, type Patch, type Rulebook, type Term } from "../src/index.js";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, isLockedField, type Patch, type Rulebook, type Term } from "../src/index.js";
 
 const term: Term = {
   id: "t1", category: "site_fee", name: "Startup fee", amountCents: 100000, unit: null, billing: "auto_paid", trigger: null, cap: null,
@@ -132,6 +132,22 @@ describe("a scanned value's citation", () => {
     expect(citationPatches(cited, [gridPatch({ grandTotalCents: 9, "cellIds.grandTotalCents": "p1.t1.r4.c1" })])).toEqual([]);
     const next = applyPatches(cited, [gridPatch({ "rows.0.cells.1": 250 }), ...citationPatches(cited, [gridPatch({ "rows.0.cells.1": 250 })])]);
     expect(next.grids[0]!.cellIds).toEqual({ "rows.0.cells.1": null, "subtotal.1": "p1.t1.r2.c2", grandTotalCents: "p1.t1.r3.c1" });
+  });
+
+  it("that a person's answer drops sets aside the cell it pointed to, which prints the amount the person corrected", () => {
+    const cited: Rulebook = {
+      ...rulebook,
+      terms: [{ ...term, source: { ...term.source, cell: "p1.t1.r1.c1", capCell: "p3.l2" }, cap: { kind: "amount", value: 500000, period: null, text: "" } }],
+      grids: [{ ...rulebook.grids[0]!, cellIds: { "rows.0.cells.1": "p2.t1.r1.c2", "subtotal.1": "p2.t1.r2.c2" } }],
+    };
+    const dropped = citationPatches(cited, [termPatch("t1", { amountCents: 1, cap: { kind: "amount", value: 1, period: null, text: "" } }), gridPatch({ "rows.0.cells.1": 250 })]);
+    expect(correctedCells(cited, dropped)).toEqual([
+      { doc: "A.pdf", page: 1, cell: "p1.t1.r1.c1", reason: "corrected by a person" },
+      { doc: "A.pdf", page: 3, cell: "p3.l2", reason: "corrected by a person" },
+      { doc: "A.pdf", page: 2, cell: "p2.t1.r1.c2", reason: "corrected by a person" },
+    ]);
+    expect(applyPatches(cited, dropped).accounted).toEqual([]);
+    expect(correctedCells(cited, [])).toEqual([]);
   });
 
   it("of a grid value must be an id", () => {

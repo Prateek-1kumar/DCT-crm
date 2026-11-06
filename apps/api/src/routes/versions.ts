@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { applyPatches, cellProofPatches, citationPatches, type Question, type Rulebook } from "@dct/shared";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Question, type Rulebook } from "@dct/shared";
 import { asPrintedQuestion, checks, coverage } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -100,15 +100,17 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       if (!chosen) throw new HttpError(400, `This question has ${plural(question.options.length, "option")}: pick one of them.`);
 
       let patched: Rulebook;
+      const dropped = citationPatches(rulebook, chosen.patches);
       try {
         // worked out now, from the grid as it is, so answers to two questions about one grid add to each other's cells
-        patched = applyPatches(rulebook, [...chosen.patches, ...cellProofPatches(rulebook, chosen.patches), ...citationPatches(rulebook, chosen.patches)]);
+        patched = applyPatches(rulebook, [...chosen.patches, ...cellProofPatches(rulebook, chosen.patches), ...dropped]);
       } catch (err) {
         throw new HttpError(409, (err as Error).message);
       }
       const touched = decided(chosen);
       const next: Rulebook = {
         ...patched,
+        accounted: [...patched.accounted, ...correctedCells(rulebook, dropped)],
         // new figures have to be checked again: only the person's own "use them as printed" keeps an acceptance
         grids: patched.grids.map((g) => (g.acceptedAsPrinted && !setsAcceptance(chosen, g.id) && !isDeepStrictEqual(figuresOf(g), figuresOf(rulebook.grids.find((o) => o.id === g.id)!)) ? { ...g, acceptedAsPrinted: false } : g)),
         terms: patched.terms.map((t) => (touched.has(t.id) ? { ...t, evidence: "person" } : t)),

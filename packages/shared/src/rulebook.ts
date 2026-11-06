@@ -107,9 +107,12 @@ export const Grid = z.object({
 });
 export type Grid = z.infer<typeof Grid>;
 
-/** A dollar amount (or whole pages) deliberately not a rulebook value, with the reason (superseded budget, insurance limit, citation). */
+/**
+ * A dollar amount (or whole pages) deliberately not a rulebook value, with the reason (superseded budget, insurance limit,
+ * citation). On a scanned page it may name the cell or line instead (`cell`, with its page), as a person's correction does.
+ */
 export const Accounted = z
-  .object({ doc: text, page: z.number().int().positive().optional(), pages: z.array(z.number().int().positive()).optional(), amountCents: cents.optional(), reason: text })
+  .object({ doc: text, page: z.number().int().positive().optional(), pages: z.array(z.number().int().positive()).optional(), amountCents: cents.optional(), cell: z.string().optional(), reason: text })
   .refine((a) => (a.page !== undefined) !== (a.pages !== undefined), { error: "give either page (with amountCents) or pages" });
 export type Accounted = z.infer<typeof Accounted>;
 

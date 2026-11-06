@@ -76,7 +76,7 @@ async function main() {
     claude: claudeReader(anthropic, process.env.HARNESS_MODEL ?? "claude-sonnet-5-5"),
     openai,
     scans,
-    maxUsd: readBudget(maxUsd, await untranscribed(docs, scans, openai)),
+    maxUsd: readBudget(maxUsd, await untranscribed(docs, scans, openai), docs.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0)),
     onProgress: console.log,
     ...(from && { rulebook: await earlier(resolve(base, from)) }),
   });

@@ -462,13 +462,27 @@ describe("an answer that changes a scanned term's amount", () => {
     const documentIds = [await scannedDoc([table([["Exam", [field("$250.00"), field("$260.00")]]])])];
     const rb = rulebook({
       terms: [term("t9", { amountCents: 25000, evidence: "none", source: { ...scanSource, cell: "p1.t1.r1.c1" } })],
-      accounted: [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the fee before overhead" }],
+      accounted: [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the fee before overhead" }, { doc: "scan.pdf", page: 1, cell: "p1.t1.r1.c2", reason: "the fee with overhead" }],
       questions: [question("read:t9", { kind: "reading", about: { target: "term", id: "t9" }, source: scanSource, options })],
     });
     const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
 
     const res = (await answer(id, "read:t9", { option, by: "Ana" })).json();
     expect(res.rulebook.terms[0].source.cell).toBe(cell);
+    expect(res.problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("a person's correction sets aside the misread printed cell, so it doesn't block approval", async () => {
+    const documentIds = [await scannedDoc([table([["Exam", [field("$250.00")]]])])];
+    const rb = rulebook({
+      terms: [term("t9", { amountCents: 25000, evidence: "none", source: { ...scanSource, cell: "p1.t1.r1.c1" } })],
+      questions: [question("read:t9", { kind: "reading", about: { target: "term", id: "t9" }, source: scanSource, options: [options[0]!] })],
+    });
+    const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
+
+    const res = (await answer(id, "read:t9", { option: 0, by: "Ana" })).json();
+    expect(res.rulebook.accounted).toEqual([{ doc: "scan.pdf", page: 1, cell: "p1.t1.r1.c1", reason: "corrected by a person" }]);
     expect(res.problems).toEqual([]);
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
   });

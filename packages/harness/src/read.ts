@@ -1,10 +1,10 @@
-import type { Rulebook } from "@dct/shared";
+import type { Question, Rulebook } from "@dct/shared";
 import { compile, type CompileResult } from "./agent";
 import type { ModelClient } from "./agent/client";
 import { checks } from "./checks";
 import type { Budget, Reader } from "./models";
 import { resolve } from "./resolve";
-import { review } from "./review";
+import { review, reviewUsd } from "./review";
 import { SCAN_PAGE_USD, scanDocs } from "./scan";
 import type { CheckReport, LoadedDoc, ScanStore } from "./types";
 
@@ -41,8 +41,23 @@ export class ReadFailed extends Error {
 }
 
 const COMPILED = new Set(["done", "finishes_exhausted"]);
-// The rest is kept for the second reader and the resolver; a scan-free compile has used about a third of $3.
+// Of what is left once the reviewer and the closer reads are set aside; the rest absorbs compile's last turn past its
+// limit, and the resolver's reads. A scan-free compile has used about a third of $3.
 const COMPILE_SHARE = 0.7;
+/** Kept back for each scanned page's closer second read: measured at $0.02–0.08 a page. */
+export const VERIFY_PAGE_USD = 0.08;
+
+export const NOT_REVIEWED = "This read wasn't checked for judgment calls. Start the read again; the pages already read are kept.";
+
+/** A rulebook nobody checked for silent judgment calls can't be approved, and no answer can wave that through. */
+const NOT_REVIEWED_ID = "review:not-run";
+const notReviewed = (docs: LoadedDoc[]): Question => ({
+  id: NOT_REVIEWED_ID, kind: "decision", origin: "reviewer", about: null, question: NOT_REVIEWED,
+  context: "The second reader, which looks for choices the rulebook made that the contract doesn't settle, couldn't run on this read.",
+  source: { doc: docs[0]!.name, page: 1, quote: "" }, options: [], suggestion: null, state: "open", blocking: true, readings: [], resolution: null,
+});
+
+const scannedPages = (docs: LoadedDoc[]) => docs.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0);
 
 function withRequired(rulebook: Rulebook, report: CheckReport): Rulebook {
   const known = new Set(rulebook.questions.map((q) => q.id));
@@ -54,8 +69,12 @@ export function defaultMaxUsd(): number {
   return envUsd > 0 ? envUsd : 3;
 }
 
-/** An explicit limit is the whole budget; otherwise the default, plus what the scanned pages still to read are expected to cost. */
-export const readBudget = (maxUsd: number | undefined, scanPages: number) => maxUsd ?? defaultMaxUsd() + SCAN_PAGE_USD * scanPages;
+/**
+ * An explicit limit is the whole budget; otherwise the default, plus what the scanned pages still to read are expected to
+ * cost, plus a closer read of every scanned page, which each read may pay for again.
+ */
+export const readBudget = (maxUsd: number | undefined, untranscribedPages: number, scanned: number) =>
+  maxUsd ?? defaultMaxUsd() + SCAN_PAGE_USD * untranscribedPages + VERIFY_PAGE_USD * scanned;
 
 export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadResult> {
   if (!opts.scans && docs.some((d) => d.pages.some((p) => p.kind === "image"))) {
@@ -82,7 +101,10 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
   let rulebook = opts.rulebook;
   let compiled: CompileResult | undefined;
   if (!rulebook) {
-    compiled = await compile(docs, { client: opts.anthropic, model: opts.claude.model, maxUsd: (budget.limit - budget.spent) * COMPILE_SHARE, onProgress: say });
+    // the reviewer and the closer reads are what make a draft safe to approve, so compile can't spend their share
+    const reserved = (await reviewUsd(opts.openai, docs)) + VERIFY_PAGE_USD * scannedPages(docs);
+    const maxUsd = Math.max(0, budget.limit - budget.spent - reserved) * COMPILE_SHARE;
+    compiled = await compile(docs, { client: opts.anthropic, model: opts.claude.model, maxUsd, onProgress: say });
     budget.spent += compiled.usd;
     if (!COMPILED.has(compiled.stopReason)) return { rulebook: compiled.rulebook, report: compiled.report, usd: budget.spent, compiled, log };
     rulebook = compiled.rulebook;
@@ -100,5 +122,9 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
   resolved.log.forEach(say);
 
   const report = checks.runChecks(resolved.rulebook, docs);
-  return { rulebook: withRequired(resolved.rulebook, report), report, usd: budget.spent, compiled, ...(reviewed.error && { reviewError: reviewed.error }), log };
+  rulebook = withRequired(resolved.rulebook, report);
+  // a rulebook carried over from an earlier read may hold the item already; this review decides whether it still applies
+  const questions = rulebook.questions.filter((q) => q.id !== NOT_REVIEWED_ID);
+  rulebook = { ...rulebook, questions: reviewed.error ? [...questions, notReviewed(docs)] : questions };
+  return { rulebook, report, usd: budget.spent, compiled, ...(reviewed.error && { reviewError: reviewed.error }), log };
 }

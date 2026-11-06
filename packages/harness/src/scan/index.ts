@@ -1,4 +1,4 @@
-import { estimateUsd, spentOn, type Budget, type Reader } from "../models";
+import { estimateUsd, spentOn, type Budget, type Part, type Reader } from "../models";
 import { pdfReader } from "../pdf";
 import { buildPage } from "../pdf/page";
 import { ReadFailed } from "../read";
@@ -6,7 +6,7 @@ import type { LoadedDoc, Page, ScanPage, ScanStore } from "../types";
 import { cellsOf, scanText } from "./cells";
 import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts, parseTranscription, transcribeAsk, type Transcription } from "./transcribe";
 import { quarterTurn } from "./verify";
-import { toWords } from "./words";
+import { bandsOf, toWords } from "./words";
 
 export { fileScanStore } from "./store";
 
@@ -42,14 +42,29 @@ export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
       if (!scan) return p;
       // the words only place the page's text for display; the agent and the quote check read the transcription's own structure
       const text = scanText(p.page, scan.transcription);
-      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text, cells: cellsOf(p.page, scan.transcription), transcription: scan.transcription };
+      const bands = Object.fromEntries([...bandsOf(scan.transcription)].map(([key, band]) => [`p${p.page}.${key}`, band]));
+      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text, cells: cellsOf(p.page, scan.transcription), transcription: scan.transcription, bands };
     }),
   };
 }
 
 
-/** One transcription inside the budget: the estimate is held while the call runs, then replaced by what it cost. undefined when the estimate doesn't fit. */
-async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Promise<Transcription | undefined> {
+const pngWidth = (png: Buffer) => png.readUInt32BE(16);
+
+/**
+ * The dpi the model sees the page's small print at: the last image sent is a strip, or the whole page when it fits one.
+ * ponytail: assumes the render wasn't lowered by MAX_SCAN_PIXELS, which only a page over about 300 square inches is.
+ */
+function effectiveDpi(png: Buffer, parts: Part[]): number {
+  const images = parts.flatMap((p) => (p.type === "image" ? [p.png] : []));
+  return Math.round((SCAN_DPI * pngWidth(images.at(-1)!)) / pngWidth(png));
+}
+
+/**
+ * One transcription inside the budget: the estimate is held while the call runs, then replaced by what it cost. undefined
+ * when the estimate doesn't fit.
+ */
+async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Promise<{ read: Transcription; dpi: number } | undefined> {
   const parts = await pageParts(png);
   const estimate = estimateUsd(reader, parts, OUTPUT_TOKENS);
   if (budget.spent + estimate > budget.limit) return undefined;
@@ -57,7 +72,7 @@ async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Pr
   try {
     const answer = await reader.ask(transcribeAsk(parts));
     budget.spent += answer.usd - estimate;
-    return parseTranscription(answer.value);
+    return { read: parseTranscription(answer.value), dpi: effectiveDpi(png, parts) };
   } catch (err) {
     budget.spent += spentOn(err) - estimate;
     throw err;
@@ -69,16 +84,18 @@ const MAX_READS = 3;
 async function transcribePage(doc: LoadedDoc, page: Page, reader: Reader, budget: Budget, onProgress?: (line: string) => void): Promise<ScanPage | undefined> {
   const render = (of: LoadedDoc) => pdfReader.render(of, page.page, { dpi: SCAN_DPI, maxPixels: MAX_SCAN_PIXELS });
   let rotation = 0;
-  let read = await transcribeWithin(reader, budget, await render(doc));
+  let done = await transcribeWithin(reader, budget, await render(doc));
   // each read reports the turn still needed on the picture it was given, so the page's turn is their sum
-  for (let reads = 1; read && quarterTurn(read.rotation) !== 0 && reads < MAX_READS; reads++) {
-    rotation = (rotation + quarterTurn(read.rotation)) % 360;
+  for (let reads = 1; done && quarterTurn(done.read.rotation) !== 0 && reads < MAX_READS; reads++) {
+    rotation = (rotation + quarterTurn(done.read.rotation)) % 360;
     const turned = { ...doc, pages: doc.pages.map((p) => (p.page === page.page ? { ...p, rotation } : p)) };
-    read = await transcribeWithin(reader, budget, await render(turned));
+    done = await transcribeWithin(reader, budget, await render(turned));
   }
-  if (!read) return undefined;
-  if (quarterTurn(read.rotation) !== 0) onProgress?.(`p.${page.page} of ${doc.name} may still be turned the wrong way`);
-  return { page: page.page, version: scanVersion(reader), rotation, transcription: read };
+  if (!done) return undefined;
+  // shows on a paid run whether tiny print on landscape pages needs smaller strips
+  onProgress?.(`p.${page.page} of ${doc.name} read at ${done.dpi} dpi`);
+  if (quarterTurn(done.read.rotation) !== 0) onProgress?.(`p.${page.page} of ${doc.name} may still be turned the wrong way`);
+  return { page: page.page, version: scanVersion(reader), rotation, transcription: done.read };
 }
 
 export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store: ScanStore; budget: Budget; onProgress?: (line: string) => void }): Promise<LoadedDoc[]> {
