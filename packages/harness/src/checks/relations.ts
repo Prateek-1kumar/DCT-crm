@@ -164,12 +164,15 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
 
   const rate = rateCell ? rateOf(rateCell) : null;
   if (typeof rate === "string") return why(rate);
-  if (rate && !rate.percent) {
-    if (r.kind === "sum") return why(`${r.rate} prints "${rateCell!.text}", not a percent: a sum adds a percent on top; for a quantity use a product.`);
-    // a count belongs to its own line; a percent is a rule the page may print anywhere
+  if (rate && !rate.percent && r.kind === "sum") return why(`${r.rate} prints "${rateCell!.text}", not a percent: a sum adds a percent on top; for a quantity use a product.`);
+  if (rateCell && rateCell.table !== null) {
+    // a rate in a table belongs to one line of it; a line of text states a rule for the page
     const inRow = operandCells.every((c) => c.row === resultCell.row);
-    const own = rateCell!.row !== null && rateCell!.table === resultCell.table && (inRow ? rateCell!.row === resultCell.row : rateCell!.col === resultCell.col);
-    if (!own) return why(`the count ${r.rate} has to be in the result's own printed row (or its column, in a table printed sideways).`);
+    const heading = rateCell.row === null && rateCell.col === resultCell.col;
+    const line = rateCell.row === resultCell.row || (!inRow && rateCell.col === resultCell.col);
+    if (rateCell.table !== resultCell.table || !(heading || line)) {
+      return why(`the rate ${r.rate} has to be printed in the result's own row (or its column, in a table printed sideways), in its column's heading, or in a line of text on the page.`);
+    }
   }
   const table = `${r.doc}:${/^p\d+\.t\d+/.exec(r.result)![0]}`;
   const toTheDollar = !holds(r.kind, result, operands, rate);

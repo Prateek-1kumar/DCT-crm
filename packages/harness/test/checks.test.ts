@@ -682,10 +682,25 @@ describe("relations", () => {
     );
     const borrowed = rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r2.c2" });
     expect(proven([borrowed], [rows])).toEqual([]);
-    expect(problems([borrowed], [rows])).toEqual(["p1.t1.r1.c3 = p1.t1.r1.c1 × p1.t1.r2.c2: the count p1.t1.r2.c2 has to be in the result's own printed row (or its column, in a table printed sideways)."]);
+    expect(problems([borrowed], [rows])).toEqual(["p1.t1.r1.c3 = p1.t1.r1.c1 × p1.t1.r2.c2: the rate p1.t1.r2.c2 has to be printed in the result's own row (or its column, in a table printed sideways), in its column's heading, or in a line of text on the page."]);
     expect(proven([rel({ kind: "product", result: "p1.t1.r2.c3", operands: ["p1.t1.r2.c1"], rate: "p1.t1.r2.c2" })], [rows])).toEqual(keys("p1.t1.r2.c1", "p1.t1.r2.c2", "p1.t1.r2.c3"));
     // a percent may be printed anywhere on the result's page
     expect(proven([rel({ kind: "product", result: "p1.t1.r3.c3", operands: ["p1.t1.r3.c1"], rate: "p1.l1" })], [rows])).toEqual(keys("p1.t1.r3.c3", "p1.l1"));
+  });
+
+  it("a percent from another row of the table can't prove an amount", () => {
+    const milestones = scanned(
+      ["T 0.3-0.6 | Milestones", "H | Milestone | Percent | Amount (5% of the contract)", "R 0.31-0.32 | Contract value | | $10,000.00", "R 0.33-0.34 | Start-up | 10% | $1,000.00", "R 0.35-0.36 | Enrollment | 15% | $1,000.00", "R 0.37-0.38 | Closeout | | $500.00"].join("\n"),
+    );
+    const borrowed = rel({ kind: "product", result: "p1.t1.r3.c2", operands: ["p1.t1.r1.c2"], rate: "p1.t1.r2.c1" });
+    expect(proven([borrowed], [milestones])).toEqual([]);
+    expect(problems([borrowed], [milestones])).toEqual([
+      "p1.t1.r3.c2 = p1.t1.r1.c2 × p1.t1.r2.c1: the rate p1.t1.r2.c1 has to be printed in the result's own row (or its column, in a table printed sideways), in its column's heading, or in a line of text on the page.",
+    ]);
+    expect(problems([rel({ kind: "product", result: "p1.t1.r3.c2", operands: ["p1.t1.r1.c2"], rate: "p1.t1.r3.c1" })], [milestones])[0]).toMatch(/doesn't hold: the cells it is made of come to \$1,500\.00/);
+    expect(proven([rel({ kind: "product", result: "p1.t1.r2.c2", operands: ["p1.t1.r1.c2"], rate: "p1.t1.r2.c1" })], [milestones])).toEqual(keys("p1.t1.r2.c1", "p1.t1.r2.c2"));
+    // the result's column heading prints its own rate
+    expect(proven([rel({ kind: "product", result: "p1.t1.r4.c2", operands: ["p1.t1.r1.c2"], rate: "p1.t1.h2" })], [milestones])).toEqual(keys("p1.t1.h2", "p1.t1.r4.c2"));
   });
 
   it("a total must cover every amount before it in its row", () => {
