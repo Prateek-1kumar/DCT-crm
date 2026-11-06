@@ -2,11 +2,14 @@ import { applyPatches, parseCents, type Grid, type Patch, type Question, type Re
 import { needsProof } from "../checks";
 import { findQuote } from "../checks/coverage";
 import { usd } from "../checks/text";
+import { groupLines, median } from "../pdf/lines";
 import type { CheckReport, Doubt, Page, Word } from "../types";
 import { askPages, cellLabel, onScan, personId, printQuestion, proven, raise, raiseUnread, raiseZoomed, readCell, same, shown, termLabel, tryAsk, values } from "./read";
 import type { Run } from "./run";
 
 const PAD = 0.015;
+const MAX_PAD = 0.06;
+const MAX_CROPS = 12;
 
 const MARKS: Partial<Record<Doubt, string>> = { handwritten: "handwritten", struck_out: "struck out", initialed: "initialed" };
 
@@ -35,6 +38,12 @@ const lineBand = (words: Word[], text: string): [number, number] | null => {
   const boxes = findQuote(words, text);
   return boxes.length ? [Math.min(...boxes.map((b) => b[1])), Math.max(...boxes.map((b) => b[3]))] : null;
 };
+
+/** Two rows either side of a value, so a position off by a row or two still has the row in the picture. */
+function padOf(page: Page) {
+  const rows = groupLines(page.words).map(([w]) => (w!.y0 + w!.y1) / 2);
+  return Math.min(MAX_PAD, Math.max(PAD, 2 * median(rows.slice(1).map((c, i) => c - rows[i]!))));
+}
 
 const wordsIn = (page: Page, band: [number, number] | null) => (band ? page.words.filter((w) => (w.y0 + w.y1) / 2 >= band[0] && (w.y0 + w.y1) / 2 <= band[1]) : []);
 
@@ -70,9 +79,10 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
     const page = pageOf(t.source.doc, t.source.page);
     if (page?.kind !== "scan" || !needsProof(t, page)) continue;
     const band = lineBand(page.words, t.source.quote);
+    const pad = padOf(page);
     spots.push({
       source: t.source, about: { target: "term", id: t.id }, label: termLabel(t), questionId: `read:${t.id}`, personId: personId(t.id), current: t.amountCents!, words: wordsIn(page, band),
-      crop: band ? [0, Math.max(0, band[0] - PAD), 1, Math.min(1, band[1] + PAD)] : undefined, failing: false,
+      crop: band ? [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)] : undefined, failing: false,
       patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
     });
   }
@@ -89,14 +99,15 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
         if (typeof current !== "number") return;
         const page = pages.find((p) => findQuote(p.words, r.name).length) ?? pages[0]!;
         const band = lineBand(page.words, r.name);
+        const pad = padOf(page);
         const headed = lineBand(page.words, g.visits.join(" ")) ?? lineBand(page.words, g.visits[0]!);
         const spot: Spot = {
           source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label: cellLabel(g, row, col), questionId: `read:${g.id}`, personId: personId(g.id),
           current, words: wordsIn(page, band), failing,
           // from the top of the page, so the visit headings above the row are in the picture
-          crop: band ? [0, 0, 1, Math.min(1, band[1] + PAD)] : undefined,
+          crop: band ? [0, 0, 1, Math.min(1, band[1] + pad)] : undefined,
           // without the visit headings found, the picture runs from the top of the page, so they are still in it
-          zoom: band && headed ? [0, Math.max(0, band[0] - PAD), 1, Math.min(1, band[1] + PAD)] : undefined,
+          zoom: band && headed ? [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)] : undefined,
           header: band && headed ? [0, Math.max(0, headed[0] - PAD), 1, Math.min(1, headed[1] + PAD)] : undefined,
           patch: (v) => ({ target: "grid", id: g.id, set: { [`rows.${row}.cells.${col}`]: v } }),
         };
@@ -166,20 +177,24 @@ export async function relook(run: Run, report: CheckReport) {
 
   const differ: { s: Spot; said: string | null }[] = [];
   const unread: Spot[] = [];
-  for (const group of grouped(spots.filter((s) => !whyPerson(s) && !s.failing), (s) => JSON.stringify([s.source.doc, s.source.page, s.crop]))) {
-    const { doc, page } = group[0]!.source;
-    const [{ crop, zoom, header }] = group as [Spot, ...Spot[]];
-    const answers = (await tryAsk(run, [run.openai], { doc, pages: [page], region: zoom ?? crop, header }, group))?.[0];
-    if (!answers) {
-      unread.push(...group);
-      continue;
+  for (const onPage of grouped(spots.filter((s) => !whyPerson(s) && !s.failing), (s) => JSON.stringify([s.source.doc, s.source.page]))) {
+    const crops = grouped(onPage, (s) => JSON.stringify([s.zoom ?? s.crop, s.header]));
+    for (let from = 0; from < crops.length; from += MAX_CROPS) {
+      const group = crops.slice(from, from + MAX_CROPS).flat();
+      const { doc, page } = group[0]!.source;
+      const asked = group.map((s) => ({ label: s.label, look: { region: s.zoom ?? s.crop, header: s.header } }));
+      const answers = (await tryAsk(run, [run.openai], { doc, pages: [page] }, asked))?.[0];
+      if (!answers) {
+        unread.push(...group);
+        continue;
+      }
+      const confirmed = group.filter((s, i) => same(readCell(answers[i]!), s.current));
+      if (confirmed.length) {
+        run.rulebook = applyPatches(run.rulebook, proven(run.rulebook, confirmed.map((s) => s.patch(s.current))));
+        run.log.push(`p.${page} (${doc}): a closer look confirms ${values(confirmed.length)} ✓`);
+      }
+      differ.push(...group.flatMap((s, i) => (confirmed.includes(s) ? [] : [{ s, said: answers[i]! }])));
     }
-    const confirmed = group.filter((s, i) => same(readCell(answers[i]!), s.current));
-    if (confirmed.length) {
-      run.rulebook = applyPatches(run.rulebook, proven(run.rulebook, confirmed.map((s) => s.patch(s.current))));
-      run.log.push(`p.${page} (${doc}): a closer look confirms ${values(confirmed.length)} ✓`);
-    }
-    differ.push(...group.flatMap((s, i) => (confirmed.includes(s) ? [] : [{ s, said: answers[i]! }])));
   }
 
   // asked once per question id, after every look, so a later question never replaces an earlier one about the same grid

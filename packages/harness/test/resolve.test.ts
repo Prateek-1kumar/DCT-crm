@@ -1,9 +1,9 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Patch, Question, Rulebook } from "@dct/shared";
+import type { Patch, Question, Region, Rulebook } from "@dct/shared";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { checks } from "../src/checks";
 import type { Ask, Budget, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
@@ -216,6 +216,75 @@ describe("scanned pages: one closer look by the vision reader", () => {
     expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "quote" });
   });
 
+  describe("a dense page, where rows are 0.015 apart", () => {
+    const centre = (i: number) => 0.02 + i * 0.015;
+    const dense = (): LoadedDoc[] => {
+      const [budget, ...rest] = docs;
+      const [first, ...pages] = budget!.pages;
+      const words = Array.from({ length: 44 }, (_, i) => [
+        { text: `Fee${i}`, x0: 0.05, x1: 0.1, y0: centre(i) - 0.005, y1: centre(i) + 0.005 },
+        { text: `$${i}.00`, x0: 0.3, x1: 0.4, y0: centre(i) - 0.005, y1: centre(i) + 0.005 },
+      ]).flat();
+      return [{ ...budget!, pages: [{ ...first!, kind: "scan", layout: "", raw: "", words }, ...pages] }, ...rest];
+    };
+    const fees = (rows: number[]) => rows.map((i) => term({ id: `t${i}`, name: `Fee${i}`, amountCents: i * 100, source: { doc: "Budget.pdf", page: 1, quote: `Fee${i}` } }));
+    const answer = (label: string) => `$${/Fee(\d+)/.exec(label)![1]}.00`;
+    const look = (rows: number[], r: ReturnType<typeof readers>) => {
+      const scan = dense();
+      const book = rulebook({ terms: fees(rows) });
+      return resolve(book, scan, checks.runChecks(book, scan), { claude: r.claude.reader, openai: r.openai.reader, budget: { limit: 3, spent: 0 } });
+    };
+
+    it("the zoomed re-look crop contains the rows either side of the target", async () => {
+      const regions: Region[] = [];
+      const render = pdfReader.render.bind(pdfReader);
+      const spy = vi.spyOn(pdfReader, "render").mockImplementation(async (doc, n, opts) => {
+        if (opts?.region) regions.push(opts.region);
+        return render(doc, n, opts);
+      });
+      try {
+        await look([20], readers({ fail: true }, { read: answer }));
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(regions).toHaveLength(1);
+      const [, top, , bottom] = regions[0]!;
+      for (const row of [18, 19, 21, 22]) {
+        expect(top).toBeLessThanOrEqual(centre(row));
+        expect(bottom).toBeGreaterThanOrEqual(centre(row));
+      }
+    });
+
+    it("tells the reader to read the row with the label, and to answer null if it is not in the picture", async () => {
+      const r = readers({ fail: true }, { read: answer });
+      await look([20], r);
+
+      expect(r.openai.calls[0]!.system).toContain("row or term it names by its label");
+      expect(r.openai.calls[0]!.system).toContain("null if that label is not in the picture");
+    });
+
+    it("re-looks on one page are asked in one call", async () => {
+      const r = readers({ fail: true }, { read: answer });
+      const out = await look([5, 12, 20, 28, 40], r);
+
+      expect(r.openai.calls).toHaveLength(1);
+      expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([5, 12, 20, 28, 40].map((i) => `the amount for 'Fee${i}'`));
+      expect(r.openai.calls[0]!.parts.filter((p) => p.type === "image")).toHaveLength(5);
+      expect(out.rulebook.terms.map((t) => t.evidence)).toEqual(Array(5).fill("two_reads"));
+    });
+
+    it("a page with many spots is asked in calls of at most 12 crops, each answer kept with its own item", async () => {
+      const rows = Array.from({ length: 14 }, (_, i) => i + 1);
+      const r = readers({ fail: true }, { read: (label) => (label.includes("Fee9'") ? "$1.00" : answer(label)) });
+      const out = await look(rows, r);
+
+      expect(r.openai.calls.map((c) => itemsOf(c).length)).toEqual([12, 2]);
+      expect(out.rulebook.terms.filter((t) => t.evidence === "two_reads").map((t) => t.id)).toEqual(rows.filter((i) => i !== 9).map((i) => `t${i}`));
+      expect(question1(out.rulebook, "read:t9").readings[1]!.answer).toBe("the amount for 'Fee9': $1.00");
+    });
+  });
+
   it("a struck-out amount and its handwritten replacement are both asked, with no model call", async () => {
     const r = readers({ fail: true }, { fail: true });
     const terms = [
@@ -283,24 +352,24 @@ describe("scanned pages: one closer look by the vision reader", () => {
       const r = readers({ fail: true }, { read: truthful });
       await resolveOn(scanned({}, low), r, rulebook({ grids: [openGrid()] }));
 
-      const [exam] = r.openai.calls;
-      const [header, row] = imagesOf(exam!);
-      expect(imagesOf(exam!)).toHaveLength(2);
-      for (const image of [header!, row!]) {
+      expect(r.openai.calls).toHaveLength(1);
+      const [call] = r.openai.calls;
+      expect(imagesOf(call!)).toHaveLength(4);
+      for (const image of imagesOf(call!)) {
         expect(image.width).toBeGreaterThanOrEqual(2500);
         expect(image.height).toBeLessThan(500);
       }
-      expect(texts(exam!)).toContain("column headings");
+      expect(texts(call!)).toContain("column headings");
     });
 
     it("a grid cell whose visit headings can't be found is shown from the top of the page, so the headings are still in the picture", async () => {
       const r = readers({ fail: true }, { read: truthful });
       await resolveOn(scanned({}, low.replace("Visit  V1  V2\n", "")), r, rulebook({ grids: [openGrid()] }));
 
-      const [exam] = r.openai.calls;
-      expect(imagesOf(exam!)).toHaveLength(1);
-      expect(imagesOf(exam!)[0]!.height).toBeGreaterThan(2000);
-      expect(texts(exam!)).not.toContain("column headings");
+      const [call] = r.openai.calls;
+      expect(imagesOf(call!)).toHaveLength(2);
+      for (const image of imagesOf(call!)) expect(image.height).toBeGreaterThan(2000);
+      expect(texts(call!)).not.toContain("column headings");
     });
 
     it("the closer read of a whole scanned grid sends the page and its strips, as the transcription saw it", async () => {

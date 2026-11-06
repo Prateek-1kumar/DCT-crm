@@ -69,6 +69,22 @@ describe("toWords", () => {
     expect(groupLines(toWords(t)).map(rawLine)).toEqual(["Intro", "Startup fee", "Visit fee", "Closing words", "Payment $200.00", "Total $1,000.00"]);
   });
 
+  it("toWords keeps a dense table's rows at their reported heights", () => {
+    const rows = Array.from({ length: 44 }, (_, i) => {
+      const centre = 0.02 + i * 0.015;
+      return { label: `Row ${i}`, cells: [cell(`$${i}.00`)], top: centre - 0.01, bottom: centre + 0.01 };
+    });
+    const words = toWords(transcription({ lines: [], tables: [{ title: "", top: 0.01, bottom: 0.7, columns: ["Item", "Fee"], rows }] }));
+
+    rows.forEach((r, i) => {
+      const amount = words.find((w) => w.text === `$${i}.00`)!;
+      expect(Math.abs((amount.y0 + amount.y1) / 2 - (r.top + r.bottom) / 2)).toBeLessThan(0.002);
+    });
+    expect(Math.max(...words.map((w) => w.y1))).toBeLessThanOrEqual(1);
+    expect(Math.min(...words.map((w) => w.y0))).toBeGreaterThanOrEqual(0);
+    expect(groupLines(words).map(rawLine)).toEqual(["Item Fee", ...rows.map((_, i) => `Row ${i} $${i}.00`)]);
+  });
+
   it("keeps two lines with the same band as two lines in order", () => {
     const t = transcription({ lines: [line("First clause $100.00", 0.4, 0.42), line("Second clause $200.00", 0.4, 0.42)] });
     const lines = groupLines(toWords(t));

@@ -11,7 +11,7 @@ const BIC = /^[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$/;
 // IBANs print in groups of four, some all letters ("GB29 NWBK 6016 …").
 const IBAN_GROUP = /^[A-Z]{4}$/;
 
-const median = (xs: number[]) => {
+export const median = (xs: number[]) => {
   const s = [...xs].sort((p, q) => p - q);
   return s[Math.floor(s.length / 2)] ?? 0;
 };
