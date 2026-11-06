@@ -161,9 +161,7 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
     if (!values.size) return why("no rulebook value cites either cell; 'same' proves the one value that cites one of them, so write that first.");
     // one value printed twice is two reads of it; two values that print one amount prove nothing about each other
     if (values.size > 1) return why(`these cells are cited by different rulebook values (${[...values].join(", ")}); 'same' only shows one value printed twice.`);
-    // and the fee is named where it is printed again, or it may be an unrelated fee that costs the same
     const [other] = operandCells as [ScanCell];
-    // what names the fee where one cell is printed: its row's label, and the quote of a value citing it
     const namesAt = (c: ScanCell) => [c.table === null ? "" : (c.rowLabel ?? ""), ...rulebook.terms.filter((t) => t.source.doc === doc.name && [t.source.cell, t.source.capCell].includes(c.id)).map((t) => t.source.quote)].filter((n) => n.trim());
     const names = namesAt(resultCell);
     const named = names.some((n) => looseContains(rowText(doc, other), n)) || namesAt(other).some((n) => looseContains(rowText(doc, resultCell), n));

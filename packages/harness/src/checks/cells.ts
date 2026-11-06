@@ -134,7 +134,6 @@ type Placed = { amount: Amount; row: string; col: string; cell: ScanCell | undef
  * Sideways, rows and columns swap.
  */
 function namesOff(table: string, cells: Placed[], visits: string[], lineNames: Map<string, string>, sideways: boolean): string[] {
-  // one message per grid line and per visit, keyed so the first cell that is off names it
   const out = new Map<string, string>();
   const lineAt = new Map<string, Map<string, string>>();
   for (const { amount, row, col, cell } of cells) {

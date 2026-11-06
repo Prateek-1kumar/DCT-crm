@@ -612,7 +612,11 @@ describe("planted misreads", () => {
     const mutated = rows.filter((x) => x.mutation !== "none");
     const pages = total(mutated, (t) => t.pages);
     const perPage = total(mutated, (t) => t.questions) / pages;
-    console.log(`questions per page with a misread second read: ${perPage.toFixed(2)}, of which the misread adds ${(total(mutated, (t) => t.questions - t.baseline) / pages).toFixed(2)}`);
+    const perShape = SHAPES.map((shape) => {
+      const own = mutated.filter((x) => x.shape === shape.name);
+      return `${shape.name} ${(total(own, (t) => t.questions) / total(own, (t) => t.pages)).toFixed(2)}`;
+    });
+    console.log(`questions per page with a misread second read: ${perPage.toFixed(2)}, of which the misread adds ${(total(mutated, (t) => t.questions - t.baseline) / pages).toFixed(2)}; by shape: ${perShape.join(", ")}`);
     expect(perPage).toBeLessThan(1);
   });
 });
