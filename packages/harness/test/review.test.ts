@@ -96,8 +96,8 @@ describe("review input", () => {
   });
 });
 
-describe("review input for an OCR page", () => {
-  it("sends the page image with the OCR text, labelled as OCR", async () => {
+describe("review input for a scan page", () => {
+  it("the reviewer gets the image and the transcription for a scan page", async () => {
     const pdf = await PDFDocument.create();
     pdf.addPage([612, 792]);
     const path = join(dir, "ocr.pdf");
@@ -109,7 +109,7 @@ describe("review input for an OCR page", () => {
     await review(rulebook(), [scan], { reader, budget: budget() });
     const parts = calls[0]!.parts;
     const i = parts.findIndex((p) => p.type === "image");
-    expect(parts[i - 1]).toMatchObject({ type: "text", text: expect.stringMatching(/^=== CTA\.pdf p1 ===.*OCR.*misreads\)\nScreen failure {2}\$5,995\.00$/) });
+    expect(parts[i - 1]).toMatchObject({ type: "text", text: expect.stringMatching(/^=== CTA\.pdf p1 ===.*transcribed from the image.*attached\)\nScreen failure {2}\$5,995\.00$/) });
   });
 });
 

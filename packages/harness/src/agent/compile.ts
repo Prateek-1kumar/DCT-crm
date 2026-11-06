@@ -3,7 +3,7 @@ import { checks } from "../checks";
 import type { CheckReport, LoadedDoc } from "../types";
 import type { ModelClient, ModelMessage, ModelParams } from "./client";
 import { priceFor, usdFor, type Usage } from "./cost";
-import { OCR_NOTE, SYSTEM_PROMPT } from "./prompt";
+import { SCAN_NOTE, SYSTEM_PROMPT } from "./prompt";
 import { createSession } from "./session";
 import { TOOLS } from "./tools";
 
@@ -43,7 +43,7 @@ export interface CompileResult {
 const MAX_TOKENS = 64000;
 const CUT_OFF = ["refusal", "max_tokens", "model_context_window_exceeded"] as const;
 
-const KIND_NOTE = { text: "TEXT", scan: OCR_NOTE, image: "IMAGE (use view_page)" };
+const KIND_NOTE = { text: "TEXT", scan: SCAN_NOTE, image: "IMAGE (use view_page)" };
 
 function inventory(docs: LoadedDoc[]): string {
   return docs

@@ -8,7 +8,7 @@ const integer = { type: "integer" };
 export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   {
     name: "read_pages",
-    description: "Text of pages with the columns kept aligned, up to 15 pages per call. OCR pages come with the text OCR read, which may contain misreads: check numbers with view_page. IMAGE pages have no text: use view_page.",
+    description: "Text of pages with the columns kept aligned, up to 15 pages per call. SCAN pages come with the text a vision model read from the image, plus a list of the words it was unsure of: check those with view_page. IMAGE pages have no text: use view_page.",
     input_schema: object({ doc: string, pages: array(integer) }, ["doc", "pages"]),
   },
   {

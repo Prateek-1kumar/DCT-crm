@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { compile, type CompileOptions } from "../src/agent";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
-import type { LoadedDoc } from "../src/types";
+import type { Doubt, LoadedDoc } from "../src/types";
 import { wordsOf } from "./words";
 
 const BUDGET = [
@@ -189,22 +189,39 @@ describe("compile", () => {
   });
 });
 
-describe("OCR pages", () => {
-  const ocrDoc = (...lines: string[]): LoadedDoc => {
+describe("scan pages", () => {
+  const scanDoc = (lines: string[], doubts: Record<string, Doubt> = {}): LoadedDoc => {
     const doc = textDoc(...lines);
-    return { ...doc, pages: [{ ...doc.pages[0]!, kind: "scan" }] };
+    const page = doc.pages[0]!;
+    return { ...doc, pages: [{ ...page, kind: "scan", words: page.words.map((w) => (doubts[w.text] ? { ...w, doubt: doubts[w.text] } : w)) }] };
   };
-  const NOTE = "OCR, scanned: text read by OCR may contain misreads; check numbers with view_page";
+  const NOTE = "SCAN: text read from the page image by a vision model; amounts here are re-checked at zoom after you finish. Quote the words as transcribed.";
+  const read = async (doc: LoadedDoc) => {
+    const { calls } = await run([doc], [reply([call("read_pages", { doc: "A.pdf", pages: [1] })]), reply([])], { maxTurns: 2 });
+    return calls;
+  };
 
-  it("are labelled in the inventory and in read_pages, which returns their OCR text under the warning", async () => {
-    const { calls } = await run([ocrDoc(...BUDGET)], [reply([call("read_pages", { doc: "A.pdf", pages: [1] })]), reply([])], { maxTurns: 2 });
+  it("are labelled in the inventory and in read_pages, which returns their text under the note", async () => {
+    const calls = await read(scanDoc(BUDGET));
     expect(String(calls[0]!.messages[0]!.content)).toContain(`p1: ${NOTE}, `);
     expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).toBe(`=== A.pdf p1 ===\n(${NOTE})\n${BUDGET.join("\n")}`);
   });
 
+  it("read_pages lists doubtful words on a scan page", async () => {
+    const calls = await read(scanDoc(["Fee $1,250.00 and $900.00 and $50.00"], { "$1,250.00": "unsure", "$900.00": "handwritten" }));
+    expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).toBe(
+      `=== A.pdf p1 ===\n(${NOTE})\nFee $1,250.00 and $900.00 and $50.00\nDoubtful on this page: "$1,250.00" (unsure); "$900.00" (handwritten)`,
+    );
+  });
+
+  it("read_pages adds no doubt line when there are none", async () => {
+    const calls = await read(scanDoc(["Fee $1,250.00"]));
+    expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).not.toContain("Doubtful");
+  });
+
   it("leave their amounts to the harness's own proof, so finish can pass without them", async () => {
     const { result } = await run(
-      [ocrDoc("Startup fee $1,234.56 payable on signature.")],
+      [scanDoc(["Startup fee $1,234.56 payable on signature."])],
       [reply([call("put_study", { study }), call("put_terms", { terms: [startup] })]), reply([call("finish")])],
     );
     expect(result.stopReason).toBe("done");

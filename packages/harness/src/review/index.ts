@@ -21,7 +21,7 @@ async function pagesOf(doc: LoadedDoc): Promise<Part[]> {
     const label = `=== ${doc.name} p${page.page} ===`;
     if (page.kind === "text") parts.push({ type: "text", text: `${label}\n${page.layout}` });
     else {
-      const heading = page.kind === "scan" ? `${label} (OCR, scanned: the image is the page; the text below was read by OCR and may contain misreads)\n${page.layout}` : `${label} (scan, shown as an image)`;
+      const heading = page.kind === "scan" ? `${label} (scan: the text below was transcribed from the image, which is attached)\n${page.layout}` : `${label} (scan, shown as an image)`;
       parts.push({ type: "text", text: heading }, { type: "image", png: await pdfReader.render(doc, page.page) });
     }
   }
