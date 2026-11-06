@@ -45,7 +45,7 @@ function laidOut(page: number, t: Transcription): Laid[][] {
     const id = `p${page}.t${n}`;
     // a bank column's cells are hidden by their heading, since nothing in a cell says what it is
     const bank = table.columns.map(isBankHeading);
-    const lines = [[lay(id, n, null, null, plain(table.title))]];
+    const lines = [[lay(`${id}.title`, n, null, null, plain(table.title))]];
     if (table.columns.some(Boolean)) lines.push(table.columns.map((h, c) => lay(`${id}.h${c}`, n, null, c, plain(h))));
     table.rows.forEach((r, j) => lines.push([plain(r.label), ...r.cells].map((f, c) => lay(`${id}.r${j + 1}.c${c}`, n, j + 1, c, f, bank[c]))));
     blocks.push({ top: table.top, lines });
@@ -59,13 +59,14 @@ const isTitle = (l: Laid) => l.table !== null && l.col === null;
 
 /**
  * Every heading, cell (c0 is the row label) and line of a page: `p{page}.t{table}.h{col}`, `p{page}.t{table}.r{row}.c{col}`
- * and `p{page}.l{line}`, counted from 1 except columns. Derived on load, so a saved transcription always gets the same ids.
+ * and `p{page}.l{line}`, counted from 1 except columns, and each table's title, `p{page}.t{table}.title`, which is read
+ * like a line. Derived on load, so a saved transcription always gets the same ids.
  */
 export function cellsOf(page: number, t: Transcription): ScanCell[] {
   const headings = new Map<string, string>();
   return laidOut(page, t).flatMap((line) =>
     line.flatMap((l): ScanCell[] => {
-      if (isTitle(l)) return [];
+      if (isTitle(l)) return textOf(l) ? [{ id: l.id, page, table: null, row: null, col: null, text: textOf(l), doubts: l.doubts }] : [];
       const struck = l.parts.filter((p) => p.doubts.includes("struck_out")).map((p) => p.words.map((w) => w.text).join(" "));
       const cell: ScanCell = { id: l.id, page, table: l.table, row: l.row, col: l.col, text: textOf(l), doubts: l.doubts, ...(struck.length > 0 && { struck }) };
       if (l.row === null) {
@@ -83,7 +84,7 @@ export function scanText(page: number, t: Transcription): string {
   return laidOut(page, t)
     .map((line) => {
       const first = line[0]!;
-      if (isTitle(first)) return `TABLE ${first.id} ${JSON.stringify(textOf(first))}`;
+      if (isTitle(first)) return `TABLE ${first.id.replace(/\.title$/, "")} ${JSON.stringify(textOf(first))}`;
       if (first.table === null) return `${first.id} | ${shownOf(first)}`;
       if (first.row === null) return `p${page}.t${first.table}.h | ${line.map((l) => `c${l.col} ${shownOf(l)}`).join(" | ")}`;
       return `p${page}.t${first.table}.r${first.row} | ${line.map(shownOf).join(" | ")}`;

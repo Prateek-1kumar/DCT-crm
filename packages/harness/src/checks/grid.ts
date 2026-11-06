@@ -109,8 +109,10 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   if (!printsTotals(grid) && numericCells(grid).some(({ row, col }) => !covered[row]![col])) {
     problems.push("nothing printed proves these cells: capture the printed subtotal/total rows.");
   }
+  // a text page's amount stands for a cell only when the cell doesn't say it was read from a scan
   const printed = printedAmounts(grid, docs);
-  const unproven = numericCells(grid).filter(({ row, col }) => !covered[row]![col]! && !printed.has(Math.abs(num(grid.rows[row]!.cells[col])!)));
+  const onText = (row: number, col: number) => typeof grid.cellIds?.[`rows.${row}.cells.${col}`] !== "string" && printed.has(Math.abs(num(grid.rows[row]!.cells[col])!));
+  const unproven = numericCells(grid).filter(({ row, col }) => !covered[row]![col]! && !onText(row, col));
   const bySumOnly = unproven.filter(({ row, col }) => loose[row]![col]);
   return { problems, unproven, ...(bySumOnly.length > 0 && { bySumOnly }) };
 }

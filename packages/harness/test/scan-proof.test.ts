@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeAccounted, normalizeQuestion } from "../src/agent/normalize";
 import { checks } from "../src/checks";
 import { coverage } from "../src/checks/coverage";
-import { withRelationProof } from "../src/checks/relations";
+import { checkRelations, withRelationProof } from "../src/checks/relations";
 import type { Reader } from "../src/models/reader";
 import { buildPage } from "../src/pdf/page";
 import { resolve } from "../src/resolve";
@@ -11,6 +11,7 @@ import { withScans } from "../src/scan";
 import { parseTranscription, type Transcription } from "../src/scan/transcribe";
 import { verifyVersion } from "../src/scan/verify";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
+import { wordsOf } from "./words";
 
 const DOC = "Budget.pdf";
 const read = (lines: string[]) => parseTranscription({ rotation: 0, text: lines.join("\n") });
@@ -168,5 +169,91 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
     expect(asked.ok && asked.value.options[0]!.patches).toEqual([]);
     // the compile agent is told so, and isn't asked to fix it
     expect(checks.runChecks(book({ terms: [ecg] }), docs).problems.filter((p) => p.check === "unaccounted")).toEqual([expect.objectContaining({ afterCompile: true })]);
+  });
+});
+
+describe("a question only a re-run can clear offers no answer (I1)", () => {
+  const sheet = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00"]);
+  const ecg = (over: Partial<Term> = {}): Term => ({
+    id: "t1", category: "site_fee", name: "ECG", amountCents: 10000, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+    holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: "ECG $100.00", cell: "p1.t1.r1.c1" }, evidence: "none", houseRuleIds: [], notes: null, ...over,
+  });
+
+  it("a page whose second read couldn't be made can't be waved through", async () => {
+    // no second read in the store, and none can be made: the page is a blank render here
+    const { rulebook } = await settle(book({ terms: [ecg()] }), [sheet], []);
+    expect(open(rulebook).map((q) => [q.id, q.options])).toEqual([["read:t1:unread", []]]);
+    const settled = await settle(book({ terms: [ecg({ evidence: "person" })] }), [sheet], []);
+    expect(open(settled.rulebook).map((q) => [q.id, q.options])).toEqual([["read:Budget.pdf:p1:unread", []]]);
+  });
+
+  it("a scanned value's question offers only answers that set a value, and says what to do if none is right", async () => {
+    const { rulebook } = await settle(book({ terms: [ecg()] }), [sheet], [read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $180.00"])]);
+    const q = open(rulebook)[0]!;
+    expect(q.options.map((o) => o.label)).toEqual(["Use the first reading ($100.00)", "Use the second reading ($180.00)"]);
+    expect(q.context).toContain("If the page prints something else, leave this open and tell the team");
+  });
+});
+
+describe("an amount in a scanned table's title (I2)", () => {
+  const titled = read(["T 0.1-0.5 | Start-up fee $5,000.00 (non-refundable)", "H | Procedure | V1", "R 0.2-0.21 | ECG | $100.00"]);
+
+  it("is counted, and can be cited by its own id", () => {
+    const docs = [docOf([titled])];
+    expect(docs[0]!.pages[0]!.cells!.map((c) => c.id)).toContain("p1.t1.title");
+    expect(coverage(book({}), docs).pages[0]!.amounts.map((a) => [a.cents, a.status])).toEqual([[500000, "missing"], [10000, "missing"]]);
+    const startup: Term = {
+      id: "t1", category: "site_fee", name: "Start-up fee", amountCents: 500000, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+      holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: "Start-up fee", cell: "p1.t1.title" }, evidence: "none", houseRuleIds: [], notes: null,
+    };
+    const report = checks.runChecks(book({ terms: [startup] }), docs);
+    expect(report.problems.filter((p) => p.check === "cell")).toEqual([]);
+    expect(coverage(book({ terms: [startup] }), docs).pages[0]!.amounts[0]).toMatchObject({ cents: 500000, status: "captured" });
+  });
+});
+
+describe("a grid on a text page and a scanned page (I3)", () => {
+  it("an amount the text page happens to print never proves a cell the scan's cell is cited for", () => {
+    const scan = docOf([read(["T 0.1-0.5 | Budget", "H | Procedure | V1 | V2", "R 0.2-0.21 | ECG | $100.00 | $50.00"])]);
+    const text = buildPage(2, wordsOf("Parking is reimbursed at $50.00 per visit."), "text");
+    const docs = [{ ...scan, pages: [...scan.pages, text] }];
+    const g: Grid = {
+      id: "g1", name: "Budget", arm: null, doc: DOC, pages: [1, 2], visits: ["V1", "V2"], overheadPct: null,
+      rows: [{ name: "ECG", code: null, unitCostCents: null, cells: [10000, 5000], printedRowTotalCents: null }],
+      subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false,
+      cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2" },
+    };
+    expect(checks.runChecks(book({ grids: [g] }), docs).grids["g1"]!.unproven).toEqual([{ row: 0, col: 0 }, { row: 0, col: 1 }]);
+  });
+});
+
+describe("'same' links one fee printed twice, never two fees (I5)", () => {
+  const fees = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | Screen failure | $150.00"]);
+  const screenFail: Term = {
+    id: "t1", category: "site_fee", name: "Screen failure", amountCents: 15000, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+    holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: "Screen failure", cell: "p1.t1.r1.c1" }, evidence: "none", houseRuleIds: [], notes: null,
+  };
+  const same = (line: string) => {
+    const rb = book({ terms: [screenFail], relations: [{ kind: "same", doc: DOC, result: "p1.t1.r1.c1", operands: ["p2.l1"] }] });
+    const docs = [docOf([fees, read([`L 0.1-0.12 | ${line}`])])];
+    return { evidence: withRelationProof(rb, docs).terms[0]!.evidence, problems: checkRelations(rb, docs).problems.map((p) => p.message) };
+  };
+
+  it("an unrelated amount on another page doesn't prove it", () => {
+    expect(same("Parking is reimbursed at $150.00 per visit.")).toEqual({
+      evidence: "none",
+      problems: ["p1.t1.r1.c1 = p2.l1: p2.l1 doesn't name the fee (\"Screen failure\"), so it may be another fee that costs the same."],
+    });
+  });
+
+  it("nor does the quote of a value citing the other cell, which is always on its own line", () => {
+    const parking = { ...screenFail, name: "Parking", source: { doc: DOC, page: 2, quote: "Parking is reimbursed", cell: "p2.l1" } };
+    const rb = book({ terms: [parking], relations: [{ kind: "same", doc: DOC, result: "p2.l1", operands: ["p1.t1.r1.c1"] }] });
+    const docs = [docOf([fees, read(["L 0.1-0.12 | Parking is reimbursed at $150.00 per visit."])])];
+    expect(withRelationProof(rb, docs).terms[0]!.evidence).toBe("none");
+  });
+
+  it("the same fee named on the other page does", () => {
+    expect(same("Each screen failure is paid at $150.00.")).toEqual({ evidence: "math", problems: [] });
   });
 });

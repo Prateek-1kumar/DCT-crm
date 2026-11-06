@@ -459,7 +459,7 @@ describe("scanned tables in what the agent reads", () => {
     const [first, second] = [(await store.get("d"))[0]!, (await store.get("d"))[0]!];
     expect(JSON.stringify(first)).not.toContain("p4.");
     const ids = cellsOf(4, first.transcription).map((c) => c.id);
-    expect(ids).toEqual(["p4.l1", "p4.t1.h0", "p4.t1.h1", "p4.t1.r1.c0", "p4.t1.r1.c1", "p4.t1.r2.c0", "p4.t1.r2.c1"]);
+    expect(ids).toEqual(["p4.l1", "p4.t1.title", "p4.t1.h0", "p4.t1.h1", "p4.t1.r1.c0", "p4.t1.r1.c1", "p4.t1.r2.c0", "p4.t1.r2.c1"]);
     expect(cellsOf(4, second.transcription)).toEqual(cellsOf(4, first.transcription));
     expect(scanText(4, second.transcription)).toBe(scanText(4, t));
   });

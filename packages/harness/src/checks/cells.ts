@@ -61,7 +61,7 @@ function checkOne(doc: LoadedDoc, c: Cite): string | null {
 }
 
 /** The words of the printed row a cell is on (its label and every cell), or of the line itself. */
-const rowText = (doc: LoadedDoc, cell: ScanCell) =>
+export const rowText = (doc: LoadedDoc, cell: ScanCell) =>
   cell.table === null ? cell.text : (cellsOn(doc, cell.page) ?? []).filter((c) => c.table === cell.table && c.row === cell.row).map((c) => c.text).join(" ");
 
 /** Why a term's amounts on a scanned page don't match the cells they cite. Text pages need none, but for a cap printed only on a scanned page. */
@@ -124,15 +124,47 @@ const TABLE_CELL = /^(p\d+\.t\d+)\.r(\d+)\.c(\d+)$/;
 
 const LAYOUT = "in each printed table, every amount of one row comes from one printed row, and every amount of one visit from one printed column (or the other way round in a table printed sideways).";
 
+const alike = (a: string, b: string) => !a.trim() || !b.trim() || looseContains(a, b) || looseContains(b, a);
+
+type Placed = { amount: Amount; row: string; col: string; cell: ScanCell | undefined };
+
+/**
+ * Why the grid's names don't fit the printed table they cite, read one way round: each grid row's name is its printed row's
+ * label, each visit its printed column's heading (where the table has headings), and no two grid lines share a printed row.
+ * Sideways, rows and columns swap.
+ */
+function namesOff(table: string, cells: Placed[], visits: string[], sideways: boolean): string[] {
+  // one message per grid line and per visit, keyed so the first cell that is off names it
+  const out = new Map<string, string>();
+  const lineAt = new Map<string, Map<string, string>>();
+  for (const { amount, row, col, cell } of cells) {
+    if (!cell) continue;
+    const [printedLine, lineName, visitName] = sideways ? [col, cell.heading ?? "", cell.rowLabel ?? ""] : [row, cell.rowLabel ?? "", cell.heading ?? ""];
+    if (amount.line) lineAt.set(printedLine, (lineAt.get(printedLine) ?? new Map()).set(amount.line.key, amount.line.name));
+    const name = amount.line?.key.startsWith("rows.") ? amount.line.name.replace(/^row '(.*)'$/, "$1") : undefined;
+    if (name !== undefined && !alike(lineName, name) && !out.has(amount.line!.key)) {
+      out.set(amount.line!.key, `${amount.line!.name} cites ${cell.id}, printed under "${lineName}": cite the cells printed for that row, or name the grid row as printed.`);
+    }
+    const visit = amount.visit === undefined ? undefined : visits[amount.visit];
+    if (visit !== undefined && !alike(visitName, visit) && !out.has(`visit ${amount.visit}`)) {
+      out.set(`visit ${amount.visit}`, `visit '${visit}' cites ${cell.id}, printed under "${visitName}": cite the cells printed for that visit, or name the visit as printed.`);
+    }
+  }
+  const shared = [...lineAt].filter(([, lines]) => lines.size > 1);
+  const where = sideways ? "column" : "row";
+  return [...out.values(), ...shared.map(([at, lines]) => `${[...lines.values()].join(" and ")} all cite printed ${where} ${at} of table ${table}: each grid line comes from its own printed ${where}.`)];
+}
+
 /**
  * In each printed table, each grid line cites one printed row and each visit one printed column, or, in a table printed
- * sideways, the other way round. A budget may span several tables, on one page or more.
+ * sideways, the other way round, and the names match what is printed there. A budget may span several tables, on one page
+ * or more.
  */
-function shapeIssues(cited: { amount: Amount; id: string }[], visits: string[]): string[] {
-  const tables = new Map<string, { amount: Amount; row: string; col: string }[]>();
+function shapeIssues(doc: LoadedDoc, cited: { amount: Amount; id: string }[], visits: string[]): string[] {
+  const tables = new Map<string, Placed[]>();
   for (const { amount, id } of cited) {
     const m = TABLE_CELL.exec(id);
-    if (m) tables.set(m[1]!, [...(tables.get(m[1]!) ?? []), { amount, row: `${m[1]}.r${m[2]}`, col: `${m[1]}.c${m[3]}` }]);
+    if (m) tables.set(m[1]!, [...(tables.get(m[1]!) ?? []), { amount, row: `${m[1]}.r${m[2]}`, col: `${m[1]}.c${m[3]}`, cell: cellOf(doc, id) }]);
   }
   return [...tables].flatMap(([table, cells]) => {
     // each grid line or visit that cites more than one printed row (or column) of this table
@@ -150,8 +182,11 @@ function shapeIssues(cited: { amount: Amount; id: string }[], visits: string[]):
     const line = (a: Amount) => a.line;
     const visit = (a: Amount) => (a.visit === undefined ? undefined : { key: String(a.visit), name: `visit '${visits[a.visit]}'` });
     const [rows, columns] = [spread(line, "row"), spread(visit, "col")];
-    if (!rows.length && !columns.length) return [];
-    if (!spread(line, "col").length && !spread(visit, "row").length) return [];
+    const upright = !rows.length && !columns.length;
+    const sideways = !spread(line, "col").length && !spread(visit, "row").length;
+    // a table each line and visit cite one cell of reads either way round; the names say which
+    const named = [...(upright ? [namesOff(table, cells, visits, false)] : []), ...(sideways ? [namesOff(table, cells, visits, true)] : [])];
+    if (named.length) return named.some((issues) => !issues.length) ? [] : named[0]!;
     return [
       ...rows.map((g) => `${g.name} cites cells of different printed rows of table ${table} (${[...g.ids].join(", ")}): ${LAYOUT}`),
       ...columns.map((g) => `${g.name} cites cells of different printed columns of table ${table} (${[...g.ids].join(", ")}): ${LAYOUT}`),
@@ -177,7 +212,7 @@ export function citeGrid(g: Grid, docs: LoadedDoc[], marked: Marked[] = []): str
     const cite: Cite = { what, how: "write it as {value, cell}", cents, id: g.cellIds?.[path], optional, pages: g.pages, pagesText: `the grid's pages (${g.pages.join(", ")})`, mark };
     return checkOne(doc, cite) ?? [];
   });
-  return [...shapeIssues(cited, g.visits), ...values];
+  return [...shapeIssues(doc, cited, g.visits), ...values];
 }
 
 export function checkCitations(rulebook: Rulebook, docs: LoadedDoc[]): { problems: Problem[]; marked: Marked[] } {

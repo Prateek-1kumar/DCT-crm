@@ -20,6 +20,8 @@ const UNALIGNED = "the second read could not be lined up with it";
 const MISMATCH = "it does not match the cell it cites, so a second read of that cell can't vouch for it";
 const TURNED = "the second read saw the page turned, so the two reads can't be compared";
 const UNREAD = "This still needs a second read of the page, and it could not be done in this run. Start the read again to have the page read a second time.";
+// a scanned value's answers each set a value, and nothing here takes a typed one
+const ELSE = "If the page prints something else, leave this open and tell the team: it can't be approved until the value is put right.";
 
 /** One amount the compile agent cited on a scanned page. */
 interface Spot {
@@ -172,10 +174,10 @@ function askPerson(run: Run, group: Spot[], why: Map<Spot, string>) {
     about: first.about,
     source: first.source,
     question: one ? `What does p.${first.source.page} of ${first.source.doc} print for ${first.label}?` : `What does ${first.source.doc} print for these ${group.length} values?`,
-    context: `Check ${one ? "this value" : "these values"} on the page: ${group.map((s) => `${s.label}: ${usd(s.cents)} (${why.get(s)}${pages ? `, p.${s.source.page}` : ""})`).join("; ")}.`,
+    context: `Check ${one ? "this value" : "these values"} on the page: ${group.map((s) => `${s.label}: ${usd(s.cents)} (${why.get(s)}${pages ? `, p.${s.source.page}` : ""})`).join("; ")}. ${ELSE}`,
     readings: [],
     options: [{ label: one ? `Use ${usd(first.cents)}` : "Use the values as written", patches: group.map((s) => s.patch(s.cents)) }],
-  });
+  }, false);
   run.log.push(`${place(first)}: ${values(group.length)} marked on the page or not settled by a second read, so a person will be asked`);
 }
 
@@ -217,7 +219,7 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
     about: s.about,
     source: s.source,
     question: one ? `What does p.${s.source.page} of ${s.source.doc} print for ${s.label}?` : `Two readings of ${s.source.doc} disagree on ${rows.length} values. What does the page print?`,
-    context: `The page was read twice, independently, and the readings differ. ${rows.map((r) => `${r.s.label}: first read ${usd(r.s.cents)}, second read ${shown(r)}`).join("; ")}.`,
+    context: `The page was read twice, independently, and the readings differ. ${rows.map((r) => `${r.s.label}: first read ${usd(r.s.cents)}, second read ${shown(r)}`).join("; ")}. ${ELSE}`,
     readings: [
       { model: `${run.openai.model} (first read)`, answer: rows.map((r) => `${r.s.label}: ${usd(r.s.cents)}`).join("; ") },
       { model: `${run.openai.model} (second read)`, answer: rows.map((r) => `${r.s.label}: ${shown(r)}`).join("; ") },
@@ -226,7 +228,7 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
       { label: one ? `Use the first reading (${usd(s.cents)})` : "Use the first readings", patches: rows.map((r) => r.s.patch(r.s.cents)) },
       ...(offered ? [{ label: one ? `Use the second reading (${typeof seconds[0] === "number" ? usd(seconds[0]) : "blank"})` : "Use the second readings", patches: use }] : []),
     ],
-  });
+  }, false);
   run.log.push(`${place(s)}: a second read of the page reads ${values(rows.length)} differently, so a person will be asked`);
 }
 
@@ -241,7 +243,7 @@ function askAsPrinted(run: Run, report: CheckReport) {
     const lead = open(personId(g.id))
       ? "The figures shown are as first read from the image; the ones that are marked, or that a second read could not settle, are asked about in the other question."
       : "A second read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent.";
-    raise(run, asPrinted(g, freshId(run, `read:${g.id}`), lead, problems));
+    raise(run, asPrinted(g, freshId(run, `read:${g.id}`), lead, problems), false);
     run.log.push(`p.${g.pages.join(",")} (${g.doc}): the figures of '${g.name}' don't add up as printed, so a person will be asked`);
   }
 }

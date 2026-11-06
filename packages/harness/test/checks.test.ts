@@ -428,12 +428,12 @@ describe("checkCitations", () => {
   });
 
   const exam = (cellIds: Record<string, string | null>, over: Partial<Grid> = {}) =>
-    grid({ rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: 10000 }], grandTotalCents: 10000, cellIds, ...over });
+    grid({ visits: ["Fee", "Fee with overhead"], rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: 10000 }], grandTotalCents: 10000, cellIds, ...over });
 
   it("checks every amount of a grid on a scanned page against its cell, naming the place", () => {
     expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.printedRowTotalCents": "p1.t1.r1.c1", grandTotalCents: "p1.t1.r1.c1" })] }).problems).toEqual([]);
     expect(messages({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2", grandTotalCents: "p1.t1.r1.c1" })] })).toEqual([
-      `row 'Exam' at visit 'V1' is $100.00, but cell p1.t1.r1.c2 prints "$130.00": write the amount as the cited cell prints it, or cite the cell it is printed in.`,
+      `row 'Exam' at visit 'Fee' is $100.00, but cell p1.t1.r1.c2 prints "$130.00": write the amount as the cited cell prints it, or cite the cell it is printed in.`,
       "the printed total of row 'Exam' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
     ]);
   });
@@ -472,6 +472,43 @@ describe("checkCitations", () => {
     expect(messages({ grids: [g] }, [page1])).toEqual([]);
   });
 
+  describe("names match what is printed", () => {
+    const page1 = layout("T 0.1-0.5 | Budget", "H | Item | V1 | V2", "R 0.11-0.12 | Physical exam | $100.00 | $100.00", "R 0.13-0.14 | Labs | $100.00 | $100.00");
+    const at = (ids: string[][]) => Object.fromEntries(ids.flatMap((r, i) => r.map((id, j) => [`rows.${i}.cells.${j}`, id])));
+    const two = (cellIds: Record<string, string>, over: Partial<Grid> = {}) => grid({ rows: [row("Exam", [10000, 10000]), row("Labs", [10000, 10000])], cellIds, ...over });
+
+    it("two grid rows can't cite each other's printed rows", () => {
+      expect(messages({ grids: [two(at([["p1.t1.r1.c1", "p1.t1.r1.c2"], ["p1.t1.r2.c1", "p1.t1.r2.c2"]]))] }, [page1])).toEqual([]);
+      expect(messages({ grids: [two(at([["p1.t1.r2.c1", "p1.t1.r2.c2"], ["p1.t1.r1.c1", "p1.t1.r1.c2"]]))] }, [page1])).toEqual([
+        `row 'Exam' cites p1.t1.r2.c1, printed under "Labs": cite the cells printed for that row, or name the grid row as printed.`,
+        `row 'Labs' cites p1.t1.r1.c1, printed under "Physical exam": cite the cells printed for that row, or name the grid row as printed.`,
+      ]);
+    });
+
+    it("a visit can't cite another visit's column", () => {
+      expect(messages({ grids: [two(at([["p1.t1.r1.c2", "p1.t1.r1.c1"], ["p1.t1.r2.c2", "p1.t1.r2.c1"]]))] }, [page1])).toEqual([
+        `visit 'V1' cites p1.t1.r1.c2, printed under "V2": cite the cells printed for that visit, or name the visit as printed.`,
+        `visit 'V2' cites p1.t1.r1.c1, printed under "V1": cite the cells printed for that visit, or name the visit as printed.`,
+      ]);
+    });
+
+    it("two grid lines can't cite one printed row", () => {
+      const both = grid({ rows: [row("Labs", [10000, null]), row("Labs", [null, 10000])], cellIds: { "rows.0.cells.0": "p1.t1.r2.c1", "rows.1.cells.1": "p1.t1.r2.c2" } });
+      expect(messages({ grids: [both] }, [page1])).toEqual(["row 'Labs' and row 'Labs' all cite printed row p1.t1.r2 of table p1.t1: each grid line comes from its own printed row."]);
+    });
+
+    it("a table printed sideways is checked the other way round", () => {
+      const sideways = layout("T 0.1-0.5 | Budget", "H | Visit | Exam | Labs", "R 0.11-0.12 | V1 | $100.00 | $50.00", "R 0.13-0.14 | V2 | $100.00 | $50.00");
+      const g = (ids: string[][]) => grid({ rows: [row("Exam", [10000, 10000]), row("Labs", [5000, 5000])], cellIds: at(ids) });
+      expect(messages({ grids: [g([["p1.t1.r1.c1", "p1.t1.r2.c1"], ["p1.t1.r1.c2", "p1.t1.r2.c2"]])] }, [sideways])).toEqual([]);
+      // the visits swapped: each still one printed row, but under the other visit's label
+      expect(messages({ grids: [g([["p1.t1.r2.c1", "p1.t1.r1.c1"], ["p1.t1.r2.c2", "p1.t1.r1.c2"]])] }, [sideways])).toEqual([
+        `visit 'V1' cites p1.t1.r2.c1, printed under "V2": cite the cells printed for that visit, or name the visit as printed.`,
+        `visit 'V2' cites p1.t1.r1.c1, printed under "V1": cite the cells printed for that visit, or name the visit as printed.`,
+      ]);
+    });
+  });
+
   it("a visit citing cells from two different printed columns is refused", () => {
     const g = grid({
       rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: null }, { name: "Visit fee", code: null, unitCostCents: null, cells: [13000, null], printedRowTotalCents: null }],
@@ -492,7 +529,7 @@ describe("checkCitations", () => {
     expect(citations({ grids: [exam({}, { pages: [1, 2] })] }, [mixed]).problems).toEqual([]);
     const scannedToo = exam({}, { pages: [1, 2], rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 13000], printedRowTotalCents: 10000 }] });
     expect(messages({ grids: [scannedToo] }, [mixed])).toEqual([
-      "row 'Exam' at visit 'V2' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
+      "row 'Exam' at visit 'Fee with overhead' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
     ]);
     expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2" }, { pages: [1, 2] })] }, [mixed]).problems).toHaveLength(1);
   });
@@ -569,6 +606,7 @@ describe("relations", () => {
 
     // a grid cell citing a proven cell needs no second read
     const g = grid({
+      visits: ["Unit", "Qty"],
       rows: [
         { name: "ECG", code: null, unitCostCents: null, cells: [15000, null], printedRowTotalCents: null },
         { name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: 10000 },

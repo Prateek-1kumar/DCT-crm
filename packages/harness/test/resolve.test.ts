@@ -292,7 +292,7 @@ describe("scanned pages: a blind second read of the page", () => {
       { model: "openai-x (first read)", answer: "the amount for 'Screen failure fee': $75.00" },
       { model: "openai-x (second read)", answer: "the amount for 'Screen failure fee': $85.00" },
     ]);
-    expect(q.options.map((o) => o.label)).toEqual(["Use the first reading ($75.00)", "Use the second reading ($85.00)", "Neither, I'll type the right value"]);
+    expect(q.options.map((o) => o.label)).toEqual(["Use the first reading ($75.00)", "Use the second reading ($85.00)"]);
     expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "quote" });
     const chosen = q.options[1]!.patches;
     expect(applyPatches(out.rulebook, [...chosen, ...citationPatches(out.rulebook, chosen)]).terms[0]!.source.cell).toBeUndefined();
@@ -359,7 +359,7 @@ describe("scanned pages: a blind second read of the page", () => {
       { model: "openai-x (first read)", answer: "row 'Exam' at visit 'V2': $205.00" },
       { model: "openai-x (second read)", answer: "row 'Exam' at visit 'V2': $260.00" },
     ]);
-    expect(q.options.map((o) => o.label)).toEqual(["Use the first reading ($205.00)", "Use the second reading ($260.00)", "Neither, I'll type the right value"]);
+    expect(q.options.map((o) => o.label)).toEqual(["Use the first reading ($205.00)", "Use the second reading ($260.00)"]);
     expect(q.options[1]!.patches).toEqual<Patch[]>([{ target: "grid", id: "g1", set: { "rows.0.cells.1": 26000 } }]);
   });
 
@@ -459,7 +459,7 @@ describe("scanned pages: a blind second read of the page", () => {
 
     const q = question1(out.rulebook, "person:t1");
     expect(q.context).toContain("(struck out and handwritten on the second read)");
-    expect(q.options.map((o) => o.label)).toEqual(["Use $100.00", "Neither, I'll type the right value"]);
+    expect(q.options.map((o) => o.label)).toEqual(["Use $100.00"]);
     expect(out.rulebook.terms[0]!.evidence).toBe("quote");
   });
 
