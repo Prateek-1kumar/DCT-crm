@@ -69,9 +69,10 @@ async function runRead(ctx: Ctx, readId: string) {
 
   try {
     const [version] = await db.select({ studyId: versions.studyId, documentIds: versions.documentIds }).from(versions).where(eq(versions.id, row.versionId));
-    const docs = await loadDocs(db, version!.documentIds);
+    const clients = models();
+    const docs = await loadDocs(db, version!.documentIds, clients.openai);
     const scanned = docs.filter((d) => d.pages.some((p) => p.kind === "image"));
-    const result = await read(docs, { ...models(), maxUsd: row.budgetUsd, onProgress: say, scans: scanStore }).finally(() => refreshPages(ctx, scanned));
+    const result = await read(docs, { ...clients, maxUsd: row.budgetUsd, onProgress: say, scans: scanStore }).finally(() => refreshPages(ctx, scanned));
     await appended;
 
     const trace = { compile: result.compiled?.trace ?? null, log: result.log };

@@ -31,8 +31,8 @@ export async function readsRoutes(api: FastifyInstance, { db, boss, log, models 
       .orderBy(asc(studyDocuments.addedAt), asc(documents.name));
     if (!docs.length) throw new HttpError(409, "Upload the contract first.");
     const { openai } = models();
-    const scans = await untranscribed(await loadDocs(db, docs.map((d) => d.id)), scanStore, openai);
-    const budgetUsd = Math.round((config.readBudgetUsd + SCAN_PAGE_USD * scans) * 100) / 100;
+    const scans = await untranscribed(await loadDocs(db, docs.map((d) => d.id), openai), scanStore, openai);
+    const budgetUsd = Math.min(Math.round((config.readBudgetUsd + SCAN_PAGE_USD * scans) * 100) / 100, config.readBudgetMaxUsd);
 
     const started = await db
       .transaction(async (tx) => {

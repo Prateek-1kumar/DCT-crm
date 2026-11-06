@@ -45,6 +45,7 @@ const Env = z.object({
   HARNESS_MODEL: z.string().default("claude-sonnet-5-5"),
   OPENAI_MODEL: z.string().optional(),
   OPENAI_PRICE_PER_MTOK: z.string().optional(),
+  READ_BUDGET_MAX_USD: z.coerce.number({ error: "must be a positive number of US dollars" }).positive({ error: "must be a positive number of US dollars" }).default(20),
   READ_BUDGET_USD: z.coerce.number({ error: "must be a positive number of US dollars" }).positive({ error: "must be a positive number of US dollars" }).default(3),
 });
 
@@ -90,6 +91,8 @@ export function parseConfig(env: NodeJS.ProcessEnv) {
     maxUploadBytes: 50 * 1024 * 1024,
     ai: { anthropicKey: e.ANTHROPIC_API_KEY, openaiKey: e.OPENAI_API_KEY, claudeModel: e.HARNESS_MODEL, openaiModel: e.OPENAI_MODEL, openaiPrice: e.OPENAI_PRICE_PER_MTOK },
     readBudgetUsd: e.READ_BUDGET_USD,
+    /** What a read's budget can grow to when it has scanned pages to pay for. */
+    readBudgetMaxUsd: e.READ_BUDGET_MAX_USD,
   };
 }
 

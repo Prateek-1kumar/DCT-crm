@@ -1,6 +1,7 @@
 import { HttpError } from "../src/lib/http.js";
 import type { ModelClient, Reader } from "@dct/harness";
 import { pdfReader, scanVersion } from "@dct/harness";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { eq } from "drizzle-orm";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import { writeFile } from "node:fs/promises";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
+import { config } from "../src/config.js";
 import { auditLog, documents, parties, reads, studies, studyDocuments, versions, type PageInfo } from "../src/db/schema.js";
 import { savePdf, scanStore } from "../src/lib/storage.js";
 import type { Models } from "../src/jobs/models.js";
@@ -99,11 +101,14 @@ async function pdf(name: string, lines = [CLAUSE, FILLER, FILLER]) {
   return Buffer.from(await file.save());
 }
 
-/** A PDF of blank pages: no text layer, so every page is a scan. Each call makes different bytes. */
+/** A PDF of pages with no text layer, so every page is a scan. Pages after the first carry a black box, so a fake reader can tell them apart. Each call makes different bytes. */
 async function scan(pages: number) {
   const file = await PDFDocument.create();
   file.setTitle(`${nextId++}`);
-  for (let i = 0; i < pages; i++) file.addPage([612, 792]);
+  for (let i = 0; i < pages; i++) {
+    const page = file.addPage([612, 792]);
+    if (i > 0) page.drawRectangle({ x: 100, y: 100, width: 300, height: 300 });
+  }
   return Buffer.from(await file.save());
 }
 
@@ -238,6 +243,63 @@ describe("starting a read", () => {
     expect((await get(built, again.readId)).budgetUsd).toBe(3);
     expect((await finished(built, again.readId)).status).toBe("done");
     expect(transcriptions).toBe(0);
+  });
+
+  it("a page saved by an earlier model is charged and transcribed again", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    const { sha256 } = await contractOf(s.id);
+    await scanStore.put(sha256, { page: 1, version: "an-earlier-model", rotation: 0, words: [] });
+    await scanStore.put(sha256, { page: 2, version: scanVersion(fakes().openai), rotation: 0, words: [] });
+    use(fakes());
+    transcriptions = 0;
+    const { readId } = (await post(built, s.id)).json();
+    expect((await get(built, readId)).budgetUsd).toBe(3.4);
+    expect((await finished(built, readId)).status).toBe("done");
+    expect(transcriptions).toBe(1);
+    expect((await scanStore.get(sha256)).find((p) => p.page === 1)!.version).toBe(scanVersion(fakes().openai));
+  });
+
+  it("the read budget never passes READ_BUDGET_MAX_USD", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    use(fakes());
+    const was = config.readBudgetMaxUsd;
+    config.readBudgetMaxUsd = 3.5;
+    try {
+      const { readId } = (await post(built, s.id)).json();
+      expect((await get(built, readId)).budgetUsd).toBe(3.5);
+      await finished(built, readId);
+    } finally {
+      config.readBudgetMaxUsd = was;
+    }
+  });
+
+  it("a read that fails on page 2 keeps page 1 and says which page", async () => {
+    const s = await seedStudy({ scanPages: 2 });
+    const { id, sha256 } = await contractOf(s.id);
+    const models = fakes();
+    const inked = async (png: Buffer) => {
+      const image = await loadImage(png);
+      const canvas = createCanvas(image.width, image.height);
+      const g = canvas.getContext("2d");
+      g.drawImage(image, 0, 0);
+      return g.getImageData(0, 0, image.width, image.height).data.some((v, i) => i % 4 < 3 && v < 128);
+    };
+    const openai: Reader = {
+      ...models.openai,
+      ask: (async (req: Parameters<Reader["ask"]>[0]) => {
+        if (req.name === "transcribe_page" && (await inked((req.parts[0] as { png: Buffer }).png))) throw new Error("model fell over: secret contract text");
+        return models.openai.ask(req);
+      }) as Reader["ask"],
+    };
+    use({ ...models, openai });
+    const read = await finished(built, (await post(built, s.id)).json().readId);
+    expect(read.status).toBe("failed");
+    expect(read.error).toContain("p.2");
+    expect(read.error).not.toContain("secret");
+
+    const [doc] = await built.ctx.db.select().from(documents).where(eq(documents.id, id));
+    expect(doc!.pages.map((p) => p.kind)).toEqual(["scan", "image"]);
+    expect((await scanStore.get(sha256)).map((p) => p.page)).toEqual([1]);
   });
 
   it("charges only for the scanned pages not yet transcribed, when a read stopped part way", async () => {

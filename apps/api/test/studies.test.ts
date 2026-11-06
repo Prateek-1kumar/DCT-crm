@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { auditLog } from "../src/db/schema.js";
@@ -131,13 +131,15 @@ describe("documents", () => {
   });
 
   it("uploading a scanned PDF queues nothing and lists its scanned pages", async () => {
+    const jobs = async () => Number((await built.ctx.db.execute<{ n: string }>(sql`SELECT count(*) AS n FROM pgboss.job`)).rows[0]!.n);
     const study = await newStudy();
+    const before = await jobs();
     const [file] = (await uploadBy(study.id, [{ name: "scan.pdf", data: await pdf("blank", "text", "blank") }])).json();
     expect(file).toMatchObject({ pages: 3, scannedPages: [1, 3] });
 
     const [doc] = (await call("GET", `/studies/${study.id}`)).json().documents;
     expect(doc).toEqual({ id: file.id, name: "scan.pdf", bytes: expect.any(Number), pageCount: 3, scannedPages: [1, 3] });
-    expect((await built.ctx.boss.getQueues()).map((q) => q.name)).not.toContain("ocr");
+    expect(await jobs()).toBe(before);
   });
 
   it("refuses what isn't a PDF, naming the file, and stores nothing", async () => {

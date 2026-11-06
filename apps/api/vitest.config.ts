@@ -15,6 +15,7 @@ export default defineConfig({
       OPENAI_PRICE_PER_MTOK: "",
       // the default, whatever test cap a developer's .env sets for real reads
       READ_BUDGET_USD: "3",
+      READ_BUDGET_MAX_USD: "20",
       UPLOAD_DIR: path.join(os.tmpdir(), `dct-api-test-${process.pid}`),
     },
     globalSetup: ["./test/global-setup.ts"],
