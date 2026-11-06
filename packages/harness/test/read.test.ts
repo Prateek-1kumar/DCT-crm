@@ -8,7 +8,8 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { ModelClient } from "../src/agent/client";
 import type { Ask, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
-import { ReadFailed, read } from "../src/read";
+import { ReadFailed, defaultMaxUsd, read, readBudget } from "../src/read";
+import { SCAN_PAGE_USD } from "../src/scan";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
 
 const CLAUSE = "Screen failures are paid at the full visit rate of $500.00 per subject.";
@@ -101,8 +102,7 @@ it("transcribes scanned pages first, paid from the same budget, and saves them",
   const scanned = await pdfReader.load(join(dir, "Scan.pdf"));
   expect(scanned.pages[0]!.kind).toBe("image");
 
-  const lines = [{ text: CLAUSE, top: 0.1, bottom: 0.12, unsure: false, marks: [] }];
-  const openai = fake("gpt", { transcribe_page: { rotation: 0, lines, tables: [] }, read_values: { answers: [{ item: 0, answer: "$500.00" }] }, review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { transcribe_page: { rotation: 0, text: `L 0.100-0.120 | ${CLAUSE}` }, read_values: { answers: [{ item: 0, answer: "$500.00" }] }, review: { findings: [] } }, 0.4);
   const saved: ScanPage[] = [];
   const scans: ScanStore = { get: async () => saved, put: async (_, page) => void saved.push(page) };
   const progress: string[] = [];
@@ -125,4 +125,9 @@ it("reports what was spent when a read breaks part way, with a plain message", a
   expect(failure).toBeInstanceOf(ReadFailed);
   expect((failure as ReadFailed).message).toMatch(/problem on the server/);
   expect((failure as ReadFailed).usd).toBeCloseTo(0.5);
+});
+
+it("a given --max-usd is the whole budget; otherwise the default plus an allowance for each page still to read", () => {
+  expect(readBudget(1.5, 10)).toBe(1.5);
+  expect(readBudget(undefined, 2)).toBeCloseTo(defaultMaxUsd() + 2 * SCAN_PAGE_USD);
 });

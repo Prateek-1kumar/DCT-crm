@@ -8,7 +8,7 @@ import type { Ask, Budget, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { groupLines, rawLine } from "../src/pdf/lines";
 import { fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "../src/scan";
-import type { Transcription } from "../src/scan/transcribe";
+import { parseTranscription, type Transcription } from "../src/scan/transcribe";
 import { toWords } from "../src/scan/words";
 import { ReadFailed } from "../src/read";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
@@ -130,7 +130,9 @@ const memoryStore = (): ScanStore & { pages: Map<string, ScanPage[]> } => {
 
 const sizeOf = (png: Buffer) => ({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) });
 
-function fakeReader(answer: (call: number, png: Buffer) => Transcription) {
+const compact = (rotation = 0, text = "L 0.100-0.120 | Startup fee $1,234.56") => ({ rotation, text });
+
+function fakeReader(answer: (call: number, png: Buffer) => { rotation: number; text: string }) {
   const sent: Buffer[] = [];
   const reader: Reader = {
     model: "gpt-test",
@@ -152,7 +154,7 @@ describe("scanDocs", () => {
   it("transcribes an image page once", async () => {
     const doc = await imagePdf("once.pdf", [[612, 792]]);
     expect(doc.pages[0]!.kind).toBe("image");
-    const { reader, sent } = fakeReader(() => transcription());
+    const { reader, sent } = fakeReader(() => compact());
     const store = memoryStore();
     const progress: string[] = [];
 
@@ -172,10 +174,10 @@ describe("scanDocs", () => {
 
   it("counts the pages still to pay for, and treats a page saved by another model as not read", async () => {
     const doc = await imagePdf("count.pdf", [[612, 792], [612, 792]]);
-    const { reader } = fakeReader(() => transcription());
+    const { reader } = fakeReader(() => compact());
     const store = memoryStore();
     expect(await untranscribed([doc], store, reader)).toBe(2);
-    await store.put(doc.sha256, { page: 1, version: "transcribe-2 other-model", rotation: 0, transcription: transcription() });
+    await store.put(doc.sha256, { page: 1, version: `transcribe-2 ${reader.model}`, rotation: 0, transcription: transcription() });
     expect(await untranscribed([doc], store, reader)).toBe(2);
     await store.put(doc.sha256, { page: 1, version: scanVersion(reader), rotation: 0, transcription: transcription() });
     expect(await untranscribed([doc], store, reader)).toBe(1);
@@ -183,7 +185,7 @@ describe("scanDocs", () => {
 
   it("a page saved in the old format is read again", async () => {
     const doc = await imagePdf("old-format.pdf", [[612, 792]]);
-    const { reader, sent } = fakeReader(() => transcription());
+    const { reader, sent } = fakeReader(() => compact());
     const store = fileScanStore(join(dir, "scans-old"));
     await mkdir(join(dir, "scans-old"), { recursive: true });
     await writeFile(join(dir, "scans-old", `${doc.sha256}.scan.json`), JSON.stringify([{ page: 1, version: `transcribe-1 ${reader.model}`, rotation: 0, words: [] }]));
@@ -197,7 +199,7 @@ describe("scanDocs", () => {
 
   it("turns a sideways page and reads it again", async () => {
     const doc = await imagePdf("sideways.pdf", [[612, 792]]);
-    const { reader, sent } = fakeReader((call) => transcription({ rotation: call === 1 ? 90 : 0 }));
+    const { reader, sent } = fakeReader((call) => compact(call === 1 ? 90 : 0));
     const [scanned] = await scanDocs([doc], { reader, store: memoryStore(), budget: budgetOf(3) });
     expect(sent).toHaveLength(2);
     const [first, second] = sent.map(sizeOf) as [ReturnType<typeof sizeOf>, ReturnType<typeof sizeOf>];
@@ -208,7 +210,7 @@ describe("scanDocs", () => {
 
   it("keeps finished pages when the budget runs out", async () => {
     const doc = await imagePdf("budget.pdf", [[612, 792], [612, 792], [612, 792]]);
-    const { reader, sent } = fakeReader(() => transcription());
+    const { reader, sent } = fakeReader(() => compact());
     const store = memoryStore();
     const stopped = await scanDocs([doc], { reader, store, budget: budgetOf(0.1 + 0.05) }).catch((e: unknown) => e);
     expect(stopped).toBeInstanceOf(ReadFailed);
@@ -227,7 +229,7 @@ describe("scanDocs", () => {
     const { reader } = fakeReader((_, png) => {
       const { width, height } = sizeOf(png);
       if (width / height < 0.5) throw new Error("secret model detail");
-      return transcription();
+      return compact();
     });
     const store = memoryStore();
     const stopped = await scanDocs([doc], { reader, store, budget: budgetOf(3) }).catch((e: unknown) => e);
@@ -239,7 +241,7 @@ describe("scanDocs", () => {
 
   it("says when a page looked blank when read from the image, and keeps going", async () => {
     const doc = await imagePdf("backs.pdf", [[612, 792], [612, 792]]);
-    const { reader } = fakeReader((call) => (call === 1 ? transcription({ lines: [], tables: [] }) : transcription()));
+    const { reader } = fakeReader((call) => (call === 1 ? compact(0, "") : compact()));
     const progress: string[] = [];
     const [scanned] = await scanDocs([doc], { reader, store: memoryStore(), budget: budgetOf(3), onProgress: (l) => progress.push(l) });
 
@@ -251,13 +253,64 @@ describe("scanDocs", () => {
 
   it("masks bank numbers in the text and paints nothing", async () => {
     const doc = await imagePdf("bank.pdf", [[612, 792]]);
-    const { reader } = fakeReader(() => transcription({ lines: [line("Account number 123456789", 0.1, 0.12), line("Startup fee $1,234.56", 0.2, 0.22)] }));
+    const { reader } = fakeReader(() => compact(0, "L 0.100-0.120 | Account number 123456789\nL 0.200-0.220 | Startup fee $1,234.56"));
     const [scanned] = await scanDocs([doc], { reader, store: memoryStore(), budget: budgetOf(3) });
     const page = scanned!.pages[0]!;
     expect(page.words.map((w) => w.text)).toContain("#########");
     expect(page.raw).not.toContain("123456789");
     expect(page.raw).toContain("$1,234.56");
     expect(page.maskBoxes).toEqual([]);
+  });
+});
+
+describe("parseTranscription", () => {
+  const parse = (text: string, rotation = 0) => parseTranscription({ rotation, text });
+
+  it("the compact form parses into lines and tables with positions, blank cells and doubts", () => {
+    const t = parse(
+      [
+        "L 0.050-0.062 | Study ABC-123 budget",
+        "L 0.070-0.082 | Rates are fixed{x}",
+        "T 0.300-0.620 | Visit fees",
+        "H | Visit | Fee | Extra | Total",
+        "R 0.312-0.326 | Visit 1 | $1,200.00 | | $1,500.00",
+        "R 0.330-0.344 | Visit 2 | $900.00{hw}{?} | $50.00 | $950.00",
+      ].join("\n"),
+      90,
+    );
+    expect(t.rotation).toBe(90);
+    expect(t.lines).toEqual([
+      line("Study ABC-123 budget", 0.05, 0.062),
+      line("Rates are fixed", 0.07, 0.082, { marks: ["struck_out"] }),
+    ]);
+    expect(t.tables).toEqual([
+      {
+        title: "Visit fees", top: 0.3, bottom: 0.62, columns: ["Visit", "Fee", "Extra", "Total"],
+        rows: [
+          { label: "Visit 1", top: 0.312, bottom: 0.326, cells: [cell("$1,200.00"), cell(""), cell("$1,500.00")] },
+          { label: "Visit 2", top: 0.33, bottom: 0.344, cells: [{ text: "$900.00", unsure: true, marks: ["handwritten"] }, cell("$50.00"), cell("$950.00")] },
+        ],
+      },
+    ]);
+  });
+
+  it("a line the parser can't read is kept as an unsure line at the previous element's position", () => {
+    const t = parse("L 0.100-0.120 | First\nSomething the model wrote freely $5.00\nT 0.3-0.4 | Fees");
+    expect(t.lines).toEqual([line("First", 0.1, 0.12), line("Something the model wrote freely $5.00", 0.1, 0.12, { unsure: true })]);
+    expect(parse("Total: $5.00").lines).toEqual([line("Total: $5.00", 0, 0, { unsure: true })]);
+  });
+
+  it("positions outside the page are clamped, and a missing position comes from the neighbour", () => {
+    const t = parse("L 1.200-1.500 | Past the end\nL 0.9-0.4 | Backwards\nL | No position\nR 0.5- | Row | $1.00");
+    expect(t.lines.map((l) => [l.top, l.bottom])).toEqual([[1, 1], [0.4, 0.9], [0.4, 0.9]]);
+    expect(t.tables[0]!.rows[0]).toMatchObject({ top: 0.4, bottom: 0.9 });
+  });
+
+  it("keeps every field of a row longer than its headings, and rows with no table above them", () => {
+    const t = parse("H | Item | Fee\nR 0.2-0.21 | A | $1.00 | $2.00 | $3.00\nT 0.4-0.5 |\nH | Only headings");
+    expect(t.tables[0]!.rows[0]!.cells.map((c) => c.text)).toEqual(["$1.00", "$2.00", "$3.00"]);
+    expect(t.lines.map((l) => l.text)).toEqual(["Only headings"]);
+    expect(groupLines(toWords(parse("R 0.2-0.21 | A | $1.00 | $2.00"))).map(rawLine)).toEqual(["A $1.00 $2.00"]);
   });
 });
 

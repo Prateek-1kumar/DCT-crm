@@ -116,7 +116,7 @@ for (const [fileIndex, spec] of args.entries()) {
       continue;
     }
     try {
-      const read = toWords(await cached<Transcription>(`${id}-gpt`, () => transcribe(gpt, png)));
+      const read = toWords(await cached<Transcription>(`${id}-gpt-compact`, () => transcribe(gpt, png)));
       const s = score(truth, amountsPerLine(read));
       for (const k of Object.keys(s) as (keyof Score)[]) total[k] += s[k];
       console.log(`${id}: ${show(s)}`);

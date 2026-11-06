@@ -5,7 +5,7 @@ import { checks } from "./checks";
 import type { Budget, Reader } from "./models";
 import { resolve } from "./resolve";
 import { review } from "./review";
-import { scanDocs } from "./scan";
+import { SCAN_PAGE_USD, scanDocs } from "./scan";
 import type { CheckReport, LoadedDoc, ScanStore } from "./types";
 
 export interface ReadOptions {
@@ -53,6 +53,9 @@ export function defaultMaxUsd(): number {
   const envUsd = Number(process.env.HARNESS_MAX_USD);
   return envUsd > 0 ? envUsd : 3;
 }
+
+/** An explicit limit is the whole budget; otherwise the default, plus what the scanned pages still to read are expected to cost. */
+export const readBudget = (maxUsd: number | undefined, scanPages: number) => maxUsd ?? defaultMaxUsd() + SCAN_PAGE_USD * scanPages;
 
 export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadResult> {
   if (!opts.scans && docs.some((d) => d.pages.some((p) => p.kind === "image"))) {

@@ -3,7 +3,7 @@ import { pdfReader } from "../pdf";
 import { buildPage } from "../pdf/page";
 import { ReadFailed } from "../read";
 import type { LoadedDoc, Page, ScanPage, ScanStore } from "../types";
-import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts, transcribeAsk, type Transcription } from "./transcribe";
+import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts, parseTranscription, transcribeAsk, type Transcription } from "./transcribe";
 import { toWords } from "./words";
 
 export { fileScanStore } from "./store";
@@ -14,7 +14,7 @@ export const SCAN_PAGE_USD = 0.4;
 const OUTPUT_TOKENS = 8000;
 const PARALLEL_PAGES = 4;
 
-export const scanVersion = (reader: Reader) => `transcribe-2 ${reader.model}`;
+export const scanVersion = (reader: Reader) => `transcribe-3 ${reader.model}`;
 
 const readyPages = async (doc: LoadedDoc, store: ScanStore, reader: Reader) => (await store.get(doc.sha256)).filter((p) => p.version === scanVersion(reader));
 const needsReading = (page: Page, saved: ScanPage[]) => page.kind === "image" && !saved.some((s) => s.page === page.page);
@@ -52,7 +52,7 @@ async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Pr
   try {
     const answer = await reader.ask(transcribeAsk(parts));
     budget.spent += answer.usd - estimate;
-    return answer.value;
+    return parseTranscription(answer.value);
   } catch (err) {
     budget.spent += spentOn(err) - estimate;
     throw err;

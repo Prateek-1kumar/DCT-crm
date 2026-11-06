@@ -5,8 +5,8 @@ import { Rulebook } from "@dct/shared";
 import OpenAI from "openai";
 import { claudeReader, openaiReader } from "./models";
 import { pdfReader } from "./pdf";
-import { defaultMaxUsd, read, type ReadResult } from "./read";
-import { SCAN_PAGE_USD, fileScanStore, untranscribed } from "./scan";
+import { read, readBudget, type ReadResult } from "./read";
+import { fileScanStore, untranscribed } from "./scan";
 import type { LoadedDoc } from "./types";
 
 function fail(message: string): never {
@@ -54,8 +54,11 @@ async function main() {
   const base = process.env.INIT_CWD ?? process.cwd();
   const args = process.argv.slice(2);
   const from = args[0] === "--from" ? args.splice(0, 2)[1] : undefined;
+  const limit = args.includes("--max-usd") ? args.splice(args.indexOf("--max-usd"), 2)[1] : undefined;
+  const maxUsd = limit === undefined ? undefined : Number(limit);
+  if (maxUsd !== undefined && !(maxUsd > 0)) fail("--max-usd needs a dollar amount above zero, for example --max-usd 2.5.");
   const [out, ...pdfs] = args;
-  if (!out || !pdfs.length) fail("Usage: pnpm --filter @dct/harness read [--from <earlier outDir>] <outDir> <pdf...>");
+  if (!out || !pdfs.length) fail("Usage: pnpm --filter @dct/harness read [--from <earlier outDir>] [--max-usd <dollars>] <outDir> <pdf...>");
   for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_MODEL"]) {
     if (!process.env[key]) fail(`${key} is not set. Add it to the .env file at the repo root, or export it, then try again.`);
   }
@@ -73,7 +76,7 @@ async function main() {
     claude: claudeReader(anthropic, process.env.HARNESS_MODEL ?? "claude-sonnet-5-5"),
     openai,
     scans,
-    maxUsd: defaultMaxUsd() + SCAN_PAGE_USD * (await untranscribed(docs, scans, openai)),
+    maxUsd: readBudget(maxUsd, await untranscribed(docs, scans, openai)),
     onProgress: console.log,
     ...(from && { rulebook: await earlier(resolve(base, from)) }),
   });
