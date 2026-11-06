@@ -131,7 +131,18 @@ Each candidate question, from a failed check, the compile agent or the reviewer,
 | **elsewhere** | The answer may be in another clause or document | Search the bundle (and an amendment's supersession) and the house rules. If found, it is settled with the citation. If not, it becomes a **decision**. |
 | **decision** | The contract doesn't say | If a matching house rule exists, apply it and cite it. Otherwise it is a person's question. **Never settled by models agreeing.** |
 
-**On `SCAN` pages the second read is the same model looking again, closer** (decided 2026-11-06). Every amount that no arithmetic proves gets a zoomed crop of its spot read by the OpenAI model, which isn't shown the value. If it reads the same, the amount is settled (`two_reads`). If not, it is a person's question with the crop and both readings. A value transcribed as handwritten, struck out or initialed is never settled by reads; it goes straight to a person with the crop. A scanned grid whose arithmetic fails is read again at zoom; if the new reading makes every identity hold, the arithmetic proves it, and otherwise a person is asked. Claude does not read scans.
+**On `SCAN` pages, values cite cells, and a blind table re-read proves** (decided 2026-11-06 evening; replaces the crop re-look described in the next paragraph, which is kept only as history).
+- Every cell and line of a transcription has a stable id (`p7.t1.r5.c3`).
+- The compile agent reads scanned tables as tables, with row and column ids, and cites cells instead of retyping values. Code checks that each value equals its cited cell, so a number the page doesn't print can't enter the rulebook.
+- Proof on scans, in order:
+  1. arithmetic over cited cells (grid totals, plus fixed relations: sum, product by a printed rate or count, the same fee printed twice);
+  2. otherwise one blind re-read of the page's tables. It is given no labels and no values, and its strips are offset from the first read's. The two reads are compared cell by cell by structure, never by position.
+- Settling: agreement proves (`two_reads`). A difference is retried against the arithmetic, then asked. A mark seen by either read is asked. Anything that can't be aligned is asked.
+- Positions are for display only.
+- A read whose reviewer can't run within its budget can't be approved.
+- The blind re-read counts as proof only after free measurements show the two reads rarely share a mistake: a planted-misread test, and two saved reads of the same page.
+
+Earlier design: **On `SCAN` pages the second read is the same model looking again, closer** (decided 2026-11-06). Every amount that no arithmetic proves gets a zoomed crop of its spot read by the OpenAI model, which isn't shown the value. If it reads the same, the amount is settled (`two_reads`). If not, it is a person's question with the crop and both readings. A value transcribed as handwritten, struck out or initialed is never settled by reads; it goes straight to a person with the crop. A scanned grid whose arithmetic fails is read again at zoom; if the new reading makes every identity hold, the arithmetic proves it, and otherwise a person is asked. Claude does not read scans.
 
 Every automatic resolution is recorded with its evidence and visible on the rulebook line. A reading resolution changes a value only through the same checks; a `two_reads` value that breaks an identity becomes a person's question.
 
@@ -199,6 +210,12 @@ Upload and study details · Reading (live progress feed) · Decisions (cards) ·
 - Keep the UI's design language (sidebar, pills); what each screen contains can change.
 - Build method: parallel Sonnet agents (effort high) do the implementation; the principal engineer (Claude, this session) reviews every change so the design stays intact. The owner also reviews. One step at a time, starting with the clean-up.
 - Work on a new branch. The old extraction code, review-question system, agent instruction files and old docs are deleted first, so old logic can't leak in.
+- **2026-11-06 evening, scanned pages (after the HCWC runs and a principal-engineer review):**
+  - Scanned values cite transcription cells, and code checks them.
+  - A blind table re-read is accepted as proof once the free tests pass.
+  - A skipped reviewer blocks approval.
+  - Opus implements this change.
+  - The next paid run, on a different contract, is decided later.
 - **2026-11-06, scanned pages:** vision-first, with tesseract removed. One model reads scans: the OpenAI model, paid when a read starts and cached per file. Claude writes the rulebook. The OpenAI reviewer stays, because it settles what Claude left open. Amounts that no arithmetic proves get a zoomed re-look by the same model. Doubtful marks (handwriting, strike-throughs) always go to a person. Scan images are sent unmasked for now.
 
 ## 11. Calls made by the designer (check these)
