@@ -28,6 +28,8 @@ interface Item {
 
 interface ValueItem extends Item {
   id: string;
+  /** Set on a grid's row cell, so a check of what no total covers can tell which cell this is. */
+  cell?: [number, number];
   current: Cell;
   patch(value: Cell): Patch;
 }
@@ -76,15 +78,25 @@ export async function askPages(run: Run, readers: Reader[], job: Pick<Job, "doc"
   return replies.map((r) => items.map((_, i) => r.answers.find((x) => x.item === i)?.answer ?? null));
 }
 
-async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, items: Item[]): Promise<Pair[] | null> {
+/** askPages that logs a failure in plain words and returns null, so the items can be left for a person. */
+export async function tryAsk(run: Run, readers: Reader[], job: Pick<Job, "doc" | "pages" | "region">, items: Pick<Item, "label" | "options">[]): Promise<(string | null)[][] | null> {
   try {
-    const [a, b] = await askPages(run, [run.claude, run.openai], job, items);
-    return a!.map((x, i): Pair => [x, b![i]!]);
+    return await askPages(run, readers, job, items);
   } catch (err) {
     run.log.push(`${where(job)}: left for a person (${err instanceof Error ? err.message : "it could not be read"})`);
     return null;
   }
 }
+
+async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, items: Item[]): Promise<Pair[] | null> {
+  const answers = await tryAsk(run, [run.claude, run.openai], job, items);
+  return answers && answers[0]!.map((x, i): Pair => [x, answers[1]![i]!]);
+}
+
+export const values = (n: number) => `${n} ${n === 1 ? "value" : "values"}`;
+
+/** Questions that go straight to a person with no model call: a marked value, or a spot that can't be found to look at closely. */
+export const personId = (target: string, cell?: [number, number]) => (cell ? `person:${target}:${cell[0]}:${cell[1]}` : `person:${target}`);
 
 export function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>) {
   const question: Question = {
@@ -93,6 +105,11 @@ export function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | 
   const region = run.crops.get(q.id);
   if (region) question.source = { ...question.source, region };
   run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), question] };
+}
+
+/** What a scanned page's amounts get when the closer look could not be done. */
+export function raiseUnread(run: Run, q: Pick<Question, "id" | "about" | "source" | "question">) {
+  raise(run, { ...q, context: "This still needs a closer second read of the page, and it could not be done in this run.", readings: [], options: [] });
 }
 
 export const shown = (c: Cell) => (typeof c === "number" ? usd(c) : String(c));
@@ -158,8 +175,8 @@ export function proven(rulebook: Rulebook, patches: Patch[]): Patch[] {
   ];
 }
 
-/** Applies the patches only if the checks still pass for everything they touch; otherwise the rulebook is left as it was. */
-function tryApply(run: Run, patches: Patch[]): boolean {
+/** Applies the patches only if the checks still pass for everything they touch (and `also` holds); otherwise the rulebook is left as it was. */
+function tryApply(run: Run, patches: Patch[], also: (report: CheckReport) => boolean = () => true): boolean {
   let next: Rulebook;
   try {
     next = applyPatches(run.rulebook, patches);
@@ -168,7 +185,7 @@ function tryApply(run: Run, patches: Patch[]): boolean {
   }
   const report: CheckReport = checks.runChecks(next, run.docs);
   const broken = patches.some((p) => (p.target === "grid" ? (report.grids[p.id]?.problems.length ?? 0) > 0 : p.id in report.quotes));
-  if (broken) return false;
+  if (broken || !also(report)) return false;
   run.rulebook = next;
   return true;
 }
@@ -217,13 +234,13 @@ function valuesJob(t: Target, items: ValueItem[]): Job {
           readings: readings(run, said),
           options: [...use(0), ...use(1)],
         });
-        run.log.push(`${place}: the two reads disagree on ${differ.length} ${differ.length === 1 ? "value" : "values"}, so a person will be asked`);
+        run.log.push(`${place}: the two reads disagree on ${values(differ.length)}, so a person will be asked`);
       }
       if (!settled.length) return;
 
       const patches = proven(run.rulebook, settled.map((s) => s.item.patch(s.value)));
       if (tryApply(run, patches)) {
-        run.log.push(`${place}: two reads agree on ${settled.length} ${settled.length === 1 ? "value" : "values"} ✓`);
+        run.log.push(`${place}: two reads agree on ${values(settled.length)} ✓`);
         return;
       }
       if (settled.length < items.length) {
@@ -280,20 +297,21 @@ function termsJob(terms: Term[]): Job {
 function gridJob(g: Grid): Job {
   const items: ValueItem[] = [];
   const visit = (j: number) => g.visits[j] ?? `#${j + 1}`;
-  const add = (label: string, path: string, current: Cell) => {
+  const add = (label: string, path: string, current: Cell, cell?: [number, number]) => {
     if (typeof current !== "number") return;
-    items.push({ id: `read:${g.id}:${path}`, label, current, read: readCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }) });
+    items.push({ id: `read:${g.id}:${path}`, cell, label, current, read: readCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }) });
   };
-  g.rows.forEach((r, i) => r.cells.forEach((c, j) => add(cellLabel(g, i, j), `rows.${i}.cells.${j}`, c)));
+  g.rows.forEach((r, i) => r.cells.forEach((c, j) => add(cellLabel(g, i, j), `rows.${i}.cells.${j}`, c, [i, j])));
   for (const line of ["subtotal", "overhead", "total"] as const) g[line]?.forEach((c, j) => add(`the ${line} line at visit '${visit(j)}'`, `${line}.${j}`, c));
   add("the grand total", "grandTotalCents", g.grandTotalCents);
   const source = { doc: g.doc, page: g.pages[0]!, quote: "" };
   return valuesJob({ id: g.id, what: `the figures of '${g.name}'`, about: { target: "grid", id: g.id }, source, pages: g.pages }, items);
 }
 
-const onScan = (run: Run, doc: string, pages: number[]) => {
+/** One rule for terms and grids: a scan on any of the pages makes it a scan's, read by the vision reader alone. */
+export const onScan = (run: Run, doc: string, pages: number[]) => {
   const all = run.docs.find((d) => d.name === doc)?.pages ?? [];
-  return pages.every((n) => all.find((p) => p.page === n)?.kind === "scan");
+  return pages.some((n) => all.find((p) => p.page === n)?.kind === "scan");
 };
 
 /** Scanned pages are left out: `relook` and `rereadScanGrids` settle them with the vision reader alone. */
@@ -309,17 +327,17 @@ export function readJobs(run: Run, report: CheckReport): Job[] {
 
 /**
  * A scanned grid whose arithmetic fails is read again at zoom by the vision reader. If the corrected figures make the checks
- * pass, the arithmetic is the proof; otherwise a person sees both readings.
+ * pass and no changed cell is left without a total proving it, the arithmetic is the proof; otherwise a person sees both
+ * readings. A grid with a marked value is left to the person already asked about it.
  */
 export async function rereadScanGrids(run: Run, report: CheckReport) {
   for (const g of run.rulebook.grids.filter((x) => report.grids[x.id]?.problems.length && onScan(run, x.doc, x.pages))) {
+    if (run.rulebook.questions.some((q) => q.id.startsWith(`person:${g.id}:`))) continue;
     const job = gridJob(g);
-    const answers = await askPages(run, [run.openai], job, job.items).then(([a]) => a!, (err: unknown) => {
-      run.log.push(`${where(job)}: left for a person (${err instanceof Error ? err.message : "it could not be read"})`);
-      return null;
-    });
+    const base = { id: `read:${g.id}`, about: { target: "grid" as const, id: g.id }, source: { doc: g.doc, page: g.pages[0]!, quote: "" } };
+    const answers = (await tryAsk(run, [run.openai], job, job.items))?.[0];
     if (!answers) {
-      job.settle(run, null);
+      raiseUnread(run, { ...base, question: printQuestion(base.source, [`the figures of '${g.name}'`]) });
       continue;
     }
 
@@ -327,25 +345,26 @@ export async function rereadScanGrids(run: Run, report: CheckReport) {
     const changed = read.filter((r) => r.value !== null && !same(r.value, r.item.current));
     const confirmed = read.filter((r) => r.value !== null && same(r.value, r.item.current));
     const patches = [...proven(run.rulebook, confirmed.map((r) => r.item.patch(r.value))), ...changed.map((r) => r.item.patch(r.value))];
-    if (changed.length && tryApply(run, patches)) {
-      run.log.push(`${where(job)}: a closer read corrected ${changed.length} ${changed.length === 1 ? "value" : "values"} and the totals now add up ✓`);
+    const covered = (after: CheckReport) => changed.every(({ item }) => !after.grids[g.id]?.unproven.some((u) => u.row === item.cell?.[0] && u.col === item.cell[1]));
+    if (changed.length && tryApply(run, patches, covered)) {
+      run.log.push(`${where(job)}: a closer read corrected ${values(changed.length)} and the totals now add up ✓`);
       continue;
     }
 
-    const base = { id: `read:${g.id}`, about: { target: "grid" as const, id: g.id }, source: { doc: g.doc, page: g.pages[0]!, quote: "" } };
     if (changed.length) {
       raiseZoomed(run, base, changed.map((r) => ({ label: r.item.label, whole: shown(r.item.current), read: r.said, keep: r.item.patch(r.item.current), use: r.item.patch(r.value) })));
-      run.log.push(`${where(job)}: a closer read still doesn't make the totals add up, so a person will be asked`);
+      run.log.push(`${where(job)}: a closer read doesn't settle the figures by the totals, so a person will be asked`);
     } else {
+      const all = read.every((r) => r.value !== null);
       raise(run, {
         ...base,
         kind: "decision",
         question: `The figures of '${g.name}' don't add up. Use them as printed?`,
-        context: `A closer read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent. ${report.grids[g.id]!.problems.join(" ")}`,
+        context: `${all ? "A closer read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent." : "A closer read of the page agrees with the rulebook wherever it could read, and the contract's own arithmetic does not hold."} ${report.grids[g.id]!.problems.join(" ")}`,
         readings: [],
         options: [{ label: "Use them as printed", patches: [] }],
       });
-      run.log.push(`${where(job)}: a closer read confirms the print, but the printed figures don't add up, so a person will be asked`);
+      run.log.push(`${where(job)}: a closer read confirms what it could read, but the printed figures don't add up, so a person will be asked`);
     }
   }
 }

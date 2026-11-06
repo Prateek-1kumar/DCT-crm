@@ -225,10 +225,10 @@ describe("scanned pages: one closer look by the vision reader", () => {
 
     expect(r.claude.calls).toHaveLength(0);
     expect(r.openai.calls).toHaveLength(0);
-    expect(out.rulebook.questions.map((q) => [q.id, q.kind, q.source.region !== undefined])).toEqual([["read:t1", "reading", true], ["read:t2", "reading", true]]);
-    expect(question1(out.rulebook, "read:t1").context).toContain("p.1 shows this value struck out");
-    expect(question1(out.rulebook, "read:t2").context).toContain("p.1 shows this value handwritten");
-    expect(question1(out.rulebook, "read:t1").options.map((o) => o.label)).toEqual(["Use $1,000.00", "Neither, I'll type the right value"]);
+    expect(out.rulebook.questions.map((q) => [q.id, q.kind, q.source.region !== undefined])).toEqual([["person:t1", "reading", true], ["person:t2", "reading", true]]);
+    expect(question1(out.rulebook, "person:t1").context).toContain("p.1 shows this value struck out");
+    expect(question1(out.rulebook, "person:t2").context).toContain("p.1 shows this value handwritten");
+    expect(question1(out.rulebook, "person:t1").options.map((o) => o.label)).toEqual(["Use $1,000.00", "Neither, I'll type the right value"]);
     expect(out.rulebook.terms.map((t) => t.evidence)).toEqual(["quote", "quote"]);
   });
 
@@ -259,6 +259,73 @@ describe("scanned pages: one closer look by the vision reader", () => {
     ]);
     expect(q.source.region).toBeUndefined();
     expect(q.options.map((o) => o.label)).toEqual(["Use the whole-page reading ($205.00)", "Use the zoomed reading ($260.00)", "Neither, I'll type the right value"]);
+  });
+
+  const openGrid = (): Grid => ({ ...grid(25000), subtotal: [15000, null], grandTotalCents: null });
+
+  it("a handwritten cell in a scan grid whose totals fail is asked, never settled by the closer read", async () => {
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned({ 2: "handwritten" }), r, rulebook({ grids: [grid(20500)] }));
+
+    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 20500]);
+    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([]);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1:0:0", "person:g1:0:1"]);
+    expect(question1(out.rulebook, "person:g1:0:1").context).toBe("p.1 shows this value handwritten");
+    expect(question1(out.rulebook, "person:g1:0:1").source.region).toBeDefined();
+  });
+
+  it("a handwritten cell and a disagreeing cell in one scan grid both reach a person", async () => {
+    const read = (label: string) => (label === "row 'Labs' at visit 'V2'" ? "$55.00" : truthful(label));
+    const r = readers({ fail: true }, { read });
+    const out = await resolveOn(scanned({ 2: "handwritten" }), r, rulebook({ grids: [openGrid()] }));
+
+    expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual(["row 'Labs' at visit 'V2'"]);
+    expect(out.rulebook.questions.map((q) => q.id).sort()).toEqual(["person:g1:0:1", "read:g1"]);
+    expect(question1(out.rulebook, "person:g1:0:1").options[0]!.label).toBe("Use $250.00");
+    expect(question1(out.rulebook, "read:g1").readings.map((x) => x.model)).toEqual(["openai-x (whole page)", "openai-x (zoomed)"]);
+  });
+
+  it("a grid spanning a text page and a scan page is never read by Claude", async () => {
+    const spanning = { ...grid(20500), pages: [1, 2] };
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned(), r, rulebook({ grids: [spanning] }));
+
+    expect(r.claude.calls).toHaveLength(0);
+    expect(r.openai.calls).toHaveLength(1);
+    expect(r.openai.calls[0]!.parts.filter((p) => p.type === "image")).toHaveLength(2);
+    expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000]);
+    expect(out.rulebook.questions).toEqual([]);
+  });
+
+  it("a changed scan cell no total covers is asked, not accepted", async () => {
+    const g = { ...grid(25000), subtotal: [15000, null], grandTotalCents: null, rows: grid(25000).rows.map((row, i) => (i === 0 ? { ...row, cells: [10500, 25000] } : row)) };
+    const read = (label: string) => (label === "row 'Labs' at visit 'V2'" ? "$55.00" : truthful(label));
+    const r = readers({ fail: true }, { read });
+    const out = await resolveOn(scanned(), r, rulebook({ grids: [g] }));
+
+    expect(out.rulebook.grids[0]!.rows.map((row) => row.cells)).toEqual([[10500, 25000], [5000, 5000]]);
+    const q = question1(out.rulebook, "read:g1");
+    expect(q.readings.map((x) => x.answer)).toEqual([expect.stringContaining("row 'Labs' at visit 'V2': $50.00"), expect.stringContaining("row 'Labs' at visit 'V2': $55.00")]);
+  });
+
+  it("a scanned grid the closer read could not be made is asked in plain words", async () => {
+    const out = await resolveOn(scanned(), readers({ fail: true }, { fail: true }), rulebook({ grids: [grid(20500)] }));
+    const q = question1(out.rulebook, "read:g1");
+    expect(q.context).toBe("This still needs a closer second read of the page, and it could not be done in this run.");
+    expect(out.log.join("\n")).not.toContain("secret");
+  });
+
+  it("a scanned amount whose spot can't be found is asked", async () => {
+    const r = readers({ fail: true }, { read: () => "$50.00" });
+    const out = await resolveOn(scanned(), r, rulebook({ terms: [fee({ amountCents: 5000, source: { doc: "Budget.pdf", page: 1, quote: "Archiving fee" } })] }));
+
+    expect(r.openai.calls).toHaveLength(0);
+    const q = question1(out.rulebook, "person:t1");
+    expect(q.context).toContain("could not be found on the page");
+    expect(q.options.map((o) => o.label)).toEqual(["Use $50.00", "Neither, I'll type the right value"]);
+    expect(q.source.region).toBeUndefined();
+    expect(out.rulebook.terms[0]!.evidence).toBe("quote");
   });
 });
 
