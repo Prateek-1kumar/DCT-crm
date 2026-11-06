@@ -201,6 +201,27 @@ describe("scanned pages: one closer look by the vision reader", () => {
     expect(out.rulebook.questions).toEqual([]);
   });
 
+  it("a re-run drops a reading question the re-look now confirms", async () => {
+    const stale = question({ id: "read:t1", origin: "check", about: { target: "term", id: "t1" } });
+    const out = await resolveOn(scanned(), readers({ fail: true }, { read: () => "$75.00" }), rulebook({ terms: [fee()], questions: [stale] }));
+
+    expect(out.rulebook.questions.find((q) => q.id === "read:t1")).toBeUndefined();
+    expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "two_reads" });
+  });
+
+  it("a re-run keeps answered questions and questions from the compile agent, the reviewer and the rules", async () => {
+    const kept = [
+      question({ id: "read:t1", origin: "check", state: "answered" }),
+      question({ id: "read:c1", origin: "compile" }),
+      question({ id: "person:r1", origin: "reviewer" }),
+      question({ id: "read:u1", origin: "rule" }),
+      question({ id: "read:g1:printed", origin: "check", kind: "decision" }),
+    ];
+    const out = await resolveOn(scanned(), readers({ fail: true }, { read: () => "$75.00" }), rulebook({ terms: [fee()], questions: kept }));
+
+    expect(out.rulebook.questions).toEqual(kept);
+  });
+
   it("a differing re-look asks with both readings and the crop", async () => {
     const r = readers({ fail: true }, { read: () => "$85.00" });
     const out = await resolveOn(scanned(), r, rulebook({ terms: [fee()] }));
