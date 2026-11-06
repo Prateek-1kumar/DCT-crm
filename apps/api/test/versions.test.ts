@@ -336,12 +336,13 @@ describe("answering a question about a scanned grid", () => {
 
   it("answering the marked-values question on a scanned grid lets the version be approved", async () => {
     const asWritten = gridQuestion("person:g1", "Use the values as written", [{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } }]);
-    const { id } = await seedScan(rulebook({ terms: [], grids: [scanGrid([10000, null])], questions: [asWritten] }));
+    // the second read already agreed on V1, which on a scan its column total alone can't prove
+    const { id } = await seedScan(rulebook({ terms: [], grids: [{ ...scanGrid([10000, null]), cellsReadTwice: [[0, 0]] }], questions: [asWritten] }));
     expect((await stored(id)).problems).toHaveLength(1);
 
     const res = await answer(id, "person:g1", { option: 0, by: "Ana" });
     expect(res.json().problems).toEqual([]);
-    expect(res.json().rulebook.grids[0].cellsReadTwice).toEqual([[0, 1]]);
+    expect(res.json().rulebook.grids[0].cellsReadTwice).toEqual([[0, 0], [0, 1]]);
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
   });
 
@@ -375,8 +376,8 @@ describe("answers that leave a scanned grid failing", () => {
       subtotal: [10000, 20000], overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: accepted,
     }) as Rulebook["grids"][number];
   const source = { doc: "scan.pdf", page: 1, quote: "" };
-  const seedGrid = async (accepted: boolean, questions: Question[]) => {
-    const { documentIds, grid: cited } = await scannedGrid(grid(accepted));
+  const seedGrid = async (accepted: boolean, questions: Question[], over: Partial<Rulebook["grids"][number]> = {}) => {
+    const { documentIds, grid: cited } = await scannedGrid({ ...grid(accepted), ...over });
     // the transcribed figures stay on the page when an answer replaces them
     const accounted = [25000, 20000].map((amountCents) => ({ doc: "scan.pdf", page: 1, amountCents, reason: "the whole-page reading" }));
     const rb = rulebook({ terms: [], grids: [cited], questions, accounted });
@@ -400,7 +401,8 @@ describe("answers that leave a scanned grid failing", () => {
 
   it("an answer that changes a scanned subtotal clears its citation, and the version can be approved", async () => {
     const fix = question("q-subtotal", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $250.00", patches: [{ target: "grid", id: "g1", set: { "subtotal.1": 25000 } }] }] });
-    const { id } = await seedGrid(false, [fix]);
+    // the second read agreed on both cells, which on a scan the column totals alone can't prove
+    const { id } = await seedGrid(false, [fix], { cellsReadTwice: [[0, 0], [0, 1]] });
 
     const res = (await answer(id, "q-subtotal", { option: 0, by: "Ana" })).json();
     expect(res.rulebook.grids[0].cellIds).toMatchObject({ "subtotal.0": "p1.t1.r2.c1", "subtotal.1": null });
