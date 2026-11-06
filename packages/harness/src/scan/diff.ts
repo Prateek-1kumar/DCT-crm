@@ -8,6 +8,8 @@ export interface Verdict {
   second?: string;
   /** The marks either read saw. */
   marks?: Mark[];
+  /** Where the other read has this cell when it prints nothing there, so a figure only this read found sits in a known cell. */
+  blankAt?: string;
 }
 
 type Table = Transcription["tables"][number];
@@ -155,9 +157,13 @@ export function diffReads(page: number, first: Transcription, second: Transcript
       row.cells.forEach((cell, k) => {
         if (!amountsOf(cell.text).length) return;
         const id = `p${page}.t${ti + 1}.r${ri + 1}.c${k + 1}`;
+        const compared = (col: number): Verdict => {
+          const verdict = compareCell(cell, match!.cells[col] ?? { text: "", unsure: false, marks: [] });
+          return verdict.outcome === "differ" && !amountsOf(verdict.second!).length ? { ...verdict, blankAt: `p${page}.t${tables.get(ti)! + 1}.r${rows.get(ri)! + 1}.c${col + 1}` } : verdict;
+        };
         if (!match) out.set(id, cell.marks.length ? { outcome: "marked", marks: cell.marks } : UNALIGNED);
-        else if (columns.has(k)) out.set(id, compareCell(cell, match.cells[columns.get(k)!] ?? { text: "", unsure: false, marks: [] }));
-        else if (printedAlike(row, match)) out.set(id, compareCell(cell, match.cells[k]!));
+        else if (columns.has(k)) out.set(id, compared(columns.get(k)!));
+        else if (printedAlike(row, match)) out.set(id, compared(k));
         else out.set(id, cell.marks.length ? { outcome: "marked", marks: cell.marks } : UNALIGNED);
       });
     });

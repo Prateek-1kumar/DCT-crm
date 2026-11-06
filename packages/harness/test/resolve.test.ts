@@ -9,6 +9,7 @@ import { coverage } from "../src/checks/coverage";
 import type { Ask, Budget, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
 import { resolve } from "../src/resolve";
+import { closeSettledMissed } from "../src/resolve/scan";
 import { withScans } from "../src/scan";
 import { parseTranscription, type Compact } from "../src/scan/transcribe";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
@@ -270,7 +271,7 @@ describe("scanned pages: a blind second read of the page", () => {
     const out = await resolveOn(scan, r, book);
     expect(verifies(r)).toHaveLength(1);
     // the row's fee and its own total are one fee to add, never two
-    const asked = question1(out.rulebook, "read:Budget.pdf:p1:missed");
+    const asked = question1(out.rulebook, "read:Budget.pdf:p1:missed:t1.r3");
     expect(out.rulebook.questions).toEqual([asked]);
     expect(asked.options[0]!.patches).toEqual([expect.objectContaining({ target: "term", set: expect.objectContaining({ name: "ECG", amountCents: 4000 }) })]);
     const missed = coverage(out.rulebook, scan).pages[0]!.amounts.filter((a) => a.status === "missing");
@@ -426,8 +427,14 @@ describe("scanned pages: a blind second read of the page", () => {
     // the compile agent listing it as accounted for doesn't settle it; a person setting it aside does
     const listed = { ...out.rulebook, accounted: [{ doc: "Budget.pdf", page: 1, amountCents: 60000, reason: "a cap, already in the contract's terms" }] };
     expect(missed(listed, scan)).toContainEqual([60000, "missing"]);
-    const aside = question1(out.rulebook, "read:Budget.pdf:p1:missed").options[1]!.patches;
-    expect(missed(applyPatches(out.rulebook, aside), scan)).toEqual([[10000, "set_aside"], [25000, "set_aside"], [5000, "set_aside"], [60000, "set_aside"]]);
+    const asks = out.rulebook.questions.filter((q) => q.id.startsWith("read:Budget.pdf:p1:missed:"));
+    expect(asks.map((q) => q.options.length)).toEqual([3, 2, 2]);
+    const everything = asks[0]!.options[2]!;
+    expect(everything.label).toBe("Set aside every amount on this page");
+    expect(missed(applyPatches(out.rulebook, everything.patches), scan)).toEqual([[10000, "set_aside"], [25000, "set_aside"], [5000, "set_aside"], [60000, "set_aside"]]);
+    const closed = closeSettledMissed(applyPatches(out.rulebook, everything.patches), scan);
+    expect(closed.questions.filter((q) => q.state === "open")).toEqual([]);
+    expect(closeSettledMissed(out.rulebook, scan).questions.filter((q) => q.state === "open")).toHaveLength(3);
 
     // a page with no second read reports nothing of the kind
     const unread = scanned({ 1: first });

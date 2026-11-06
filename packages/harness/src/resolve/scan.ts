@@ -1,4 +1,4 @@
-import { CORRECTED_BY_SECOND_READ, SET_ASIDE, applyPatches, cellProofPatches, citationPatches, correctedCells, pageOfCell, valueAt, type Patch, type Source } from "@dct/shared";
+import { ADDED_TO_GRID, CORRECTED_BY_SECOND_READ, SET_ASIDE, applyPatches, cellProofPatches, citationPatches, correctedCells, pageOfCell, valueAt, type Grid, type Patch, type Question, type Rulebook, type Source } from "@dct/shared";
 import { checks, needsProof } from "../checks";
 import { MARKS, checkCitations } from "../checks/cells";
 import { onScan, printedAmounts, printsTotals } from "../checks/grid";
@@ -242,53 +242,112 @@ function askAsPrinted(run: Run, report: CheckReport) {
 
 const words = (line: string) => (line.length >= 120 ? line.slice(0, line.lastIndexOf(" ")) : line).trim();
 
+const TABLE_CELL = /^(p\d+\.t\d+)\.r(\d+)\.c(\d+)$/;
+const tableCell = (id: string) => {
+  const m = TABLE_CELL.exec(id);
+  return m ? { table: m[1]!, row: Number(m[2]), col: Number(m[3]) } : undefined;
+};
+const unanimous = (xs: number[]) => (xs.length > 0 && xs.every((x) => x === xs[0]) ? xs[0] : undefined);
+
 /**
- * One question per scanned page about the amounts only its second read found: a fee the first read dropped, or a figure
- * the second read saw twice. The person adds them as fees, each printed row or line one term (its one amount, or all of
- * them in its formula, so a row and its own total aren't billed twice), or sets them aside.
+ * The blank cell of a grid that sits at a printed cell the first read left empty, worked out from where the grid's other
+ * cells are printed: its row's cells all in that printed row and its visit's all in that printed column, or the other way
+ * round in a table printed sideways. undefined unless exactly one blank cell fits.
+ */
+function blankSlot(rulebook: Rulebook, doc: string, id: string) {
+  const at = tableCell(id);
+  if (!at) return undefined;
+  const slots: { grid: Grid; row: number; col: number }[] = [];
+  for (const grid of rulebook.grids.filter((g) => g.doc === doc)) {
+    const printed = (path: RegExp) =>
+      Object.entries(grid.cellIds ?? {}).flatMap(([key, cell]) => {
+        const found = typeof cell === "string" && path.test(key) ? tableCell(cell) : undefined;
+        return found?.table === at.table ? [found] : [];
+      });
+    grid.rows.forEach((r, row) =>
+      r.cells.forEach((cell, col) => {
+        if (cell !== null || grid.cellIds?.[`rows.${row}.cells.${col}`]) return;
+        const line = printed(new RegExp(`^rows\\.${row}\\.`));
+        const visit = printed(new RegExp(`^(rows\\.\\d+\\.cells|subtotal|overhead|total|additions\\.\\d+\\.cells)\\.${col}$`));
+        const upright = unanimous(line.map((p) => p.row)) === at.row && unanimous(visit.map((p) => p.col)) === at.col;
+        const sideways = unanimous(line.map((p) => p.col)) === at.col && unanimous(visit.map((p) => p.row)) === at.row;
+        if (upright || sideways) slots.push({ grid, row, col });
+      }),
+    );
+  }
+  return slots.length === 1 ? slots[0] : undefined;
+}
+
+const rowOfCell = (cell: string) => cell.replace(/\.c\d+$/, "");
+const missedId = (doc: string, page: number, cell: string) => `read:${doc}:p${page}:missed:${rowOfCell(cell).replace(/^p\d+\./, "")}`;
+
+/**
+ * One question per printed row of a scanned page about the amounts only its second read found: a fee the first read
+ * dropped, or a figure the second read saw twice. A person adds the row as a fee (one term for the row, its one amount or
+ * all of them in its formula, so a row and its own total aren't billed twice), or sets it aside. An amount in a cell of a
+ * grid that the first read left blank goes into that cell instead. The first row also offers setting aside the whole page.
  */
 function askMissed(run: Run) {
   for (const page of coverage(run.rulebook, run.docs).pages) {
     const missed = page.amounts.filter((a) => a.status === "missing" && a.secondRead !== undefined);
     if (!missed.length) continue;
     const { doc, page: n } = page;
-    const one = missed.length === 1;
     const overhead = run.rulebook.terms.some((t) => t.category === "overhead") || run.rulebook.grids.some((g) => g.overheadPct !== null);
     const taken = new Set(run.rulebook.terms.map((t) => t.id));
-    const fees = grouped(missed, (a) => a.secondRead!.replace(/\.c\d+$/, "")).map((row): Patch => {
+    const aside = (amounts: typeof missed) =>
+      [...new Set(amounts.map((a) => a.secondRead!))].map((cell): Patch => ({ target: "accounted", id: cell, set: { doc, page: n, cell: secondReadCell(cell), reason: SET_ASIDE } }));
+    const rows = grouped(missed, (a) => rowOfCell(a.secondRead!));
+
+    rows.forEach((row, k) => {
+      const slots = row.map((a) => ({ a, slot: a.firstReadBlank ? blankSlot(run.rulebook, doc, a.firstReadBlank) : undefined }));
+      const fills = slots.flatMap(({ a, slot }) => (slot ? [{ a, ...slot }] : []));
+      const rest = slots.flatMap(({ a, slot }) => (slot ? [] : [a]));
       const line = words(row[0]!.line);
-      const amounts = [...new Set(row.map((a) => a.cents))];
-      let id = `p${n}-added`;
-      for (let k = 2; taken.has(id); k++) id = `p${n}-added-${k}`;
-      taken.add(id);
-      const name = amountsAt(line).reduceRight((t, a) => t.slice(0, a.start) + t.slice(a.end), line).replace(/\s+/g, " ").trim().slice(0, 80) || `Amount on p.${n}`;
-      return {
-        target: "term", id,
-        set: {
-          category: "site_fee", name, amountCents: amounts.length === 1 ? amounts[0]! : null, unit: null, billing: "unknown", trigger: null, cap: null,
-          formula: amounts.length === 1 ? null : `Amounts printed on this row of p.${n}: ${amounts.map(usd).join(", ")}`, conditions: null, holdbackApplies: "unclear", overheadApplies: overhead ? "unclear" : "n/a",
-          deadline: null, source: { doc, page: n, quote: line }, evidence: "person", houseRuleIds: [], notes: "Found only by a second reading of the page; added by a person.",
-        },
-      };
+      const patches: Patch[] = fills.flatMap(({ a, grid, row: r, col }): Patch[] => [
+        { target: "grid", id: grid.id, set: { [`rows.${r}.cells.${col}`]: a.cents } },
+        { target: "accounted", id: a.secondRead!, set: { doc, page: n, cell: secondReadCell(a.secondRead!), reason: ADDED_TO_GRID } },
+      ]);
+      if (rest.length) {
+        const amounts = [...new Set(rest.map((a) => a.cents))];
+        let id = `p${n}-added`;
+        for (let j = 2; taken.has(id); j++) id = `p${n}-added-${j}`;
+        taken.add(id);
+        const name = amountsAt(line).reduceRight((t, a) => t.slice(0, a.start) + t.slice(a.end), line).replace(/\s+/g, " ").trim().slice(0, 80) || `Amount on p.${n}`;
+        patches.push({
+          target: "term", id,
+          set: {
+            category: "site_fee", name, amountCents: amounts.length === 1 ? amounts[0]! : null, unit: null, billing: "unknown", trigger: null, cap: null,
+            formula: amounts.length === 1 ? null : `Amounts printed on this row of p.${n}: ${amounts.map(usd).join(", ")}`, conditions: null, holdbackApplies: "unclear", overheadApplies: overhead ? "unclear" : "n/a",
+            deadline: null, source: { doc, page: n, quote: line }, evidence: "person", houseRuleIds: [], notes: "Found only by a second reading of the page; added by a person.",
+          },
+        });
+      }
+      const one = row.length === 1;
+      const listed = row.map((a) => usd(a.cents)).join(", ");
+      raise(run, {
+        id: freshId(run, missedId(doc, n, row[0]!.secondRead!)),
+        kind: "decision",
+        about: null,
+        source: { doc, page: n, quote: "" },
+        question: `A second reading of p.${n} of ${doc} found ${listed} on the row "${line}" that the first reading missed. ${one ? "Is it a fee?" : "Are they fees?"}`,
+        context: `${one ? "It isn't" : "They aren't"} in the rulebook yet. Check the page. ${fills.length ? `Adding ${one ? "it" : "them"} puts ${one ? "it" : "each"} in the budget grid cell the first reading left blank${rest.length ? ", and the rest as a fee" : ""}; ` : `Add ${one ? "it" : "them"} if ${one ? "it is a fee" : "they are fees"} the site can bill; `}set ${one ? "it" : "them"} aside if ${one ? "it is" : "they are"} only an amount already in the rulebook, read twice.`,
+        readings: [],
+        options: [
+          { label: one ? "It's a fee: add it" : "They're fees: add them", patches },
+          { label: one ? "It isn't a separate amount: set it aside" : "They aren't separate amounts: set them aside", patches: aside(row) },
+          ...(k === 0 && rows.length > 1 ? [{ label: "Set aside every amount on this page", patches: aside(missed) }] : []),
+        ],
+      }, false);
     });
-    const cells = [...new Set(missed.map((a) => a.secondRead!))];
-    const aside = cells.map((cell): Patch => ({ target: "accounted", id: cell, set: { doc, page: n, cell: secondReadCell(cell), reason: SET_ASIDE } }));
-    const listed = missed.map((a) => `${usd(a.cents)} in "${words(a.line)}"`).join("; ");
-    raise(run, {
-      id: freshId(run, `read:${doc}:p${n}:missed`),
-      kind: "decision",
-      about: null,
-      source: { doc, page: n, quote: "" },
-      question: one ? `A second reading of p.${n} of ${doc} found ${usd(missed[0]!.cents)} that the first reading missed. Is it a fee?` : `A second reading of p.${n} of ${doc} found ${missed.length} amounts that the first reading missed. Are they fees?`,
-      context: `${one ? "It isn't" : "They aren't"} in the rulebook yet: ${listed}. Check the page. Add ${one ? "it" : "them"} if ${one ? "it is a fee" : "they are fees"} the site can bill; set ${one ? "it" : "them"} aside if ${one ? "it is" : "they are"} only an amount already in the rulebook, read twice.`,
-      readings: [],
-      options: [
-        { label: one ? "It's a fee: add it" : "They're fees: add them", patches: fees },
-        { label: one ? "It isn't a separate amount: set it aside" : "They aren't separate amounts: set them aside", patches: aside },
-      ],
-    }, false);
-    run.log.push(`p.${n} (${doc}): a second read found ${values(missed.length)} the first read missed, so a person will be asked`);
+    run.log.push(`p.${n} (${doc}): a second read found ${values(missed.length)} the first read missed, in ${rows.length} ${rows.length === 1 ? "row" : "rows"}, so a person will be asked`);
   }
+}
+
+/** Questions about amounts only a second read found that another answer has since settled, such as setting aside a whole page. */
+export function closeSettledMissed(rulebook: Rulebook, docs: LoadedDoc[]): Rulebook {
+  const stillMissing = coverage(rulebook, docs).pages.flatMap((p) => p.amounts.filter((a) => a.status === "missing" && a.secondRead !== undefined).map((a) => missedId(p.doc, p.page, a.secondRead!)));
+  const settled = (q: Question) => q.origin === "check" && q.state === "open" && q.id.includes(":missed:") && !stillMissing.some((id) => q.id === id || q.id.startsWith(`${id}:`));
+  return { ...rulebook, questions: rulebook.questions.map((q) => (settled(q) ? { ...q, state: "auto_resolved" as const } : q)) };
 }
 
 /**

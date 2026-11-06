@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Question, type Rulebook } from "@dct/shared";
-import { asPrintedQuestion, checks, coverage, forPerson, printsTotals } from "@dct/harness";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, isLockedPatch, type Question, type Rulebook } from "@dct/shared";
+import { asPrintedQuestion, checks, closeSettledMissed, coverage, forPerson, printsTotals } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -99,6 +99,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       if (!question.options.length) throw new HttpError(409, "This needs the read to be run again, not an answer.");
       const chosen = question.options[option];
       if (!chosen) throw new HttpError(400, `This question has ${plural(question.options.length, "option")}: pick one of them.`);
+      if (chosen.patches.some(isLockedPatch) && question.origin !== "check") throw new HttpError(409, "That answer would set an amount aside, which only a check of the page can offer, so it wasn't applied.");
 
       let patched: Rulebook;
       const dropped = citationPatches(rulebook, chosen.patches);
@@ -119,6 +120,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       };
 
       const docs = await loadDocs(tx, v.documentIds);
+      next.questions = closeSettledMissed(next, docs).questions;
       const report = checks.runChecks(next, docs);
       const known = new Set(next.questions.map((q) => q.id));
       next.questions.push(...report.required.filter((q) => !known.has(q.id)));

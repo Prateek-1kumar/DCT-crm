@@ -551,13 +551,37 @@ describe("an amount only a second reading of the page found", () => {
 
   it("can be added as a fee by a person, and the version approved", async () => {
     const { id } = await missedDraft();
-    const added = (await answer(id, "read:scan.pdf:p1:missed", { option: 0, by: "Ana" })).json();
+    const added = (await answer(id, "read:scan.pdf:p1:missed:t1.r2", { option: 0, by: "Ana" })).json();
     expect(added.rulebook.terms[1]).toMatchObject({ name: "Labs", amountCents: 7500, billing: "unknown", evidence: "person", source: { doc: "scan.pdf", page: 1, quote: "Labs $75.00" } });
     expect(added.problems).toEqual([]);
     // how it is billed is the one thing left to decide
     const billed = (await answer(id, "rule:billing", { option: 0, by: "Ana" })).json();
     expect(billed.rulebook.terms[1].billing).toBe("auto_paid");
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("every amount on the page can be set aside at once, which closes the other rows' questions", async () => {
+    const documentIds = [await scannedDoc([table([["Exam", [field("$250.00")]]])])];
+    const docs = await loadDocs(db(), documentIds);
+    const before = rulebook({ terms: [term("t9", { amountCents: 25000, evidence: "none", source: { doc: "scan.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } })] });
+    const second = reader({ verify_page: { rotation: 0, text: "T 0.1-0.5 | Budget\nR 0.1-0.11 | Exam | $250.00\nR 0.12-0.13 | Labs | $75.00\nR 0.14-0.15 | Parking | $20.00" } });
+    const { rulebook: rb } = await resolve(before, docs, checks.runChecks(before, docs), { claude: second, openai: second, budget: { limit: 5, spent: 0 }, scans: scanStore });
+    const rows = rb.questions.filter((q) => q.id.includes(":missed:"));
+    expect(rows.map((q) => q.id)).toEqual(["read:scan.pdf:p1:missed:t1.r2", "read:scan.pdf:p1:missed:t1.r3"]);
+    const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, docs).problems });
+
+    const res = (await answer(id, rows[0]!.id, { option: 2, by: "Ana" })).json();
+    expect(res.rulebook.questions.map((q: Question) => [q.id, q.state])).toEqual([["read:scan.pdf:p1:missed:t1.r2", "answered"], ["read:scan.pdf:p1:missed:t1.r3", "auto_resolved"]]);
+    expect(res.problems).toEqual([]);
+    expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);
+  });
+
+  it("an answer that sets an amount aside is refused on a question that isn't a check's", async () => {
+    const aside = { target: "accounted" as const, id: "x", set: { doc: "contract.pdf", page: 1, amountCents: 150000, reason: "set aside by a person" } };
+    const { id } = await seed({ rulebook: rulebook({ questions: [question("q1", { options: [{ label: "Set it aside", patches: [aside] }] })] }) });
+    const res = await answer(id, "q1", { option: 0, by: "Ana" });
+    expect([res.statusCode, res.json().message]).toEqual([409, "That answer would set an amount aside, which only a check of the page can offer, so it wasn't applied."]);
+    expect((await stored(id)).rulebook!.accounted).toEqual([]);
   });
 
   it("a second read kept under another prompt's version isn't attached to the page", async () => {
@@ -578,7 +602,7 @@ describe("an amount only a second reading of the page found", () => {
 
   it("can be set aside by a person, and the version approved", async () => {
     const { id } = await missedDraft();
-    const res = (await answer(id, "read:scan.pdf:p1:missed", { option: 1, by: "Ana" })).json();
+    const res = (await answer(id, "read:scan.pdf:p1:missed:t1.r2", { option: 1, by: "Ana" })).json();
     expect(res.rulebook.accounted).toEqual([{ doc: "scan.pdf", page: 1, cell: "p1.t1.r2.c1 (second read)", reason: "set aside by a person" }]);
     expect(res.problems).toEqual([]);
     expect((await approve(id, { by: "Ben" })).statusCode).toBe(200);

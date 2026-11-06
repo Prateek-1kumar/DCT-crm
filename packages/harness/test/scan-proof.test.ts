@@ -1,4 +1,4 @@
-import { applyPatches, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
 import { normalizeAccounted, normalizeQuestion } from "../src/agent/normalize";
 import { checks } from "../src/checks";
@@ -7,6 +7,7 @@ import { checkRelations, withRelationProof } from "../src/checks/relations";
 import type { Reader } from "../src/models/reader";
 import { buildPage } from "../src/pdf/page";
 import { resolve } from "../src/resolve";
+import { closeSettledMissed } from "../src/resolve/scan";
 import { withScans } from "../src/scan";
 import { parseTranscription, type Transcription } from "../src/scan/transcribe";
 import { verifyVersion } from "../src/scan/verify";
@@ -33,6 +34,20 @@ async function settle(rb: Rulebook, first: Transcription[], second: Transcriptio
   return { rulebook: out.rulebook, docs, report: checks.runChecks(out.rulebook, docs) };
 }
 const open = (rb: Rulebook) => rb.questions.filter((q) => q.state === "open");
+/** What the answer route does with a person's pick, without the database. */
+const pick = (rb: Rulebook, id: string, option: number): Rulebook => {
+  const chosen = rb.questions.find((q) => q.id === id)!.options[option]!;
+  const dropped = citationPatches(rb, chosen.patches);
+  const next = applyPatches(rb, [...chosen.patches, ...cellProofPatches(rb, chosen.patches), ...dropped]);
+  const touched = new Set(chosen.patches.filter((p) => p.target === "term").map((p) => p.id));
+  return {
+    ...next,
+    accounted: [...next.accounted, ...correctedCells(rb, dropped)],
+    terms: next.terms.map((t) => (touched.has(t.id) ? { ...t, evidence: "person" as const } : t)),
+    questions: next.questions.map((q) => (q.id === id ? { ...q, state: "answered" as const } : q)),
+  };
+};
+
 
 describe("a figure slipped into a blank cell along a summed row or column is never proven (C1)", () => {
   it("a row total doesn't prove a figure the first read moved sideways into a blank visit", async () => {
@@ -138,14 +153,6 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
     holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: "ECG $100.00", cell: "p1.t1.r1.c1" }, evidence: "none", houseRuleIds: [], notes: null,
   };
   const missed = (rb: Rulebook, docs: LoadedDoc[]) => coverage(rb, docs).pages.flatMap((p) => p.amounts.filter((a) => a.secondRead !== undefined).map((a) => [a.cents, a.status]));
-  /** What the answer route does with a person's pick, without the database. */
-  const pick = (rb: Rulebook, id: string, option: number): Rulebook => {
-    const chosen = rb.questions.find((q) => q.id === id)!.options[option]!;
-    const next = applyPatches(rb, chosen.patches);
-    const touched = new Set(chosen.patches.filter((p) => p.target === "term").map((p) => p.id));
-    return { ...next, terms: next.terms.map((t) => (touched.has(t.id) ? { ...t, evidence: "person" as const } : t)), questions: next.questions.map((q) => (q.id === id ? { ...q, state: "answered" as const } : q)) };
-  };
-
   it("a person-captured term for the amount, named on its row, clears it", () => {
     const docs = [docOf([first])];
     docs[0]!.pages[0]!.second = truth;
@@ -155,10 +162,10 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
     expect(missed(book({ terms: [ecg, { ...labs, name: "Parking" }] }), docs)).toEqual([[25000, "missing"]]);
   });
 
-  it("is asked once per page, and can be added as a fee by a person, leaving nothing to fix but how it is billed", async () => {
+  it("is asked once per printed row, and can be added as a fee by a person, leaving nothing to fix but how it is billed", async () => {
     const { rulebook, docs } = await settle(book({ terms: [ecg] }), [first], [truth]);
-    const q = open(rulebook).find((x) => x.id === "read:Budget.pdf:p1:missed")!;
-    expect(q).toMatchObject({ kind: "decision", question: "A second reading of p.1 of Budget.pdf found $250.00 that the first reading missed. Is it a fee?" });
+    const q = open(rulebook).find((x) => x.id === "read:Budget.pdf:p1:missed:t1.r2")!;
+    expect(q).toMatchObject({ kind: "decision", question: 'A second reading of p.1 of Budget.pdf found $250.00 on the row "Labs $250.00" that the first reading missed. Is it a fee?' });
     expect(q.options.map((o) => o.label)).toEqual(["It's a fee: add it", "It isn't a separate amount: set it aside"]);
     expect(checks.runChecks(rulebook, docs).unaccounted).toEqual([{ doc: DOC, page: 1, amountCents: 25000, context: "Labs $250.00", secondRead: true }]);
 
@@ -172,12 +179,81 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
 
   it("can be set aside by a person", async () => {
     const { rulebook, docs } = await settle(book({ terms: [ecg] }), [first], [truth]);
-    const aside = pick(rulebook, "read:Budget.pdf:p1:missed", 1);
+    const aside = pick(rulebook, "read:Budget.pdf:p1:missed:t1.r2", 1);
     expect(aside.accounted).toEqual([{ doc: DOC, page: 1, cell: "p1.t1.r2.c1 (second read)", reason: "set aside by a person" }]);
     expect(checks.runChecks(aside, docs).problems).toEqual([]);
     // a re-run asks nothing more
     const again = await resolve(aside, docs, checks.runChecks(aside, docs), { claude: NO_CALLS, openai: NO_CALLS, budget: { limit: 3, spent: 0 }, scans: storeOf([truth]) });
     expect(open(again.rulebook)).toEqual([]);
+  });
+
+  it("a page with one real fee and one double read can be answered right", async () => {
+    // the second read saw ECG twice and found Labs, which the first read dropped
+    const doubled = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | ECG | $100.00", "R 0.24-0.25 | Labs | $250.00"]);
+    const { rulebook, docs } = await settle(book({ terms: [{ ...ecg, evidence: "person" }] }), [first], [doubled]);
+    const rows = open(rulebook).filter((q) => q.id.includes(":missed:"));
+    expect(rows.map((q) => q.id)).toEqual(["read:Budget.pdf:p1:missed:t1.r2", "read:Budget.pdf:p1:missed:t1.r3"]);
+    expect(rows.map((q) => q.options.map((o) => o.label))).toEqual([
+      ["It's a fee: add it", "It isn't a separate amount: set it aside", "Set aside every amount on this page"],
+      ["It's a fee: add it", "It isn't a separate amount: set it aside"],
+    ]);
+
+    const answered = pick(pick(rulebook, rows[0]!.id, 1), rows[1]!.id, 0);
+    expect(answered.terms.map((t) => [t.name, t.amountCents])).toEqual([["ECG", 10000], ["Labs", 25000]]);
+    const report = checks.runChecks(answered, docs);
+    expect(report.problems).toEqual([]);
+    expect(report.unaccounted).toEqual([]);
+    expect(report.required.map((x) => x.id)).toEqual(["rule:billing"]);
+    // the first read has ECG once, so only the second copy is new
+    expect(missed(answered, docs)).toEqual([[10000, "set_aside"], [25000, "decided"]]);
+  });
+
+  it("setting aside every amount on the page leaves no row open", async () => {
+    const doubled = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | ECG | $100.00", "R 0.24-0.25 | Labs | $250.00"]);
+    const { rulebook, docs } = await settle(book({ terms: [{ ...ecg, evidence: "person" }] }), [first], [doubled]);
+    const all = pick(rulebook, "read:Budget.pdf:p1:missed:t1.r2", 2);
+    expect(checks.runChecks(all, docs).unaccounted).toEqual([]);
+    expect(open(closeSettledMissed(all, docs)).filter((q) => q.id.includes(":missed:"))).toEqual([]);
+  });
+
+  it("one person term clears one missed amount", () => {
+    const twice = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | Labs | $250.00", "R 0.24-0.25 | Labs | $250.00"]);
+    const docs = [docOf([first])];
+    docs[0]!.pages[0]!.second = twice;
+    const labs: Term = { ...ecg, id: "t2", name: "Labs", amountCents: 25000, evidence: "person", source: { doc: DOC, page: 1, quote: "Labs $250.00" } };
+    expect(missed(book({ terms: [ecg, labs] }), docs)).toEqual([[25000, "decided"], [25000, "missing"]]);
+    expect(missed(book({ terms: [ecg, labs, { ...labs, id: "t3" }] }), docs)).toEqual([[25000, "decided"], [25000, "decided"]]);
+  });
+
+  it("a blank-in-first-read grid cell is filled into the grid", async () => {
+    // printed: ECG $100.00 at V1, V2 blank, $100.00 at V3; the first read put the V1 figure at V2
+    const sheet = (cells: string[]) => read(["T 0.1-0.5 | Budget", "H | Procedure | V1 | V2 | V3 | Total", `R 0.2-0.21 | ECG | ${cells.join(" | ")} | $200.00`, "R 0.22-0.23 | Labs | $50.00 | $50.00 | $50.00 | $150.00"]);
+    const g: Grid = {
+      id: "g1", name: "Budget", arm: null, doc: DOC, pages: [1], visits: ["V1", "V2", "V3"], overheadPct: null,
+      rows: [
+        { name: "ECG", code: null, unitCostCents: null, cells: [null, 10000, 10000], printedRowTotalCents: 20000 },
+        { name: "Labs", code: null, unitCostCents: null, cells: [5000, 5000, 5000], printedRowTotalCents: 15000 },
+      ],
+      subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false,
+      cellIds: { "rows.0.cells.1": "p1.t1.r1.c2", "rows.0.cells.2": "p1.t1.r1.c3", "rows.0.printedRowTotalCents": "p1.t1.r1.c4", "rows.1.cells.0": "p1.t1.r2.c1", "rows.1.cells.1": "p1.t1.r2.c2", "rows.1.cells.2": "p1.t1.r2.c3", "rows.1.printedRowTotalCents": "p1.t1.r2.c4" },
+    };
+    const { rulebook, docs } = await settle(book({ grids: [g] }), [sheet(["", "$100.00", "$100.00"])], [sheet(["$100.00", "", "$100.00"])]);
+    const [moved, fill] = [open(rulebook).find((q) => q.about?.id === "g1")!, open(rulebook).find((q) => q.id.includes(":missed:"))!];
+    expect(fill.options[0]!.patches).toEqual([
+      { target: "grid", id: "g1", set: { "rows.0.cells.0": 10000 } },
+      { target: "accounted", id: "p1.t1.r1.c1", set: { doc: DOC, page: 1, cell: "p1.t1.r1.c1 (second read)", reason: "added to the grid by a person" } },
+    ]);
+
+    for (const order of [[moved, fill], [fill, moved]] as const) {
+      const answered = pick(pick(rulebook, order[0].id, order[0] === moved ? 1 : 0), order[1].id, order[1] === moved ? 1 : 0);
+      expect(answered.terms).toEqual([]);
+      expect(answered.grids[0]!.rows[0]!.cells).toEqual([10000, null, 10000]);
+      expect(answered.grids[0]!.cellsReadTwice).toContainEqual([0, 0]);
+      const report = checks.runChecks(answered, docs);
+      expect(report.problems).toEqual([]);
+      expect(report.required).toEqual([]);
+      expect(missed(answered, docs)).toEqual([[10000, "set_aside"]]);
+    }
   });
 
   it("the agent can't account away a second-read-only amount", () => {

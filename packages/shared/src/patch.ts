@@ -135,8 +135,10 @@ export const CORRECTED = "corrected by a person";
 export const CORRECTED_BY_SECOND_READ = "corrected by a second read";
 /** An amount only a page's second read found, that a person said isn't a separate amount. */
 export const SET_ASIDE = "set aside by a person";
+/** An amount only a page's second read found, that a person put into the grid cell the first read left blank. */
+export const ADDED_TO_GRID = "added to the grid by a person";
 /** The reasons only the harness gives, never the compile agent. */
-export const KEPT_REASONS = [CORRECTED, CORRECTED_BY_SECOND_READ, SET_ASIDE];
+export const KEPT_REASONS = [CORRECTED, CORRECTED_BY_SECOND_READ, SET_ASIDE, ADDED_TO_GRID];
 
 /**
  * The cells the given citationPatches drop, set aside: each still prints the amount an answer or a second read replaced,

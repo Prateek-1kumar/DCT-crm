@@ -11,6 +11,7 @@ export { VERIFY_PROMPT, verifyVersion } from "./scan/verify";
 export { review, reviewUsd } from "./review";
 export type { ReviewResult } from "./review";
 export { resolve } from "./resolve";
+export { closeSettledMissed } from "./resolve/scan";
 export { asPrintedQuestion } from "./resolve/read";
 export { NOT_REVIEWED, ReadFailed, read, scanExtraUsd, scannedPages } from "./read";
 export type { ReadOptions, ReadResult } from "./read";

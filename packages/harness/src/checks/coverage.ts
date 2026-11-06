@@ -1,4 +1,4 @@
-import { SET_ASIDE, parseCents, valueAt, type Region, type Rulebook } from "@dct/shared";
+import { ADDED_TO_GRID, SET_ASIDE, parseCents, valueAt, type Region, type Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
 import { amountsOf, cellsOf, type ScanCell } from "../scan/cells";
 import { alignTables, diffReads } from "../scan/diff";
@@ -22,6 +22,8 @@ export interface CoverageAmount {
   doubt: Doubt | null;
   /** Set on an amount only the page's second read found: the id of its cell or line in that read. */
   secondRead?: string;
+  /** On such an amount: the id of the first read's cell it sits in when that read printed nothing there. */
+  firstReadBlank?: string;
 }
 
 /** How a person's "set aside" names an amount only the second read found, apart from the first read's cell of the same id. */
@@ -266,11 +268,13 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
   });
 }
 
-/** A term a person added or settled that holds this amount, named on the printed row or line it is on. */
-const decidedBy = (rulebook: Rulebook, doc: string, page: number, cents: number, line: string) =>
+/** A term a person added that holds this amount, named on the printed row or line it is on, and that `free` allows. One that cites a cell of the first read is already that cell's, so it never stands for a second copy. */
+const decidedBy = (rulebook: Rulebook, doc: string, page: number, cents: number, line: string, free: (t: Rulebook["terms"][number]) => boolean) =>
   rulebook.terms.find(
     (t) =>
-      t.evidence === "person" && t.source.doc === doc && t.source.page === page &&
+      free(t) &&
+      t.evidence === "person" &&
+      t.source.cell === undefined && t.source.doc === doc && t.source.page === page &&
       [t.amountCents, ...[t.formula, t.notes].flatMap((x) => (x ? amountsIn(x) : []))].some((c) => c !== null && Math.abs(c) === cents) &&
       [t.name, t.source.quote].some((words) => words.trim() && looseContains(line, words)),
   );
@@ -281,6 +285,7 @@ const decidedBy = (rulebook: Rulebook, doc: string, page: number, cents: number,
  * asked about already, and listing all of its amounts again would say nothing new. Nothing cites them, so each is missing
  * until a person settles it: a term of theirs with that amount on that row, or their "set aside" (or the whole page set
  * aside). The compile agent's listing of the amount never counts, since it can't tell a dropped fee from a double read.
+ * A person's term clears the amounts of one printed row only, so a dropped sibling row with the same name and amount stays open.
  */
 function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number): CoverageAmount[] {
   const page = pages[index]!;
@@ -289,15 +294,27 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
   const paired = new Set(alignTables(page.second.tables, page.transcription.tables).keys());
   const bands = Object.fromEntries([...bandsOf(page.second)].map(([key, band]) => [`p${page.page}.${key}`, band]));
   const second: Page = { ...page, cells: cellsOf(page.page, page.second), bands };
+  const claimed = new Map<string, string>();
+  // an amount the second read couldn't line up, that the first read prints as many times on the same words, is accounted for there: only the copies beyond that are new
+  const twin = (line: string, cents: number) => `${looseKey(line)}|${cents}`;
+  const twins = new Map<string, number>();
+  for (const { line, printed } of printedCells(pages, index)) for (const { cents } of printed) twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) + 1);
   return printedCells(pages.map((p, i) => (i === index ? second : p)), index).flatMap(({ cell, line, printed }) =>
     printed.flatMap(({ text, cents }): CoverageAmount[] => {
       const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
       if (!cents || !verdict || (cell.table !== null && !paired.has(cell.table - 1)) || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
-      const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || (a.reason === SET_ASIDE && a.page === page.page && a.cell === secondReadCell(cell.id))));
-      const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line);
+      const left = twins.get(twin(line, cents)) ?? 0;
+      if (verdict.outcome === "unaligned" && left > 0) {
+        twins.set(twin(line, cents), left - 1);
+        return [];
+      }
+      const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || ([SET_ASIDE, ADDED_TO_GRID].includes(a.reason) && a.page === page.page && a.cell === secondReadCell(cell.id))));
+      const row = cell.id.replace(/\.c\d+$/, "");
+      const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line, (t) => (claimed.get(t.id) ?? row) === row);
+      if (added) claimed.set(added.id, row);
       const status: AmountStatus = added ? "decided" : accounted ? "set_aside" : "missing";
       const reason = accounted?.reason ?? (added ? null : `a second read of p.${page.page} found an amount the first read didn't`);
-      return [{ box: cellBand(second, cell.id), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id }];
+      return [{ box: cellBand(second, cell.id), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id, ...(verdict.blankAt && { firstReadBlank: verdict.blankAt }) }];
     }),
   );
 }
