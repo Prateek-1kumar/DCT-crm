@@ -29,7 +29,9 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
     if (!result.problems.length && result.unproven.length) {
       const cells = result.unproven.slice(0, 5).map(({ row, col }) => `row '${g.rows[row]!.name}' at visit '${g.visits[col]}'`).join("; ");
       const more = result.unproven.length > 5 ? ` and ${result.unproven.length - 5} more` : "";
-      problems.push({ ...where, message: `${result.unproven.length} cells have no printed total proving them: ${cells}${more}.` });
+      // cells a printed sum holds but doesn't prove rest on the second read, which the agent can't give
+      const second = result.unproven.every(({ row, col }) => result.bySumOnly?.some((u) => u.row === row && u.col === col));
+      problems.push({ ...where, message: `${result.unproven.length} cells have no printed total proving them: ${cells}${more}.`, ...(second && { afterCompile: true as const }) });
     }
   }
 

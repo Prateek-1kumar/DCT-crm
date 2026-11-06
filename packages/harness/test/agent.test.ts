@@ -408,6 +408,24 @@ describe("scanned values cite cells", () => {
     expect(finish).toContain("never list these with put_accounted:\n$80.00 on p.1 of A.pdf was found only by a second reading of the page");
   });
 
+  it("a scanned grid with row totals finishes without the agent being asked to prove its cells", async () => {
+    const doc = scanned(["T 0.1-0.5 | Budget", "H | Procedure | V1 | V2 | Total", "R 0.11-0.12 | ECG | $100.00 | $40.00 | $140.00", "R 0.13-0.14 | Labs | $50.00 | $50.00 | $100.00"].join("\n"));
+    const session = createSession([doc], 3);
+    await session.run("put_study", { study });
+    const at = (value: string, cell: string) => ({ value, cell });
+    const grid = {
+      id: "g1", name: "Budget", doc: "A.pdf", pages: [1], visits: ["V1", "V2"],
+      rows: [
+        { name: "ECG", cells: [at("$100.00", "p1.t1.r1.c1"), at("$40.00", "p1.t1.r1.c2")], printedRowTotal: at("$140.00", "p1.t1.r1.c3") },
+        { name: "Labs", cells: [at("$50.00", "p1.t1.r2.c1"), at("$50.00", "p1.t1.r2.c2")], printedRowTotal: at("$100.00", "p1.t1.r2.c3") },
+      ],
+    };
+    expect((await session.run("put_grid", { grid })).isError).toBe(false);
+    const finish = String((await session.run("finish", {})).content);
+    expect(finish).toContain("ALL CHECKS PASS");
+    expect(finish).not.toContain("no printed total proving");
+  });
+
   it("text-page terms need no citation", async () => {
     const { saved, answer } = await putTerms(textDoc(...BUDGET), startup);
     expect(answer.is_error).toBe(false);
