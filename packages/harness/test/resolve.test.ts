@@ -195,10 +195,27 @@ describe("scanned pages: one closer look by the vision reader", () => {
 
     expect(r.claude.calls).toHaveLength(0);
     expect(r.openai.calls).toHaveLength(1);
-    expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual(["the amount for 'Screen failure fee'"]);
+    expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([expect.stringContaining("every amount printed on the row labelled 'Screen failure fee'")]);
     expect(texts(r.openai.calls[0]!)).not.toContain("7500");
     expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "two_reads" });
     expect(out.rulebook.questions).toEqual([]);
+  });
+
+  it("a term whose value is printed on its row next to another amount is confirmed by the re-look", async () => {
+    const text = "Exhibit A\nCoordinator fee  $200.00  $266.00";
+    const t = term({ amountCents: 20000, name: "Coordinator fee", source: { doc: "Budget.pdf", page: 1, quote: "Coordinator fee" } });
+    const r = readers({ fail: true }, { read: () => "$200.00 | $266.00" });
+    const out = await resolveOn(scanned({}, text), r, rulebook({ terms: [t] }));
+
+    expect(itemsOf(r.openai.calls[0]!)[0]!.label).toContain("every amount printed on the row labelled 'Coordinator fee'");
+    expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 20000, evidence: "two_reads" });
+    expect(out.rulebook.questions).toEqual([]);
+
+    const missing = await resolveOn(scanned({}, text), readers({ fail: true }, { read: () => "$266.00 | $300.00" }), rulebook({ terms: [t] }));
+    const q = question1(missing.rulebook, "read:t1");
+    expect(q.readings[1]!.answer).toBe("the amount for 'Coordinator fee': $266.00, $300.00 on that row");
+    expect(q.options.map((o) => o.label)).toEqual(["Use the whole-page reading ($200.00)", "Neither, I'll type the right value"]);
+    expect(missing.rulebook.terms[0]!.evidence).toBe("quote");
   });
 
   it("a re-run drops a reading question the re-look now confirms", async () => {
@@ -290,7 +307,7 @@ describe("scanned pages: one closer look by the vision reader", () => {
       const out = await look([5, 12, 20, 28, 40], r);
 
       expect(r.openai.calls).toHaveLength(1);
-      expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([5, 12, 20, 28, 40].map((i) => `the amount for 'Fee${i}'`));
+      expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual([5, 12, 20, 28, 40].map((i) => expect.stringContaining(`the row labelled 'Fee${i}'`)));
       expect(r.openai.calls[0]!.parts.filter((p) => p.type === "image")).toHaveLength(5);
       expect(out.rulebook.terms.map((t) => t.evidence)).toEqual(Array(5).fill("two_reads"));
     });

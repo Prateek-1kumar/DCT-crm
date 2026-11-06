@@ -17,6 +17,8 @@ interface Spot {
   source: Source;
   about: Question["about"];
   label: string;
+  /** Set on a term: the zoomed look lists every amount on its row, since which column is the term's was decided when it was read; the look only has to find the value there. */
+  rowOf?: string;
   /** The id of the question raised when reads disagree, shared by the cells of one grid. */
   questionId: string;
   /** The id of the one question raised for the term, or for all the cells of the grid, that go straight to a person. */
@@ -81,7 +83,7 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
     const band = lineBand(page.words, t.source.quote);
     const pad = padOf(page);
     spots.push({
-      source: t.source, about: { target: "term", id: t.id }, label: termLabel(t), questionId: `read:${t.id}`, personId: personId(t.id), current: t.amountCents!, words: wordsIn(page, band),
+      source: t.source, about: { target: "term", id: t.id }, label: termLabel(t), rowOf: t.name, questionId: `read:${t.id}`, personId: personId(t.id), current: t.amountCents!, words: wordsIn(page, band),
       crop: band ? [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)] : undefined, failing: false,
       patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
     });
@@ -119,6 +121,16 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   }
   return spots;
 }
+
+const amountsOf = (said: string | null) => (said ?? "").split("|").flatMap((a) => parseCents(a.trim()) ?? []);
+
+const confirms = (s: Spot, said: string | null) => (s.rowOf ? amountsOf(said).includes(s.current) : same(readCell(said), s.current));
+
+/** What a person is shown of the zoomed look: a row's several amounts read as a list. */
+const zoomedText = (s: Spot, said: string | null) => (s.rowOf && said && amountsOf(said).length > 1 ? `${amountsOf(said).map(usd).join(", ")} on that row` : said);
+
+/** A row with several amounts offers none of them as the zoomed reading, since the term's column was not what was looked at. */
+const zoomedValue = (s: Spot, said: string | null) => (s.rowOf ? (amountsOf(said).length === 1 ? amountsOf(said)[0]! : null) : readCell(said));
 
 const grouped = <T>(items: T[], key: (t: T) => string) => {
   const groups = new Map<string, T[]>();
@@ -182,13 +194,13 @@ export async function relook(run: Run, report: CheckReport) {
     for (let from = 0; from < crops.length; from += MAX_CROPS) {
       const group = crops.slice(from, from + MAX_CROPS).flat();
       const { doc, page } = group[0]!.source;
-      const asked = group.map((s) => ({ label: s.label, look: { region: s.zoom ?? s.crop, header: s.header } }));
+      const asked = group.map((s) => ({ label: s.rowOf ? `every amount printed on the row labelled '${s.rowOf}', in the order printed, separated by " | "` : s.label, look: { region: s.zoom ?? s.crop, header: s.header } }));
       const answers = (await tryAsk(run, [run.openai], { doc, pages: [page] }, asked))?.[0];
       if (!answers) {
         unread.push(...group);
         continue;
       }
-      const confirmed = group.filter((s, i) => same(readCell(answers[i]!), s.current));
+      const confirmed = group.filter((s, i) => confirms(s, answers[i]!));
       if (confirmed.length) {
         run.rulebook = applyPatches(run.rulebook, proven(run.rulebook, confirmed.map((s) => s.patch(s.current))));
         run.log.push(`p.${page} (${doc}): a closer look confirms ${values(confirmed.length)} ✓`);
@@ -202,8 +214,8 @@ export async function relook(run: Run, report: CheckReport) {
     const here = rows.map(({ s }) => s);
     remember(run, here[0]!.questionId, here);
     raiseZoomed(run, about(here[0]!.questionId, here), rows.map(({ s, said }) => {
-      const read = readCell(said);
-      return { label: s.label, whole: shown(s.current), read: said, keep: s.patch(s.current), use: typeof read === "number" ? s.patch(read) : null };
+      const read = zoomedValue(s, said);
+      return { label: s.label, whole: shown(s.current), read: zoomedText(s, said), keep: s.patch(s.current), use: typeof read === "number" ? s.patch(read) : null };
     }));
     run.log.push(`${place(here[0]!)}: a closer look read ${values(rows.length)} differently, so a person will be asked`);
   }
