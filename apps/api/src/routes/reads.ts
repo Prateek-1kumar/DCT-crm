@@ -1,4 +1,4 @@
-import { SCAN_PAGE_USD, VERIFY_PAGE_USD, untranscribed } from "@dct/harness";
+import { SCAN_PAGE_USD, VERIFY_PAGE_USD, reviewUsd, untranscribed } from "@dct/harness";
 import { asc, eq, max } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -34,7 +34,8 @@ export async function readsRoutes(api: FastifyInstance, { db, boss, log, models 
     const loaded = await loadDocs(db, docs.map((d) => d.id), openai);
     const scans = await untranscribed(loaded, scanStore, openai);
     const scanned = loaded.reduce((n, d) => n + d.pages.filter((p) => p.kind !== "text").length, 0);
-    const budgetUsd = Math.min(Math.round((config.readBudgetUsd + SCAN_PAGE_USD * scans + VERIFY_PAGE_USD * scanned) * 100) / 100, config.readBudgetMaxUsd);
+    const extra = SCAN_PAGE_USD * scans + VERIFY_PAGE_USD * scanned + (await reviewUsd(openai, loaded));
+    const budgetUsd = Math.min(Math.round((config.readBudgetUsd + extra) * 100) / 100, config.readBudgetMaxUsd);
 
     const started = await db
       .transaction(async (tx) => {

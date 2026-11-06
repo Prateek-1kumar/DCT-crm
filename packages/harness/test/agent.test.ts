@@ -5,6 +5,7 @@ import { Rulebook } from "@dct/shared";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, describe, expect, it } from "vitest";
 import { compile, type CompileOptions } from "../src/agent";
+import { normalizeAccounted } from "../src/agent/normalize";
 import { withScans } from "../src/scan";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
@@ -120,6 +121,12 @@ describe("compile", () => {
     expect(result.stopReason).toBe("done");
     expect(result.finishes).toBe(2);
     expect(result.rulebook.accounted).toEqual([{ doc: "A.pdf", page: 1, amountCents: 500000, reason: "insurance limit" }]);
+  });
+
+  it("refuses to set an amount aside as corrected by a person: only a person's answer does that", () => {
+    const refused = normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: " Corrected by a Person " });
+    expect(refused).toMatchObject({ ok: false, issues: [expect.stringMatching(/only a person's answer/)] });
+    expect(normalizeAccounted({ doc: "A.pdf", page: 1, cell: "p1.l1", reason: "printed twice" }).ok).toBe(true);
   });
 
   it("(c) keeps the problems when the allowed finishes run out", async () => {

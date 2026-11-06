@@ -83,6 +83,8 @@ function QuestionCard({
     },
   });
   const locked = readOnly || question.state !== "open";
+  // a read that wasn't reviewed is settled by reading again, not by an answer
+  const nothingToChoose = question.options.length === 0;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -104,7 +106,7 @@ function QuestionCard({
         {!question.blocking && question.state === "open" && <p className="mt-2 text-body text-muted">You can approve without answering this.</p>}
       </div>
 
-      {question.context && (
+      {question.context && !nothingToChoose && (
         <div className="rounded-tile bg-sunken p-5">
           <h3 className="eyebrow mb-1.5">What the contract says and doesn&apos;t</h3>
           <p className="text-body text-ink-2">{question.context}</p>
@@ -125,22 +127,28 @@ function QuestionCard({
         </div>
       )}
 
-      <fieldset disabled={locked} className="flex flex-col gap-2.5">
-        <legend className="mb-2 text-small font-medium text-ink-2">{locked ? "The answer" : "Your answer"}</legend>
-        {question.options.map((o, i) => (
-          <label
-            key={i}
-            className={cx(
-              "flex cursor-pointer items-start gap-3 rounded-tile border p-4 transition-colors has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-brand/20 has-disabled:cursor-default",
-              choice === i ? "border-brand bg-brand-soft" : "border-line-strong hover:bg-sunken",
-            )}
-          >
-            <input type="radio" name="option" className="mt-1 size-4 accent-primary" checked={choice === i} onChange={() => setChoice(i)} autoFocus={!locked && i === 0} />
-            <span className="flex-1 text-body font-medium">{o.label}</span>
-            {question.suggestion?.option === i && <Badge tone="accent">We suggest this</Badge>}
-          </label>
-        ))}
-      </fieldset>
+      {nothingToChoose ? (
+        <p className="rounded-tile bg-sunken p-5 text-body text-ink-2">
+          {question.context && `${question.context} `}There&apos;s nothing to choose here: start the read again. This can&apos;t be approved until then.
+        </p>
+      ) : (
+        <fieldset disabled={locked} className="flex flex-col gap-2.5">
+          <legend className="mb-2 text-small font-medium text-ink-2">{locked ? "The answer" : "Your answer"}</legend>
+          {question.options.map((o, i) => (
+            <label
+              key={i}
+              className={cx(
+                "flex cursor-pointer items-start gap-3 rounded-tile border p-4 transition-colors has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-brand/20 has-disabled:cursor-default",
+                choice === i ? "border-brand bg-brand-soft" : "border-line-strong hover:bg-sunken",
+              )}
+            >
+              <input type="radio" name="option" className="mt-1 size-4 accent-primary" checked={choice === i} onChange={() => setChoice(i)} autoFocus={!locked && i === 0} />
+              <span className="flex-1 text-body font-medium">{o.label}</span>
+              {question.suggestion?.option === i && <Badge tone="accent">We suggest this</Badge>}
+            </label>
+          ))}
+        </fieldset>
+      )}
       {question.suggestion && !locked && <p className="-mt-3 text-small text-muted">Why we suggest it: {question.suggestion.reason}</p>}
 
       {given && (
@@ -162,9 +170,11 @@ function QuestionCard({
         ) : (
           <>
             <Button onClick={onForward}>Skip</Button>
-            <Button type="submit" variant="primary" disabled={choice === null || answer.isPending}>
-              Answer
-            </Button>
+            {!nothingToChoose && (
+              <Button type="submit" variant="primary" disabled={choice === null || answer.isPending}>
+                Answer
+              </Button>
+            )}
           </>
         )}
       </div>

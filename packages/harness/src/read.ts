@@ -71,10 +71,11 @@ export function defaultMaxUsd(): number {
 
 /**
  * An explicit limit is the whole budget; otherwise the default, plus what the scanned pages still to read are expected to
- * cost, plus a closer read of every scanned page, which each read may pay for again.
+ * cost, a closer read of every scanned page (each read may pay for it again), and the review (`reviewUsd`), so compile's
+ * share isn't what pays for them.
  */
-export const readBudget = (maxUsd: number | undefined, untranscribedPages: number, scanned: number) =>
-  maxUsd ?? defaultMaxUsd() + SCAN_PAGE_USD * untranscribedPages + VERIFY_PAGE_USD * scanned;
+export const readBudget = (maxUsd: number | undefined, untranscribedPages: number, scanned: number, reviewUsd: number) =>
+  maxUsd ?? defaultMaxUsd() + SCAN_PAGE_USD * untranscribedPages + VERIFY_PAGE_USD * scanned + reviewUsd;
 
 export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadResult> {
   if (!opts.scans && docs.some((d) => d.pages.some((p) => p.kind === "image"))) {
@@ -112,7 +113,7 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
   rulebook = withRequired(rulebook, checks.runChecks(rulebook, docs));
 
   say("Second reader: checking the rulebook for unasked judgment calls");
-  const reviewed = await review(rulebook, docs, { reader: opts.openai, budget });
+  const reviewed = await review(rulebook, docs, { reader: opts.openai, budget, keep: VERIFY_PAGE_USD * scannedPages(docs) });
   reviewed.log.forEach(say);
   if (reviewed.error) say(reviewed.error);
   else say(`Second reader raised ${reviewed.questions.length} ${reviewed.questions.length === 1 ? "question" : "questions"}`);

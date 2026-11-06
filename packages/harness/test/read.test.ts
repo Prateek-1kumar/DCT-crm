@@ -11,6 +11,7 @@ import { checks } from "../src/checks";
 import { ModelError, type Ask, type Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { NOT_REVIEWED, ReadFailed, VERIFY_PAGE_USD, defaultMaxUsd, read, readBudget } from "../src/read";
+import { reviewUsd } from "../src/review";
 import { SCAN_PAGE_USD, untranscribed, withScans } from "../src/scan";
 import { parseTranscription } from "../src/scan/transcribe";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
@@ -137,9 +138,9 @@ it("reports what was spent when a read breaks part way, with a plain message", a
   expect((failure as ReadFailed).usd).toBeCloseTo(0.5);
 });
 
-it("a given --max-usd is the whole budget; otherwise the default plus an allowance for each page still to read, and for each scanned page's closer read", () => {
-  expect(readBudget(1.5, 10, 10)).toBe(1.5);
-  expect(readBudget(undefined, 2, 5)).toBeCloseTo(defaultMaxUsd() + 2 * SCAN_PAGE_USD + 5 * VERIFY_PAGE_USD);
+it("a given --max-usd is the whole budget; otherwise the default plus an allowance for each page still to read, each scanned page's closer read, and the review", () => {
+  expect(readBudget(1.5, 10, 10, 1)).toBe(1.5);
+  expect(readBudget(undefined, 2, 5, 0.9)).toBeCloseTo(defaultMaxUsd() + 2 * SCAN_PAGE_USD + 5 * VERIFY_PAGE_USD + 0.9);
 });
 
 it("a read whose reviewer couldn't run can't be approved: it carries a blocking item that no answer settles", async () => {
@@ -160,8 +161,19 @@ it("a read whose reviewer couldn't run can't be approved: it carries a blocking 
   expect(reviewed.rulebook.questions).toEqual([]);
 });
 
-it("a 22-page scan at the default budget always runs the reviewer and the verify reads", async () => {
-  const PAGES = 22;
+it("the review leaves the closer reads' allowance in place", async () => {
+  const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "scan" as const })) };
+  const openai = fake("gpt", { review: { findings: [] }, read_values: { answers: [{ item: 0, answer: "$500.00" }] } }, 0);
+  // the review's estimate is about $0.03 at $1 a million tokens: it fits in $0.10, but not beside one page's $0.08
+  const result = await read([scan], { anthropic: {} as ModelClient, claude: fake("claude", {}, 0), openai, maxUsd: 0.1, rulebook });
+  expect(result.reviewError).toMatch(/skipped/);
+  expect(result.rulebook.questions.map((q) => q.id)).toContain("review:not-run");
+});
+
+const PAGES = 22;
+
+/** A fresh read of a 22-page scan at the default budget, then a second read of it, with readers at measured prices and a compile that spends all it is given and a turn more. */
+async function twoReadsOf22Pages() {
   const file = await PDFDocument.create();
   const ink = createCanvas(40, 40);
   ink.getContext("2d").fillRect(0, 0, 40, 40);
@@ -184,22 +196,38 @@ it("a 22-page scan at the default budget always runs the reviewer and the verify
     },
   };
   const OVERSHOOT = 0.3;
+  let share = 0;
   vi.mocked(compile).mockImplementation(async (compiled, opts) => {
+    share = opts.maxUsd!;
     const rb = { ...rulebook, terms: [], accounted: [{ doc: "Budget22.pdf", pages: compiled[0]!.pages.map((p) => p.page), reason: "synthetic" }] };
     return { rulebook: rb, report: checks.runChecks(rb, compiled), model: "claude", usd: opts.maxUsd! + OVERSHOOT, turns: 40, finishes: 1, stopReason: "done", trace: [] };
   });
 
   const saved: ScanPage[] = [];
   const scans: ScanStore = { get: async () => saved, put: async (_, page) => void saved.push(page) };
+  const runs = [];
   for (const run of ["fresh", "pages already read"]) {
-    const limit = readBudget(undefined, await untranscribed([scanned], scans, openai), PAGES);
+    const unread = await untranscribed([scanned], scans, openai);
+    const limit = readBudget(undefined, unread, PAGES, await reviewUsd(openai, [scanned]));
     const [before, progress] = [{ reviews, transcriptions }, [] as string[]];
     const result = await read([scanned], { anthropic: {} as ModelClient, claude: fake("claude", {}, 0), openai, scans, maxUsd: limit, onProgress: (l) => progress.push(l) });
+    // what compile was given before anything was set aside: 70% of the default and the transcription allowance, less what transcription spent
+    const before_ = 0.7 * (defaultMaxUsd() + SCAN_PAGE_USD * unread - 0.15 * unread);
+    runs.push({ run, limit, result, progress, share, before: before_, reviews: reviews - before.reviews, transcriptions: transcriptions - before.transcriptions });
+  }
+  return runs;
+}
 
+it("a 22-page scan at the default budget always runs the reviewer and the verify reads", async () => {
+  for (const { run, limit, result, progress, reviews, transcriptions } of await twoReadsOf22Pages()) {
     expect(result.reviewError, run).toBeUndefined();
-    expect(reviews - before.reviews, run).toBe(1);
+    expect(reviews, run).toBe(1);
     expect(limit - result.usd, run).toBeGreaterThanOrEqual(PAGES * VERIFY_PAGE_USD);
-    expect(transcriptions - before.transcriptions, run).toBe(run === "fresh" ? PAGES : 0);
+    expect(transcriptions, run).toBe(run === "fresh" ? PAGES : 0);
     expect(progress.filter((l) => /^p\.\d+ of Budget22\.pdf read at \d+ dpi$/.test(l)), run).toHaveLength(run === "fresh" ? PAGES : 0);
   }
+}, 30_000);
+
+it("a 22-page scan's compile share is at least what it was before the reservations", async () => {
+  for (const { run, share, before } of await twoReadsOf22Pages()) expect(share, run).toBeGreaterThanOrEqual(before);
 }, 30_000);

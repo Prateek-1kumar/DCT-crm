@@ -162,7 +162,7 @@ describe("starting a read", () => {
     expect(await versionOf(versionId)).toMatchObject({ status: expect.stringMatching(/reading|draft/), number: 1, createdBy: "Asha" });
 
     const read = await finished(built, readId);
-    expect(read).toMatchObject({ id: readId, versionId, status: "done", budgetUsd: 3, error: null });
+    expect(read).toMatchObject({ id: readId, versionId, status: "done", budgetUsd: 3.03, error: null });
     expect(read.spentUsd).toBeGreaterThan(0.25);
     expect(read.startedAt).toBeTruthy();
     expect(read.finishedAt).toBeTruthy();
@@ -178,7 +178,7 @@ describe("starting a read", () => {
     expect(row!.trace).toMatchObject({ compile: expect.any(Array), log: read.progress });
 
     const entries = await built.ctx.db.select().from(auditLog).where(eq(auditLog.entityId, readId));
-    expect(entries).toMatchObject([{ by: "Asha", action: "read.started", entity: "read", detail: { studyId: s.id, versionId, number: 1, budgetUsd: 3 } }]);
+    expect(entries).toMatchObject([{ by: "Asha", action: "read.started", entity: "read", detail: { studyId: s.id, versionId, number: 1, budgetUsd: 3.03 } }]);
   });
 
   it("numbers the next read one higher once the first has failed", async () => {
@@ -209,7 +209,8 @@ describe("starting a read", () => {
 
     const answer = (questionId: string) => built.app.inject({ method: "POST", url: `/api/v1/versions/${first.versionId}/questions/${encodeURIComponent(questionId)}/answer`, payload: { option: 0, by: "Ben" } });
     for (const q of open.filter((q) => q.id !== "review:not-run")) expect((await answer(q.id)).statusCode).toBe(200);
-    expect((await answer("review:not-run")).statusCode).toBe(400);
+    const rerun = await answer("review:not-run");
+    expect([rerun.statusCode, rerun.json().message]).toEqual([409, "This needs the read to be run again, not an answer."]);
     const refused = await built.app.inject({ method: "POST", url: `/api/v1/versions/${first.versionId}/approve`, payload: { by: "Ben" } });
     expect(refused.statusCode).toBe(409);
     expect(refused.json().message).toContain(NOT_REVIEWED);
@@ -233,21 +234,21 @@ describe("starting a read", () => {
     expect((await post(built, s.id, { by: " " })).json().message).toMatch(/pick your name/);
   });
 
-  it("starting a read on a 2-page scan records budget 3 + 0.80 to read them + 0.16 for their closer reads", async () => {
+  it("starting a read on a 2-page scan records budget 3 + 0.80 to read them + 0.16 for their closer reads + the review (0.05 at the fake price)", async () => {
     const s = await seedStudy({ scanPages: 2 });
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3.96);
+    expect((await get(built, readId)).budgetUsd).toBe(4.01);
     const entries = await built.ctx.db.select().from(auditLog).where(eq(auditLog.entityId, readId));
-    expect(entries).toMatchObject([{ detail: { budgetUsd: 3.96 } }]);
+    expect(entries).toMatchObject([{ detail: { budgetUsd: 4.01 } }]);
     await finished(built, readId);
   });
 
-  it("budgets nothing extra for a contract with a text layer", async () => {
+  it("budgets only the review extra for a contract with a text layer (0.03 at the fake price)", async () => {
     const s = await seedStudy();
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3);
+    expect((await get(built, readId)).budgetUsd).toBe(3.03);
     await finished(built, readId);
   });
 
@@ -271,14 +272,14 @@ describe("starting a read", () => {
     expect(detail.documents[0]).toMatchObject({ scannedPages: [], scansRead: [1, 2] });
   });
 
-  it("a second read of the same file adds only the closer reads to the budget and transcribes nothing again", async () => {
+  it("a second read of the same file adds only the closer reads and the review to the budget and transcribes nothing again", async () => {
     const s = await seedStudy({ scanPages: 2 });
     use(fakes(scanScript()));
     expect((await finished(built, (await post(built, s.id)).json().readId)).status).toBe("done");
     use(fakes(scanScript()));
     transcriptions = 0;
     const again = (await post(built, s.id)).json();
-    expect((await get(built, again.readId)).budgetUsd).toBe(3.16);
+    expect((await get(built, again.readId)).budgetUsd).toBe(3.19);
     expect((await finished(built, again.readId)).status).toBe("done");
     expect(transcriptions).toBe(0);
   });
@@ -291,7 +292,7 @@ describe("starting a read", () => {
     use(fakes(scanScript()));
     transcriptions = 0;
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3.56);
+    expect((await get(built, readId)).budgetUsd).toBe(3.6);
     expect((await finished(built, readId)).status).toBe("done");
     expect(transcriptions).toBe(1);
     expect((await scanStore.get(sha256)).find((p) => p.page === 1)!.version).toBe(scanVersion(fakes().openai));
@@ -345,7 +346,7 @@ describe("starting a read", () => {
     await scanStore.put((await contractOf(s.id)).sha256, { page: 1, version: scanVersion(fakes().openai), rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
-    expect((await get(built, readId)).budgetUsd).toBe(3.56);
+    expect((await get(built, readId)).budgetUsd).toBe(3.6);
     await finished(built, readId);
   });
 
@@ -463,7 +464,7 @@ describe("a read that fails", () => {
     use(fakes([big as unknown as ModelMessage]));
     const read = await finished(built, (await post(built, s.id)).json().readId);
     expect(read.status).toBe("failed");
-    expect(read.error).toMatch(/spending limit of \$3\.00/);
+    expect(read.error).toMatch(/spending limit of \$3\.03/);
     expect(read.spentUsd).toBeGreaterThan(3);
   });
 
@@ -473,7 +474,7 @@ describe("a read that fails", () => {
     use(fakes([big as unknown as ModelMessage]));
     const read = await finished(built, (await post(built, s.id)).json().readId);
     expect(read.status).toBe("failed");
-    expect(read.error).toBe("The read reached its spending limit of $3.96 before it finished, so the rulebook wasn't kept. The scanned pages it read are saved, so the next read costs less. Start it again to try once more.");
+    expect(read.error).toBe("The read reached its spending limit of $4.01 before it finished, so the rulebook wasn't kept. The scanned pages it read are saved, so the next read costs less. Start it again to try once more.");
     expect(await scanStore.get((await contractOf(s.id)).sha256)).toHaveLength(2);
   });
 

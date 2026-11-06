@@ -6,7 +6,7 @@ export { coverage, findQuote, quoteBoxes } from "./checks/coverage";
 export type { AmountStatus, Coverage, CoverageAmount, CoverageClause, CoveragePage, CoverageRef } from "./checks/coverage";
 export { pdfReader } from "./pdf";
 export { SCAN_PAGE_USD, fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "./scan";
-export { review } from "./review";
+export { review, reviewUsd } from "./review";
 export type { ReviewResult } from "./review";
 export { resolve } from "./resolve";
 export { asPrintedQuestion } from "./resolve/read";

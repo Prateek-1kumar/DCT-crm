@@ -14,6 +14,8 @@ export interface ScanCell {
   doubts: Doubt[];
   heading?: string;
   rowLabel?: string;
+  /** The parts of its text that are printed and struck out, such as a value a handwritten one replaces. */
+  struck?: string[];
 }
 
 interface Laid {
@@ -64,7 +66,8 @@ export function cellsOf(page: number, t: Transcription): ScanCell[] {
   return laidOut(page, t).flatMap((line) =>
     line.flatMap((l): ScanCell[] => {
       if (isTitle(l)) return [];
-      const cell: ScanCell = { id: l.id, page, table: l.table, row: l.row, col: l.col, text: textOf(l), doubts: l.doubts };
+      const struck = l.parts.filter((p) => p.doubts.includes("struck_out")).map((p) => p.words.map((w) => w.text).join(" "));
+      const cell: ScanCell = { id: l.id, page, table: l.table, row: l.row, col: l.col, text: textOf(l), doubts: l.doubts, ...(struck.length > 0 && { struck }) };
       if (l.row === null) {
         if (l.table !== null) headings.set(`${l.table}.${l.col}`, cell.text);
         return [cell];

@@ -253,9 +253,17 @@ describe("scanDocs", () => {
     const ask = reader.ask.bind(reader);
     let running = 0;
     let most = 0;
+    // every ask waits until three are in flight together, so rendering speed can't decide the count; the timeout only
+    // keeps a broken scheduler from hanging the test
+    let release: () => void = () => {};
+    const together = new Promise<void>((resolve) => {
+      release = resolve;
+      setTimeout(resolve, 1000);
+    });
     reader.ask = async (req) => {
       most = Math.max(most, ++running);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (running >= 3) release();
+      await together;
       running--;
       return ask(req);
     };

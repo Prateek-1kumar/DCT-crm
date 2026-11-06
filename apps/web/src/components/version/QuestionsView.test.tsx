@@ -138,6 +138,17 @@ describe("QuestionsView", () => {
     expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
   });
 
+  it("a question with nothing to choose says so, and offers no answer", async () => {
+    const rerun = question("review:not-run", { question: "This read wasn't checked for judgment calls. Start the read again; the pages already read are kept.", context: "The second reader couldn't run on this read.", options: [] });
+    mockApi({ "GET /versions/v1": () => version({ rulebook: rulebook({ questions: [rerun] }) }), "GET /documents/d1/pages/2/find": find() });
+    view();
+    expect(await screen.findByText(/wasn't checked for judgment calls/)).toBeTruthy();
+    expect(screen.getByText(/The second reader couldn't run on this read\. There's nothing to choose here/)).toBeTruthy();
+    expect(screen.queryByText("What the contract says and doesn't")).toBeNull();
+    expect(screen.queryByText("Your answer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
+  });
+
   it("is read-only once the version is live", async () => {
     mockApi({
       "GET /versions/v1": () => version({ status: "approved", rulebook: rulebook({ questions: [question("a")] }) }),

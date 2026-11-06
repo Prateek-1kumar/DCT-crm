@@ -147,17 +147,19 @@ function citations(rulebook: Rulebook): Map<string, Cited[]> {
   return byCell;
 }
 
-// A column is money when its heading or its table's title says so, or when it prints an amount; its bare numbers count
-// then. A heading that names a count or a rate ("Quantity", "Total Quantity", "Visits", "Overhead %") makes it a count
-// column instead, unless it names money outright ("Fee (incl. 25% overhead)"): there only a figure with $ is money.
-const MONEY = /\$|\busd\b|\b(?:fee|cost|amount|price|payment|total)s?\b/i;
-const NAMES_MONEY = /\$|\busd\b|\b(?:fee|cost|amount|price|payment)s?\b/i;
-const NAMES_COUNT = /%|\b(?:qty|quantity|quantities|count|units?|visits|hours|percent|percentage|number of|no\. of)\b/i;
+// When in doubt a column is money, and its bare numbers ("1,500") count. Only a heading that is nothing but a count
+// ("Quantity", "Total Quantity", "Visits", "No. of subjects"), a percentage label ("Overhead %") or a code ("CPT") makes
+// a count column, where only a figure with $ is money. Any money word in it, or a number after "visits" ("Visits 2-5"),
+// keeps it money.
+const COUNT = /^\s*(?:total\s+)?(?:qty|quantit(?:y|ies)|count|#|units?|hours|visits|%|percent(?:age)?|(?:number|no\.?) of \w+|(?:cpt|hcpcs)(?:\s+codes?)?|codes?)\s*$/i;
+const PERCENTAGE = /^\s*[a-z ]*%\s*$/i;
+const MONEY_WORD = /\b(?:total|rate|per|overhead|reimburs\w*|compensation|charge|fee|cost|price|amount|payment|stipend)s?\b/i;
 const CURRENCY = /\$|\busd\b/i;
-// cellsOf keeps no table titles, so they come from the page's text, which prints each as: TABLE <id> "<title>"
-const TITLE = /^TABLE (p\d+\.t\d+) (".*")$/gm;
 
-type Column = "money" | "count" | "other";
+type Column = "money" | "count";
+
+const counts = (heading: string) =>
+  (COUNT.test(heading) && !MONEY_WORD.test(heading.replace(/^\s*total\s+/i, ""))) || (PERCENTAGE.test(heading) && !MONEY_WORD.test(heading.replace(/\boverhead\b/i, "")));
 
 function tokens(text: string): { text: string; cents: number }[] {
   const words = text.split(/\s+/).filter(Boolean);
@@ -166,27 +168,38 @@ function tokens(text: string): { text: string; cents: number }[] {
 
 /** What a scanned cell or line prints: its amount-shaped words, or a table cell's whole value ("$ 1,500", or "1,500" in a money column). */
 function printedIn(cell: ScanCell, column: Column): { text: string; cents: number }[] {
-  if (column === "count") return tokens(cell.text).filter((t) => CURRENCY.test(t.text));
   if (cell.row !== null && cell.col) {
-    const whole = looseCents(cell.text) ?? (column === "money" ? parseCents(cell.text) : null);
+    if (column === "count") return tokens(cell.text).filter((t) => CURRENCY.test(t.text));
+    const whole = looseCents(cell.text) ?? parseCents(cell.text);
     if (whole !== null) return [{ text: cell.text, cents: Math.abs(whole) }];
   }
   return tokens(cell.text);
 }
 
-function columnsOf(page: Page, cells: ScanCell[]): Map<string, Column> {
-  const titles = new Map([...page.layout.matchAll(TITLE)].map((m) => [m[1]!, JSON.parse(m[2]!) as string]));
-  const columns = new Map<string, Column>();
+const widthOf = (cells: ScanCell[], table: number) => Math.max(0, ...cells.filter((c) => c.table === table).map((c) => c.col ?? 0));
+
+/**
+ * The count columns of a page's tables, as "table.col". A table printed without headings is taken as the rest of the
+ * last table on the page before with as many columns, as a budget continued on the next page is.
+ * ponytail: walks back one page per continued page; fine for any real contract's page count.
+ */
+function countColumns(pages: Page[], index: number): Set<string> {
+  const cells = pages[index]?.cells ?? [];
+  const counted = new Set<string>();
+  const headed = new Set(cells.filter((c) => c.table !== null && c.row === null).map((c) => c.table));
   for (const c of cells) {
-    if (c.table === null || !c.col) continue;
-    const key = `${c.table}.${c.col}`;
-    const heading = c.row === null ? c.text : (c.heading ?? "");
-    if (NAMES_COUNT.test(heading) && !NAMES_MONEY.test(heading)) columns.set(key, "count");
-    if (columns.get(key) === "count") continue;
-    const prints = c.row !== null && (looseCents(c.text) !== null || tokens(c.text).length > 0);
-    if (prints || MONEY.test(heading) || MONEY.test(titles.get(`p${c.page}.t${c.table}`) ?? "")) columns.set(key, "money");
+    if (c.table !== null && c.row === null && c.col && counts(c.text)) counted.add(`${c.table}.${c.col}`);
   }
-  return columns;
+  const tables = new Set(cells.flatMap((c) => (c.table === null || headed.has(c.table) ? [] : [c.table])));
+  if (!tables.size || index === 0) return counted;
+  const before = pages[index - 1]!.cells ?? [];
+  const earlier = countColumns(pages, index - 1);
+  for (const table of tables) {
+    const width = widthOf(cells, table);
+    const match = [...new Set(before.flatMap((c) => (c.table === null ? [] : [c.table])))].filter((t) => widthOf(before, t) === width).at(-1);
+    for (let col = 1; match !== undefined && col <= width; col++) if (earlier.has(`${match}.${col}`)) counted.add(`${table}.${col}`);
+  }
+  return counted;
 }
 
 /** The row a cell is on ("p7.t1.r5", "p7.t1.h"), or the line itself. */
@@ -204,15 +217,20 @@ function cellBand(page: Page, id: string): Region {
  * On a transcribed scan an amount is accounted for by a value citing its cell, or by `accounted` naming its cell, its
  * amount on this page, or the whole page. A value or a listing for another page never counts.
  */
-function scannedAmounts(rulebook: Rulebook, doc: string, page: Page, cells: ScanCell[], cited: Map<string, Cited[]>): CoverageAmount[] {
-  const columns = columnsOf(page, cells);
+function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number, cited: Map<string, Cited[]>): CoverageAmount[] {
+  const page = pages[index]!;
+  const cells = page.cells ?? [];
+  const counted = countColumns(pages, index);
   return cells.flatMap((cell) => {
     const row = cell.table === null ? [cell] : cells.filter((c) => c.table === cell.table && c.row === cell.row);
     const line = row.map((c) => c.text).join(" ").trim().slice(0, 120);
-    return printedIn(cell, columns.get(`${cell.table}.${cell.col}`) ?? "other").flatMap(({ text, cents }): CoverageAmount[] => {
+    const printed = printedIn(cell, counted.has(`${cell.table}.${cell.col}`) ? "count" : "money");
+    // a citation names one amount: a second one in the same cell or line ("$500.00 per visit, max $6,000.00") needs its
+    // own, except a struck value the cited one replaces
+    const struck = new Set((cell.struck ?? []).flatMap((s) => tokens(s).map((t) => t.cents)));
+    return printed.flatMap(({ text, cents }): CoverageAmount[] => {
       if (cents === 0) return [];
-      // a table cell holds one value (with its struck predecessor, if any); a line can print several, so its citation must name the amount
-      const match = cited.get(cell.id)?.find((c) => cell.table !== null || (c.cents !== null && Math.abs(c.cents) === cents));
+      const match = cited.get(cell.id)?.find((c) => printed.length === 1 || struck.has(cents) || (c.cents !== null && Math.abs(c.cents) === cents));
       const accounted = match
         ? undefined
         : rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || a.cell === cell.id || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents)));
@@ -231,12 +249,12 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
 
   for (const doc of docs) {
     if (noMoney.has(doc.name)) continue;
-    for (const page of doc.pages) {
+    for (const [index, page] of doc.pages.entries()) {
       const out: CoveragePage = { doc: doc.name, page: page.page, kind: page.kind, amounts: [], clauses: [] };
       pages.push(out);
       if (page.kind === "image") continue;
 
-      if (page.cells) out.amounts = scannedAmounts(rulebook, doc.name, page, page.cells, cited);
+      if (page.cells) out.amounts = scannedAmounts(rulebook, doc.name, doc.pages, index, cited);
       else {
         // A whole page set aside (a superseded budget) wins over a coincidental match; a set-aside amount counts wherever
         // it was listed, as in the every-dollar check.

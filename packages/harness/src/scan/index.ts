@@ -55,16 +55,16 @@ const pngWidth = (png: Buffer) => png.readUInt32BE(16);
  * The dpi the model sees the page's small print at: the last image sent is a strip, or the whole page when it fits one.
  * ponytail: assumes the render wasn't lowered by MAX_SCAN_PIXELS, which only a page over about 300 square inches is.
  */
-function effectiveDpi(png: Buffer, parts: Part[]): number {
-  const images = parts.flatMap((p) => (p.type === "image" ? [p.png] : []));
-  return Math.round((SCAN_DPI * pngWidth(images.at(-1)!)) / pngWidth(png));
+function effectiveDpi(png: Buffer, parts: Part[]): number | undefined {
+  const last = parts.flatMap((p) => (p.type === "image" ? [p.png] : [])).at(-1);
+  return last ? Math.round((SCAN_DPI * pngWidth(last)) / pngWidth(png)) : undefined;
 }
 
 /**
  * One transcription inside the budget: the estimate is held while the call runs, then replaced by what it cost. undefined
  * when the estimate doesn't fit.
  */
-async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Promise<{ read: Transcription; dpi: number } | undefined> {
+async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Promise<{ read: Transcription; dpi?: number } | undefined> {
   const parts = await pageParts(png);
   const estimate = estimateUsd(reader, parts, OUTPUT_TOKENS);
   if (budget.spent + estimate > budget.limit) return undefined;
@@ -93,7 +93,7 @@ async function transcribePage(doc: LoadedDoc, page: Page, reader: Reader, budget
   }
   if (!done) return undefined;
   // shows on a paid run whether tiny print on landscape pages needs smaller strips
-  onProgress?.(`p.${page.page} of ${doc.name} read at ${done.dpi} dpi`);
+  if (done.dpi) onProgress?.(`p.${page.page} of ${doc.name} read at ${done.dpi} dpi`);
   if (quarterTurn(done.read.rotation) !== 0) onProgress?.(`p.${page.page} of ${doc.name} may still be turned the wrong way`);
   return { page: page.page, version: scanVersion(reader), rotation, transcription: done.read };
 }

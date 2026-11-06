@@ -96,6 +96,7 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       const question = rulebook.questions.find((q) => q.id === questionId);
       if (!question) throw new HttpError(404, "This version has no such question.");
       if (question.state !== "open") throw new HttpError(409, "This question has already been answered");
+      if (!question.options.length) throw new HttpError(409, "This needs the read to be run again, not an answer.");
       const chosen = question.options[option];
       if (!chosen) throw new HttpError(400, `This question has ${plural(question.options.length, "option")}: pick one of them.`);
 

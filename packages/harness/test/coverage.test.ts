@@ -301,13 +301,15 @@ describe("coverage on a scanned page, by cell", () => {
     expect(amountsOf(rulebook()).map((a) => a.cents)).toEqual([200000, 30000, 150000, 15000]);
   });
 
-  it("a column is money by its heading, the table's title, or any amount in it", () => {
-    const doc = (title: string, heading: string, other: string) => scanned(`T 0.1-0.3 | ${title}\nH | Item | ${heading}\nR 0.12-0.13 | A | 1,500\nR 0.14-0.15 | B | ${other}`);
-    const bare = (title: string, heading: string, other = "7") => amountsOf(rulebook(), doc(title, heading, other)).map((a) => a.cents);
-    expect(bare("Schedule", "Visit 1")).toEqual([]);
-    expect(bare("Schedule", "Cost")).toEqual([150000, 700]);
-    expect(bare("Payment schedule", "Visit 1")).toEqual([150000, 700]);
-    expect(bare("Schedule", "Visit 1", "$7.00")).toEqual([150000, 700]);
+  it("a column is money unless its heading is only a count, a percentage or a code; there a figure with $ still counts", () => {
+    const doc = (heading: string, other: string) => scanned(`T 0.1-0.3 | Schedule\nH | Item | ${heading}\nR 0.12-0.13 | A | 1,500\nR 0.14-0.15 | B | ${other}`);
+    const bare = (heading: string, other = "7") => amountsOf(rulebook(), doc(heading, other)).map((a) => a.cents);
+    expect(bare("Visit 1")).toEqual([150000, 700]);
+    expect(bare("")).toEqual([150000, 700]);
+    expect(bare("CPT code")).toEqual([]);
+    expect(bare("No. of subjects")).toEqual([]);
+    expect(bare("Number of payments")).toEqual([150000, 700]);
+    expect(bare("Hours", "$7.00")).toEqual([700]);
   });
 
   it("a quantity column on a scan page isn't counted as money", () => {
@@ -318,6 +320,40 @@ describe("coverage on a scanned page, by cell", () => {
       "R 0.14-0.15 | ECG | 1,500 | $5.00 | | | | | ",
     ].join("\n"));
     expect(amountsOf(rulebook(), doc).map((a) => a.cents)).toEqual([10000, 4000, 150000, 500]);
+  });
+
+  it.each(["Total (all visits)", "Total for 4 visits", "Visits 2-5", "Rate per unit", "Overhead 25%", "Per-patient total (10 visits)"])(
+    "a fee column headed %s keeps its bare amounts",
+    (heading) => {
+      const doc = scanned(`T 0.1-0.3 | Schedule\nH | Item | ${heading}\nR 0.12-0.13 | Exam | 6,000\nR 0.14-0.15 | ECG | 1,200.00`);
+      expect(amountsOf(rulebook(), doc).map((a) => a.cents)).toEqual([600000, 120000]);
+    },
+  );
+
+  it.each([
+    ["Schedule", "Reimbursement"], ["Schedule", "Rate"], ["Schedule", "Compensation"], ["Schedule", "Charge"], ["Schedule", "Stipend"], ["Study budget", "Visit 1"],
+  ])("a column under %s / %s is money", (title, heading) => {
+    const doc = scanned(`T 0.1-0.3 | ${title}\nH | Item | ${heading}\nR 0.12-0.13 | Exam | 1,500\nR 0.14-0.15 | ECG | 250`);
+    expect(amountsOf(rulebook(), doc).map((a) => a.cents)).toEqual([150000, 25000]);
+  });
+
+  it("a table continued without its headings takes its columns from the page before, or counts its bare numbers as money", () => {
+    const first = "T 0.1-0.3 | Schedule\nH | Item | Visits | Payment\nR 0.12-0.13 | Exam | 2 | 1,500";
+    const doc = scanned(first, "T 0.1-0.3 | \nR 0.12-0.13 | Labs | 3 | 250");
+    expect(amountsOf(rulebook(), doc, 2).map((a) => a.cents)).toEqual([25000]);
+    const other = scanned(first, "T 0.1-0.3 | \nR 0.12-0.13 | Labs | 250");
+    expect(amountsOf(rulebook(), other, 2).map((a) => a.cents)).toEqual([25000]);
+  });
+
+  it("a cell printing a fee and a maximum needs both accounted", () => {
+    const doc = scanned("T 0.1-0.3 | Budget\nH | Item | Fee\nR 0.12-0.13 | Exam | $500.00 per visit, max $6,000.00\nR 0.14-0.15 | ECG | $900.00{x} $1,050.00{hw}");
+    const rb = rulebook({
+      terms: [
+        term("exam", { amountCents: 50000, source: { doc: "s.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } }),
+        term("ecg", { amountCents: 105000, source: { doc: "s.pdf", page: 1, quote: "ECG", cell: "p1.t1.r2.c1" } }),
+      ],
+    });
+    expect(amountsOf(rb, doc).map((a) => [a.cents, a.status])).toEqual([[50000, "captured"], [600000, "missing"], [90000, "captured"], [105000, "captured"]]);
   });
 
   it("a matching amount on another page doesn't account for this one", () => {
