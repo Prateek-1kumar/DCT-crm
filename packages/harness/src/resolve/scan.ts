@@ -328,6 +328,7 @@ function askMissed(run: Run) {
         id: freshId(run, missedId(doc, n, row[0]!.secondRead!)),
         kind: "decision",
         about: null,
+        missedRow: { doc, page: n, row: rowOfCell(row[0]!.secondRead!) },
         source: { doc, page: n, quote: "" },
         question: `A second reading of p.${n} of ${doc} found ${listed} on the row "${line}" that the first reading missed. ${one ? "Is it a fee?" : "Are they fees?"}`,
         context: `${one ? "It isn't" : "They aren't"} in the rulebook yet. Check the page. ${fills.length ? `Adding ${one ? "it" : "them"} puts ${one ? "it" : "each"} in the budget grid cell the first reading left blank${rest.length ? ", and the rest as a fee" : ""}; ` : `Add ${one ? "it" : "them"} if ${one ? "it is a fee" : "they are fees"} the site can bill; `}set ${one ? "it" : "them"} aside if ${one ? "it is" : "they are"} only an amount already in the rulebook, read twice.`,
@@ -345,8 +346,9 @@ function askMissed(run: Run) {
 
 /** Questions about amounts only a second read found that another answer has since settled, such as setting aside a whole page. */
 export function closeSettledMissed(rulebook: Rulebook, docs: LoadedDoc[]): Rulebook {
-  const stillMissing = coverage(rulebook, docs).pages.flatMap((p) => p.amounts.filter((a) => a.status === "missing" && a.secondRead !== undefined).map((a) => missedId(p.doc, p.page, a.secondRead!)));
-  const settled = (q: Question) => q.origin === "check" && q.state === "open" && q.id.includes(":missed:") && !stillMissing.some((id) => q.id === id || q.id.startsWith(`${id}:`));
+  const key = (doc: string, page: number, row: string) => JSON.stringify([doc, page, row]);
+  const stillMissing = new Set(coverage(rulebook, docs).pages.flatMap((p) => p.amounts.filter((a) => a.status === "missing" && a.secondRead !== undefined).map((a) => key(p.doc, p.page, rowOfCell(a.secondRead!)))));
+  const settled = (q: Question) => q.origin === "check" && q.state === "open" && q.missedRow !== undefined && !stillMissing.has(key(q.missedRow.doc, q.missedRow.page, q.missedRow.row));
   return { ...rulebook, questions: rulebook.questions.map((q) => (settled(q) ? { ...q, state: "auto_resolved" as const } : q)) };
 }
 

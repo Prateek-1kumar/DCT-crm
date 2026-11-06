@@ -1,6 +1,6 @@
 import { applyPatches, cellProofPatches, citationPatches, correctedCells, type Grid, type Relation, type Rulebook, type Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
-import { normalizeAccounted, normalizeQuestion } from "../src/agent/normalize";
+import { normalizeAccounted, normalizeGrid, normalizeQuestion, normalizeTerm } from "../src/agent/normalize";
 import { checks } from "../src/checks";
 import { coverage } from "../src/checks/coverage";
 import { checkRelations, withRelationProof } from "../src/checks/relations";
@@ -254,6 +254,34 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
       expect(report.required).toEqual([]);
       expect(missed(answered, docs)).toEqual([[10000, "set_aside"]]);
     }
+  });
+
+  it("a term or document named with ':missed:' can't close or open a missed-amount question", async () => {
+    const { rulebook, docs } = await settle(book({ terms: [ecg] }), [first], [truth]);
+    const real = open(rulebook).find((q) => q.missedRow)!;
+    expect(real.id).toBe("read:Budget.pdf:p1:missed:t1.r2");
+    const lookalike = (id: string, over: Partial<typeof real> = {}) => ({ ...real, id, missedRow: undefined, ...over });
+    const crowded = {
+      ...rulebook,
+      questions: [
+        ...rulebook.questions,
+        lookalike("read:Budget.pdf:p1:missed:t1.r9", { options: [] }),
+        lookalike("read:Budget.pdf:p1:missed:t1.r2:x", { origin: "compile" as const }),
+        lookalike("read:Budget.pdf:p1:missed:t1.r3", { missedRow: { doc: "Budget.pdf:p1:missed:t1", page: 1, row: "r2" } }),
+      ],
+    };
+    const states = (rb: Rulebook) => Object.fromEntries(rb.questions.map((q) => [q.id, q.state]));
+    expect(states(closeSettledMissed(crowded, docs))).toEqual({
+      "read:Budget.pdf:p1:missed:t1.r2": "open", "read:Budget.pdf:p1:missed:t1.r9": "open", "read:Budget.pdf:p1:missed:t1.r2:x": "open", "read:Budget.pdf:p1:missed:t1.r3": "auto_resolved",
+    });
+    const aside = pick(crowded, real.id, 1);
+    expect(states(closeSettledMissed(aside, docs))).toMatchObject({ "read:Budget.pdf:p1:missed:t1.r9": "open", "read:Budget.pdf:p1:missed:t1.r2:x": "open" });
+
+    const named = { id: "x:missed:y", category: "site_fee", name: "Fee", amount: "$10.00", billing: "auto_paid", holdbackApplies: "n/a", overheadApplies: "n/a", source: { doc: DOC, page: 1, quote: "Fee" } };
+    expect(normalizeTerm(named)).toEqual({ ok: false, issues: [`id: a term's id can't contain a colon (":"); use letters, digits and dashes.`] });
+    expect(normalizeGrid({ id: "g:1", name: "B", doc: DOC, pages: [1], visits: ["V1"], rows: [] })).toMatchObject({ ok: false, issues: expect.arrayContaining([`id: a grid's id can't contain a colon (":"); use letters, digits and dashes.`]) });
+    const asked = normalizeQuestion({ id: "q", kind: "decision", question: "Fee?", source: { doc: DOC, page: 1, quote: "" }, missedRow: { doc: DOC, page: 1, row: "t1.r2" }, options: [] });
+    expect(asked.ok && asked.value.missedRow).toBeUndefined();
   });
 
   it("the agent can't account away a second-read-only amount", () => {

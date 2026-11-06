@@ -89,7 +89,7 @@ export const values = (n: number) => `${n} ${n === 1 ? "value" : "values"}`;
 /** Questions that go straight to a person: a marked value, or one two reads of a scan can't settle. */
 export const personId = (target: string) => `person:${target}`;
 
-type Raised = Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>;
+type Raised = Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind" | "missedRow">>;
 
 /** `neither`: a person may say none of the options is right, which leaves the value to them to type. */
 const checkQuestion = (q: Raised, neither = true): Question => ({

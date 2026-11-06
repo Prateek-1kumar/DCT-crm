@@ -27,6 +27,10 @@ function parse<T>(schema: z.ZodType<T>, value: unknown, issues: string[]): Parse
   return result.success && !issues.length ? { ok: true, value: result.data } : { ok: false, issues };
 }
 
+const noColon = (id: unknown, what: string, issues: string[]) => {
+  if (typeof id === "string" && id.includes(":")) issues.push(`id: a ${what}'s id can't contain a colon (":"); use letters, digits and dashes.`);
+};
+
 const notAnObject: Parsed<never> = { ok: false, issues: ["this item must be an object"] };
 
 export function normalizeStudy(raw: unknown): Parsed<Study> {
@@ -45,6 +49,7 @@ export function normalizeTerm(raw: unknown): Parsed<Term> {
     unit: null, trigger: null, formula: null, conditions: null, holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, houseRuleIds: [], notes: null,
     ...raw, cap, amountCents: cents(raw.amount, "amount", issues), evidence: "none",
   };
+  noColon(raw.id, "term", issues);
   return parse(Term, term, issues);
 }
 
@@ -79,6 +84,7 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
     arm: null, ...raw, cellsReadTwice: [], acceptedAsPrinted: false, overheadPct: pct, rows, subtotal: line("subtotal"), overhead: line("overhead"), total: line("total"), additions,
     grandTotalCents: amount(raw.grandTotal, "grandTotalCents", "grandTotal"), cellIds,
   };
+  noColon(raw.id, "grid", issues);
   return parse(Grid, grid, issues);
 }
 
@@ -108,5 +114,5 @@ export function normalizeQuestion(raw: unknown): Parsed<Question> {
     const patches = list(Array.isArray(given) ? given.filter(settable) : given, unlocked, []);
     return { ...rest, patches };
   }, []);
-  return parse(Question, { context: "", about: null, suggestion: null, ...raw, options, origin: "compile", state: "open", blocking: true, readings: [], resolution: null }, []);
+  return parse(Question, { context: "", about: null, suggestion: null, ...raw, missedRow: undefined, options, origin: "compile", state: "open", blocking: true, readings: [], resolution: null }, []);
 }

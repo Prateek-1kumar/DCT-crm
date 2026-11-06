@@ -179,6 +179,8 @@ export const Question = z.object({
   /** What each model read independently, for a `reading` question; a person sees these when the reads disagree. */
   readings: z.array(z.object({ model: text, answer: z.string() })),
   resolution: z.object({ by: z.enum(["two_reads", "citation"]), patches: z.array(Patch), citation: Source.nullable() }).nullable(),
+  /** Set only by the harness on a check's question about the amounts a page's second read found on one printed row; ids are never parsed to tell. */
+  missedRow: z.object({ doc: text, page: z.number().int().positive(), row: text }).optional(),
 });
 export type Question = z.infer<typeof Question>;
 
