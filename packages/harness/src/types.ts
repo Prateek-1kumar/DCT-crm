@@ -38,6 +38,8 @@ export interface Page {
   rotation: number;
   /** A transcribed scan's cells and lines with their ids: what its amounts cite. */
   cells?: ScanCell[];
+  /** What the cells come from, for comparing with a second read of the page. */
+  transcription?: Transcription;
 }
 
 /** What the vision model transcribed from one page: kept per file, so each scan is paid for once. The words are derived on load, so a fix to `toWords` reaches pages already saved. */
@@ -53,6 +55,8 @@ export interface ScanPage {
 export interface ScanStore {
   get(sha256: string): Promise<ScanPage[]>;
   put(sha256: string, page: ScanPage): Promise<void>;
+  /** Blind second reads of pages, kept apart so one never stands in for a page's transcription. */
+  verify?: ScanStore;
 }
 
 export interface LoadedDoc {

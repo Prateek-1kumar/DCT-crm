@@ -1,6 +1,6 @@
-import type { Question, Region, Rulebook } from "@dct/shared";
+import type { Question, Rulebook } from "@dct/shared";
 import { estimateUsd, spentOn, type Ask, type Budget, type Reader } from "../models/reader";
-import type { LoadedDoc } from "../types";
+import type { LoadedDoc, ScanStore } from "../types";
 
 export interface Run {
   rulebook: Rulebook;
@@ -8,10 +8,10 @@ export interface Run {
   claude: Reader;
   openai: Reader;
   budget: Budget;
+  /** Where second reads of scanned pages are kept, so a run started again doesn't pay for them twice. */
+  scans?: ScanStore;
   usd: number;
   log: string[];
-  /** Where a scanned page's value was looked at closely, by the id of the question to raise if the reads still disagree. */
-  crops: Map<string, Region>;
 }
 
 const OUTPUT_TOKENS = 4000;

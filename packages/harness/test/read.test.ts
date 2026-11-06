@@ -9,7 +9,8 @@ import type { ModelClient } from "../src/agent/client";
 import type { Ask, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { ReadFailed, defaultMaxUsd, read, readBudget } from "../src/read";
-import { SCAN_PAGE_USD } from "../src/scan";
+import { SCAN_PAGE_USD, withScans } from "../src/scan";
+import { parseTranscription } from "../src/scan/transcribe";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
 
 const CLAUSE = "Screen failures are paid at the full visit rate of $500.00 per subject.";
@@ -83,11 +84,15 @@ it("won't start on a file with scanned pages when there's nowhere to keep what i
   await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/nowhere to keep/);
 });
 
-it("reads transcribed pages, proving an amount by a zoomed second read from the vision reader alone", async () => {
-  const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "scan" as const })) };
+const PAGE = { rotation: 0, text: `L 0.100-0.120 | ${CLAUSE}` };
+const citing = (doc: string): Rulebook => ({ ...rulebook, terms: [{ ...rulebook.terms[0]!, source: { ...rulebook.terms[0]!.source, doc, cell: "p1.l1" } }] });
+
+it("reads transcribed pages, proving an amount by a blind second read from the vision reader alone", async () => {
+  const images: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "image" as const })) };
+  const scan = withScans(images, [{ page: 1, version: "v", rotation: 0, transcription: parseTranscription(PAGE) }]);
   const claude = fake("claude", {}, 1);
-  const openai = fake("gpt", { read_values: { answers: [{ item: 0, answer: "$500.00" }] }, review: { findings: [] } }, 0.4);
-  const result = await read([scan], { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook });
+  const openai = fake("gpt", { verify_page: PAGE, review: { findings: [] } }, 0.4);
+  const result = await read([scan], { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook: citing("CTA.pdf") });
   expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "two_reads" });
   expect(result.report.problems).toEqual([]);
   expect(result.usd).toBeCloseTo(0.8);
@@ -102,12 +107,12 @@ it("transcribes scanned pages first, paid from the same budget, and saves them",
   const scanned = await pdfReader.load(join(dir, "Scan.pdf"));
   expect(scanned.pages[0]!.kind).toBe("image");
 
-  const openai = fake("gpt", { transcribe_page: { rotation: 0, text: `L 0.100-0.120 | ${CLAUSE}` }, read_values: { answers: [{ item: 0, answer: "$500.00" }] }, review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { transcribe_page: PAGE, verify_page: PAGE, review: { findings: [] } }, 0.4);
   const saved: ScanPage[] = [];
   const scans: ScanStore = { get: async () => saved, put: async (_, page) => void saved.push(page) };
   const progress: string[] = [];
 
-  const result = await read([scanned], { anthropic: {} as ModelClient, claude: fake("claude", {}, 1), openai, scans, maxUsd: 3, rulebook: { ...rulebook, terms: [{ ...rulebook.terms[0]!, source: { ...rulebook.terms[0]!.source, doc: "Scan.pdf" } }] }, onProgress: (l) => progress.push(l) });
+  const result = await read([scanned], { anthropic: {} as ModelClient, claude: fake("claude", {}, 1), openai, scans, maxUsd: 3, rulebook: citing("Scan.pdf"), onProgress: (l) => progress.push(l) });
   expect(saved).toHaveLength(1);
   expect(progress).toContain("Reading scanned pages: 1 of 1");
   expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "two_reads" });

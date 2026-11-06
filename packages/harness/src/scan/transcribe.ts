@@ -150,17 +150,21 @@ function crop(image: Image, top: number, bottom: number): Buffer {
   return canvas.toBuffer("image/png");
 }
 
-/** The whole page, then strips each about 0.6 of the page width tall, overlapping so no line is cut in every strip. */
-export async function pageParts(png: Buffer): Promise<Part[]> {
+/**
+ * The whole page, then strips each about 0.6 of the page width tall, overlapping so no line is cut in every strip.
+ * `offset` (a fraction of a strip) moves the strips down, so a second read cuts the page in different places from the first.
+ */
+export async function pageParts(png: Buffer, offset = 0): Promise<Part[]> {
   const image = await loadImage(png);
   const stripHeight = Math.min(1, (STRIP_ASPECT * image.width) / image.height);
-  const count = Math.ceil((1 - OVERLAP) / (stripHeight - OVERLAP));
+  const step = stripHeight - OVERLAP;
+  const count = Math.ceil((1 - OVERLAP) / step);
+  const tops = count > 1 ? [...new Set(Array.from({ length: count + (offset ? 1 : 0) }, (_, i) => Math.max(0, Math.min((i - offset) * step, 1 - stripHeight))))] : [];
   const parts: Part[] = [{ type: "image", png: crop(image, 0, 1) }];
-  for (let i = 0; i < count && count > 1; i++) {
-    const top = Math.min(i * (stripHeight - OVERLAP), 1 - stripHeight);
-    parts.push({ type: "text", text: `Strip ${i + 1} of ${count}: from ${Math.round(top * 100)}% to ${Math.round((top + stripHeight) * 100)}% of the page height` });
+  tops.forEach((top, i) => {
+    parts.push({ type: "text", text: `Strip ${i + 1} of ${tops.length}: from ${Math.round(top * 100)}% to ${Math.round((top + stripHeight) * 100)}% of the page height` });
     parts.push({ type: "image", png: crop(image, top, top + stripHeight) });
-  }
+  });
   return parts;
 }
 

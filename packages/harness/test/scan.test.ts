@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { createCanvas } from "@napi-rs/canvas";
 import { PDFDocument } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Ask, Budget, Reader } from "../src/models";
+import type { Ask, Budget, Part, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { groupLines, rawLine } from "../src/pdf/lines";
 import { checkQuote } from "../src/checks/quote";
 import { quoteBoxes } from "../src/checks/coverage";
 import { fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "../src/scan";
 import { cellsOf, scanText } from "../src/scan/cells";
-import { parseTranscription, type Transcription } from "../src/scan/transcribe";
+import { pageParts, parseTranscription, type Transcription } from "../src/scan/transcribe";
 import { toWords } from "../src/scan/words";
 import { ReadFailed } from "../src/read";
 import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
@@ -373,7 +373,7 @@ describe("withScans", () => {
     const doc = await imagePdf("load.pdf", [[612, 792]]);
     const saved = transcription();
     const loaded = withScans(doc, [{ page: 1, version: "v", rotation: 0, transcription: saved }]);
-    expect(loaded.pages[0]).toMatchObject({ kind: "scan", words: toWords(saved), raw: scanText(1, saved), layout: scanText(1, saved) });
+    expect(loaded.pages[0]).toMatchObject({ kind: "scan", words: toWords(saved), raw: scanText(1, saved), layout: scanText(1, saved), transcription: saved });
     expect(loaded.pages[0]!.words.length).toBeGreaterThan(0);
   });
 });
@@ -521,5 +521,26 @@ describe("fileScanStore", () => {
     await store.put("c", { page: 1, version: "old", rotation: 0, transcription: transcription() });
     await store.put("c", { page: 1, version: "new", rotation: 0, transcription: transcription() });
     expect(await store.get("c")).toMatchObject([{ page: 1, version: "new" }]);
+  });
+
+  it("keeps second reads apart from the transcriptions, so a page's transcription is never replaced by one", async () => {
+    const store = fileScanStore(join(dir, "scans-verify"));
+    await store.put("d", { page: 1, version: "transcribe", rotation: 0, transcription: transcription() });
+    await store.verify!.put("d", { page: 1, version: "verify-1 m", rotation: 0, transcription: transcription({ lines: [] }) });
+    expect(await store.get("d")).toMatchObject([{ page: 1, version: "transcribe" }]);
+    expect(await store.verify!.get("d")).toMatchObject([{ page: 1, version: "verify-1 m" }]);
+  });
+});
+
+describe("pageParts", () => {
+  it("an offset cuts the strips in other places, still from the top of the page to the bottom", async () => {
+    const doc = await imagePdf("strips.pdf", [[612, 792]]);
+    const png = await pdfReader.render(doc, 1, { dpi: 100 });
+    const labels = (parts: Part[]) => parts.flatMap((p) => (p.type === "text" ? [p.text] : []));
+    const [plain, offset] = [labels(await pageParts(png)), labels(await pageParts(png, 0.5))];
+
+    expect(offset).not.toEqual(plain);
+    expect(offset[0]).toMatch(/from 0% to/);
+    expect(offset.at(-1)).toMatch(/to 100% of the page height$/);
   });
 });

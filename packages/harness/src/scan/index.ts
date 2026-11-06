@@ -41,7 +41,7 @@ export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
       if (!scan) return p;
       // the words only place the page's text for display; the agent and the quote check read the transcription's own structure
       const text = scanText(p.page, scan.transcription);
-      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text, cells: cellsOf(p.page, scan.transcription) };
+      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text, cells: cellsOf(p.page, scan.transcription), transcription: scan.transcription };
     }),
   };
 }

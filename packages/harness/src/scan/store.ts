@@ -2,9 +2,16 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ScanPage, ScanStore } from "../types";
 
-/** One file per contract file, named by its hash. Writes go through a temporary file and a rename, so a crash never leaves half a file. */
+/**
+ * One file per contract file, named by its hash, and one more for the second reads of its pages. Writes go through a
+ * temporary file and a rename, so a crash never leaves half a file.
+ */
 export function fileScanStore(dir: string): ScanStore {
-  const file = (sha256: string) => join(dir, `${sha256}.scan.json`);
+  return { ...pagesIn(dir, "scan"), verify: pagesIn(dir, "verify") };
+}
+
+function pagesIn(dir: string, kind: string): ScanStore {
+  const file = (sha256: string) => join(dir, `${sha256}.${kind}.json`);
   // each put reads the file and writes it back, so puts to one file must not overlap
   const queues = new Map<string, Promise<void>>();
 

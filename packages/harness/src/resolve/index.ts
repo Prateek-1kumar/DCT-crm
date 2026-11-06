@@ -1,16 +1,18 @@
 import type { Question, Rulebook } from "@dct/shared";
 import type { Budget, Reader } from "../models/reader";
-import type { CheckReport, LoadedDoc } from "../types";
+import type { CheckReport, LoadedDoc, ScanStore } from "../types";
 import { checks } from "../checks";
 import { elsewhere } from "./elsewhere";
-import { readAll, readJobs, rereadScanGrids } from "./read";
-import { relook } from "./scan";
+import { readAll, readJobs } from "./read";
+import { settleScans } from "./scan";
 import type { Run } from "./run";
 
 export interface ResolveOptions {
   claude: Reader;
   openai: Reader;
   budget: Budget;
+  /** Where second reads of scanned pages are kept; without it they are made again on every run. */
+  scans?: ScanStore;
 }
 
 export interface Resolved {
@@ -25,11 +27,9 @@ const raisedByResolve = (q: Question) => q.origin === "check" && q.state === "op
 /** Settles what two independent reads or a citation can settle (§5.5); decisions are left alone. */
 export async function resolve(rulebook: Rulebook, docs: LoadedDoc[], report: CheckReport, opts: ResolveOptions): Promise<Resolved> {
   // a re-run starts from the earlier run's rulebook; whatever still applies is raised again below
-  const run: Run = { rulebook: { ...rulebook, questions: rulebook.questions.filter((q) => !raisedByResolve(q)) }, docs, usd: 0, log: [], crops: new Map(), ...opts };
-  await relook(run, report);
-  const after = checks.runChecks(run.rulebook, docs);
-  await readAll(run, readJobs(run, after));
-  await rereadScanGrids(run, after);
+  const run: Run = { rulebook: { ...rulebook, questions: rulebook.questions.filter((q) => !raisedByResolve(q)) }, docs, usd: 0, log: [], ...opts };
+  await settleScans(run, report);
+  await readAll(run, readJobs(run, checks.runChecks(run.rulebook, docs)));
   await elsewhere(run);
   return { rulebook: run.rulebook, usd: run.usd, log: run.log };
 }

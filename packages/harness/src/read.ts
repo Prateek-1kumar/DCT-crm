@@ -96,7 +96,7 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
   else say(`Second reader raised ${reviewed.questions.length} ${reviewed.questions.length === 1 ? "question" : "questions"}`);
   rulebook = { ...rulebook, questions: [...rulebook.questions, ...reviewed.questions] };
 
-  const resolved = await resolve(rulebook, docs, checks.runChecks(rulebook, docs), { claude: opts.claude, openai: opts.openai, budget });
+  const resolved = await resolve(rulebook, docs, checks.runChecks(rulebook, docs), { claude: opts.claude, openai: opts.openai, budget, scans: opts.scans });
   resolved.log.forEach(say);
 
   const report = checks.runChecks(resolved.rulebook, docs);

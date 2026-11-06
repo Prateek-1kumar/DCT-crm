@@ -1,136 +1,49 @@
-import { applyPatches, parseCents, type Grid, type Patch, type Question, type Region, type Source } from "@dct/shared";
-import { needsProof } from "../checks";
-import { findQuote } from "../checks/coverage";
-import { usd } from "../checks/text";
-import { groupLines, median } from "../pdf/lines";
-import type { CheckReport, Doubt, Page, Word } from "../types";
-import { askPages, cellLabel, onScan, personId, printQuestion, proven, raise, raiseUnread, raiseZoomed, readCell, same, shown, termLabel, tryAsk, values } from "./read";
+import { applyPatches, parseCents, type Patch, type Source } from "@dct/shared";
+import { checks, needsProof } from "../checks";
+import { checkCitations } from "../checks/cells";
+import { printedAmounts } from "../checks/grid";
+import { amountsIn, usd } from "../checks/text";
+import { pdfReader } from "../pdf";
+import { diffReads, verdictOf } from "../scan/diff";
+import { MAX_SCAN_PIXELS, SCAN_DPI, type Transcription } from "../scan/transcribe";
+import { SecondReadFailed, verifyRead, verifyVersion } from "../scan/verify";
+import type { CheckReport, Doubt, LoadedDoc, Page } from "../types";
+import { asPrinted, cellLabel, onScan, personId, proven, raise, termLabel, tryApply, values } from "./read";
 import type { Run } from "./run";
 
-const PAD = 0.015;
-const MAX_PAD = 0.06;
-const MAX_CROPS = 12;
-
 const MARKS: Partial<Record<Doubt, string>> = { handwritten: "handwritten", struck_out: "struck out", initialed: "initialed" };
+const marksText = (doubts: Doubt[]) => doubts.flatMap((d) => MARKS[d] ?? []).join(" and ") || "marked";
 
+const NOT_CITED = "the rulebook does not say which cell of the page it was read from";
+const UNALIGNED = "the second read could not be lined up with it";
+const TURNED = "the second read saw the page turned, so the two reads can't be compared";
+const UNREAD = "This still needs a second read of the page, and it could not be done in this run. Start the read again to have the page read a second time.";
+
+/** One amount the compile agent cited on a scanned page. */
 interface Spot {
+  about: { target: "term" | "grid"; id: string };
   source: Source;
-  about: Question["about"];
   label: string;
-  /** Set on a term: the zoomed look lists every amount on its row, since which column is the term's was decided when it was read; the look only has to find the value there. */
-  rowOf?: string;
-  /** The id of the question raised when reads disagree, shared by the cells of one grid. */
-  questionId: string;
-  /** The id of the one question raised for the term, or for all the cells of the grid, that go straight to a person. */
-  personId: string;
-  current: number;
-  /** What was transcribed at this spot: the quote's lines, or none when the quote can't be found. */
-  words: Word[];
-  /** What a person is shown; undefined when the spot can't be found, so the whole page is shown. */
-  crop?: Region;
-  /** What the zoomed look is given: the spot's own band, with `header` above it when the visit headings were found. Defaults to `crop`. */
-  zoom?: Region;
-  header?: Region;
-  /** A cell of a grid whose arithmetic fails, which rereadScanGrids reads with the whole grid. A marked cell, or one whose row can't be found, is still asked about here. */
-  failing: boolean;
+  path: string;
+  cents: number;
+  /** The cell or line it cites; undefined when it cites none. */
+  cell: string | undefined;
+  /** Nothing proves it yet, so it needs the second read. A proven value is still asked about when either read sees it marked. */
+  unproven: boolean;
+  /** Set on a grid's row cell, so the totals check can tell whether a corrected one is covered. */
+  rowCell?: [number, number];
   patch(value: number): Patch;
 }
 
-const lineBand = (words: Word[], text: string): [number, number] | null => {
-  const boxes = findQuote(words, text);
-  return boxes.length ? [Math.min(...boxes.map((b) => b[1])), Math.max(...boxes.map((b) => b[3]))] : null;
+const pageOfCell = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
+const place = (s: Spot) => `p.${s.source.page} (${s.source.doc})`;
+const quarterTurn = (degrees: number) => (((Math.round(degrees / 90) * 90) % 360) + 360) % 360;
+
+/** A printed amount as one number: a cell with words beside its one amount ("$260.00 per visit") counts; null otherwise. */
+const centsOf = (text: string) => {
+  const found = amountsIn(text);
+  return found.length === 1 ? found[0]! : parseCents(text);
 };
-
-/** Two rows either side of a value, so a position off by a row or two still has the row in the picture. */
-function padOf(page: Page) {
-  const rows = groupLines(page.words).map(([w]) => (w!.y0 + w!.y1) / 2);
-  return Math.min(MAX_PAD, Math.max(PAD, 2 * median(rows.slice(1).map((c, i) => c - rows[i]!))));
-}
-
-const wordsIn = (page: Page, band: [number, number] | null) => (band ? page.words.filter((w) => (w.y0 + w.y1) / 2 >= band[0] && (w.y0 + w.y1) / 2 <= band[1]) : []);
-
-/** A printed subtotal, overhead, total or added line carries no row name to find it by, so a marked word with its amount stands for it. */
-function markedLines(g: Grid, pages: Page[]): Spot[] {
-  const visit = (j: number) => g.visits[j] ?? `#${j + 1}`;
-  const lines = [
-    ...(["subtotal", "overhead", "total"] as const).flatMap((k) => (g[k] ?? []).map((current, j) => ({ current, label: `the ${k} line at visit '${visit(j)}'`, path: `${k}.${j}` }))),
-    ...g.additions.flatMap((a, i) => a.cells.map((current, j) => ({ current, label: `the '${a.name}' line at visit '${visit(j)}'`, path: `additions.${i}.cells.${j}` }))),
-    { current: g.grandTotalCents, label: "the grand total", path: "grandTotalCents" },
-  ];
-  return lines.flatMap(({ current, label, path }): Spot[] => {
-    if (typeof current !== "number") return [];
-    for (const page of pages) {
-      const word = page.words.find((w) => w.doubt && MARKS[w.doubt] && parseCents(w.text) === current);
-      if (!word) continue;
-      const band: [number, number] = [word.y0, word.y1];
-      return [{
-        source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label, questionId: `read:${g.id}`, personId: personId(g.id),
-        current, words: wordsIn(page, band), failing: false, crop: [0, 0, 1, Math.min(1, band[1] + PAD)],
-        patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }),
-      }];
-    }
-    return [];
-  });
-}
-
-function spotsOf(run: Run, report: CheckReport): Spot[] {
-  const pageOf = (doc: string, n: number) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === n);
-  const spots: Spot[] = [];
-
-  for (const t of run.rulebook.terms) {
-    const page = pageOf(t.source.doc, t.source.page);
-    if (page?.kind !== "scan" || !needsProof(t, page)) continue;
-    const band = lineBand(page.words, t.source.quote);
-    const pad = padOf(page);
-    spots.push({
-      source: t.source, about: { target: "term", id: t.id }, label: termLabel(t), rowOf: t.name, questionId: `read:${t.id}`, personId: personId(t.id), current: t.amountCents!, words: wordsIn(page, band),
-      crop: band ? [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)] : undefined, failing: false,
-      patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
-    });
-  }
-
-  for (const g of run.rulebook.grids) {
-    if (!onScan(run, g.doc, g.pages)) continue;
-    const pages = g.pages.flatMap((n) => pageOf(g.doc, n) ?? []);
-    const result = report.grids[g.id];
-    const failing = (result?.problems.length ?? 0) > 0;
-    const unproven = new Set((result?.unproven ?? []).map(({ row, col }) => `${row},${col}`));
-    const marked = pages.some((p) => p.words.some((w) => w.doubt && MARKS[w.doubt]));
-    g.rows.forEach((r, row) =>
-      r.cells.forEach((current, col) => {
-        if (typeof current !== "number") return;
-        const page = pages.find((p) => findQuote(p.words, r.name).length) ?? pages[0]!;
-        const band = lineBand(page.words, r.name);
-        const pad = padOf(page);
-        const headed = lineBand(page.words, g.visits.join(" ")) ?? lineBand(page.words, g.visits[0]!);
-        const spot: Spot = {
-          source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label: cellLabel(g, row, col), questionId: `read:${g.id}`, personId: personId(g.id),
-          current, words: wordsIn(page, band), failing,
-          // from the top of the page, so the visit headings above the row are in the picture
-          crop: band ? [0, 0, 1, Math.min(1, band[1] + pad)] : undefined,
-          // without the visit headings found, the picture runs from the top of the page, so they are still in it
-          zoom: band && headed ? [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)] : undefined,
-          header: band && headed ? [0, Math.max(0, headed[0] - PAD), 1, Math.min(1, headed[1] + PAD)] : undefined,
-          patch: (v) => ({ target: "grid", id: g.id, set: { [`rows.${row}.cells.${col}`]: v } }),
-        };
-        // a marked value is asked whether or not the totals cover it; when its row can't be found to look for marks, any mark on the grid's pages counts
-        if (failing || unproven.has(`${row},${col}`) || markOf(spot) || (!band && marked)) spots.push(spot);
-      }),
-    );
-    spots.push(...markedLines(g, pages));
-  }
-  return spots;
-}
-
-const amountsOf = (said: string | null) => (said ?? "").split("|").flatMap((a) => parseCents(a.trim()) ?? []);
-
-const confirms = (s: Spot, said: string | null) => (s.rowOf ? amountsOf(said).includes(s.current) : same(readCell(said), s.current));
-
-/** What a person is shown of the zoomed look: a row's several amounts read as a list. */
-const zoomedText = (s: Spot, said: string | null) => (s.rowOf && said && amountsOf(said).length > 1 ? `${amountsOf(said).map(usd).join(", ")} on that row` : said);
-
-/** A row with several amounts offers none of them as the zoomed reading, since the term's column was not what was looked at. */
-const zoomedValue = (s: Spot, said: string | null) => (s.rowOf ? (amountsOf(said).length === 1 ? amountsOf(said)[0]! : null) : readCell(said));
 
 const grouped = <T>(items: T[], key: (t: T) => string) => {
   const groups = new Map<string, T[]>();
@@ -138,90 +51,197 @@ const grouped = <T>(items: T[], key: (t: T) => string) => {
   return [...groups.values()];
 };
 
-const markOf = (s: Spot) => s.words.flatMap((w) => (w.doubt && MARKS[w.doubt]) || [])[0];
-
-const NOT_FOUND = "could not be found on the page";
-
-/** A marked value, or one whose spot can't be found to check for marks, is never settled by a reading: a person is asked. */
-const whyPerson = (s: Spot) => markOf(s) ?? (s.crop ? undefined : NOT_FOUND);
-
-/** Grid cells in one question are shown from the top of the page to the lowest of them on the first one's page, so all are in the picture. */
-function remember(run: Run, id: string, spots: Spot[]) {
-  const crop = spots.filter((s) => s.source.page === spots[0]!.source.page).map((s) => s.crop).filter((c): c is Region => c !== undefined).sort((a, b) => b[3] - a[3])[0];
-  if (crop) run.crops.set(id, crop);
-}
-
-function personContext(group: Spot[]) {
-  const [s] = group;
-  if (s!.about?.target === "term") return markOf(s!) ? `p.${s!.source.page} shows this value ${markOf(s!)}` : "The spot for this amount could not be found on the page, so it could not be looked at closely.";
-  const pages = new Set(group.map((x) => x.source.page)).size > 1;
-  const list = group.map((x) => `${x.label}: ${usd(x.current)} (${whyPerson(x)}${pages ? `, p.${x.source.page}` : ""})`).join("; ");
-  const one = group.length === 1;
-  return `Check ${one ? "this value" : "these values"} on the page: ${one ? "it is" : "they are"} marked or couldn't be found to read closely. ${list}.`;
-}
-
-const about = (id: string, spots: Spot[]) => ({ id, about: spots[0]!.about, source: spots[0]!.source, question: printQuestion(spots[0]!.source, spots.map((s) => s.label)) });
-const place = (s: Spot) => `p.${s.source.page} (${s.source.doc})`;
-
 /**
- * For each amount the model wrote on a scanned page that arithmetic doesn't prove: a value marked handwritten, struck out or
- * initialed, or one whose spot can't be found, goes straight to a person; any other gets a zoomed second look at its spot by
- * the vision reader, who isn't shown the value. The same reading proves it (two_reads); a different one is asked.
+ * Every amount on a scanned page that a person hasn't settled. A changed amount whose citation was dropped (null) rests on
+ * whoever changed it, so it is left alone, as is a grid amount printed on one of the grid's text pages.
  */
-export async function relook(run: Run, report: CheckReport) {
-  const spots = spotsOf(run, report);
-
-  for (const group of grouped(spots.filter(whyPerson), (s) => s.personId)) {
-    const [first] = group;
-    const one = group.length === 1;
-    remember(run, first!.personId, group);
-    raise(run, {
-      id: first!.personId,
-      about: first!.about,
-      source: first!.source,
-      question: one ? printQuestion(first!.source, [first!.label]) : `What does p.${first!.source.page} of ${first!.source.doc} print for these ${group.length} values?`,
-      context: personContext(group),
-      readings: [],
-      options: [{ label: one ? `Use ${usd(first!.current)}` : "Use the values as written", patches: group.map((s) => s.patch(s.current)) }],
+function spotsOf(run: Run, report: CheckReport): Spot[] {
+  const pageOf = (doc: string, n: number) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === n);
+  const spots: Spot[] = [];
+  for (const t of run.rulebook.terms) {
+    const page = pageOf(t.source.doc, t.source.page);
+    if (page?.kind !== "scan" || t.amountCents === null || t.evidence === "person" || t.source.cell === null) continue;
+    spots.push({
+      about: { target: "term", id: t.id }, source: t.source, label: termLabel(t), path: "amountCents", cents: t.amountCents, cell: t.source.cell,
+      unproven: needsProof(t, page) && t.id in report.quotes, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
     });
-    run.log.push(`${place(first!)}: ${values(group.length)} marked on the page or not found there, so a person will be asked`);
   }
 
-  const differ: { s: Spot; said: string | null }[] = [];
+  for (const g of run.rulebook.grids) {
+    if (!onScan(run, g.doc, g.pages)) continue;
+    const result = report.grids[g.id];
+    const failing = (result?.problems.length ?? 0) > 0;
+    const unproven = new Set((result?.unproven ?? []).map(({ row, col }) => `rows.${row}.cells.${col}`));
+    const settled = new Set(g.cellsReadTwice.map(([row, col]) => `rows.${row}.cells.${col}`));
+    const onText = printedAmounts(g, run.docs);
+    const scanPage = g.pages.find((n) => pageOf(g.doc, n)?.kind === "scan")!;
+    const visit = (j: number) => g.visits[j] ?? `#${j + 1}`;
+    const add = (path: string, label: string, cents: unknown, rowCell?: [number, number]) => {
+      const cell = g.cellIds?.[path];
+      if (typeof cents !== "number" || settled.has(path) || cell === null) return;
+      // a printed line needs proof only while the totals fail, and then only through the cell it cites
+      if (cell === undefined && (!rowCell || onText.has(Math.abs(cents)))) return;
+      spots.push({
+        about: { target: "grid", id: g.id }, source: { doc: g.doc, page: cell ? pageOfCell(cell) : scanPage, quote: "" }, label, path, cents, cell,
+        unproven: failing || unproven.has(path), rowCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }),
+      });
+    };
+    g.rows.forEach((r, i) => {
+      r.cells.forEach((c, j) => add(`rows.${i}.cells.${j}`, cellLabel(g, i, j), c, [i, j]));
+      add(`rows.${i}.printedRowTotalCents`, `the printed total of row '${r.name}'`, r.printedRowTotalCents);
+    });
+    for (const line of ["subtotal", "overhead", "total"] as const) g[line]?.forEach((c, j) => add(`${line}.${j}`, `the ${line} line at visit '${visit(j)}'`, c));
+    g.additions.forEach((a, i) => a.cells.forEach((c, j) => add(`additions.${i}.cells.${j}`, `the '${a.name}' line at visit '${visit(j)}'`, c)));
+    add("grandTotalCents", "the grand total", g.grandTotalCents);
+  }
+  return spots;
+}
+
+/** The page's second read, from the store when an earlier run made it; null (and a log line) when it can't be made. */
+async function secondRead(run: Run, doc: LoadedDoc, page: Page, first: Transcription): Promise<Transcription | null> {
+  const version = verifyVersion(run.openai);
+  const saved = (await run.scans?.verify?.get(doc.sha256))?.find((p) => p.page === page.page && p.version === version);
+  if (saved) return saved.transcription;
+  const spent = run.budget.spent;
+  let read: Transcription;
+  try {
+    const png = await pdfReader.render(doc, page.page, { dpi: SCAN_DPI, maxPixels: MAX_SCAN_PIXELS });
+    read = await verifyRead(run.openai, png, first.tables.map((t, i) => ({ ordinal: i + 1, title: t.title })), run.budget);
+  } catch (err) {
+    run.log.push(`p.${page.page} (${doc.name}): left for a person (${err instanceof SecondReadFailed ? err.message : "the page could not be read a second time"})`);
+    return null;
+  } finally {
+    run.usd += run.budget.spent - spent;
+  }
+  await run.scans?.verify?.put(doc.sha256, { page: page.page, version, rotation: page.rotation, transcription: read }).catch(() => {
+    run.log.push(`p.${page.page} (${doc.name}): the second read couldn't be kept, so a later run will pay for it again`);
+  });
+  return read;
+}
+
+function askPerson(run: Run, group: Spot[], why: Map<Spot, string>) {
+  const [first] = group as [Spot];
+  const one = group.length === 1;
+  const pages = new Set(group.map((s) => s.source.page)).size > 1;
+  raise(run, {
+    id: personId(first.about.id),
+    about: first.about,
+    source: first.source,
+    question: one ? `What does p.${first.source.page} of ${first.source.doc} print for ${first.label}?` : `What does ${first.source.doc} print for these ${group.length} values?`,
+    context: `Check ${one ? "this value" : "these values"} on the page: ${group.map((s) => `${s.label}: ${usd(s.cents)} (${why.get(s)}${pages ? `, p.${s.source.page}` : ""})`).join("; ")}.`,
+    readings: [],
+    options: [{ label: one ? `Use ${usd(first.cents)}` : "Use the values as written", patches: group.map((s) => s.patch(s.cents)) }],
+  });
+  run.log.push(`${place(first)}: ${values(group.length)} marked on the page or not settled by a second read, so a person will be asked`);
+}
+
+/** Values the two reads disagree on: the second read's figures stand if they make the arithmetic hold; otherwise a person picks. */
+function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
+  const [{ s }] = rows as [{ s: Spot; second: string }];
+  const seconds = rows.map((r) => centsOf(r.second));
+  const usable = seconds.every((v) => v !== null);
+  const use = rows.map((r, i) => r.s.patch(seconds[i]!));
+  const covered = (after: CheckReport) => rows.every(({ s: x }) => !x.rowCell || !after.grids[x.about.id]?.unproven.some((u) => u.row === x.rowCell![0] && u.col === x.rowCell![1]));
+  if (usable && tryApply(run, use, covered)) {
+    run.log.push(`${place(s)}: the second read corrected ${values(rows.length)} and the totals now add up ✓`);
+    return;
+  }
+  const one = rows.length === 1;
+  const shown = (r: { second: string }) => r.second || "blank";
+  raise(run, {
+    id: `read:${s.about.id}`,
+    about: s.about,
+    source: s.source,
+    question: one ? `What does p.${s.source.page} of ${s.source.doc} print for ${s.label}?` : `Two readings of ${s.source.doc} disagree on ${rows.length} values. What does the page print?`,
+    context: `The page was read twice, independently, and the readings differ. ${rows.map((r) => `${r.s.label}: first read ${usd(r.s.cents)}, second read ${shown(r)}`).join("; ")}.`,
+    readings: [
+      { model: `${run.openai.model} (first read)`, answer: rows.map((r) => `${r.s.label}: ${usd(r.s.cents)}`).join("; ") },
+      { model: `${run.openai.model} (second read)`, answer: rows.map((r) => `${r.s.label}: ${shown(r)}`).join("; ") },
+    ],
+    options: [
+      { label: one ? `Use the first reading (${usd(s.cents)})` : "Use the first readings", patches: rows.map((r) => r.s.patch(r.s.cents)) },
+      ...(usable ? [{ label: one ? `Use the second reading (${usd(seconds[0]!)})` : "Use the second readings", patches: use }] : []),
+    ],
+  });
+  run.log.push(`${place(s)}: a second read of the page reads ${values(rows.length)} differently, so a person will be asked`);
+}
+
+/** A scanned grid whose figures still don't add up, and that nothing else asks about: only a person can accept the print as it is. */
+function askAsPrinted(run: Run, report: CheckReport) {
+  const after = checks.runChecks(run.rulebook, run.docs);
+  const open = (id: string) => run.rulebook.questions.some((q) => q.id === id && q.state === "open");
+  for (const g of run.rulebook.grids) {
+    const problems = after.grids[g.id]?.problems ?? [];
+    if (!report.grids[g.id]?.problems.length || !problems.length || !onScan(run, g.doc, g.pages)) continue;
+    if (open(`read:${g.id}`) || open(`read:${g.id}:unread`) || checks.checkGrid({ ...g, acceptedAsPrinted: true }, run.docs).problems.length) continue;
+    const lead = open(personId(g.id))
+      ? "The figures shown are as first read from the image; the ones that are marked, or that a second read could not settle, are asked about in the other question."
+      : "A second read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent.";
+    raise(run, asPrinted(g, `read:${g.id}`, lead, problems));
+    run.log.push(`p.${g.pages.join(",")} (${g.doc}): the figures of '${g.name}' don't add up as printed, so a person will be asked`);
+  }
+}
+
+/**
+ * Settles the amounts cited on scanned pages that arithmetic doesn't prove (§5.5). Each page with one gets a single blind
+ * second read, compared with the first cell by cell by structure: agreement proves a value (two_reads); a difference stands
+ * only if the arithmetic then holds, otherwise a person picks; a mark seen by either read, or a value the reads can't line
+ * up, goes to a person. Positions are never used.
+ */
+export async function settleScans(run: Run, report: CheckReport) {
+  const { marked } = checkCitations(run.rulebook, run.docs);
+  const spots = spotsOf(run, report);
+  const why = new Map<Spot, string>();
+  for (const s of spots) {
+    const mark = marked.find((m) => m.target === s.about.target && m.id === s.about.id && m.path === s.path);
+    if (mark) why.set(s, `${marksText(mark.doubts)} on the first read`);
+    else if (s.unproven && s.cell === undefined) why.set(s, NOT_CITED);
+  }
+
+  const differ: { s: Spot; second: string }[] = [];
   const unread: Spot[] = [];
-  for (const onPage of grouped(spots.filter((s) => !whyPerson(s) && !s.failing), (s) => JSON.stringify([s.source.doc, s.source.page]))) {
-    const crops = grouped(onPage, (s) => JSON.stringify([s.zoom ?? s.crop, s.header]));
-    for (let from = 0; from < crops.length; from += MAX_CROPS) {
-      const group = crops.slice(from, from + MAX_CROPS).flat();
-      const { doc, page } = group[0]!.source;
-      const asked = group.map((s) => ({ label: s.rowOf ? `every amount printed on the row labelled '${s.rowOf}', in the order printed, separated by " | "` : s.label, look: { region: s.zoom ?? s.crop, header: s.header } }));
-      const answers = (await tryAsk(run, [run.openai], { doc, pages: [page] }, asked))?.[0];
-      if (!answers) {
-        unread.push(...group);
-        continue;
-      }
-      const confirmed = group.filter((s, i) => confirms(s, answers[i]!));
-      if (confirmed.length) {
-        run.rulebook = applyPatches(run.rulebook, proven(run.rulebook, confirmed.map((s) => s.patch(s.current))));
-        run.log.push(`p.${page} (${doc}): a closer look confirms ${values(confirmed.length)} ✓`);
-      }
-      differ.push(...group.flatMap((s, i) => (confirmed.includes(s) ? [] : [{ s, said: answers[i]! }])));
+  for (const group of grouped(spots.filter((s) => s.cell), (s) => JSON.stringify([s.source.doc, s.source.page]))) {
+    const open = group.filter((s) => s.unproven && !why.has(s));
+    if (!open.length) continue;
+    const doc = run.docs.find((d) => d.name === group[0]!.source.doc)!;
+    const page = doc.pages.find((p) => p.page === group[0]!.source.page);
+    if (!page?.transcription) {
+      open.forEach((s) => why.set(s, UNALIGNED));
+      continue;
+    }
+    const second = await secondRead(run, doc, page, page.transcription);
+    if (!second) {
+      unread.push(...open);
+      continue;
+    }
+    if (quarterTurn(second.rotation) !== 0) {
+      open.forEach((s) => why.set(s, TURNED));
+      run.log.push(`p.${page.page} (${doc.name}): the second read saw the page turned, so its ${values(open.length)} will be asked about`);
+      continue;
+    }
+
+    const diff = diffReads(page.page, page.transcription, second);
+    const agreed: Spot[] = [];
+    for (const s of group.filter((x) => !why.has(x))) {
+      const verdict = verdictOf(diff, s.cell!, s.cents);
+      if (verdict.outcome === "marked") why.set(s, `${marksText(verdict.marks ?? [])} on the second read`);
+      else if (!s.unproven) continue;
+      else if (verdict.outcome === "agree") agreed.push(s);
+      else if (verdict.outcome === "differ") differ.push({ s, second: verdict.second ?? "" });
+      else why.set(s, UNALIGNED);
+    }
+    if (agreed.length) {
+      run.rulebook = applyPatches(run.rulebook, proven(run.rulebook, agreed.map((s) => s.patch(s.cents))));
+      run.log.push(`${place(agreed[0]!)}: a second read of the page agrees on ${values(agreed.length)} ✓`);
     }
   }
 
-  // asked once per question id, after every look, so a later question never replaces an earlier one about the same grid
-  for (const rows of grouped(differ, ({ s }) => s.questionId)) {
-    const here = rows.map(({ s }) => s);
-    remember(run, here[0]!.questionId, here);
-    raiseZoomed(run, about(here[0]!.questionId, here), rows.map(({ s, said }) => {
-      const read = zoomedValue(s, said);
-      return { label: s.label, whole: shown(s.current), read: zoomedText(s, said), keep: s.patch(s.current), use: typeof read === "number" ? s.patch(read) : null };
-    }));
-    run.log.push(`${place(here[0]!)}: a closer look read ${values(rows.length)} differently, so a person will be asked`);
+  for (const group of grouped([...why.keys()], (s) => s.about.id)) askPerson(run, group, why);
+  for (const rows of grouped(differ, (d) => d.s.about.id)) settleDifferences(run, rows);
+  for (const group of grouped(unread, (s) => s.about.id)) {
+    const [s] = group as [Spot];
+    const question = group.length === 1 ? `What does p.${s.source.page} of ${s.source.doc} print for ${s.label}?` : `What does ${s.source.doc} print for these ${group.length} values?`;
+    raise(run, { id: `read:${s.about.id}:unread`, about: s.about, source: s.source, question, context: UNREAD, readings: [], options: [] });
   }
-  for (const here of grouped(unread, (s) => s.questionId)) {
-    const id = `${here[0]!.questionId}:unread`;
-    remember(run, id, here);
-    raiseUnread(run, about(id, here));
-  }
+  askAsPrinted(run, report);
 }

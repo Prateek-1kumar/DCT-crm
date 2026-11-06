@@ -481,16 +481,16 @@ describe("an option the resolver wrote", () => {
     ask: async <T,>(req: { name: string }) => ({ value: answers[req.name] as T, model: "fake-openai", usd: 0 }),
   });
 
-  it("picking the zoomed reading of a scanned term drops the citation of the old value, so the version can be approved", async () => {
+  it("picking the second reading of a scanned term drops the citation of the old value, so the version can be approved", async () => {
     const documentIds = [await scannedDoc([table([["Exam", [field("$250.00")]]])])];
     const docs = await loadDocs(db(), documentIds);
     const before = rulebook({
       terms: [term("t9", { amountCents: 25000, evidence: "none", source: { doc: "scan.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } })],
-      accounted: [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the whole-page reading" }],
+      accounted: [{ doc: "scan.pdf", page: 1, amountCents: 25000, reason: "the first reading" }],
     });
-    const zoomed = reader({ read_values: { answers: [{ item: 0, answer: "$260.00" }] } });
-    const { rulebook: rb } = await resolve(before, docs, checks.runChecks(before, docs), { claude: zoomed, openai: zoomed, budget: { limit: 5, spent: 0 } });
-    const option = rb.questions.find((q) => q.id === "read:t9")!.options.findIndex((o) => o.label === "Use the zoomed reading ($260.00)");
+    const second = reader({ verify_page: { rotation: 0, text: "T 0.1-0.5 | Budget\nR 0.1-0.11 | Exam | $260.00" } });
+    const { rulebook: rb } = await resolve(before, docs, checks.runChecks(before, docs), { claude: second, openai: second, budget: { limit: 5, spent: 0 } });
+    const option = rb.questions.find((q) => q.id === "read:t9")!.options.findIndex((o) => o.label === "Use the second reading ($260.00)");
     expect(option).toBeGreaterThan(0);
     const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, docs).problems });
 
