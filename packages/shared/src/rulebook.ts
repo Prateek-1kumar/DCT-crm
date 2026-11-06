@@ -128,7 +128,10 @@ export const Patch = z.object({ target: z.enum(["term", "grid"]), id: text, set:
 export type Patch = z.infer<typeof Patch>;
 
 /** What an agent's patch must never set: identity, and the proof only a check or a person earns. */
-export const LOCKED_FIELDS = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted"]);
+const LOCKED_FIELDS = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted"]);
+
+/** Whether a patch key is a locked field or a path into one ("cellsReadTwice.0"). */
+export const isLockedField = (key: string) => LOCKED_FIELDS.has(key.split(".")[0]!);
 
 export const QuestionKind = z.enum(["reading", "elsewhere", "decision"]);
 export type QuestionKind = z.infer<typeof QuestionKind>;

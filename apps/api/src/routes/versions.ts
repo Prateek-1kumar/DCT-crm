@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { applyPatches, cellProofPatches, type Question, type Rulebook } from "@dct/shared";
 import { asPrintedQuestion, checks, coverage } from "@dct/harness";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -65,11 +66,10 @@ function requireDraft(v: Version, doing: string) {
 /** Terms an option changes or adds: a person chose them, whoever wrote the patch (design §5.5a). Grid cells it sets are proven by cellProofPatches. */
 const decided = (option: Question["options"][number]) => new Set(option.patches.filter((p) => p.target === "term").map((p) => p.id));
 
-/** A new figure for an accepted grid has to be checked again: only the person's own "use them as printed" keeps its acceptance. */
-const changesFigures = (option: Question["options"][number], gridId: string) => {
-  const mine = option.patches.filter((p) => p.target === "grid" && p.id === gridId);
-  return !mine.some((p) => "acceptedAsPrinted" in p.set) && mine.some((p) => Object.keys(p.set).some((k) => k !== "cellsReadTwice"));
-};
+type Grid = Rulebook["grids"][number];
+
+const figuresOf = ({ acceptedAsPrinted: _accepted, cellsReadTwice: _proven, ...figures }: Grid) => figures;
+const setsAcceptance = (option: Question["options"][number], gridId: string) => option.patches.some((p) => p.target === "grid" && p.id === gridId && "acceptedAsPrinted" in p.set);
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -109,17 +109,20 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       const touched = decided(chosen);
       const next: Rulebook = {
         ...patched,
-        grids: patched.grids.map((g) => (g.acceptedAsPrinted && changesFigures(chosen, g.id) ? { ...g, acceptedAsPrinted: false } : g)),
+        // new figures have to be checked again: only the person's own "use them as printed" keeps an acceptance
+        grids: patched.grids.map((g) => (g.acceptedAsPrinted && !setsAcceptance(chosen, g.id) && !isDeepStrictEqual(figuresOf(g), figuresOf(rulebook.grids.find((o) => o.id === g.id)!)) ? { ...g, acceptedAsPrinted: false } : g)),
         terms: patched.terms.map((t) => (touched.has(t.id) ? { ...t, evidence: "person" } : t)),
         questions: patched.questions.map((q) => (q.id === questionId ? { ...q, state: "answered" } : q)),
       };
 
-      const report = checks.runChecks(next, await loadDocs(tx, v.documentIds));
+      const docs = await loadDocs(tx, v.documentIds);
+      const report = checks.runChecks(next, docs);
       const known = new Set(next.questions.map((q) => q.id));
       next.questions.push(...report.required.filter((q) => !known.has(q.id)));
       for (const g of next.grids) {
         const problems = report.grids[g.id]?.problems ?? [];
-        if (!problems.length || next.questions.some((q) => q.state === "open" && q.about?.target === "grid" && q.about.id === g.id)) continue;
+        // only asked when accepting would clear the grid: a row with the wrong number of values stays a problem either way
+        if (!problems.length || checks.checkGrid({ ...g, acceptedAsPrinted: true }, docs).problems.length || next.questions.some((q) => q.state === "open" && q.about?.target === "grid" && q.about.id === g.id)) continue;
         let id = `read:${g.id}:printed`;
         for (let n = 2; next.questions.some((q) => q.id === id); n++) id = `read:${g.id}:printed${n}`;
         next.questions.push(asPrintedQuestion(g, id, "The figures still don't add up after that answer.", problems));

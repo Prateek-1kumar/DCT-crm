@@ -386,6 +386,27 @@ describe("answers that leave a scanned grid failing", () => {
     expect(res.rulebook.questions.filter((q: Question) => q.state === "open").map((q: Question) => q.id)).toEqual(["read:g1:printed"]);
   });
 
+  it("an answer that writes the same values keeps the acceptance", async () => {
+    const same = question("q-same", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $250.00", patches: cellTo(25000) }] });
+    const { id } = await seedGrid(true, [same]);
+    const res = (await answer(id, "q-same", { option: 0, by: "Ana" })).json();
+    expect(res.rulebook.grids[0].acceptedAsPrinted).toBe(true);
+    expect(res.problems).toEqual([]);
+    expect(res.rulebook.questions.filter((q: Question) => q.state === "open")).toEqual([]);
+  });
+
+  it("a grid with the wrong number of visit values isn't offered 'use as printed' again and again", async () => {
+    const rename = question("q-rename", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Rename it", patches: [{ target: "grid", id: "g1", set: { name: "Budget 2" } }] }] });
+    const documentIds = [await scannedDoc()];
+    const short = { ...grid(false), rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000], printedRowTotalCents: null }] };
+    const rb = rulebook({ terms: [], grids: [short], questions: [rename] });
+    const { id } = await seed({ documentIds, rulebook: rb, problems: checks.runChecks(rb, await loadDocs(db(), documentIds)).problems });
+
+    const res = (await answer(id, "q-rename", { option: 0, by: "Ana" })).json();
+    expect(res.problems.length).toBeGreaterThan(0);
+    expect(res.rulebook.questions.filter((q: Question) => q.state === "open")).toEqual([]);
+  });
+
   it("asks only once while the question about the grid is still open", async () => {
     const change = question("q-change", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use $260.00", patches: cellTo(26000) }] });
     const open = question("read:g1", { about: { target: "grid", id: "g1" }, source, options: [{ label: "Use them as printed", patches: [{ target: "grid", id: "g1", set: { acceptedAsPrinted: true } }] }] });

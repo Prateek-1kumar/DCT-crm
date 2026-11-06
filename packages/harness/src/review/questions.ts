@@ -1,4 +1,4 @@
-import { LOCKED_FIELDS, Term, applyPatches, parseCents, parsePercent, type Patch, type Question, type Region, type Rulebook, type Source } from "@dct/shared";
+import { Term, isLockedField, applyPatches, parseCents, parsePercent, type Patch, type Question, type Region, type Rulebook, type Source } from "@dct/shared";
 import { checkQuote } from "../checks/quote";
 import type { LoadedDoc } from "../types";
 import type { Change, Finding, NewTerm } from "./schema";
@@ -22,7 +22,7 @@ function patchesOf(changes: Change[], rulebook: Rulebook): Patch[] {
   const kept: Patch[] = [];
   for (const c of changes) {
     const [key, value] = converted(c);
-    if (LOCKED_FIELDS.has(key) || (c.target === "term" && !rulebook.terms.some((t) => t.id === c.id))) continue;
+    if (isLockedField(key) || (c.target === "term" && !rulebook.terms.some((t) => t.id === c.id))) continue;
     const patch: Patch = { target: c.target, id: c.id, set: { [key]: value } };
     try {
       applyPatches(rulebook, [...kept, patch]);

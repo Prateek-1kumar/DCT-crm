@@ -1,4 +1,4 @@
-import { Accounted, Grid, LOCKED_FIELDS, Question, Study, Term, parseCents, parsePercent } from "@dct/shared";
+import { Accounted, Grid, isLockedField, Question, Study, Term, parseCents, parsePercent } from "@dct/shared";
 import type { z } from "zod";
 
 type Raw = Record<string, unknown>;
@@ -80,7 +80,7 @@ export function normalizeAccounted(raw: unknown): Parsed<Accounted> {
 }
 
 // An option's patch is applied when a person picks it, who never sees the patch: it can't carry the proof fields.
-const unlocked = (p: unknown) => (isObject(p) && isObject(p.set) ? { ...p, set: Object.fromEntries(Object.entries(p.set).filter(([key]) => !LOCKED_FIELDS.has(key))) } : p);
+const unlocked = (p: unknown) => (isObject(p) && isObject(p.set) ? { ...p, set: Object.fromEntries(Object.entries(p.set).filter(([key]) => !isLockedField(key))) } : p);
 
 export function normalizeQuestion(raw: unknown): Parsed<Question> {
   if (!isObject(raw)) return notAnObject;
