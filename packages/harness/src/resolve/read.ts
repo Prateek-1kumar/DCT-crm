@@ -1,6 +1,7 @@
 import { applyPatches, parseCents, type Cell, type Grid, type Patch, type Question, type Region, type Rulebook, type Source, type Term } from "@dct/shared";
 import { z } from "zod";
-import { OCR_PAGE_REASON, checks } from "../checks";
+import { SCAN_PAGE_REASON, checks } from "../checks";
+import { usd } from "../checks/text";
 import type { Part, Reader } from "../models/reader";
 import { pdfReader } from "../pdf";
 import type { CheckReport } from "../types";
@@ -35,7 +36,7 @@ interface Job {
   doc: string;
   pages: number[];
   region?: Region;
-  items: Item[];
+  items: ValueItem[];
   /** null when the pages could not be read twice. */
   settle(run: Run, reads: Pair[] | null): void;
 }
@@ -85,13 +86,47 @@ async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, i
   }
 }
 
-function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>) {
+export function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>) {
   const question: Question = {
     kind: "reading", origin: "check", suggestion: null, state: "open", blocking: true, resolution: null, ...q, options: [...q.options, { label: NEITHER, patches: [] }],
   };
   const region = run.crops.get(q.id);
   if (region) question.source = { ...question.source, region };
   run.rulebook = { ...run.rulebook, questions: [...run.rulebook.questions.filter((x) => x.id !== q.id), question] };
+}
+
+export const shown = (c: Cell) => (typeof c === "number" ? usd(c) : String(c));
+
+export const printQuestion = (source: Source, labels: string[]) =>
+  labels.length === 1
+    ? `What does p.${source.page} of ${source.doc} print for ${labels[0]}?`
+    : `The whole-page and zoomed readings on p.${source.page} of ${source.doc} disagree on ${labels.length} values. What does the page print?`;
+
+interface Zoomed {
+  label: string;
+  /** What the whole-page transcription gave, as shown. */
+  whole: string;
+  /** The zoomed read exactly as the reader gave it; null when it could not read the spot. */
+  read: string | null;
+  keep: Patch;
+  use: Patch | null;
+}
+
+/** A scanned value the zoomed read does not confirm: a person sees both readings, picks one or types the right value. */
+export function raiseZoomed(run: Run, q: Pick<Question, "id" | "about" | "source">, rows: Zoomed[]) {
+  const model = (how: string) => `${run.openai.model} (${how})`;
+  const said = (m: 0 | 1) => rows.map((r) => `${r.label}: ${m ? (r.read ?? UNREADABLE) : r.whole}`).join("; ");
+  const one = rows.length === 1 ? rows[0]! : null;
+  raise(run, {
+    ...q,
+    question: printQuestion(q.source, rows.map((r) => r.label)),
+    context: `The page was read as a whole and then zoomed in on, and the two readings differ. ${rows.map((r) => `${r.label}: whole page "${r.whole}", zoomed "${r.read ?? UNREADABLE}"`).join("; ")}.`,
+    readings: [{ model: model("whole page"), answer: said(0) }, { model: model("zoomed"), answer: said(1) }],
+    options: [
+      { label: one ? `Use the whole-page reading (${one.whole})` : "Use the whole-page readings", patches: rows.map((r) => r.keep) },
+      ...(rows.every((r) => r.use) ? [{ label: one ? `Use the zoomed reading (${one.read})` : "Use the zoomed readings", patches: rows.map((r) => r.use!) }] : []),
+    ],
+  });
 }
 
 const readings = (run: Run, say: (m: 0 | 1) => string) => [
@@ -103,7 +138,7 @@ const readings = (run: Run, say: (m: 0 | 1) => string) => [
  * The patches settle a value; this adds what proves it: a term's evidence, and for a grid the cell in cellsReadTwice. That
  * list serves whatever read the cell, because the grid check only needs to know it no longer rests on the model's word alone.
  */
-export function proven(rulebook: Rulebook, patches: Patch[], evidence: "two_reads" | "ocr_match" = "two_reads"): Patch[] {
+export function proven(rulebook: Rulebook, patches: Patch[]): Patch[] {
   const cells = new Map<string, [number, number][]>();
   const terms = new Set<string>();
   for (const p of patches) {
@@ -118,7 +153,7 @@ export function proven(rulebook: Rulebook, patches: Patch[], evidence: "two_read
   }
   return [
     ...patches,
-    ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence } })),
+    ...[...terms].map((id): Patch => ({ target: "term", id, set: { evidence: "two_reads" } })),
     ...[...cells].map(([id, set]): Patch => ({ target: "grid", id, set: { cellsReadTwice: set } })),
   ];
 }
@@ -256,14 +291,63 @@ function gridJob(g: Grid): Job {
   return valuesJob({ id: g.id, what: `the figures of '${g.name}'`, about: { target: "grid", id: g.id }, source, pages: g.pages }, items);
 }
 
-export function readJobs(rulebook: Rulebook, report: CheckReport): Job[] {
+const onScan = (run: Run, doc: string, pages: number[]) => {
+  const all = run.docs.find((d) => d.name === doc)?.pages ?? [];
+  return pages.every((n) => all.find((p) => p.page === n)?.kind === "scan");
+};
+
+/** Scanned pages are left out: `relook` and `rereadScanGrids` settle them with the vision reader alone. */
+export function readJobs(run: Run, report: CheckReport): Job[] {
   const onPage = new Map<string, Term[]>();
-  for (const t of rulebook.terms.filter((x) => report.quotes[x.id] === OCR_PAGE_REASON)) {
+  for (const t of run.rulebook.terms.filter((x) => report.quotes[x.id] === SCAN_PAGE_REASON && !onScan(run, x.source.doc, [x.source.page]))) {
     const key = `${t.source.doc}\u0000${t.source.page}`;
     onPage.set(key, [...(onPage.get(key) ?? []), t]);
   }
-  const grids = rulebook.grids.filter((g) => report.grids[g.id]?.problems.length || report.grids[g.id]?.unproven.length);
+  const grids = run.rulebook.grids.filter((g) => (report.grids[g.id]?.problems.length || report.grids[g.id]?.unproven.length) && !onScan(run, g.doc, g.pages));
   return [...[...onPage.values()].map(termsJob), ...grids.map(gridJob)];
+}
+
+/**
+ * A scanned grid whose arithmetic fails is read again at zoom by the vision reader. If the corrected figures make the checks
+ * pass, the arithmetic is the proof; otherwise a person sees both readings.
+ */
+export async function rereadScanGrids(run: Run, report: CheckReport) {
+  for (const g of run.rulebook.grids.filter((x) => report.grids[x.id]?.problems.length && onScan(run, x.doc, x.pages))) {
+    const job = gridJob(g);
+    const answers = await askPages(run, [run.openai], job, job.items).then(([a]) => a!, (err: unknown) => {
+      run.log.push(`${where(job)}: left for a person (${err instanceof Error ? err.message : "it could not be read"})`);
+      return null;
+    });
+    if (!answers) {
+      job.settle(run, null);
+      continue;
+    }
+
+    const read = job.items.map((item, i) => ({ item, said: answers[i]!, value: item.read(answers[i]!) }));
+    const changed = read.filter((r) => r.value !== null && !same(r.value, r.item.current));
+    const confirmed = read.filter((r) => r.value !== null && same(r.value, r.item.current));
+    const patches = [...proven(run.rulebook, confirmed.map((r) => r.item.patch(r.value))), ...changed.map((r) => r.item.patch(r.value))];
+    if (changed.length && tryApply(run, patches)) {
+      run.log.push(`${where(job)}: a closer read corrected ${changed.length} ${changed.length === 1 ? "value" : "values"} and the totals now add up ✓`);
+      continue;
+    }
+
+    const base = { id: `read:${g.id}`, about: { target: "grid" as const, id: g.id }, source: { doc: g.doc, page: g.pages[0]!, quote: "" } };
+    if (changed.length) {
+      raiseZoomed(run, base, changed.map((r) => ({ label: r.item.label, whole: shown(r.item.current), read: r.said, keep: r.item.patch(r.item.current), use: r.item.patch(r.value) })));
+      run.log.push(`${where(job)}: a closer read still doesn't make the totals add up, so a person will be asked`);
+    } else {
+      raise(run, {
+        ...base,
+        kind: "decision",
+        question: `The figures of '${g.name}' don't add up. Use them as printed?`,
+        context: `A closer read of the page sees exactly what the rulebook has, so the contract's own print is inconsistent. ${report.grids[g.id]!.problems.join(" ")}`,
+        readings: [],
+        options: [{ label: "Use them as printed", patches: [] }],
+      });
+      run.log.push(`${where(job)}: a closer read confirms the print, but the printed figures don't add up, so a person will be asked`);
+    }
+  }
 }
 
 /** One call per model for each set of pages, however many items ask about them. */

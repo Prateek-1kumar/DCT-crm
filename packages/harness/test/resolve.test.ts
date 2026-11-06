@@ -8,7 +8,7 @@ import { checks } from "../src/checks";
 import type { Ask, Budget, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
 import { resolve } from "../src/resolve";
-import type { LoadedDoc } from "../src/types";
+import type { Doubt, LoadedDoc } from "../src/types";
 import { wordsOf } from "./words";
 
 type Term = Rulebook["terms"][number];
@@ -176,109 +176,89 @@ describe("reading: two reads agree", () => {
   });
 });
 
-describe("scanned pages: OCR first", () => {
-  const sheet = (exam: string) => `Exhibit A\nScreen failure fee  $75.OO\nExam  $100.00  ${exam}\nLabs  $50.00  $5O.00`;
-  const scanned = (text: string): LoadedDoc[] => {
+describe("scanned pages: one closer look by the vision reader", () => {
+  const sheet = "Exhibit A\nScreen failure fee  $75.00\nExam  $100.00  $250.00\nLabs  $50.00  $50.00\nStartup fee  $1,000.00\nAmended charge  $900.00";
+  const scanned = (doubts: Record<number, Doubt> = {}): LoadedDoc[] => {
     const [budget, ...rest] = docs;
     const [first, ...pages] = budget!.pages;
-    return [{ ...budget!, pages: [{ ...first!, kind: "scan", layout: text, raw: text, words: wordsOf(text) }, ...pages] }, ...rest];
+    const words = wordsOf(sheet).map((w) => ({ ...w, ...(doubts[Math.round(w.y0 * 100)] ? { doubt: doubts[Math.round(w.y0 * 100)] } : {}) }));
+    return [{ ...budget!, pages: [{ ...first!, kind: "scan", layout: sheet, raw: sheet, words }, ...pages] }, ...rest];
   };
-  const openGrid = (): Grid => ({ ...grid(25000), subtotal: [15000, null], grandTotalCents: null });
-  const book = () => rulebook({ grids: [openGrid()], terms: [term({ amountCents: 7500, source: { doc: "Budget.pdf", page: 1, quote: "Screen failure fee" } })] });
-  const resolveOn = (scan: LoadedDoc[], r: ReturnType<typeof readers>, b: Rulebook, budget: Budget = { limit: 3, spent: 0 }) =>
-    resolve(b, scan, checks.runChecks(b, scan), { claude: r.claude.reader, openai: r.openai.reader, budget });
+  const fee = (over: Partial<Term> = {}) => term({ amountCents: 7500, source: { doc: "Budget.pdf", page: 1, quote: "Screen failure fee" }, ...over });
+  const resolveOn = (scan: LoadedDoc[], r: ReturnType<typeof readers>, b: Rulebook) =>
+    resolve(b, scan, checks.runChecks(b, scan), { claude: r.claude.reader, openai: r.openai.reader, budget: { limit: 3, spent: 0 } });
 
-  it("proves every value OCR read as the model wrote it, without calling a model", async () => {
-    const scan = scanned(sheet("$250.OO"));
-    const b = book();
-    expect(checks.runChecks(b, scan).grids["g1"]!.unproven).toHaveLength(2);
-    const r = readers({ read: truthful });
-    const out = await resolveOn(scan, r, b);
+  it("a matching zoomed re-look proves a scanned amount", async () => {
+    const r = readers({ fail: true }, { read: () => "$75.00" });
+    const out = await resolveOn(scanned(), r, rulebook({ terms: [fee()] }));
 
     expect(r.claude.calls).toHaveLength(0);
-    expect(r.openai.calls).toHaveLength(0);
-    expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "ocr_match" });
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 1], [1, 1]]);
-    expect(checks.runChecks(out.rulebook, scan).problems).toEqual([]);
-    expect(out.usd).toBe(0);
-  });
-
-  it("finds the quote despite OCR's letter and digit swaps", async () => {
-    const scan = scanned(sheet("$250.00").replace("Screen failure fee", "Screen fai1ure fee"));
-    const r = readers({ read: truthful });
-    const out = await resolveOn(scan, r, book());
-    expect(out.rulebook.terms[0]!.evidence).toBe("ocr_match");
-    expect(r.claude.calls).toHaveLength(0);
-  });
-
-  it("doesn't let an amount elsewhere on the page prove a term whose quote can't be found", async () => {
-    const b = rulebook({ grids: [openGrid()], terms: [term({ amountCents: 5000, source: { doc: "Budget.pdf", page: 1, quote: "Archiving fee" } })] });
-    const r = readers({ read: truthful });
-    const out = await resolveOn(scanned(sheet("$250.00")), r, b);
-    expect(out.rulebook.terms[0]!.evidence).not.toBe("ocr_match");
-    expect(r.claude.calls.length).toBeGreaterThan(0);
-  });
-
-  it("doesn't prove a grid value OCR read in another column of its row", async () => {
-    const g = openGrid();
-    const b = rulebook({ grids: [{ ...g, subtotal: null, rows: g.rows.map((row, i) => (i === 0 ? { ...row, cells: [25000, 10000] } : row)) }], terms: [] });
-    expect(checks.runChecks(b, scanned(sheet("$250.00"))).grids["g1"]!.unproven).toContainEqual({ row: 0, col: 0 });
-    const r = readers({ read: truthful });
-    const out = await resolveOn(scanned(sheet("$250.00")), r, b);
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual(expect.arrayContaining([[1, 0], [1, 1]]));
-    expect(out.rulebook.grids[0]!.cellsReadTwice).not.toContainEqual([0, 0]);
-    expect(r.claude.calls.length).toBeGreaterThan(0);
-  });
-
-  it("takes one closer look, without the OCR text or the value, when OCR read something else, and accepts it when the model reads what it wrote", async () => {
-    const scan = scanned(sheet("$256.00"));
-    const r = readers({ read: truthful });
-    const out = await resolveOn(scan, r, book());
-
-    expect(r.openai.calls).toHaveLength(0);
-    expect(r.claude.calls).toHaveLength(1);
-    const ask = r.claude.calls[0]!;
-    expect(itemsOf(ask).map((i) => i.label)).toEqual(["row 'Exam' at visit 'V2'"]);
-    expect(ask.parts.filter((p) => p.type === "image")).toHaveLength(1);
-    for (const hidden of ["256", "250", "25000", "Exam  $100"]) expect(texts(ask)).not.toContain(hidden);
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[1, 1], [0, 1]]);
-    expect(out.rulebook.terms[0]!.evidence).toBe("ocr_match");
-    const report = checks.runChecks(out.rulebook, scan);
-    expect([report.quotes, report.grids["g1"]]).toEqual([{}, { problems: [], unproven: [] }]);
-    expect(out.log).toContain("p.1 (Budget.pdf): a second look confirms 1 value ✓");
-  });
-
-  it("hands over to the two models when the closer look reads something else, and asks a person if they differ, with the crop", async () => {
-    const scan = scanned(sheet("$256.00"));
-    const r = readers({ read: (l) => (l.includes("Exam") ? "$260.00" : truthful(l)) }, { read: (l) => (l.includes("Exam") ? "$265.00" : truthful(l)) });
-    const out = await resolveOn(scan, r, book());
-
-    expect(r.claude.calls).toHaveLength(2);
     expect(r.openai.calls).toHaveLength(1);
-    const q = out.rulebook.questions.find((x) => x.id === "read:g1")!;
-    expect(q.readings.map((x) => x.answer)).toEqual([expect.stringContaining("row 'Exam' at visit 'V2': $260.00"), expect.stringContaining("row 'Exam' at visit 'V2': $265.00")]);
-    expect(q.source.region).toBeDefined();
-    expect(out.rulebook.grids[0]!.rows[0]!.cells[1]).toBe(25000);
-  });
-
-  it("settles by the two models when they agree after a closer look that disagreed", async () => {
-    const scan = scanned(sheet("$256.00"));
-    const r = readers({ read: (l) => (l.includes("Exam") && r.claude.calls.length === 1 ? "$260.00" : truthful(l)) }, { read: truthful });
-    const out = await resolveOn(scan, r, book());
-
-    expect(r.claude.calls).toHaveLength(2);
-    expect(out.log.some((l) => l.includes("two reads agree"))).toBe(true);
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toContainEqual([0, 1]);
+    expect(itemsOf(r.openai.calls[0]!).map((i) => i.label)).toEqual(["the amount for 'Screen failure fee'"]);
+    expect(texts(r.openai.calls[0]!)).not.toContain("7500");
+    expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "two_reads" });
     expect(out.rulebook.questions).toEqual([]);
   });
 
-  it("keeps to the budget: no closer look when it would pass the limit, and the value stays for the next stage", async () => {
-    const scan = scanned(sheet("$256.00"));
-    const r = readers({ read: truthful });
-    const out = await resolveOn(scan, r, book(), { limit: 1, spent: 1 });
+  it("a differing re-look asks with both readings and the crop", async () => {
+    const r = readers({ fail: true }, { read: () => "$85.00" });
+    const out = await resolveOn(scanned(), r, rulebook({ terms: [fee()] }));
+
+    const q = question1(out.rulebook, "read:t1");
+    expect(q).toMatchObject({ kind: "reading", origin: "check", state: "open", about: { target: "term", id: "t1" } });
+    expect(q.readings).toEqual([
+      { model: "openai-x (whole page)", answer: "the amount for 'Screen failure fee': $75.00" },
+      { model: "openai-x (zoomed)", answer: "the amount for 'Screen failure fee': $85.00" },
+    ]);
+    expect(q.source.region).toBeDefined();
+    expect(q.options.map((o) => o.label)).toEqual(["Use the whole-page reading ($75.00)", "Use the zoomed reading ($85.00)", "Neither, I'll type the right value"]);
+    expect(out.rulebook.terms[0]).toMatchObject({ amountCents: 7500, evidence: "quote" });
+  });
+
+  it("a struck-out amount and its handwritten replacement are both asked, with no model call", async () => {
+    const r = readers({ fail: true }, { fail: true });
+    const terms = [
+      term({ id: "t1", amountCents: 100000, source: { doc: "Budget.pdf", page: 1, quote: "Startup fee" } }),
+      term({ id: "t2", amountCents: 90000, source: { doc: "Budget.pdf", page: 1, quote: "Amended charge" } }),
+    ];
+    const out = await resolveOn(scanned({ 4: "struck_out", 5: "handwritten" }), r, rulebook({ terms }));
+
     expect(r.claude.calls).toHaveLength(0);
-    expect(out.log.some((l) => l.includes("the second look could not be done"))).toBe(true);
-    expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[1, 1]]);
+    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.questions.map((q) => [q.id, q.kind, q.source.region !== undefined])).toEqual([["read:t1", "reading", true], ["read:t2", "reading", true]]);
+    expect(question1(out.rulebook, "read:t1").context).toContain("p.1 shows this value struck out");
+    expect(question1(out.rulebook, "read:t2").context).toContain("p.1 shows this value handwritten");
+    expect(question1(out.rulebook, "read:t1").options.map((o) => o.label)).toEqual(["Use $1,000.00", "Neither, I'll type the right value"]);
+    expect(out.rulebook.terms.map((t) => t.evidence)).toEqual(["quote", "quote"]);
+  });
+
+  it("a scanned grid whose totals fail is fixed by a closer read when the totals then hold", async () => {
+    const b = rulebook({ grids: [grid(20500)] });
+    const r = readers({ fail: true }, { read: truthful });
+    const out = await resolveOn(scanned(), r, b);
+
+    expect(r.claude.calls).toHaveLength(0);
+    expect(r.openai.calls).toHaveLength(1);
+    expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000]);
+    expect(out.rulebook.questions).toEqual([]);
+    expect(checks.runChecks(out.rulebook, scanned()).grids["g1"]!.problems).toEqual([]);
+    expect(out.log).toContain("p.1 (Budget.pdf): a closer read corrected 1 value and the totals now add up ✓");
+  });
+
+  it("a scanned grid still failing after the closer read is asked", async () => {
+    const wrong = (label: string) => (label === "row 'Exam' at visit 'V2'" ? "$260.00" : truthful(label));
+    const r = readers({ fail: true }, { read: wrong });
+    const out = await resolveOn(scanned(), r, rulebook({ grids: [grid(20500)] }));
+
+    expect(out.rulebook.grids[0]!.rows[0]!.cells[1]).toBe(20500);
+    const q = question1(out.rulebook, "read:g1");
+    expect(q).toMatchObject({ kind: "reading", origin: "check", state: "open", about: { target: "grid", id: "g1" } });
+    expect(q.readings).toEqual([
+      { model: "openai-x (whole page)", answer: "row 'Exam' at visit 'V2': $205.00" },
+      { model: "openai-x (zoomed)", answer: "row 'Exam' at visit 'V2': $260.00" },
+    ]);
+    expect(q.source.region).toBeUndefined();
+    expect(q.options.map((o) => o.label)).toEqual(["Use the whole-page reading ($205.00)", "Use the zoomed reading ($260.00)", "Neither, I'll type the right value"]);
   });
 });
 

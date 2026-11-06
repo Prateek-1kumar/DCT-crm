@@ -12,8 +12,7 @@ export type Region = z.infer<typeof Region>;
 export const Source = z.object({ doc: text, page: z.number().int().positive(), quote: z.string(), region: Region.optional() });
 export type Source = z.infer<typeof Source>;
 
-/** `ocr_match`: on a scanned page, the value the model read is what OCR read at that spot (§ OCR phase). */
-export const Evidence = z.enum(["math", "quote", "ocr_match", "two_reads", "house_rule", "person", "none"]);
+export const Evidence = z.enum(["math", "quote", "two_reads", "house_rule", "person", "none"]);
 export type Evidence = z.infer<typeof Evidence>;
 
 export const TermCategory = z.enum([

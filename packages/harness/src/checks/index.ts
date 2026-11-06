@@ -6,10 +6,10 @@ import { requiredDecisions } from "./required";
 import { unaccounted } from "./unaccounted";
 import { usd } from "./text";
 
-export const OCR_PAGE_REASON = "scanned page: this amount needs the contract's arithmetic, a match with what OCR read there, or two independent reads";
+export const SCAN_PAGE_REASON = "scanned page: this amount needs the contract's arithmetic or a closer second read";
 
 type Term = Rulebook["terms"][number];
-const PROVEN = new Set<Term["evidence"]>(["math", "ocr_match", "two_reads", "person"]);
+const PROVEN = new Set<Term["evidence"]>(["math", "two_reads", "person"]);
 
 export const needsProof = (t: Term, page: Page | undefined) => page !== undefined && page.kind !== "text" && t.amountCents !== null && !PROVEN.has(t.evidence);
 
@@ -31,7 +31,7 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   const quotes: CheckReport["quotes"] = {};
   for (const t of rulebook.terms) {
     const page = docs.find((d) => d.name === t.source.doc)?.pages.find((p) => p.page === t.source.page);
-    const reason = checkQuote(t.source, docs) ?? (needsProof(t, page) ? OCR_PAGE_REASON : null);
+    const reason = checkQuote(t.source, docs) ?? (needsProof(t, page) ? SCAN_PAGE_REASON : null);
     if (!reason) continue;
     quotes[t.id] = reason;
     problems.push({ check: "quote", id: t.id, doc: t.source.doc, page: t.source.page, message: reason });

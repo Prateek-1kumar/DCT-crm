@@ -82,14 +82,14 @@ it("won't start on a file with scanned pages when there's nowhere to keep what i
   await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/nowhere to keep/);
 });
 
-it("reads transcribed pages, proving an amount by what was transcribed there without asking a model again", async () => {
+it("reads transcribed pages, proving an amount by a zoomed second read from the vision reader alone", async () => {
   const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "scan" as const })) };
   const claude = fake("claude", {}, 1);
-  const openai = fake("gpt", { review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { read_values: { answers: [{ item: 0, answer: "$500.00" }] }, review: { findings: [] } }, 0.4);
   const result = await read([scan], { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook });
-  expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "ocr_match" });
+  expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "two_reads" });
   expect(result.report.problems).toEqual([]);
-  expect(result.usd).toBeCloseTo(0.4);
+  expect(result.usd).toBeCloseTo(0.8);
 });
 
 it("transcribes scanned pages first, paid from the same budget, and saves them", async () => {
@@ -102,7 +102,7 @@ it("transcribes scanned pages first, paid from the same budget, and saves them",
   expect(scanned.pages[0]!.kind).toBe("image");
 
   const lines = [{ text: CLAUSE, top: 0.1, bottom: 0.12, unsure: false, marks: [] }];
-  const openai = fake("gpt", { transcribe_page: { rotation: 0, lines, tables: [] }, review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { transcribe_page: { rotation: 0, lines, tables: [] }, read_values: { answers: [{ item: 0, answer: "$500.00" }] }, review: { findings: [] } }, 0.4);
   const saved: ScanPage[] = [];
   const scans: ScanStore = { get: async () => saved, put: async (_, page) => void saved.push(page) };
   const progress: string[] = [];
@@ -110,8 +110,8 @@ it("transcribes scanned pages first, paid from the same budget, and saves them",
   const result = await read([scanned], { anthropic: {} as ModelClient, claude: fake("claude", {}, 1), openai, scans, maxUsd: 3, rulebook: { ...rulebook, terms: [{ ...rulebook.terms[0]!, source: { ...rulebook.terms[0]!.source, doc: "Scan.pdf" } }] }, onProgress: (l) => progress.push(l) });
   expect(saved).toHaveLength(1);
   expect(progress).toContain("Reading scanned pages: 1 of 1");
-  expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "ocr_match" });
-  expect(result.usd).toBeCloseTo(0.8);
+  expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "two_reads" });
+  expect(result.usd).toBeCloseTo(1.2);
 });
 
 it("reports what was spent when a read breaks part way, with a plain message", async () => {

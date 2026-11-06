@@ -161,13 +161,13 @@ describe("an amount on a scanned page", () => {
   const docs = [doc("A.pdf", scan(1, "Startup fee $1,200.00"), page(2, "text", "Startup fee $1,200.00"))];
   const at = (page: number, over: Partial<Term> = {}) => term({ id: `t${page}`, amountCents: 120000, source: { doc: "A.pdf", page, quote: "Startup fee" }, ...over });
 
-  it("needs arithmetic, a match with OCR, two reads or a person; an amount on a text page is as before", () => {
+  it("needs arithmetic, two reads or a person; an amount on a text page is as before", () => {
     const rb = rulebook({
-      terms: [at(1, { evidence: "quote" }), at(1, { id: "m", evidence: "math" }), at(1, { id: "o", evidence: "ocr_match" }), at(1, { id: "r", evidence: "two_reads" }), at(1, { id: "p", evidence: "person" }), at(1, { id: "n", amountCents: null }), at(2, { evidence: "quote" })],
+      terms: [at(1, { evidence: "quote" }), at(1, { id: "m", evidence: "math" }), at(1, { id: "r", evidence: "two_reads" }), at(1, { id: "p", evidence: "person" }), at(1, { id: "n", amountCents: null }), at(2, { evidence: "quote" })],
     });
     const { quotes } = checks.runChecks(rb, docs);
     expect(Object.keys(quotes)).toEqual(["t1"]);
-    expect(quotes.t1).toMatch(/^scanned page.*OCR/);
+    expect(quotes.t1).toMatch(/^scanned page.*closer second read/);
   });
 });
 

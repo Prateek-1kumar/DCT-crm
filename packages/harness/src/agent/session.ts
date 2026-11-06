@@ -1,6 +1,6 @@
 import { Region, type Accounted, type Grid, type Question, type Rulebook, type Study, type Term } from "@dct/shared";
 import { z } from "zod";
-import { OCR_PAGE_REASON, checks } from "../checks";
+import { SCAN_PAGE_REASON, checks } from "../checks";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
 import { SCAN_NOTE } from "./prompt";
@@ -216,8 +216,8 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
     finish() {
       if (!study) return text("There are no study details yet: call put_study first.", "Waiting for the study details", true);
       state.finishes++;
-      // proving amounts on scan pages is the harness's job after the compile, so it can't be fixed here
-      const problems = checks.runChecks(rulebook(), docs).problems.filter((p) => p.message !== OCR_PAGE_REASON);
+      // proving amounts on scanned pages is the harness's job after the compile, so it can't be fixed here
+      const problems = checks.runChecks(rulebook(), docs).problems.filter((p) => p.message !== SCAN_PAGE_REASON);
       if (!problems.length) {
         state.ending = "done";
         return text("ALL CHECKS PASS. Done.", "Checking the whole rulebook: all checks pass");
