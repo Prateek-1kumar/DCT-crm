@@ -29,6 +29,14 @@ describe("scan-replay", () => {
     expect(missedCount(transcriptionOf(PAGE), transcriptionOf(more))).toBe(2);
   });
 
+  it("lists nothing from a table of the second read that didn't pair with one of the first read's", () => {
+    const extra = compact(...PAGE.text.split("\n"), "T 0.8-0.9 | Wire details", "H | Item | Fee", "R 0.81-0.82 | Wire fee | $25.00", "R 0.83-0.84 | Courier | $40.00");
+    expect(missedCount(transcriptionOf(PAGE), transcriptionOf(extra))).toBe(0);
+    // the same rows inside the table that did pair are listed
+    const inside = compact(...PAGE.text.split("\n"), "R 0.35-0.36 | Wire fee | $25.00");
+    expect(missedCount(transcriptionOf(PAGE), transcriptionOf(inside))).toBe(1);
+  });
+
   it("matches an earlier rulebook's values to cells by value and page, and counts what coverage would miss", () => {
     const page2 = compact("T 0.1-0.3 | Budget (continued)", "H | Procedure | V3", "R 0.11-0.12 | Exam | $120.00", "R 0.13-0.14 | Labs | $55.00");
     const term = (id: string, cents: number): Term => ({

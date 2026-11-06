@@ -1,7 +1,7 @@
 import { parseCents, type Region, type Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
 import { cellsOf, type ScanCell } from "../scan/cells";
-import { amountsOf, diffReads } from "../scan/diff";
+import { alignTables, amountsOf, diffReads } from "../scan/diff";
 import { bandsOf } from "../scan/words";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
 import { amountsAt, amountsIn, looseAmounts, looseCents, looseFind, looseKey } from "./text";
@@ -273,19 +273,21 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
 
 /**
  * Amounts the page's second read found with nothing in the first read beside them: an unpaired row or line, or a cell the
- * first read left blank. Nothing cites them, so each is missing until a value captures it or `accounted` lists it (its
- * amount on this page, or the whole page).
+ * first read left blank. Only tables that paired with one of the first read's count: a table that didn't has its cells
+ * asked about already, and listing all of its amounts again would say nothing new. Nothing cites them, so each is missing
+ * until a value captures it or `accounted` lists it (its amount on this page, or the whole page).
  */
 function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number): CoverageAmount[] {
   const page = pages[index]!;
   if (!page.second || !page.transcription) return [];
   const back = diffReads(page.page, page.second, page.transcription);
+  const paired = new Set(alignTables(page.second.tables, page.transcription.tables).keys());
   const bands = Object.fromEntries([...bandsOf(page.second)].map(([key, band]) => [`p${page.page}.${key}`, band]));
   const second: Page = { ...page, cells: cellsOf(page.page, page.second), bands };
   return printedCells(pages.map((p, i) => (i === index ? second : p)), index).flatMap(({ cell, line, printed }) =>
     printed.flatMap(({ text, cents }): CoverageAmount[] => {
       const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
-      if (!cents || !verdict || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
+      if (!cents || !verdict || (cell.table !== null && !paired.has(cell.table - 1)) || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
       const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents)));
       return [{ box: cellBand(second, cell.id), text, cents, status: accounted ? "set_aside" : "missing", ref: null, reason: accounted?.reason ?? `a second read of p.${page.page} found an amount the first read didn't`, line, doubt: cell.doubts[0] ?? null }];
     }),

@@ -56,7 +56,7 @@ const hasAmounts = (t: Table) => t.rows.some((r) => r.cells.some((c) => amountsO
  * and with no other table's. Tables printed alike under one title, or under none, can't be told apart, so they stay
  * unpaired. A table with no amounts (a box read as a table, an empty one) is left out, so it can't make a look-alike.
  */
-function alignTables(first: Table[], second: Table[]): Map<number, number> {
+export function alignTables(first: Table[], second: Table[]): Map<number, number> {
   const [ia, ib] = [first, second].map((ts) => range(ts.length).filter((i) => hasAmounts(ts[i]!))) as [number[], number[]];
   const title = (t: Table) => looseKey(withoutAmounts(t.title));
   const near = (x: string, y: string) => !!x && !!y && (x.includes(y) || y.includes(x));
