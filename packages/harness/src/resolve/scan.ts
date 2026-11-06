@@ -113,10 +113,22 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   return spots;
 }
 
-/** A question a person already answered about this value settles it: it isn't asked again, whatever a later read says. */
+const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);
+
+/**
+ * A question a person answered settles a value it set to what the rulebook still has: it isn't asked again, whatever a later
+ * read says. The rulebook doesn't keep which option was picked, so an option that set this very value stands for it.
+ */
 const answered = (run: Run, s: Spot) =>
   run.rulebook.questions.some(
-    (q) => q.origin === "check" && q.state === "answered" && q.options.some((o) => o.patches.some((p) => p.target === s.about.target && p.id === s.about.id && Object.keys(p.set).some((k) => k === s.path || s.path.startsWith(`${k}.`)))),
+    (q) =>
+      q.origin === "check" &&
+      q.state === "answered" &&
+      q.options.some((o) =>
+        o.patches.some(
+          (p) => p.target === s.about.target && p.id === s.about.id && Object.entries(p.set).some(([k, v]) => (k === s.path ? v : s.path.startsWith(`${k}.`) ? valueAt(v, s.path.slice(k.length + 1)) : undefined) === s.cents),
+        ),
+      ),
   );
 
 /** The id to ask under: an answered question keeps its own, so a new one about the same term or grid takes the next free id beside it. */

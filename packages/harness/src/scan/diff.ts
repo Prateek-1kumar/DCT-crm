@@ -49,48 +49,47 @@ function align(n: number, m: number, like: (i: number, j: number) => boolean): M
 }
 
 /**
- * Tables by their order on the page when both reads found as many and every pair agrees: titled alike, or, where either is
- * untitled, most of their rows lining up with each other's and with no other table's. Otherwise by title alone. Arms printed
- * alike can't be told apart without titles, and a table one read missed would shift the rest onto their neighbours.
+ * Tables by their order on the page when both reads found as many and every pair agrees: titled alike with a title no other
+ * table shares, or else (untitled, or titled like several tables) most of their rows lining up with each other's and with no
+ * other table's. Otherwise by a title only those two tables share. Tables printed alike under one title, or under none, can't
+ * be told apart, and a table one read missed would shift the rest onto their neighbours.
  */
 function alignTables(a: Table[], b: Table[]): Map<number, number> {
   const title = (t: Table) => looseKey(withoutAmounts(t.title));
-  const near = (x: string, y: string) => x.includes(y) || y.includes(x);
+  const near = (x: string, y: string) => !!x && !!y && (x.includes(y) || y.includes(x));
+  const nearIn = (x: string, tables: Table[]) => tables.filter((t) => near(x, title(t))).length;
+  const unique = (i: number, j: number) => nearIn(title(a[i]!), b) === 1 && nearIn(title(b[j]!), a) === 1;
   const pairs = (i: number) => {
     const [x, y] = [title(a[i]!), title(b[i]!)];
-    if (x && y) return near(x, y);
+    if (x && y && !near(x, y)) return false;
+    if (near(x, y) && unique(i, i)) return true;
     const only = range(b.length).every((j) => j === i || !mostRowsAlign(a[i]!, b[j]!)) && range(a.length).every((k) => k === i || !mostRowsAlign(a[k]!, b[i]!));
     return only && mostRowsAlign(a[i]!, b[i]!);
   };
   if (a.length === b.length && range(a.length).every(pairs)) return new Map(range(a.length).map((i) => [i, i]));
-  return align(a.length, b.length, (i, j) => !!title(a[i]!) && !!title(b[j]!) && near(title(a[i]!), title(b[j]!)));
+  return align(a.length, b.length, (i, j) => near(title(a[i]!), title(b[j]!)) && unique(i, j));
 }
 
 const width = (t: Table) => Math.max(t.columns.length - 1, ...t.rows.map((r) => r.cells.length));
 const filled = (r: Row) => r.cells.some((c) => c.text.trim());
 
 /**
- * Rows that print something beyond their label, each with the labels around it: the label-only rows between it and the next
- * such row on either side, which count as part of both, and where among them its own label sits.
+ * Rows that print something beyond their label, each with its label and the label-only rows above it since the previous such
+ * row. Those below belong to the next row, so a figure that slipped up or down a row never keeps its label block.
  */
 function anchors(t: Table) {
   const at = t.rows.flatMap((r, i) => (filled(r) ? [i] : []));
-  return at.map((i, k) => {
-    const from = k ? at[k - 1]! + 1 : 0;
-    const to = k + 1 < at.length ? at[k + 1]! - 1 : t.rows.length - 1;
-    return { row: i, at: i - from, labels: t.rows.slice(from, to + 1).map((r) => looseKey(r.label)).join("|") };
-  });
+  return at.map((i, k) => ({ row: i, labels: t.rows.slice(k ? at[k - 1]! + 1 : 0, i + 1).map((r) => looseKey(r.label)).join("|") }));
 }
 
 /**
- * Rows by their labels, and those among label-only rows only when both reads split them the same way with the figures on
- * the same one. A label wrapped differently by each read looks exactly like a row slipped onto its neighbour's figure (or
- * two labels merged over it), so those rows are left for a person.
+ * Rows by their labels, a row under label-only rows only when both reads split them the same way above the same figures. A
+ * label wrapped differently by each read looks exactly like a row slipped onto its neighbour's figure (or two labels merged
+ * over it), so those rows are left for a person.
  */
 function alignRows(a: Table, b: Table): Map<number, number> {
   const [x, y] = [anchors(a), anchors(b)];
-  const like = (i: number, j: number) => x[i]!.labels === y[j]!.labels && x[i]!.at === y[j]!.at;
-  return new Map([...align(x.length, y.length, like)].map(([i, j]) => [x[i]!.row, y[j]!.row]));
+  return new Map([...align(x.length, y.length, (i, j) => x[i]!.labels === y[j]!.labels)].map(([i, j]) => [x[i]!.row, y[j]!.row]));
 }
 
 const mostRowsAlign = (a: Table, b: Table) => alignRows(a, b).size * 2 > Math.max(anchors(a).length, anchors(b).length);

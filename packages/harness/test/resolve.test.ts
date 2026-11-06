@@ -552,6 +552,12 @@ describe("scanned pages: a blind second read of the page", () => {
     const out = await resolveOn(scanned({ 1: sheet }), r, rulebook({ grids: [g], questions: [answered] }));
 
     expect(out.rulebook.questions).toEqual([answered]);
+
+    // an answer that set another figure than the rulebook now has doesn't speak for this one
+    const other = { ...answered, options: [{ label: "Use $120.00", patches: [{ target: "grid" as const, id: "g1", set: { "rows.0.unitCostCents": 12000 } }] }] };
+    const again = await resolveOn(scanned({ 1: sheet }), readers({ fail: true }, { verify: said(swap(sheet, "| Exam | $100.00", "| Exam | $110.00")) }), rulebook({ grids: [g], questions: [other] }));
+    expect(again.rulebook.questions.map((q) => q.id)).toEqual(["read:g1", "read:g1:2"]);
+    expect(question1(again.rulebook, "read:g1")).toEqual(other);
   });
 
   it("an uncited printed line of a scanned grid whose totals fail goes to a person", async () => {

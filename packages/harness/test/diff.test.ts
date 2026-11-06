@@ -114,6 +114,49 @@ describe("diffReads", () => {
     expect(diffReads(1, visits("", "$700.00"), visits("$700.00", "")).get("p1.t1.r2.c1")!.outcome).not.toBe("agree");
   });
 
+  it("a row is never confirmed by a figure that slipped onto it, or onto a label merged with it", () => {
+    const fee = (rows: [string, string][]) => read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", ...rows.map(([label, cell]) => `R | ${label} | ${cell}`));
+    // printed: Baseline 700.00, Week 4 300.00
+    const truth = fee([["Baseline", "$700.00"], ["Week 4", "$300.00"]]);
+    const down = fee([["Baseline", ""], ["Week 4", "$700.00"]]);
+    const up = fee([["Baseline", "$300.00"], ["Week 4", ""]]);
+    const mergedDown = fee([["Baseline Week 4", "$700.00"]]);
+    const split = fee([["Baseline", "$700.00"], ["Week 4", ""]]);
+    const cases: [string, ReturnType<typeof read>, ReturnType<typeof read>, string][] = [
+      ["a figure slipped down a row", down, split, "p1.t1.r3.c1"],
+      ["the slip against labels the other read merged", down, mergedDown, "p1.t1.r3.c1"],
+      ["the same the other way round", mergedDown, down, "p1.t1.r2.c1"],
+      ["a figure slipped up a row", up, down, "p1.t1.r2.c1"],
+      ["labels merged over a figure the other read has on the upper one", mergedDown, split, "p1.t1.r2.c1"],
+    ];
+    for (const [, first, second, id] of cases) expect(diffReads(1, first, second).get(id)!.outcome).not.toBe("agree");
+    expect(diffReads(1, up, truth).get("p1.t1.r2.c1")).toEqual({ outcome: "differ", second: "$700.00" });
+  });
+
+  it("a row above a wrap that one read merged now aligns", () => {
+    const down = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline |", "R | Week 4 | $700.00");
+    const merged = read("T | Budget", "H | Visit | Fee", "R | Screening | $500.00", "R | Baseline Week 4 | $700.00");
+    expect(diffReads(1, down, merged).get("p1.t1.r1.c1")).toEqual({ outcome: "agree", second: "$500.00" });
+  });
+
+  it("tables with the same title are paired only when their rows say which is which", () => {
+    const table = (title: string, exam: string) => [`T | ${title}`, "H | Procedure | Fee", `R | Physical exam | ${exam}`, "R | Labs | $50.00"];
+    // three tables titled alike print the same rows; the first read missed the middle one and misread the third's 500.00
+    const first = read(...table("Visit costs", "$400.00"), ...table("Visit costs", "$600.00"));
+    const second = read(...table("Visit costs", "$400.00"), ...table("Visit costs", "$600.00"));
+    expect(diffReads(1, first, second).get("p1.t2.r1.c1")!.outcome).not.toBe("agree");
+
+    // a title contained in another's is as close to both
+    const continued = read(...table("Budget", "$400.00"), ...table("Budget (continued)", "$600.00"));
+    const budgets = read(...table("Budget", "$400.00"), ...table("Budget", "$600.00"));
+    expect(diffReads(1, continued, budgets).get("p1.t2.r1.c1")!.outcome).not.toBe("agree");
+    expect(diffReads(1, budgets, continued).get("p1.t2.r1.c1")!.outcome).not.toBe("agree");
+
+    // tables titled alike whose rows differ still pair
+    const other = (exam: string) => read(...table("Budget", "$400.00"), "T | Budget (continued)", "H | Item | Fee", `R | Archiving | ${exam}`);
+    expect(diffReads(1, other("$300.00"), other("$300.00")).get("p1.t2.r1.c1")).toEqual({ outcome: "agree", second: "$300.00" });
+  });
+
   it("look-alike untitled tables are never paired by order", () => {
     const arm = (exam: string) => ["T |", "H | Procedure | Fee", `R | Physical exam | ${exam}`, "R | Labs | $50.00"];
     // the page prints arms A, B and C alike; the first read missed B and misread C's 500.00, the second returned A and B
