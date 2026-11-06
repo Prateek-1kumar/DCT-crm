@@ -208,12 +208,16 @@ describe("starting a read", () => {
     expect(open.map((q) => [q.question, q.blocking, q.options.length])).toContainEqual([NOT_REVIEWED, true, 0]);
 
     const answer = (questionId: string) => built.app.inject({ method: "POST", url: `/api/v1/versions/${first.versionId}/questions/${encodeURIComponent(questionId)}/answer`, payload: { option: 0, by: "Ben" } });
-    for (const q of open.filter((q) => q.id !== "review:not-run")) expect((await answer(q.id)).statusCode).toBe(200);
-    const rerun = await answer("review:not-run");
-    expect([rerun.statusCode, rerun.json().message]).toEqual([409, "This needs the read to be run again, not an answer."]);
+    for (const q of open.filter((q) => q.options.length)) expect((await answer(q.id)).statusCode).toBe(200);
+    // the questions only reading again can settle, the pages' second reads among them, take no answer
+    expect(open.filter((q) => !q.options.length).map((q) => q.id)).toEqual(["read:CTA.pdf:p2:unread", "read:t1:unread", "review:not-run"]);
+    for (const id of ["read:CTA.pdf:p2:unread", "review:not-run"]) {
+      const rerun = await answer(id);
+      expect([rerun.statusCode, rerun.json().message]).toEqual([409, "This needs the read to be run again, not an answer."]);
+    }
     const refused = await built.app.inject({ method: "POST", url: `/api/v1/versions/${first.versionId}/approve`, payload: { by: "Ben" } });
     expect(refused.statusCode).toBe(409);
-    expect(refused.json().message).toContain(NOT_REVIEWED);
+    expect(refused.json().message).toBe('3 questions still need an answer before this can be approved. First: "Did the first read of p.2 of CTA.pdf miss any amount?"');
 
     use(fakes(scanScript()));
     transcriptions = 0;
