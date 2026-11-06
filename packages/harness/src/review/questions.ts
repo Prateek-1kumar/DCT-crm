@@ -83,7 +83,8 @@ function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { o
 // The reviewer lists findings by money at stake; beyond these, a finding is shown but doesn't hold up approval.
 const MAX_BLOCKING = 6;
 
-export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: LoadedDoc[]): Question[] {
+/** A finding that ends with fewer than two answer choices is not raised, and `log` says so: an accountant can't answer a question that offers nothing to pick. */
+export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: LoadedDoc[], log: string[] = []): Question[] {
   let blocking = 0;
   return findings.flatMap((f, n): Question[] => {
     if (f.affects === "none" || !docs.find((d) => d.name === f.doc)?.pages.some((p) => p.page === f.page)) return [];
@@ -91,6 +92,10 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
     const source: Source = { doc: f.doc, page: f.page, quote: f.quote, ...(region && { region }) };
     if (checkQuote(source, docs)) source.quote = "";
     const { options, option } = choices(f, n, source, rulebook);
+    if (options.length < 2) {
+      log.push(`The second reader's question "${f.question}" came with fewer than two answer choices, so it was not raised`);
+      return [];
+    }
     return [
       {
         id: `review:${n}`,

@@ -91,6 +91,7 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
 
   say("Second reader: checking the rulebook for unasked judgment calls");
   const reviewed = await review(rulebook, docs, { reader: opts.openai, budget });
+  reviewed.log.forEach(say);
   if (reviewed.error) say(reviewed.error);
   else say(`Second reader raised ${reviewed.questions.length} ${reviewed.questions.length === 1 ? "question" : "questions"}`);
   rulebook = { ...rulebook, questions: [...rulebook.questions, ...reviewed.questions] };

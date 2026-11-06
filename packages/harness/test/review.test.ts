@@ -34,9 +34,12 @@ const rulebook = (over: Partial<Rulebook> = {}): Rulebook => ({
   accounted: [], questions: [], ...over,
 });
 
+const YES = { label: "Yes, in full", changes: [] };
+const NO = { label: "No, pro-rate it", changes: [] };
+
 const finding = (over: Partial<Finding> = {}): Finding => ({
   type: "judgment", affects: "how_much", about: { target: "term", id: "t1" }, question: "Is a screen failure paid in full?", context: "The contract says nothing about pro-rating.",
-  doc: "CTA.pdf", page: 1, quote: "Screen failure", region: null, options: [], suggestion: null, newTerm: null, ...over,
+  doc: "CTA.pdf", page: 1, quote: "Screen failure", region: null, options: [YES, NO], suggestion: null, newTerm: null, ...over,
 });
 
 const fake = (findings: Finding[], usd = 0.05) => {
@@ -118,7 +121,7 @@ describe("review budget and errors", () => {
     const { reader, calls } = fake([finding()]);
     const result = await review(rulebook(), docs, { reader, budget: { limit: 1, spent: 1 } });
     expect(calls).toHaveLength(0);
-    expect(result).toEqual({ questions: [], usd: 0, error: "The review was skipped: it would pass this read's $1.00 limit." });
+    expect(result).toEqual({ questions: [], usd: 0, log: [], error: "The review was skipped: it would pass this read's $1.00 limit." });
   });
 
   it("adds the call's cost to the budget", async () => {
@@ -139,7 +142,7 @@ describe("review budget and errors", () => {
   it("returns a reader error with no questions", async () => {
     const reader: Reader = { model: "fake", price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 }, ask: () => Promise.reject(new Error("rate limited")) };
     const result = await review(rulebook(), docs, { reader, budget: budget() });
-    expect(result).toEqual({ questions: [], usd: 0, error: "The review could not be completed: rate limited" });
+    expect(result).toEqual({ questions: [], usd: 0, log: [], error: "The review could not be completed: rate limited" });
   });
 });
 
@@ -184,6 +187,7 @@ describe("finding to question", () => {
             { target: "grid", id: "g1", field: "rows.0.cells.0", value: "Invoice" },
             { target: "grid", id: "g1", field: "overheadPct", value: "40%" },
           ] },
+          NO,
         ],
       }),
     ]);
@@ -225,9 +229,19 @@ describe("finding to question", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
+  it("a reviewer finding with no options is not raised", async () => {
+    const { reader } = fake([finding({ options: [] }), finding({ options: [YES] }), finding({ question: "Is the archive fee billed?" })]);
+    const result = await review(rulebook(), docs, { reader, budget: budget() });
+    expect(result.questions.map((q) => q.question)).toEqual(["Is the archive fee billed?"]);
+    expect(result.log).toEqual([
+      expect.stringContaining('"Is a screen failure paid in full?" came with fewer than two answer choices'),
+      expect.stringContaining("fewer than two answer choices"),
+    ]);
+  });
+
   it("drops a suggestion that points at a dropped option", async () => {
-    const [q] = await run([finding({ options: [{ label: "Bad", changes: [{ target: "term", id: "t1", field: "billing", value: "x" }] }], suggestion: { option: 0, reason: "r" } })]);
-    expect(q!.options).toEqual([]);
+    const [q] = await run([finding({ options: [{ label: "Bad", changes: [{ target: "term", id: "t1", field: "billing", value: "x" }] }, YES, NO], suggestion: { option: 0, reason: "r" } })]);
+    expect(q!.options.map((o) => o.label)).toEqual([YES.label, NO.label]);
     expect(q!.suggestion).toBeNull();
   });
 
@@ -263,9 +277,9 @@ describe("finding to question", () => {
     const base = { category: "site_fee" as const, name: "Archive fee", unit: null, billing: "invoice" as const, trigger: null, formula: null, conditions: null, deadline: null, notes: null };
     const [ok, bad] = await run([
       finding({ type: "missed_rule", newTerm: { ...base, amount: "$1,250.00" } }),
-      finding({ type: "missed_rule", newTerm: { ...base, amount: "a fee" }, options: [{ label: "No, leave it as it is", changes: [] }] }),
+      finding({ type: "missed_rule", newTerm: { ...base, amount: "a fee" }, options: [{ label: "No, leave it as it is", changes: [] }, YES] }),
     ]);
     expect((ok!.options[0]!.patches[0]!.set as { amountCents: number }).amountCents).toBe(125000);
-    expect(bad!.options).toEqual([{ label: "No, leave it as it is", patches: [] }]);
+    expect(bad!.options).toEqual([{ label: "No, leave it as it is", patches: [] }, { label: YES.label, patches: [] }]);
   });
 });

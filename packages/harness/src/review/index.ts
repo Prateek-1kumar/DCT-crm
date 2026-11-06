@@ -12,6 +12,8 @@ const OUTPUT_TOKENS = 30000;
 export interface ReviewResult {
   questions: Question[];
   usd: number;
+  /** Plain-English lines about findings that were left out. */
+  log: string[];
   error?: string;
 }
 
@@ -42,14 +44,15 @@ export async function review(rulebook: Rulebook, docs: LoadedDoc[], opts: { read
   ];
 
   if (budget.spent + estimateUsd(reader, parts, OUTPUT_TOKENS) > budget.limit) {
-    return { questions: [], usd: 0, error: `The review was skipped: it would pass this read's $${budget.limit.toFixed(2)} limit.` };
+    return { questions: [], usd: 0, log: [], error: `The review was skipped: it would pass this read's $${budget.limit.toFixed(2)} limit.` };
   }
   try {
     const { value, usd } = await reader.ask({ name: "review", system: SYSTEM_PROMPT, parts, schema: Findings, effort: "high" });
     budget.spent += usd;
-    return { questions: toQuestions(value.findings, rulebook, docs), usd };
+    const log: string[] = [];
+    return { questions: toQuestions(value.findings, rulebook, docs, log), usd, log };
   } catch (err) {
     budget.spent += spentOn(err);
-    return { questions: [], usd: spentOn(err), error: `The review could not be completed: ${err instanceof Error ? err.message : String(err)}` };
+    return { questions: [], usd: spentOn(err), log: [], error: `The review could not be completed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
