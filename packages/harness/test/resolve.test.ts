@@ -191,6 +191,7 @@ describe("scanned pages: a blind second read of the page", () => {
     "R 0.140-0.150 | Labs | $50.00 | $50.00",
     "R 0.160-0.170 | Subtotal | $150.00 | $300.00",
     "R 0.180-0.190 | Grand total | $450.00 |",
+    "L 0.200-0.210 | Payments are capped at $600.00 per subject.",
   ];
   const swap = (lines: string[], from: string, to: string) => lines.map((l) => l.replace(from, to));
   const scanned = (pages: Record<number, string[]> = { 1: SHEET }): LoadedDoc[] => {
@@ -240,10 +241,10 @@ describe("scanned pages: a blind second read of the page", () => {
 
     const [call] = verifies(r);
     const prompt = `${call!.system}\n${texts(call!)}`;
-    for (const secret of ["Exam", label, "Ignore", "Procedure", "Subtotal", "screen failure", "Screen failure fee", "subject", "$75.00", "$100.00", "$250.00", "$50.00", "$150.00", "$300.00", "$450.00", "1,234", "7500", "25000"]) {
+    for (const secret of ["Exam", label, "Ignore", "Procedure", "Subtotal", "screen failure", "Screen failure fee", "subject", "$75.00", "$100.00", "$250.00", "$50.00", "$150.00", "$300.00", "$450.00", "$600.00", "1,234", "2026", "7500", "25000"]) {
       expect(prompt).not.toContain(secret);
     }
-    expect(texts(call!)).toContain('1. "Budget 2026 (maximum)"');
+    expect(texts(call!)).toContain('1. "Budget (maximum)"');
     expect(call!.parts.filter((p) => p.type === "image").length).toBeGreaterThan(1);
     expect(out.rulebook.terms[0]!.evidence).toBe("two_reads");
     expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 1], [1, 1]]);
@@ -464,6 +465,78 @@ describe("scanned pages: a blind second read of the page", () => {
     ];
     const out = await resolveOn(scanned(), readers({ fail: true }, { verify: said(SHEET) }), rulebook({ terms: [fee()], questions: kept }));
     expect(out.rulebook.questions).toEqual(kept);
+  });
+
+  it("a value that doesn't equal its cited cell is never stamped two_reads", async () => {
+    const t = fee({ name: "Exam fee", amountCents: 10500, source: { doc: "Budget.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } });
+    const out = await resolveOn(scanned(), readers({ fail: true }, { verify: said(SHEET) }), rulebook({ terms: [t] }));
+
+    expect(out.rulebook.terms[0]!.evidence).toBe("quote");
+    expect(question1(out.rulebook, "person:t1").context).toContain("does not match the cell it cites");
+  });
+
+  describe("caps", () => {
+    const capped = (over: Partial<Term> = {}) =>
+      fee({ cap: { kind: "amount", value: 60000, period: "per subject", text: "capped at $600.00 per subject" }, source: { doc: "Budget.pdf", page: 1, quote: "The screen failure fee", cell: "p1.l2", capCell: "p1.l3" }, ...over });
+
+    it("an unmarked cited cap is verified by the re-read", async () => {
+      const r = readers({ fail: true }, { verify: said(SHEET) });
+      const agreed = await resolveOn(scanned(), r, rulebook({ terms: [capped({ evidence: "math" })] }));
+      expect(verifies(r)).toHaveLength(1);
+      expect(agreed.rulebook.questions).toEqual([]);
+
+      const out = await resolveOn(scanned(), readers({ fail: true }, { verify: said(swap(SHEET, "$600.00", "$650.00")) }), rulebook({ terms: [capped()] }));
+      const q = question1(out.rulebook, "read:t1");
+      expect(q.readings.map((x) => x.answer)).toEqual(["the cap of 'Screen failure fee': $600.00", "the cap of 'Screen failure fee': $650.00"]);
+      expect(out.rulebook.terms[0]!.cap!.value).toBe(60000);
+      expect(q.options[1]!.patches).toEqual<Patch[]>([{ target: "term", id: "t1", set: { cap: { kind: "amount", value: 65000, period: "per subject", text: "capped at $600.00 per subject" } } }]);
+    });
+
+    it("a handwritten cap goes to a person", async () => {
+      const r = readers({ fail: true }, { fail: true });
+      const out = await resolveOn(scanned({ 1: swap(SHEET, "$600.00", "$600.00{hw}") }), r, rulebook({ terms: [capped({ evidence: "math" })] }));
+
+      expect(r.openai.calls).toHaveLength(0);
+      expect(question1(out.rulebook, "person:t1").context).toContain("the cap of 'Screen failure fee': $600.00 (handwritten on the first read)");
+    });
+
+    it("an uncited cap goes to a person", async () => {
+      const out = await resolveOn(scanned(), readers({ fail: true }, { fail: true }), rulebook({ terms: [capped({ evidence: "math", source: { doc: "Budget.pdf", page: 1, quote: "The screen failure fee", cell: "p1.l2" } })] }));
+      expect(question1(out.rulebook, "person:t1").context).toContain("does not say which cell");
+    });
+  });
+
+  it("a grid unit cost is verified or asked", async () => {
+    const sheet = ["T 0.1-0.3 | Budget", "H | Procedure | Unit cost | V1 | V2", "R 0.12-0.13 | Exam | $100.00 | $100.00 | $100.00", "R 0.14-0.15 | Subtotal | | $100.00 | $100.00"];
+    const g: Grid = {
+      ...grid(10000), rows: [{ name: "Exam", code: null, unitCostCents: 10000, cells: [10000, 10000], printedRowTotalCents: null }], subtotal: [10000, 10000], grandTotalCents: null,
+      cellIds: { "rows.0.unitCostCents": "p1.t1.r1.c1", "rows.0.cells.0": "p1.t1.r1.c2", "rows.0.cells.1": "p1.t1.r1.c3", "subtotal.0": "p1.t1.r2.c2", "subtotal.1": "p1.t1.r2.c3" },
+    };
+    const r = readers({ fail: true }, { verify: said(sheet) });
+    const agreed = await resolveOn(scanned({ 1: sheet }), r, rulebook({ grids: [g] }));
+    expect(verifies(r)).toHaveLength(1);
+    expect(agreed.rulebook.questions).toEqual([]);
+
+    const out = await resolveOn(scanned({ 1: sheet }), readers({ fail: true }, { verify: said(swap(sheet, "| Exam | $100.00", "| Exam | $110.00")) }), rulebook({ grids: [g] }));
+    expect(out.rulebook.grids[0]!.rows[0]!.unitCostCents).toBe(10000);
+    expect(question1(out.rulebook, "read:g1").readings.map((x) => x.answer)).toEqual(["the unit cost of row 'Exam': $100.00", "the unit cost of row 'Exam': $110.00"]);
+
+    const marked = await resolveOn(scanned({ 1: swap(sheet, "| Exam | $100.00", "| Exam | $100.00{in}") }), readers({ fail: true }, { fail: true }), rulebook({ grids: [g] }));
+    expect(question1(marked.rulebook, "person:g1").context).toContain("the unit cost of row 'Exam': $100.00 (initialed on the first read)");
+  });
+
+  it("an uncited printed line of a scanned grid whose totals fail goes to a person", async () => {
+    const { "subtotal.1": _subtotal, ...ids } = IDS;
+    const out = await resolveOn(scanned({ 1: swap(SHEET, "$250.00", "$205.00") }), readers({ fail: true }, { verify: said(SHEET) }), rulebook({ grids: [{ ...grid(20500), cellIds: ids }] }));
+    expect(question1(out.rulebook, "person:g1").context).toContain("the subtotal line at visit 'V2': $300.00 (the rulebook does not say which cell");
+  });
+
+  it("a cached second read of the page turned another way is read again", async () => {
+    const { pages, scans } = memoryScans();
+    pages.set(docs[0]!.sha256, [{ page: 1, version: "verify-1 openai-x", rotation: 90, transcription: parseTranscription({ rotation: 0, text: SHEET.join("\n") }) }]);
+    const r = readers({ fail: true }, { verify: said(SHEET) });
+    await resolveOn(scanned(), r, rulebook({ terms: [fee()] }), { limit: 3, spent: 0 }, scans);
+    expect(verifies(r)).toHaveLength(1);
   });
 
   it("a grid spanning a text page and a scanned page is never read by Claude", async () => {

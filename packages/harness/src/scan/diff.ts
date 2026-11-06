@@ -18,13 +18,12 @@ const WORST: Verdict["outcome"][] = ["agree", "differ", "unaligned", "marked"];
 const worse = (a: Verdict | undefined, b: Verdict) => (a && WORST.indexOf(a.outcome) >= WORST.indexOf(b.outcome) ? a : b);
 
 // a cell that prints one bare number ("1500") is an amount too, as the citation check reads it
-const amountsOf = (text: string) => {
+export const amountsOf = (text: string) => {
   const found = amountsAt(text).map((a) => a.cents);
   const bare = parseCents(text);
   return found.length || bare === null ? found : [bare];
 };
 const withoutAmounts = (text: string) => amountsAt(text).reduceRight((t, a) => t.slice(0, a.start) + t.slice(a.end), text);
-const count = (list: number[], value: number) => list.filter((v) => v === value).length;
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 
 /**
@@ -49,11 +48,20 @@ function align(n: number, m: number, like: (i: number, j: number) => boolean): M
   return pairs;
 }
 
-/** Tables by their order on the page, or by title when the reads found different numbers of tables. */
+/**
+ * Tables by their order on the page when both reads found as many and every pair agrees: both titled alike, both untitled,
+ * or, when only one read has a title, most of their rows lining up. Otherwise by title alone, so a table one read missed is
+ * never paired with another one that prints the same rows (two arms of a study).
+ */
 function alignTables(a: Table[], b: Table[]): Map<number, number> {
   const title = (t: Table) => looseKey(withoutAmounts(t.title));
   const near = (x: string, y: string) => x.includes(y) || y.includes(x);
-  if (a.length === b.length) return new Map(range(a.length).flatMap((i) => (title(a[i]!) && title(b[i]!) && !near(title(a[i]!), title(b[i]!)) ? [] : [[i, i]])));
+  const pairs = (i: number) => {
+    const [x, y] = [title(a[i]!), title(b[i]!)];
+    if (x && y) return near(x, y);
+    return (!x && !y) || mostRowsAlign(a[i]!, b[i]!);
+  };
+  if (a.length === b.length && range(a.length).every(pairs)) return new Map(range(a.length).map((i) => [i, i]));
   return align(a.length, b.length, (i, j) => !!title(a[i]!) && !!title(b[j]!) && near(title(a[i]!), title(b[j]!)));
 }
 
@@ -70,18 +78,28 @@ function anchors(t: Table) {
   return at.map((i, k) => {
     const from = k ? at[k - 1]! + 1 : 0;
     const to = k + 1 < at.length ? at[k + 1]! - 1 : t.rows.length - 1;
-    return { row: i, key: looseKey(t.rows[i]!.label), around: t.rows.slice(from, to + 1).map((r) => looseKey(r.label)).join("") };
+    const block = t.rows.slice(from, to + 1).map((r) => looseKey(r.label));
+    const label = t.rows[i]!.label;
+    return { row: i, key: looseKey(label), words: new Set(label.split(/\s+/).map(looseKey).filter(Boolean)), around: block.join(""), others: block.filter((_, n) => from + n !== i) };
   });
 }
 
+/**
+ * Rows by their labels, each read's label found among the other's label words around its row. A row slipped onto its
+ * neighbour's figure is never paired: the two labels must share a word, and neither may be a label-only row of the other read.
+ */
 function alignRows(a: Table, b: Table): Map<number, number> {
   const [x, y] = [anchors(a), anchors(b)];
   const like = (i: number, j: number) => {
     const [p, q] = [x[i]!, y[j]!];
-    return p.key && q.key ? q.around.includes(p.key) && p.around.includes(q.key) : !p.key && !q.key;
+    if (!p.key || !q.key) return !p.key && !q.key;
+    const wrapped = q.around.includes(p.key) && p.around.includes(q.key);
+    return wrapped && [...p.words].some((w) => q.words.has(w)) && !p.others.includes(q.key) && !q.others.includes(p.key);
   };
   return new Map([...align(x.length, y.length, like)].map(([i, j]) => [x[i]!.row, y[j]!.row]));
 }
+
+const mostRowsAlign = (a: Table, b: Table) => alignRows(a, b).size * 2 > Math.max(anchors(a).length, anchors(b).length);
 
 /** Columns by their headings; columns neither read gave a heading line up only when both reads have as many. */
 function alignColumns(a: Table, b: Table): Map<number, number> {
@@ -98,18 +116,11 @@ function compareCell(first: Field, second: Field): Verdict {
 }
 
 /**
- * A cell whose column can't be lined up is confirmed only when its amount is printed as many times on the second read's row
- * as on the first's. It never takes a value from that row, since which cell is which isn't known.
+ * A row both reads print alike, cell for cell and blanks included, can be compared by position even when its headings
+ * don't line up. Any other cell of a column without a heading match can't be told apart from its neighbours: a figure
+ * found elsewhere on the row may belong to another visit, or be the fee where the fee with overhead was meant.
  */
-function confirmByCount(first: Row, k: number, second: Row): Verdict {
-  const cell = first.cells[k]!;
-  if (cell.marks.length) return { outcome: "marked", marks: cell.marks };
-  const all = (r: Row) => r.cells.flatMap((c) => amountsOf(c.text));
-  const values = amountsOf(cell.text);
-  const marks = [...new Set(second.cells.filter((c) => amountsOf(c.text).some((v) => values.includes(v))).flatMap((c) => c.marks))];
-  if (marks.length) return { outcome: "marked", marks };
-  return values.every((v) => count(all(first), v) === count(all(second), v)) ? { outcome: "agree" } : UNALIGNED;
-}
+const printedAlike = (a: Row, b: Row) => a.cells.length === b.cells.length && a.cells.every((c, k) => amountsOf(c.text).join() === amountsOf(b.cells[k]!.text).join());
 
 const CONTEXT_WORDS = 4;
 
@@ -152,7 +163,8 @@ export function diffReads(page: number, first: Transcription, second: Transcript
         const id = `p${page}.t${ti + 1}.r${ri + 1}.c${k + 1}`;
         if (!match) out.set(id, cell.marks.length ? { outcome: "marked", marks: cell.marks } : UNALIGNED);
         else if (columns.has(k)) out.set(id, compareCell(cell, match.cells[columns.get(k)!] ?? { text: "", unsure: false, marks: [] }));
-        else out.set(id, confirmByCount(row, k, match));
+        else if (printedAlike(row, match)) out.set(id, compareCell(cell, match.cells[k]!));
+        else out.set(id, cell.marks.length ? { outcome: "marked", marks: cell.marks } : UNALIGNED);
       });
     });
   });

@@ -5,6 +5,7 @@ import { ReadFailed } from "../read";
 import type { LoadedDoc, Page, ScanPage, ScanStore } from "../types";
 import { cellsOf, scanText } from "./cells";
 import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts, parseTranscription, transcribeAsk, type Transcription } from "./transcribe";
+import { quarterTurn } from "./verify";
 import { toWords } from "./words";
 
 export { fileScanStore } from "./store";
@@ -46,7 +47,6 @@ export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
   };
 }
 
-const quarterTurn = (degrees: number) => (((Math.round(degrees / 90) * 90) % 360) + 360) % 360;
 
 /** One transcription inside the budget: the estimate is held while the call runs, then replaced by what it cost. undefined when the estimate doesn't fit. */
 async function transcribeWithin(reader: Reader, budget: Budget, png: Buffer): Promise<Transcription | undefined> {

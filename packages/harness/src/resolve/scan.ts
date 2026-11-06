@@ -4,9 +4,9 @@ import { checkCitations } from "../checks/cells";
 import { printedAmounts } from "../checks/grid";
 import { amountsIn, usd } from "../checks/text";
 import { pdfReader } from "../pdf";
-import { diffReads, verdictOf } from "../scan/diff";
+import { amountsOf, diffReads, verdictOf } from "../scan/diff";
 import { MAX_SCAN_PIXELS, SCAN_DPI, type Transcription } from "../scan/transcribe";
-import { SecondReadFailed, verifyRead, verifyVersion } from "../scan/verify";
+import { SecondReadFailed, quarterTurn, verifyRead, verifyVersion } from "../scan/verify";
 import type { CheckReport, Doubt, LoadedDoc, Page } from "../types";
 import { asPrinted, cellLabel, onScan, personId, proven, raise, termLabel, tryApply, values } from "./read";
 import type { Run } from "./run";
@@ -16,6 +16,7 @@ const marksText = (doubts: Doubt[]) => doubts.flatMap((d) => MARKS[d] ?? []).joi
 
 const NOT_CITED = "the rulebook does not say which cell of the page it was read from";
 const UNALIGNED = "the second read could not be lined up with it";
+const MISMATCH = "it does not match the cell it cites, so a second read of that cell can't vouch for it";
 const TURNED = "the second read saw the page turned, so the two reads can't be compared";
 const UNREAD = "This still needs a second read of the page, and it could not be done in this run. Start the read again to have the page read a second time.";
 
@@ -32,12 +33,13 @@ interface Spot {
   unproven: boolean;
   /** Set on a grid's row cell, so the totals check can tell whether a corrected one is covered. */
   rowCell?: [number, number];
+  /** The contract's arithmetic can prove it, so a second read's different figure may stand when the arithmetic then holds. */
+  checkable: boolean;
   patch(value: number): Patch;
 }
 
 const pageOfCell = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
 const place = (s: Spot) => `p.${s.source.page} (${s.source.doc})`;
-const quarterTurn = (degrees: number) => (((Math.round(degrees / 90) * 90) % 360) + 360) % 360;
 
 /** A printed amount as one number: a cell with words beside its one amount ("$260.00 per visit") counts; null otherwise. */
 const centsOf = (text: string) => {
@@ -60,11 +62,23 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
   const spots: Spot[] = [];
   for (const t of run.rulebook.terms) {
     const page = pageOf(t.source.doc, t.source.page);
-    if (page?.kind !== "scan" || t.amountCents === null || t.evidence === "person" || t.source.cell === null) continue;
-    spots.push({
-      about: { target: "term", id: t.id }, source: t.source, label: termLabel(t), path: "amountCents", cents: t.amountCents, cell: t.source.cell,
-      unproven: needsProof(t, page) && t.id in report.quotes, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
-    });
+    if (page?.kind !== "scan" || t.evidence === "person") continue;
+    const about = { target: "term" as const, id: t.id };
+    if (t.amountCents !== null) {
+      spots.push({
+        about, source: t.source, label: termLabel(t), path: "amountCents", cents: t.amountCents, cell: t.source.cell, checkable: true,
+        unproven: needsProof(t, page) && t.id in report.quotes, patch: (v) => ({ target: "term", id: t.id, set: { amountCents: v } }),
+      });
+    }
+    // a term's evidence speaks for its amount, so its cap is read again on every run (from the store after the first)
+    const cap = t.cap;
+    if (cap?.kind === "amount" && cap.value !== null) {
+      const cell = t.source.capCell;
+      spots.push({
+        about, source: { ...t.source, page: cell ? pageOfCell(cell) : t.source.page }, label: `the cap of '${t.name}'`, path: "cap.value", cents: cap.value, cell,
+        checkable: false, unproven: true, patch: (v) => ({ target: "term", id: t.id, set: { cap: { ...cap, value: v } } }),
+      });
+    }
   }
 
   for (const g of run.rulebook.grids) {
@@ -76,18 +90,19 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
     const onText = printedAmounts(g, run.docs);
     const scanPage = g.pages.find((n) => pageOf(g.doc, n)?.kind === "scan")!;
     const visit = (j: number) => g.visits[j] ?? `#${j + 1}`;
-    const add = (path: string, label: string, cents: unknown, rowCell?: [number, number]) => {
+    // no total covers a unit cost, so nothing but the reads proves it
+    const add = (path: string, label: string, cents: unknown, { rowCell, unitCost = false }: { rowCell?: [number, number]; unitCost?: boolean } = {}) => {
       const cell = g.cellIds?.[path];
       if (typeof cents !== "number" || settled.has(path) || cell === null) return;
-      // a printed line needs proof only while the totals fail, and then only through the cell it cites
-      if (cell === undefined && (!rowCell || onText.has(Math.abs(cents)))) return;
+      if (cell === undefined && onText.has(Math.abs(cents))) return;
       spots.push({
-        about: { target: "grid", id: g.id }, source: { doc: g.doc, page: cell ? pageOfCell(cell) : scanPage, quote: "" }, label, path, cents, cell,
-        unproven: failing || unproven.has(path), rowCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }),
+        about: { target: "grid", id: g.id }, source: { doc: g.doc, page: cell ? pageOfCell(cell) : scanPage, quote: "" }, label, path, cents, cell, checkable: !unitCost,
+        unproven: unitCost || failing || unproven.has(path), rowCell, patch: (v) => ({ target: "grid", id: g.id, set: { [path]: v } }),
       });
     };
     g.rows.forEach((r, i) => {
-      r.cells.forEach((c, j) => add(`rows.${i}.cells.${j}`, cellLabel(g, i, j), c, [i, j]));
+      add(`rows.${i}.unitCostCents`, `the unit cost of row '${r.name}'`, r.unitCostCents, { unitCost: true });
+      r.cells.forEach((c, j) => add(`rows.${i}.cells.${j}`, cellLabel(g, i, j), c, { rowCell: [i, j] }));
       add(`rows.${i}.printedRowTotalCents`, `the printed total of row '${r.name}'`, r.printedRowTotalCents);
     });
     for (const line of ["subtotal", "overhead", "total"] as const) g[line]?.forEach((c, j) => add(`${line}.${j}`, `the ${line} line at visit '${visit(j)}'`, c));
@@ -100,7 +115,8 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
 /** The page's second read, from the store when an earlier run made it; null (and a log line) when it can't be made. */
 async function secondRead(run: Run, doc: LoadedDoc, page: Page, first: Transcription): Promise<Transcription | null> {
   const version = verifyVersion(run.openai);
-  const saved = (await run.scans?.verify?.get(doc.sha256))?.find((p) => p.page === page.page && p.version === version);
+  // a read of the page turned another way saw a different picture
+  const saved = (await run.scans?.verify?.get(doc.sha256))?.find((p) => p.page === page.page && p.version === version && p.rotation === page.rotation);
   if (saved) return saved.transcription;
   const spent = run.budget.spent;
   let read: Transcription;
@@ -142,7 +158,7 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
   const usable = seconds.every((v) => v !== null);
   const use = rows.map((r, i) => r.s.patch(seconds[i]!));
   const covered = (after: CheckReport) => rows.every(({ s: x }) => !x.rowCell || !after.grids[x.about.id]?.unproven.some((u) => u.row === x.rowCell![0] && u.col === x.rowCell![1]));
-  if (usable && tryApply(run, use, covered)) {
+  if (usable && rows.every((r) => r.s.checkable) && tryApply(run, use, covered)) {
     run.log.push(`${place(s)}: the second read corrected ${values(rows.length)} and the totals now add up ✓`);
     return;
   }
@@ -190,12 +206,14 @@ function askAsPrinted(run: Run, report: CheckReport) {
  */
 export async function settleScans(run: Run, report: CheckReport) {
   const { marked } = checkCitations(run.rulebook, run.docs);
+  const cellText = (doc: string, id: string) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === pageOfCell(id))?.cells?.find((c) => c.id === id)?.text ?? "";
   const spots = spotsOf(run, report);
   const why = new Map<Spot, string>();
   for (const s of spots) {
     const mark = marked.find((m) => m.target === s.about.target && m.id === s.about.id && m.path === s.path);
     if (mark) why.set(s, `${marksText(mark.doubts)} on the first read`);
     else if (s.unproven && s.cell === undefined) why.set(s, NOT_CITED);
+    else if (s.unproven && !amountsOf(cellText(s.source.doc, s.cell!)).includes(s.cents)) why.set(s, MISMATCH);
   }
 
   const differ: { s: Spot; second: string }[] = [];
