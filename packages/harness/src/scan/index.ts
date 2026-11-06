@@ -3,6 +3,7 @@ import { pdfReader } from "../pdf";
 import { buildPage } from "../pdf/page";
 import { ReadFailed } from "../read";
 import type { LoadedDoc, Page, ScanPage, ScanStore } from "../types";
+import { scanText } from "./cells";
 import { MAX_SCAN_PIXELS, SCAN_DPI, pageParts, parseTranscription, transcribeAsk, type Transcription } from "./transcribe";
 import { toWords } from "./words";
 
@@ -37,7 +38,10 @@ export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
     ...doc,
     pages: doc.pages.map((p) => {
       const scan = p.kind === "image" ? found.get(p.page) : undefined;
-      return scan ? buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation) : p;
+      if (!scan) return p;
+      // the words only place the page's text for display; the agent and the quote check read the transcription's own structure
+      const text = scanText(p.page, scan.transcription);
+      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text };
     }),
   };
 }

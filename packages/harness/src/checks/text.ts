@@ -65,23 +65,49 @@ export function looseAmounts(words: string[], wanted: (cents: number) => boolean
   return found;
 }
 
-const looseKey = (s: string) => slipped(normalise(s).replace(/[\s,.]/g, ""));
+// letter/digit swaps fold together, and only letters and digits count, so a quote matches however the words split or punctuation sits
+export const looseKey = (s: string) => slipped(normalise(s)).replace(/[^\p{L}\p{N}]/gu, "");
 const QUOTE_SLIP_SHARE = 0.1;
 
-function bestDistance(text: string, pattern: string): number {
-  let previous = Array.from({ length: pattern.length + 1 }, (_, i) => i);
-  let best = previous[pattern.length]!;
-  for (const c of text) {
-    const row = [0];
-    for (let j = 1; j <= pattern.length; j++) row[j] = Math.min(previous[j]! + 1, row[j - 1]! + 1, previous[j - 1]! + (pattern[j - 1] === c ? 0 : 1));
-    previous = row;
-    best = Math.min(best, row[pattern.length]!);
+/**
+ * The first and last of the words a quote covers despite reading slips: the same confusions as an
+ * amount, then at most a tenth of the quote's characters wrong. A match starts and ends on whole words, so letters it
+ * leaves off a word count as wrong; the closest match wins, then the first. null when the quote isn't there.
+ */
+export function looseFind(words: string[], quote: string): [first: number, last: number] | null {
+  const wanted = looseKey(quote);
+  if (!wanted) return null;
+  const starts = new Map<number, number>();
+  const ends = new Map<number, number>();
+  let run = "";
+  words.forEach((w, i) => {
+    const key = looseKey(w);
+    if (!key) return;
+    starts.set(run.length, i);
+    run += key;
+    ends.set(run.length, i);
+  });
+  // edit distance of the quote against the page up to each offset, carrying where each alignment began
+  let cost = Array.from({ length: wanted.length + 1 }, (_, j) => j);
+  let from = cost.map(() => 0);
+  let best: { cost: number; from: number; to: number } | undefined;
+  for (let at = 1; at <= run.length; at++) {
+    const fresh = starts.has(at);
+    const row = [fresh ? 0 : cost[0]! + 1];
+    const rowFrom = [fresh ? at : from[0]!];
+    for (let j = 1; j <= wanted.length; j++) {
+      let [c, f] = [cost[j - 1]! + (run[at - 1] === wanted[j - 1] ? 0 : 1), from[j - 1]!];
+      if (cost[j]! + 1 < c) [c, f] = [cost[j]! + 1, from[j]!];
+      if (row[j - 1]! + 1 < c) [c, f] = [row[j - 1]! + 1, rowFrom[j - 1]!];
+      row.push(c);
+      rowFrom.push(f);
+    }
+    cost = row;
+    from = rowFrom;
+    const found = cost[wanted.length]!;
+    if (ends.has(at) && found <= Math.floor(wanted.length * QUOTE_SLIP_SHARE) && found < (best?.cost ?? Infinity)) best = { cost: found, from: from[wanted.length]!, to: at };
   }
-  return best;
+  return best ? [starts.get(best.from)!, ends.get(best.to)!] : null;
 }
 
-/** Whether the quote is on a scanned page's text despite reading slips: the same confusions as an amount, then at most a tenth of the quote's characters wrong. */
-export function looseContains(pageText: string, quote: string): boolean {
-  const wanted = looseKey(quote);
-  return bestDistance(looseKey(pageText), wanted) <= Math.floor(wanted.length * QUOTE_SLIP_SHARE);
-}
+export const looseContains = (pageText: string, quote: string) => looseFind(pageText.split(/\s+/), quote) !== null;

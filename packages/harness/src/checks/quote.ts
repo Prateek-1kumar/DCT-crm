@@ -1,4 +1,5 @@
 import type { Rulebook } from "@dct/shared";
+import { printedText } from "../scan/cells";
 import type { LoadedDoc } from "../types";
 import { normalise, looseContains } from "./text";
 
@@ -15,7 +16,7 @@ export function checkQuote(source: Rulebook["terms"][number]["source"], docs: Lo
   if (page.kind === "image") return null;
   const found =
     page.kind === "scan"
-      ? [page.raw, page.layout].some((t) => looseContains(t, source.quote))
+      ? looseContains(printedText(page.raw), source.quote)
       : [page.raw, page.layout].map(normalise).some((t) => t.includes(quote) || squash(t).includes(squash(quote)));
   return found ? null : `quote not found on p.${source.page} of ${source.doc}`;
 }

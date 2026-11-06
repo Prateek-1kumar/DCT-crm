@@ -1,6 +1,6 @@
 import { isAmount, isBankHeading, median } from "../pdf/lines";
 import type { Doubt, Word } from "../types";
-import type { Transcription } from "./transcribe";
+import { joinWrapped, type Transcription } from "./transcribe";
 
 const CHAR = 1 / 120;
 const LEFT = 0.05;
@@ -23,7 +23,7 @@ type Doubtful = { unsure: boolean; marks: Doubt[] };
 type Piece = Doubtful & { text: string };
 const doubtOf = ({ unsure, marks }: Doubtful): Doubt | undefined => marks[0] ?? (unsure ? "unsure" : undefined);
 
-const hide = (word: string) => (isAmount(word) ? word : word.replace(/[A-Za-z0-9]/g, "#"));
+export const hide = (word: string) => (isAmount(word) ? word : word.replace(/[A-Za-z0-9]/g, "#"));
 
 function place(text: string, column: number, doubt: Doubt | undefined, into: Element["words"], masked = false) {
   const last = into.at(-1);
@@ -84,7 +84,8 @@ function elementsOf(t: Transcription, height: number): Element[] {
  * close together stay apart. Only an element that would land on or too near the one before it is moved down, by just
  * enough to stay its own line, so a dense table's rows don't drift down the page.
  */
-export function toWords(t: Transcription): Word[] {
+export function toWords(read: Transcription): Word[] {
+  const t = joinWrapped(read);
   const reported = [...t.lines, ...t.tables.flatMap((table) => table.rows)];
   const centres = reported.map(centreOf).sort((a, b) => a - b);
   const gaps = centres.slice(1).map((c, i) => c - centres[i]!).filter((g) => g > SAME_CENTRE);

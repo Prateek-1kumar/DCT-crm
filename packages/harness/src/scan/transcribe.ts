@@ -46,7 +46,7 @@ Rules:
 - Write only these lines: no commentary, no code fences.`;
 
 const MARK_TAGS = { hw: "handwritten", x: "struck_out", in: "initialed" } as const;
-const DOUBTS = /(?:\{(?:\?|hw|x|in)\})+/g;
+export const DOUBTS = /(?:\{(?:\?|hw|x|in)\})+/g;
 const ELEMENT = /^([LTRH])(?=[\s\d.|])([^|]*)\|(.*)$/;
 const SPAN = /^(\d*\.?\d+)\s*[-\u2013]\s*(\d*\.?\d+)$/;
 
@@ -130,6 +130,22 @@ export function parseTranscription({ rotation, text }: Compact): Transcription {
     t.columns = [];
   }
   return { rotation, lines, tables };
+}
+
+const blank = (c: Field) => !c.text && !c.unsure && !c.marks.length;
+
+/** A row with a label but only blank cells is the label of the row above wrapping onto another line, so it joins that row. */
+export function joinWrapped(t: Transcription): Transcription {
+  const tables = t.tables.map((table) => ({
+    ...table,
+    rows: table.rows.reduce<Transcription["tables"][number]["rows"]>((rows, r) => {
+      const above = rows.at(-1);
+      if (above && r.label && r.cells.every(blank)) rows[rows.length - 1] = { ...above, label: [above.label, r.label].filter(Boolean).join(" "), bottom: Math.max(above.bottom, r.bottom) };
+      else rows.push(r);
+      return rows;
+    }, []),
+  }));
+  return { ...t, tables };
 }
 
 export const SCAN_DPI = 200;

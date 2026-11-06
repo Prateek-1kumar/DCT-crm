@@ -1,7 +1,7 @@
 import type { Region, Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
-import { amountsAt, amountsIn, normalise, looseAmounts, slipped } from "./text";
+import { amountsAt, amountsIn, looseAmounts, looseFind, looseKey } from "./text";
 
 export type AmountStatus = "captured" | "decided" | "set_aside" | "missing";
 export type CoverageRef = { target: "term"; id: string } | { target: "grid"; id: string; row: number; col: number };
@@ -37,38 +37,20 @@ export interface Coverage {
   totals: { amounts: number; captured: number; decided: number; setAside: number; missing: number };
 }
 
-// letter/digit swaps fold together, so a quote finds its words on a scan as on a text page
-const key = (s: string) => slipped(normalise(s)).replace(/[^\p{L}\p{N}]/gu, "");
-
 const union = (words: Word[]): Region => [Math.min(...words.map((w) => w.x0)), Math.min(...words.map((w) => w.y0)), Math.max(...words.map((w) => w.x1)), Math.max(...words.map((w) => w.y1))];
 
-/** One box per printed line the quote spans; [] when the words aren't on the page (a scan has none). */
+/** One box per printed line the quote spans, found by the scanned-page quote check's matcher; [] when the words aren't on the page (a scan has none). */
 export function findQuote(words: Word[], quote: string): Region[] {
-  const wanted = quote.split(/\s+/).map(key).join("");
-  if (!wanted) return [];
   const ordered = groupLines(words).flat();
-  // the page as one run of letters and digits, so a quote matches however the words split or punctuation sits; a hit must start and end on a word
-  let run = "";
-  const starts: number[] = [];
-  const ends: number[] = [];
-  for (const w of ordered) {
-    starts.push(run.length);
-    run += key(w.text);
-    ends.push(run.length);
+  const hit = looseFind(ordered.map((w) => w.text), quote);
+  if (!hit) return [];
+  const lines: Word[][] = [];
+  for (const w of ordered.slice(hit[0], hit[1] + 1).filter((w) => looseKey(w.text))) {
+    const line = lines.at(-1);
+    if (line && Math.abs((w.y0 + w.y1) / 2 - (line[0]!.y0 + line[0]!.y1) / 2) <= (w.y1 - w.y0) / 2) line.push(w);
+    else lines.push([w]);
   }
-  for (let at = run.indexOf(wanted); at !== -1; at = run.indexOf(wanted, at + 1)) {
-    const first = starts.indexOf(at);
-    const last = ends.indexOf(at + wanted.length);
-    if (first === -1 || last === -1 || last < first) continue;
-    const lines: Word[][] = [];
-    for (const w of ordered.slice(first, last + 1).filter((w) => key(w.text))) {
-      const line = lines.at(-1);
-      if (line && Math.abs((w.y0 + w.y1) / 2 - (line[0]!.y0 + line[0]!.y1) / 2) <= (w.y1 - w.y0) / 2) line.push(w);
-      else lines.push([w]);
-    }
-    return lines.map(union);
-  }
-  return [];
+  return lines.map(union);
 }
 
 /** Where a scanned word sits across the page is made up (§5.1), so a scan's boxes are whole-width bands of the lines they are on. */

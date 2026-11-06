@@ -7,7 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Ask, Budget, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { groupLines, rawLine } from "../src/pdf/lines";
+import { checkQuote } from "../src/checks/quote";
+import { quoteBoxes } from "../src/checks/coverage";
 import { fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "../src/scan";
+import { cellsOf, scanText } from "../src/scan/cells";
 import { parseTranscription, type Transcription } from "../src/scan/transcribe";
 import { toWords } from "../src/scan/words";
 import { ReadFailed } from "../src/read";
@@ -370,8 +373,132 @@ describe("withScans", () => {
     const doc = await imagePdf("load.pdf", [[612, 792]]);
     const saved = transcription();
     const loaded = withScans(doc, [{ page: 1, version: "v", rotation: 0, transcription: saved }]);
-    expect(loaded.pages[0]).toMatchObject({ kind: "scan", words: toWords(saved) });
+    expect(loaded.pages[0]).toMatchObject({ kind: "scan", words: toWords(saved), raw: scanText(1, saved), layout: scanText(1, saved) });
     expect(loaded.pages[0]!.words.length).toBeGreaterThan(0);
+  });
+});
+
+describe("scanned tables in what the agent reads", () => {
+  const imageDoc = (pages = 1): LoadedDoc => ({
+    name: "s.pdf", path: "/x/s.pdf", sha256: "0",
+    pages: Array.from({ length: pages }, (_, i) => ({ page: i + 1, kind: "image" as const, layout: "", raw: "", words: [], maskBoxes: [], firstLine: "", rotation: 0 })),
+  });
+  const loaded = (text: string, page = 1) => withScans(imageDoc(page), [{ page, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text }) }]).pages[page - 1]!;
+  const fields = (layout: string, id: string) => layout.split("\n").find((l) => l.startsWith(`${id} |`))?.split("|").map((f) => f.trim());
+
+  it("a value printed under the 4th visit of a 20-visit scanned table reads under the 4th visit in the agent's text", () => {
+    const visits = Array.from({ length: 20 }, (_, i) => `V${i + 1}`);
+    const row = (label: string, y: number, f: (i: number) => string) => `R ${y.toFixed(3)}-${(y + 0.012).toFixed(3)} | ${label} | ${visits.map((_, i) => f(i)).join(" | ")}`;
+    const page = loaded(
+      [
+        "T 0.100-0.900 | Schedule of payments",
+        `H | Procedure | ${visits.join(" | ")}`,
+        row("Physical examination", 0.2, (i) => (i % 3 === 0 ? "$200.00" : "")),
+        row("ECG 12-lead", 0.215, (i) => (i % 2 ? "1,250.00" : "")),
+        row("Lab panel", 0.23, (i) => (i === 19 ? "$75.00" : "")),
+        row("Physical examination", 0.245, (i) => (i === 5 ? "$210.00" : "")),
+        "L 0.300-0.312 | Screen failures will be paid 1,500 per subject; overhead 25% not included.",
+      ].join("\n"),
+      7,
+    );
+    expect(page.layout.split("\n")[0]).toBe('TABLE p7.t1 "Schedule of payments"');
+    const headings = fields(page.layout, "p7.t1.h")!;
+    expect(headings[5]).toBe("c4 V4");
+    expect(headings[7]).toBe("c6 V6");
+    expect(fields(page.layout, "p7.t1.r1")).toEqual(["p7.t1.r1", "Physical examination", ...visits.map((_, i) => (i % 3 === 0 ? "$200.00" : ""))]);
+    expect(fields(page.layout, "p7.t1.r2")).toEqual(["p7.t1.r2", "ECG 12-lead", ...visits.map((_, i) => (i % 2 ? "1,250.00" : ""))]);
+    expect(fields(page.layout, "p7.t1.r3")!.at(-1)).toBe("$75.00");
+    expect(fields(page.layout, "p7.t1.r4")![7]).toBe("$210.00");
+    expect(fields(page.layout, "p7.l1")).toEqual(["p7.l1", "Screen failures will be paid 1,500 per subject; overhead 25% not included."]);
+  });
+
+  it("blank cells keep their column", () => {
+    const t = parseTranscription({ rotation: 0, text: "T 0.3-0.6 | Visit fees\nH | Visit | Fee | Extra | Total\nR 0.31-0.32 | Visit 1 | $1,200.00 | | $1,500.00\nR 0.33-0.34 | Visit 2 | | | $950.00" });
+    const text = scanText(2, t);
+    expect(fields(text, "p2.t1.r1")).toEqual(["p2.t1.r1", "Visit 1", "$1,200.00", "", "$1,500.00"]);
+    expect(fields(text, "p2.t1.r2")).toEqual(["p2.t1.r2", "Visit 2", "", "", "$950.00"]);
+    expect(cellsOf(2, t).find((c) => c.id === "p2.t1.r2.c3")).toEqual({ id: "p2.t1.r2.c3", page: 2, table: 1, row: 2, col: 3, text: "$950.00", doubts: [], heading: "Total", rowLabel: "Visit 2" });
+  });
+
+  it("a wrapped row label joins the row above", () => {
+    const t = parseTranscription({
+      rotation: 0,
+      text: [
+        "T 0.3-0.6 | Fees",
+        "H | Procedure | Fee | Total",
+        "R 0.31-0.32 | Physical examination, including | $200.00 | $200.00",
+        "R 0.32-0.33 | vital signs | |",
+        "R 0.34-0.35 | Pharmacy | | $5.00",
+        "R 0.36-0.37 | ECG | $100.00 | $100.00",
+      ].join("\n"),
+    });
+    const text = scanText(1, t);
+    expect(fields(text, "p1.t1.r1")).toEqual(["p1.t1.r1", "Physical examination, including vital signs", "$200.00", "$200.00"]);
+    expect(fields(text, "p1.t1.r2")).toEqual(["p1.t1.r2", "Pharmacy", "", "$5.00"]);
+    expect(fields(text, "p1.t1.r3")).toEqual(["p1.t1.r3", "ECG", "$100.00", "$100.00"]);
+    expect(cellsOf(1, t).find((c) => c.id === "p1.t1.r1.c2")).toMatchObject({ text: "$200.00", rowLabel: "Physical examination, including vital signs", heading: "Total" });
+    expect(groupLines(toWords(t)).map(rawLine)).toContain("Physical examination, including vital signs $200.00 $200.00");
+  });
+
+  it("cell ids are the same every time a saved transcription is loaded", async () => {
+    const store = fileScanStore(join(dir, "scans-ids"));
+    const t = parseTranscription({ rotation: 0, text: "L 0.1-0.12 | Budget\nT 0.3-0.6 | Fees\nH | Visit | Fee\nR 0.31-0.32 | Visit 1 | $1.00\nR 0.33-0.34 | Visit 2 | $2.00{?}" });
+    await store.put("d", { page: 4, version: "v", rotation: 0, transcription: t });
+    const [first, second] = [(await store.get("d"))[0]!, (await store.get("d"))[0]!];
+    expect(JSON.stringify(first)).not.toContain("p4.");
+    const ids = cellsOf(4, first.transcription).map((c) => c.id);
+    expect(ids).toEqual(["p4.l1", "p4.t1.h0", "p4.t1.h1", "p4.t1.r1.c0", "p4.t1.r1.c1", "p4.t1.r2.c0", "p4.t1.r2.c1"]);
+    expect(cellsOf(4, second.transcription)).toEqual(cellsOf(4, first.transcription));
+    expect(scanText(4, second.transcription)).toBe(scanText(4, t));
+  });
+
+  it("doubts are shown on the value they apply to", () => {
+    const text = scanText(1, parseTranscription({ rotation: 0, text: "T 0.3-0.4 | Fees\nH | Item | Fee | Total\nR 0.31-0.32 | Visit 1 | $900.00{x} $1,050.00{hw}{?} | $1,050.00\nL 0.5-0.52 | Paid on signing{in}" }));
+    expect(fields(text, "p1.t1.r1")).toEqual(["p1.t1.r1", "Visit 1", "$900.00{x} $1,050.00{hw}{?}", "$1,050.00"]);
+    expect(fields(text, "p1.l1")).toEqual(["p1.l1", "Paid on signing{in}"]);
+  });
+
+  it("masks a bank column and a bank number after its label", () => {
+    const page = loaded(
+      [
+        "L 0.10-0.12 | Account number",
+        "L 0.13-0.15 | 123456789{?}",
+        "T 0.3-0.6 | Payments",
+        "H | Site | Routing | Fee",
+        "R 0.31-0.32 | Site 1 | 021000021 | $100.00",
+      ].join("\n"),
+    );
+    expect(page.raw).not.toMatch(/123456789|021000021/);
+    expect(fields(page.raw, "p1.l2")).toEqual(["p1.l2", "#########{?}"]);
+    expect(fields(page.raw, "p1.t1.r1")).toEqual(["p1.t1.r1", "Site 1", "#########", "$100.00"]);
+    expect(page.layout).toBe(page.raw);
+  });
+
+  it("a quote that passes the quote check is also found on the page", () => {
+    const page = loaded(
+      [
+        "L 0.100-0.112 | The Sponsor shall pay a one-time study start-up fee of $5,000.00 upon execution of this Agreement.",
+        "T 0.3-0.6 | Visit fees",
+        "H | Visit | Fee",
+        "R 0.31-0.32 | Visit 1, including | $1,200.00{hw}",
+        "R 0.32-0.33 | vital signs |",
+      ].join("\n"),
+    );
+    const docs = [{ ...imageDoc(), pages: [page] }];
+    const quotes = [
+      "one-time study start-up fee of $5,000.00 upon execution",
+      "one time study start-up fee of $5000.00 upon executon",
+      "Visit 1, including vital signs $1,200.00",
+      "Visit 1 including vital signs $1,2OO.00",
+    ];
+    for (const quote of quotes) {
+      expect(checkQuote({ doc: "s.pdf", page: 1, quote }, docs), quote).toBeNull();
+      expect(quoteBoxes(page, quote), quote).not.toEqual([]);
+    }
+    for (const quote of ["p1.l1 The Sponsor shall pay", "a fee of $9,999.00 upon termination of this Agreement"]) {
+      expect(checkQuote({ doc: "s.pdf", page: 1, quote }, docs), quote).not.toBeNull();
+      expect(quoteBoxes(page, quote), quote).toEqual([]);
+    }
   });
 });
 
