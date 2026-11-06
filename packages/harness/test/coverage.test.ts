@@ -307,7 +307,8 @@ describe("coverage on a scanned page, by cell", () => {
     expect(bare("Visit 1")).toEqual([150000, 700]);
     expect(bare("")).toEqual([150000, 700]);
     expect(bare("CPT code", "93000")).toEqual([150000]);
-    expect(bare("No. of subjects")).toEqual([150000]);
+    // with no fee column, a count-shaped "7" can't be told from a fee shifted into it
+    expect(bare("No. of subjects")).toEqual([150000, 700]);
     expect(bare("Number of payments")).toEqual([150000, 700]);
     expect(bare("Hours", "$7.00")).toEqual([150000, 700]);
   });
@@ -362,7 +363,11 @@ describe("coverage on a scanned page, by cell", () => {
   });
 
   it("8.00 under Quantity is still excused", () => {
-    expect(cents(scanned("T 0.1-0.3 | Budget\nH | Item | Quantity | Overhead %\nR 0.12-0.13 | Exam | 8.00 | 25%\nR 0.14-0.15 | ECG | 1,500.00 | 15.00"))).toEqual([150000]);
+    expect(cents(scanned("T 0.1-0.3 | Budget\nH | Item | Fee | Quantity | Overhead %\nR 0.12-0.13 | Exam | $100.00 | 8.00 | 25%\nR 0.14-0.15 | ECG | $50.00 | 1,500.00 | 15.00"))).toEqual([10000, 5000, 150000]);
+  });
+
+  it("a small fee shifted into a quantity column still counts", () => {
+    expect(cents(scanned("T 0.1-0.3 | Budget\nH | Item | Qty | Fee\nR 0.12-0.13 | Exam | 2 | 150.00\nR 0.14-0.15 | Consent | 250.00 |"))).toEqual([15000, 25000]);
   });
 
   it("every bare amount in a money cell counts", () => {

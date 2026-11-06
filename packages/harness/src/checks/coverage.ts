@@ -178,12 +178,20 @@ function numbers(text: string): { text: string; cents: number }[] {
   });
 }
 
-/** What a scanned cell or line prints: a line's amount-shaped words, or a table cell's numbers, read whole first ("$ 1,500"). */
-function printedIn(cell: ScanCell, excused: Excused | undefined): { text: string; cents: number }[] {
+/** A table cell's numbers, read whole first ("$ 1,500"), then word by word. */
+function cellNumbers(text: string): { text: string; cents: number }[] {
+  const whole = looseCents(text) ?? parseCents(text);
+  return whole === null ? numbers(text) : [{ text, cents: Math.abs(whole) }];
+}
+
+/**
+ * What a scanned cell or line prints: a line's amount-shaped words, or a table cell's numbers. A count-shaped cell is a
+ * count only when its row prints a fee in an ordinary column; otherwise it is the fee, shifted a column.
+ */
+function printedIn(cell: ScanCell, excused: Excused | undefined, rowHasFee: boolean): { text: string; cents: number }[] {
   if (cell.row === null || !cell.col) return tokens(cell.text);
-  if ((excused === "count" && COUNT_SHAPED.test(cell.text)) || (excused === "code" && CODE_SHAPED.test(cell.text))) return [];
-  const whole = looseCents(cell.text) ?? parseCents(cell.text);
-  return whole === null ? numbers(cell.text) : [{ text: cell.text, cents: Math.abs(whole) }];
+  if ((excused === "count" && rowHasFee && COUNT_SHAPED.test(cell.text)) || (excused === "code" && CODE_SHAPED.test(cell.text))) return [];
+  return cellNumbers(cell.text);
 }
 
 const widthOf = (cells: ScanCell[], table: number) => Math.max(0, ...cells.filter((c) => c.table === table).map((c) => c.col ?? 0));
@@ -238,7 +246,8 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
   return cells.flatMap((cell) => {
     const row = cell.table === null ? [cell] : cells.filter((c) => c.table === cell.table && c.row === cell.row);
     const line = row.map((c) => c.text).join(" ").trim().slice(0, 120);
-    const printed = printedIn(cell, excused.get(`${cell.table}.${cell.col}`));
+    const rowHasFee = row.some((c) => c.row !== null && c.col && !excused.has(`${c.table}.${c.col}`) && cellNumbers(c.text).length > 0);
+    const printed = printedIn(cell, excused.get(`${cell.table}.${cell.col}`), rowHasFee);
     // a citation names one amount: a second one in the same cell or line ("$500.00 per visit, max $6,000.00") needs its
     // own, except a struck value the cited one replaces
     const struck = new Set((cell.struck ?? []).flatMap((s) => [...tokens(s), ...numbers(s)].map((t) => t.cents)));
