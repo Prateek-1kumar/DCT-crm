@@ -40,6 +40,8 @@ export interface Page {
   cells?: ScanCell[];
   /** What the cells come from, for comparing with a second read of the page. */
   transcription?: Transcription;
+  /** The page's blind second read, once one was made: an amount only it found may be one the first read dropped. */
+  second?: Transcription;
   /** Top and bottom of each scanned line and row where its words are shown, by its id ("p7.l2", "p7.t1.r5"); for display only. */
   bands?: Record<string, [number, number]>;
 }

@@ -36,6 +36,14 @@ export function pairCounts(first: Transcription, second: Transcription): Record<
   return out;
 }
 
+/** Amounts coverage would list as possibly missed: printed in the second read with nothing beside them in the first. */
+export function missedCount(first: Transcription, second: Transcription): number {
+  const read = (transcription: Transcription): ScanPage[] => [{ page: 1, version: "", rotation: 0, transcription }];
+  const doc = withScans({ name: "page", path: "page", sha256: "", pages: [buildPage(1, [], "image")] }, read(first), read(second));
+  const empty = { study: { documents: [] }, terms: [], grids: [], accounted: [], questions: [] } as unknown as Rulebook;
+  return coverage(empty, [doc]).pages.flatMap((p) => p.amounts).filter((a) => a.reason?.startsWith("a second read")).length;
+}
+
 interface Found {
   /** Rulebook values on scanned pages whose amount is printed in exactly one transcribed cell or line of their page, in two or more, or in none. */
   one: number;
@@ -176,6 +184,7 @@ async function main() {
   if (mode === "pair" && paths.length === 2) {
     const [first, second] = await Promise.all(paths.map(async (p) => transcriptionOf(await readJson(p))));
     printPair(pairCounts(first!, second!));
+    console.log(`amounts only the second read found (possibly missed): ${missedCount(first!, second!)}`);
     return;
   }
   if (mode === "replay" && paths.length >= 3) {

@@ -5,6 +5,7 @@ import { applyPatches, citationPatches, type Patch, type Question, type Rulebook
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
+import { coverage } from "../src/checks/coverage";
 import type { Ask, Budget, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
 import { resolve } from "../src/resolve";
@@ -389,6 +390,30 @@ describe("scanned pages: a blind second read of the page", () => {
     const differ = await resolveOn(scanned(), readers({ fail: true }, { verify: said(swap(SHEET, "| $250.00", "| $260.00")) }), rulebook({ grids: [bare] }));
     expect(differ.rulebook.questions.map((q) => q.id)).toEqual(["read:g1"]);
     expect(asPrinted(differ.rulebook)).toEqual([]);
+  });
+
+  it("an amount only the second read found is reported as possibly missed", async () => {
+    // the first read dropped the Exam row, the cap's line and Labs' V2 figure
+    const first = swap(SHEET.filter((l) => !l.includes("| Exam |") && !l.includes("capped")), "| Labs | $50.00 | $50.00", "| Labs | $50.00 |");
+    const missed = (b: Rulebook, scan: LoadedDoc[]) =>
+      coverage(b, scan).pages.flatMap((p) => p.amounts.filter((a) => a.reason?.startsWith("a second read")).map((a) => [a.cents, a.status]));
+    const reason = "a second read of p.1 found an amount the first read didn't";
+
+    const scan = scanned({ 1: first });
+    const out = await resolveOn(scan, readers({ fail: true }, { verify: said(SHEET) }), rulebook({ terms: [fee()] }));
+    expect(out.rulebook.terms[0]!.evidence).toBe("two_reads");
+    expect(missed(out.rulebook, scan)).toEqual([[10000, "missing"], [25000, "missing"], [5000, "missing"], [60000, "missing"]]);
+    expect(coverage(out.rulebook, scan).pages[0]!.amounts.find((a) => a.cents === 60000)).toMatchObject({ reason, line: "Payments are capped at $600.00 per subject." });
+    expect(checks.runChecks(out.rulebook, scan).unaccounted.map((u) => u.amountCents)).toEqual(expect.arrayContaining([10000, 25000, 60000]));
+
+    // listing it as accounted for, with a reason, settles it
+    const listed = { ...out.rulebook, accounted: [{ doc: "Budget.pdf", page: 1, amountCents: 60000, reason: "a cap, already in the contract's terms" }] };
+    expect(missed(listed, scan)).not.toContainEqual([60000, "missing"]);
+
+    // a page with no second read reports nothing of the kind
+    const unread = scanned({ 1: first });
+    await resolveOn(unread, readers({ fail: true }, { fail: true }), rulebook({ terms: [fee({ evidence: "person" })] }));
+    expect(missed(out.rulebook, unread)).toEqual([]);
   });
 
   it("a changed cell no total covers is asked, not accepted", async () => {

@@ -33,7 +33,8 @@ export async function untranscribed(docs: LoadedDoc[], store: ScanStore, reader:
   return counts.reduce((a, b) => a + b, 0);
 }
 
-export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
+/** The doc with its transcribed pages, each with the blind second read of it in `verified` when one was kept for the page turned the same way. */
+export function withScans(doc: LoadedDoc, pages: ScanPage[], verified: ScanPage[] = []): LoadedDoc {
   const found = new Map(pages.map((p) => [p.page, p]));
   return {
     ...doc,
@@ -43,7 +44,8 @@ export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
       // the words only place the page's text for display; the agent and the quote check read the transcription's own structure
       const text = scanText(p.page, scan.transcription);
       const bands = Object.fromEntries([...bandsOf(scan.transcription)].map(([key, band]) => [`p${p.page}.${key}`, band]));
-      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text, cells: cellsOf(p.page, scan.transcription), transcription: scan.transcription, bands };
+      const second = verified.find((v) => v.page === p.page && v.rotation === scan.rotation && quarterTurn(v.transcription.rotation) === 0)?.transcription;
+      return { ...buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation), raw: text, layout: text, cells: cellsOf(p.page, scan.transcription), transcription: scan.transcription, bands, ...(second && { second }) };
     }),
   };
 }

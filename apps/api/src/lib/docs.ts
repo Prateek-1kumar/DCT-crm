@@ -10,6 +10,8 @@ const cache = new Map<string, Promise<{ raw: LoadedDoc; shown: LoadedDoc }>>();
 
 export const forgetStored = (sha256: string) => cache.delete(sha256);
 
+const verified = async (sha256: string) => (await scanStore.verify?.get(sha256)) ?? [];
+
 function loadBoth(sha256: string) {
   let entry = cache.get(sha256);
   if (entry) cache.delete(sha256);
@@ -33,10 +35,11 @@ export async function loadDocs(tx: Tx, ids: string[], reader?: Reader): Promise<
   const rows = await tx.select().from(documents).where(inArray(documents.id, ids));
   return Promise.all(
     rows.map(async (row) => {
-      if (!reader) return { ...(await loadStored(row.sha256)), name: row.name };
       const { raw } = await loadBoth(row.sha256);
-      const current = (await scanStore.get(row.sha256)).filter((p) => p.version === scanVersion(reader));
-      return { ...withScans(raw, current), name: row.name };
+      const saved = await scanStore.get(row.sha256);
+      const current = reader ? saved.filter((p) => p.version === scanVersion(reader)) : saved;
+      // second reads are read fresh each time: a re-run can add one to a page whose transcription is cached
+      return { ...withScans(raw, current, await verified(row.sha256)), name: row.name };
     }),
   );
 }

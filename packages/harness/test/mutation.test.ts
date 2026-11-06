@@ -1,6 +1,7 @@
 import type { Cell, Grid, Relation, Rulebook, Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
+import { coverage } from "../src/checks/coverage";
 import { withRelationProof } from "../src/checks/relations";
 import { amountsAt, usd } from "../src/checks/text";
 import type { Reader } from "../src/models/reader";
@@ -402,6 +403,8 @@ interface Tally {
   /** Printed values the rulebook lost with the first read, and of those, the ones in a trial that raised no question at all. */
   lost: number;
   unnoticed: number;
+  /** Lost values coverage doesn't list as missing, as an amount only the second read found. */
+  unflagged: number;
 }
 
 async function trial(t: Tally, shape: Shape, mutation: string | null, seed: number, misread: "first" | "second") {
@@ -419,9 +422,9 @@ async function trial(t: Tally, shape: Shape, mutation: string | null, seed: numb
   const settle = async (rulebook: Rulebook, pages: Transcription[], read2: Transcription[]) => {
     const scanned = [docOf(pages)];
     const out = await resolve(rulebook, scanned, checks.runChecks(rulebook, scanned), { claude: NO_CALLS, openai: NO_CALLS, budget: { limit: 3, spent: 0 }, scans: storeOf(read2) });
-    return { out, questions: out.rulebook.questions.filter((q) => q.state === "open").length };
+    return { out, scanned, questions: out.rulebook.questions.filter((q) => q.state === "open").length };
   };
-  const { out, questions } = await settle(before, first, second);
+  const { out, scanned, questions } = await settle(before, first, second);
   const baseline = (await settle(withRelationProof(rulebookOf(shape.book(truth)), [docOf(truth)]), truth, truth)).questions;
 
   t.trials++;
@@ -429,9 +432,11 @@ async function trial(t: Tally, shape: Shape, mutation: string | null, seed: numb
   t.questions += questions;
   t.baseline += baseline;
   const kept = new Set(book.values.map((v) => v.key));
-  const lost = [...truthOf.keys()].filter((key) => !kept.has(key)).length;
-  t.lost += lost;
-  if (!questions) t.unnoticed += lost;
+  const lost = [...truthOf.keys()].filter((key) => !kept.has(key));
+  const flagged = coverage(out.rulebook, scanned).pages.flatMap((p) => p.amounts.filter((a) => a.status === "missing" && a.reason?.startsWith("a second read")).map((a) => a.cents));
+  t.lost += lost.length;
+  if (!questions) t.unnoticed += lost.length;
+  t.unflagged += lost.filter((key) => !flagged.includes(Math.abs(truthOf.get(key)!))).length;
   for (const v of book.values) {
     const right = truthOf.get(v.key);
     if (v.cents !== right) t.cited++;
@@ -447,7 +452,7 @@ async function tally(misread: "first" | "second") {
   const rows: (Tally & { shape: string; mutation: string })[] = [];
   for (const shape of SHAPES) {
     for (const mutation of [null, ...Object.keys(MUTATIONS)]) {
-      const t: Tally = { trials: 0, pages: 0, cited: 0, wrong: 0, proven: { reads: 0, relation: 0, totals: 0 }, questions: 0, baseline: 0, lost: 0, unnoticed: 0 };
+      const t: Tally = { trials: 0, pages: 0, cited: 0, wrong: 0, proven: { reads: 0, relation: 0, totals: 0 }, questions: 0, baseline: 0, lost: 0, unnoticed: 0, unflagged: 0 };
       for (let seed = 1; seed <= SEEDS; seed++) await trial(t, shape, mutation, seed * 7919 + shape.name.length, misread);
       rows.push({ shape: shape.name, mutation: mutation ?? "none", ...t });
     }
@@ -455,11 +460,11 @@ async function tally(misread: "first" | "second") {
   console.log(
     [
       `Misread in the ${misread} read (${SEEDS} seeds each; "-" where the mutation has nothing to act on)`,
-      "shape | mutation | trials | pages | wrong as cited | still wrong | wrong, proven by reads / relation / totals | questions (clean-read baseline) | extra per page | values lost / with no question",
+      "shape | mutation | trials | pages | wrong as cited | still wrong | wrong, proven by reads / relation / totals | questions (clean-read baseline) | extra per page | values lost / with no question / not listed as possibly missed",
       ...rows.map((x) =>
         [
           x.shape, x.mutation, x.trials, x.pages, x.cited, x.wrong, `${x.proven.reads} / ${x.proven.relation} / ${x.proven.totals}`, `${x.questions} (${x.baseline})`,
-          x.pages ? ((x.questions - x.baseline) / x.pages).toFixed(2) : "-", `${x.lost} / ${x.unnoticed}`,
+          x.pages ? ((x.questions - x.baseline) / x.pages).toFixed(2) : "-", `${x.lost} / ${x.unnoticed} / ${x.unflagged}`,
         ].join(" | "),
       ),
     ].join("\n"),

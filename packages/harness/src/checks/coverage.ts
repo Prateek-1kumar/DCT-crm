@@ -1,6 +1,8 @@
 import { parseCents, type Region, type Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
-import type { ScanCell } from "../scan/cells";
+import { cellsOf, type ScanCell } from "../scan/cells";
+import { amountsOf, diffReads } from "../scan/diff";
+import { bandsOf } from "../scan/words";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
 import { amountsAt, amountsIn, looseAmounts, looseCents, looseFind, looseKey } from "./text";
 
@@ -235,19 +237,25 @@ function cellBand(page: Page, id: string): Region {
   return [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)];
 }
 
+/** Each cell and line of a page's read, with the amounts it prints and the printed row or line it is on. */
+function printedCells(pages: Page[], index: number) {
+  const cells = pages[index]!.cells ?? [];
+  const excused = excusedColumns(pages, index);
+  return cells.map((cell) => {
+    const row = cell.table === null ? [cell] : cells.filter((c) => c.table === cell.table && c.row === cell.row);
+    const line = row.map((c) => c.text).join(" ").trim().slice(0, 120);
+    const rowHasFee = row.some((c) => c.row !== null && c.col && !excused.has(`${c.table}.${c.col}`) && cellNumbers(c.text).length > 0);
+    return { cell, line, printed: printedIn(cell, excused.get(`${cell.table}.${cell.col}`), rowHasFee) };
+  });
+}
+
 /**
  * On a transcribed scan an amount is accounted for by a value citing its cell, or by `accounted` naming its cell, its
  * amount on this page, or the whole page. A value or a listing for another page never counts.
  */
 function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number, cited: Map<string, Cited[]>): CoverageAmount[] {
   const page = pages[index]!;
-  const cells = page.cells ?? [];
-  const excused = excusedColumns(pages, index);
-  return cells.flatMap((cell) => {
-    const row = cell.table === null ? [cell] : cells.filter((c) => c.table === cell.table && c.row === cell.row);
-    const line = row.map((c) => c.text).join(" ").trim().slice(0, 120);
-    const rowHasFee = row.some((c) => c.row !== null && c.col && !excused.has(`${c.table}.${c.col}`) && cellNumbers(c.text).length > 0);
-    const printed = printedIn(cell, excused.get(`${cell.table}.${cell.col}`), rowHasFee);
+  return printedCells(pages, index).flatMap(({ cell, line, printed }) => {
     // a citation names one amount: a second one in the same cell or line ("$500.00 per visit, max $6,000.00") needs its
     // own, except a struck value the cited one replaces
     const struck = new Set((cell.struck ?? []).flatMap((s) => [...tokens(s), ...numbers(s)].map((t) => t.cents)));
@@ -261,6 +269,27 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
       return [{ box: cellBand(page, cell.id), text, cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line, doubt: cell.doubts[0] ?? null }];
     });
   });
+}
+
+/**
+ * Amounts the page's second read found with nothing in the first read beside them: an unpaired row or line, or a cell the
+ * first read left blank. Nothing cites them, so each is missing until a value captures it or `accounted` lists it (its
+ * amount on this page, or the whole page).
+ */
+function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: number): CoverageAmount[] {
+  const page = pages[index]!;
+  if (!page.second || !page.transcription) return [];
+  const back = diffReads(page.page, page.second, page.transcription);
+  const bands = Object.fromEntries([...bandsOf(page.second)].map(([key, band]) => [`p${page.page}.${key}`, band]));
+  const second: Page = { ...page, cells: cellsOf(page.page, page.second), bands };
+  return printedCells(pages.map((p, i) => (i === index ? second : p)), index).flatMap(({ cell, line, printed }) =>
+    printed.flatMap(({ text, cents }): CoverageAmount[] => {
+      const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
+      if (!cents || !verdict || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
+      const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents)));
+      return [{ box: cellBand(second, cell.id), text, cents, status: accounted ? "set_aside" : "missing", ref: null, reason: accounted?.reason ?? `a second read of p.${page.page} found an amount the first read didn't`, line, doubt: cell.doubts[0] ?? null }];
+    }),
+  );
 }
 
 export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
@@ -277,7 +306,7 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
       pages.push(out);
       if (page.kind === "image") continue;
 
-      if (page.cells) out.amounts = scannedAmounts(rulebook, doc.name, doc.pages, index, cited);
+      if (page.cells) out.amounts = [...scannedAmounts(rulebook, doc.name, doc.pages, index, cited), ...missedAmounts(rulebook, doc.name, doc.pages, index)];
       else {
         // A whole page set aside (a superseded budget) wins over a coincidental match; a set-aside amount counts wherever
         // it was listed, as in the every-dollar check.

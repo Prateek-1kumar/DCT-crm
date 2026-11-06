@@ -1,6 +1,6 @@
 import type { Grid, Rulebook, Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
-import { pairCounts, replayCounts, transcriptionOf } from "../scripts/scan-replay";
+import { missedCount, pairCounts, replayCounts, transcriptionOf } from "../scripts/scan-replay";
 import { parseTranscription } from "../src/scan/transcribe";
 
 const compact = (...lines: string[]) => ({ rotation: 0, text: lines.join("\n") });
@@ -21,6 +21,12 @@ describe("scan-replay", () => {
       t1: { agree: 3, differ: 0, marked: 1, unaligned: 0 },
       lines: { agree: 0, differ: 1, marked: 0, unaligned: 0 },
     });
+  });
+
+  it("counts the amounts only the second read found", () => {
+    const more = compact("L 0.1-0.2 | The screen failure fee is $75.00 per subject.", "T 0.3-0.5 | Budget", "H | Procedure | V1 | V2", "R 0.31-0.32 | Exam | $100.00 | $75.00", "R 0.33-0.34 | Labs | $50.00 | $60.00{hw}", "R 0.35-0.36 | ECG | $40.00 |", "L 0.6-0.7 | Archiving is paid at $300.00.");
+    expect(missedCount(transcriptionOf(PAGE), transcriptionOf(PAGE))).toBe(0);
+    expect(missedCount(transcriptionOf(PAGE), transcriptionOf(more))).toBe(2);
   });
 
   it("matches an earlier rulebook's values to cells by value and page, and counts what coverage would miss", () => {

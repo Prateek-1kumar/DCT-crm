@@ -271,6 +271,8 @@ export async function settleScans(run: Run, report: CheckReport) {
       continue;
     }
 
+    // kept on the page itself, so the checks after this run, coverage included, see what only the second read found
+    page.second = second;
     const diff = diffReads(page.page, page.transcription, second);
     const agreed: Spot[] = [];
     for (const s of group.filter((x) => !why.has(x))) {
