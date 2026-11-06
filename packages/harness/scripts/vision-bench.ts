@@ -1,12 +1,13 @@
 // Scores how well the OpenAI reader transcribes scanned pages: pages that have a real text layer are drawn as degraded
 // scans (bank details blacked out first), transcribed, and their amounts compared with the text layer's. Prints numbers only.
+// List only money pages: every amount-shaped number on a listed page counts, quantities and codes included.
 //   pnpm vision-bench --cap 8 --out <dir> "a.pdf:6,7" "b.pdf:24"
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import OpenAI from "openai";
-import { amountsAt, amountsIn } from "../src/checks/text";
+import { amountsIn } from "../src/checks/text";
 import { estimateUsd, openaiReader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { groupLines, rawLine } from "../src/pdf/lines";
@@ -103,10 +104,6 @@ for (const [fileIndex, spec] of args.entries()) {
   for (const n of spec.slice(at + 1).split(",").map(Number)) {
     const page = doc.pages[n - 1]!;
     const id = `f${fileIndex + 1}p${n}`;
-    if (!amountsAt(page.raw).some((a) => a.text.includes("$"))) {
-      console.log(`${id}: skipped, no dollar amounts`);
-      continue;
-    }
     const truth = amountsPerLine(page.words);
     const png = await scanOf(path, page);
     if (dry) {
