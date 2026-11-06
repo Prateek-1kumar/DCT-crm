@@ -141,6 +141,9 @@ function lineAmounts(t: Transcription) {
   });
 }
 
+/** Whether a read of a page prints any amount, in a table or on a line. */
+export const printsAmounts = (t: Transcription) => t.tables.some(hasAmounts) || lineAmounts(t).length > 0;
+
 /**
  * Compares two independent reads of one page cell by cell, by structure and order, never by position. Keys are the first
  * read's ids: a table cell's `p{page}.t{table}.r{row}.c{col}`, and a line's `p{page}.l{line}#{cents}` for each amount on it

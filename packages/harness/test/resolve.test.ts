@@ -251,23 +251,32 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 0], [0, 1], [1, 0], [1, 1]]);
   });
 
-  it("a value arithmetic or a person already proves needs no second read", async () => {
-    // on a scan only a row's own total pins its cells: a column total can't tell which row a figure is on
-    const rowTotals = [
-      ["H | Procedure | V1 | V2", "H | Procedure | V1 | V2 | Total"],
-      ["| Exam | $100.00 | $250.00", "| Exam | $100.00 | $250.00 | $350.00"],
-      ["| Labs | $50.00 | $50.00", "| Labs | $50.00 | $50.00 | $100.00"],
-    ].reduce((lines, [from, to]) => swap(lines, from!, to!), SHEET);
-    const g = cited(25000);
+  it("a page whose values are all proven by arithmetic still gets a verify read, and catches a dropped row", async () => {
+    // on a scan only a row's own total pins its cells, so these rows prove themselves; the first read dropped ECG
+    const sheet = (ecg: boolean) => [
+      ...SHEET.slice(0, 3), "H | Procedure | V1 | V2 | Total",
+      "R 0.120-0.130 | Exam | $100.00 | $250.00 | $350.00", "R 0.140-0.150 | Labs | $50.00 | $50.00 | $100.00", ...(ecg ? ["R 0.160-0.170 | ECG | $40.00 | | $40.00"] : []),
+    ];
+    const g = grid(25000);
     const totalled: Grid = {
-      ...g, rows: g.rows.map((row, i) => ({ ...row, printedRowTotalCents: [35000, 10000][i]! })),
-      cellIds: { ...IDS, "rows.0.printedRowTotalCents": "p1.t1.r1.c3", "rows.1.printedRowTotalCents": "p1.t1.r2.c3" },
+      ...g, subtotal: null, grandTotalCents: null, rows: g.rows.map((row, i) => ({ ...row, printedRowTotalCents: [35000, 10000][i]! })),
+      cellIds: Object.fromEntries([0, 1].flatMap((i) => [[`rows.${i}.cells.0`, `p1.t1.r${i + 1}.c1`], [`rows.${i}.cells.1`, `p1.t1.r${i + 1}.c2`], [`rows.${i}.printedRowTotalCents`, `p1.t1.r${i + 1}.c3`]])),
     };
-    const r = readers({ fail: true }, { fail: true });
-    const out = await resolveOn(scanned({ 1: rowTotals }), r, rulebook({ terms: [fee({ evidence: "person" })], grids: [totalled] }));
+    const book = rulebook({ terms: [fee({ evidence: "person" })], grids: [totalled] });
+    const scan = scanned({ 1: sheet(false) });
+    expect(checks.runChecks(book, scan).problems).toEqual([]);
 
-    expect(r.openai.calls).toHaveLength(0);
+    const r = readers({ fail: true }, { verify: said(sheet(true)) });
+    const out = await resolveOn(scan, r, book);
+    expect(verifies(r)).toHaveLength(1);
     expect(out.rulebook.questions).toEqual([]);
+    const missed = coverage(out.rulebook, scan).pages[0]!.amounts.filter((a) => a.status === "missing");
+    expect(missed.map((a) => [a.cents, a.reason])).toEqual([[4000, "a second read of p.1 found an amount the first read didn't"], [4000, "a second read of p.1 found an amount the first read didn't"]]);
+    expect(checks.runChecks(out.rulebook, scan).unaccounted.map((u) => u.amountCents)).toEqual([4000]);
+
+    // a page the second read couldn't be made for says so, since nothing else would show a dropped row
+    const failed = await resolveOn(scanned({ 1: sheet(false) }), readers({ fail: true }, { fail: true }), book);
+    expect(failed.rulebook.questions.map((q) => q.id)).toEqual(["read:Budget.pdf:p1:unread"]);
   });
 
   it("a differing second read of a term asks with both readings, and choosing the second drops the citation", async () => {
@@ -444,12 +453,12 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(out.rulebook.terms[0]!.evidence).toBe("quote");
   });
 
-  it("a value marked on the first read goes to a person without a second read", async () => {
+  it("a value marked on the first read goes to a person, whatever the second read says", async () => {
     const t = fee({ name: "Exam fee", amountCents: 10000, source: { doc: "Budget.pdf", page: 1, quote: "Exam", cell: "p1.t1.r1.c1" } });
-    const r = readers({ fail: true }, { fail: true });
+    const r = readers({ fail: true }, { verify: said(SHEET) });
     const out = await resolveOn(scanned({ 1: swap(SHEET, "| $100.00 |", "| $100.00{hw} |") }), r, rulebook({ terms: [t] }));
 
-    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:t1"]);
     expect(question1(out.rulebook, "person:t1").context).toContain("handwritten on the first read");
   });
 
@@ -496,10 +505,10 @@ describe("scanned pages: a blind second read of the page", () => {
   });
 
   it("a cited value with no citation on a scanned page goes to a person", async () => {
-    const r = readers({ fail: true }, { fail: true });
+    const r = readers({ fail: true }, { verify: said(SHEET) });
     const out = await resolveOn(scanned(), r, rulebook({ terms: [fee({ source: { doc: "Budget.pdf", page: 1, quote: "The screen failure fee" } })] }));
 
-    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:t1"]);
     expect(question1(out.rulebook, "person:t1").context).toContain("does not say which cell");
   });
 
@@ -567,10 +576,11 @@ describe("scanned pages: a blind second read of the page", () => {
     });
 
     it("a handwritten cap goes to a person", async () => {
-      const r = readers({ fail: true }, { fail: true });
-      const out = await resolveOn(scanned({ 1: swap(SHEET, "$600.00", "$600.00{hw}") }), r, rulebook({ terms: [capped({ evidence: "math" })] }));
+      const sheet = swap(SHEET, "$600.00", "$600.00{hw}");
+      const r = readers({ fail: true }, { verify: said(sheet) });
+      const out = await resolveOn(scanned({ 1: sheet }), r, rulebook({ terms: [capped({ evidence: "math" })] }));
 
-      expect(r.openai.calls).toHaveLength(0);
+      expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:t1"]);
       expect(question1(out.rulebook, "person:t1").context).toContain("the cap of 'Screen failure fee': $600.00 (handwritten on the first read)");
     });
 

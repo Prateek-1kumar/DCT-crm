@@ -481,6 +481,8 @@ describe("planted misreads", () => {
     expect(total(rows, (t) => t.cited)).toBeGreaterThan(0);
     expect(total(rows.filter((x) => x.mutation === "none"), (t) => t.cited + t.wrong)).toBe(0);
     expect(total(rows, (t) => t.proven.reads + t.proven.relation + t.proven.totals)).toBe(0);
+    // every scanned page with money is read twice, so whatever the first read lost is listed as possibly missed
+    expect(total(rows, (t) => t.unflagged)).toBe(0);
   });
 
   it("a misread in the second read only raises questions, fewer than one a page", { timeout: 300_000 }, async () => {

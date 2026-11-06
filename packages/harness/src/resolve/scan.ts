@@ -4,7 +4,7 @@ import { checkCitations } from "../checks/cells";
 import { printedAmounts, printsTotals } from "../checks/grid";
 import { amountsIn, usd } from "../checks/text";
 import { pdfReader } from "../pdf";
-import { amountsOf, diffReads, verdictOf } from "../scan/diff";
+import { amountsOf, diffReads, printsAmounts, verdictOf } from "../scan/diff";
 import { MAX_SCAN_PIXELS, SCAN_DPI, type Transcription } from "../scan/transcribe";
 import { SecondReadFailed, quarterTurn, verifyRead, verifyVersion } from "../scan/verify";
 import type { CheckReport, Doubt, LoadedDoc, Page } from "../types";
@@ -178,6 +178,12 @@ function askPerson(run: Run, group: Spot[], why: Map<Spot, string>) {
   run.log.push(`${place(first)}: ${values(group.length)} marked on the page or not settled by a second read, so a person will be asked`);
 }
 
+/** A page whose values all stand on their own but that still needs its second read, to find what the first read missed. */
+function unreadPage(run: Run, doc: string, page: number) {
+  const context = "Its second read checks that the first read missed no amount, and it could not be done in this run. Start the read again to have the page read a second time.";
+  raise(run, { id: `read:${doc}:p${page}:unread`, about: null, source: { doc, page, quote: "" }, question: `Did the first read of p.${page} of ${doc} miss any amount?`, context, readings: [], options: [] });
+}
+
 /** Values the two reads disagree on: the second read's figures stand if they make the arithmetic hold; otherwise a person picks. */
 function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
   const [{ s }] = rows as [{ s: Spot; second: string }];
@@ -251,11 +257,20 @@ export async function settleScans(run: Run, report: CheckReport) {
 
   const differ: { s: Spot; second: string }[] = [];
   const unread: Spot[] = [];
-  for (const group of grouped(spots.filter((s) => s.cell), (s) => JSON.stringify([s.source.doc, s.source.page]))) {
+  const key = (doc: string, page: number) => JSON.stringify([doc, page]);
+  const byPage = new Map(grouped(spots.filter((s) => s.cell), (s) => key(s.source.doc, s.source.page)).map((g) => [key(g[0]!.source.doc, g[0]!.source.page), g]));
+  // every scanned page with money is read again, even where arithmetic proves every value, so a row the first read
+  // dropped is found (coverage lists what only the second read has)
+  const noMoney = new Set(run.rulebook.study.documents.filter((d) => !d.hasMoney).map((d) => d.doc));
+  const hasMoney = (doc: LoadedDoc, page: Page | undefined) => !noMoney.has(doc.name) && !!page?.transcription && printsAmounts(page.transcription);
+  for (const doc of run.docs) for (const page of doc.pages) if (hasMoney(doc, page) && !byPage.has(key(doc.name, page.page))) byPage.set(key(doc.name, page.page), []);
+
+  for (const [at, group] of byPage) {
+    const [name, n] = JSON.parse(at) as [string, number];
+    const doc = run.docs.find((d) => d.name === name)!;
+    const page = doc.pages.find((p) => p.page === n);
     const open = group.filter((s) => s.unproven && !why.has(s));
-    if (!open.length) continue;
-    const doc = run.docs.find((d) => d.name === group[0]!.source.doc)!;
-    const page = doc.pages.find((p) => p.page === group[0]!.source.page);
+    if (!open.length && !hasMoney(doc, page)) continue;
     if (!page?.transcription) {
       open.forEach((s) => why.set(s, UNALIGNED));
       continue;
@@ -263,6 +278,7 @@ export async function settleScans(run: Run, report: CheckReport) {
     const second = await secondRead(run, doc, page, page.transcription);
     if (!second) {
       unread.push(...open);
+      if (!open.length) unreadPage(run, doc.name, page.page);
       continue;
     }
     if (quarterTurn(second.rotation) !== 0) {

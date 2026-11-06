@@ -183,16 +183,19 @@ async function twoReadsOf22Pages() {
   await writeFile(join(dir, "Budget22.pdf"), await file.save());
   const scanned = await pdfReader.load(join(dir, "Budget22.pdf"));
 
-  // measured: about $0.15 a transcribed page and $0.5–1 a review, at the OpenAI model's price
+  // measured: about $0.15 a transcribed page, $0.02–0.08 a verify read and $0.5–1 a review, at the OpenAI model's price
   let reviews = 0;
   let transcriptions = 0;
+  let verifies = 0;
   const openai: Reader = {
     model: "gpt", price: { input: 5, output: 30, cacheWrite: 0, cacheRead: 0 },
     async ask<T>(req: Ask<T>) {
       if (req.name === "transcribe_page") transcriptions++;
       if (req.name === "review") reviews++;
-      const value = req.name === "transcribe_page" ? { rotation: 0, text: "T 0.1-0.9 | Budget\nH | Procedure | Fee\nR 0.2-0.21 | Exam | $100.00" } : { findings: [] };
-      return { value: value as T, model: "gpt", usd: req.name === "review" ? 1 : 0.15 };
+      if (req.name === "verify_page") verifies++;
+      const page = { rotation: 0, text: "T 0.1-0.9 | Budget\nH | Procedure | Fee\nR 0.2-0.21 | Exam | $100.00" };
+      const value = req.name === "review" ? { findings: [] } : page;
+      return { value: value as T, model: "gpt", usd: { review: 1, verify_page: VERIFY_PAGE_USD }[req.name] ?? 0.15 };
     },
   };
   const OVERSHOOT = 0.3;
@@ -209,20 +212,23 @@ async function twoReadsOf22Pages() {
   for (const run of ["fresh", "pages already read"]) {
     const unread = await untranscribed([scanned], scans, openai);
     const limit = readBudget(undefined, unread, PAGES, await reviewUsd(openai, [scanned]));
-    const [before, progress] = [{ reviews, transcriptions }, [] as string[]];
+    const [before, progress] = [{ reviews, transcriptions, verifies }, [] as string[]];
     const result = await read([scanned], { anthropic: {} as ModelClient, claude: fake("claude", {}, 0), openai, scans, maxUsd: limit, onProgress: (l) => progress.push(l) });
     // what compile was given before anything was set aside: 70% of the default and the transcription allowance, less what transcription spent
     const before_ = 0.7 * (defaultMaxUsd() + SCAN_PAGE_USD * unread - 0.15 * unread);
-    runs.push({ run, limit, result, progress, share, before: before_, reviews: reviews - before.reviews, transcriptions: transcriptions - before.transcriptions });
+    runs.push({ run, limit, result, progress, share, before: before_, reviews: reviews - before.reviews, transcriptions: transcriptions - before.transcriptions, verifies: verifies - before.verifies });
   }
   return runs;
 }
 
 it("a 22-page scan at the default budget always runs the reviewer and the verify reads", async () => {
-  for (const { run, limit, result, progress, reviews, transcriptions } of await twoReadsOf22Pages()) {
+  for (const { run, limit, result, progress, reviews, transcriptions, verifies } of await twoReadsOf22Pages()) {
     expect(result.reviewError, run).toBeUndefined();
     expect(reviews, run).toBe(1);
-    expect(limit - result.usd, run).toBeGreaterThanOrEqual(PAGES * VERIFY_PAGE_USD);
+    // every page prints an amount, so every page is read a second time, within the limit
+    expect(verifies, run).toBe(PAGES);
+    expect(result.usd, run).toBeLessThanOrEqual(limit);
+    expect(result.rulebook.questions.filter((q) => q.id.endsWith(":unread")), run).toEqual([]);
     expect(transcriptions, run).toBe(run === "fresh" ? PAGES : 0);
     expect(progress.filter((l) => /^p\.\d+ of Budget22\.pdf read at \d+ dpi$/.test(l)), run).toHaveLength(run === "fresh" ? PAGES : 0);
   }

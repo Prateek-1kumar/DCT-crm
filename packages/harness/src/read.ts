@@ -44,7 +44,10 @@ const COMPILED = new Set(["done", "finishes_exhausted"]);
 // Of what is left once the reviewer and the closer reads are set aside; the rest absorbs compile's last turn past its
 // limit, and the resolver's reads. A scan-free compile has used about a third of $3.
 const COMPILE_SHARE = 0.7;
-/** Kept back for each scanned page's closer second read: measured at $0.02–0.08 a page. */
+/**
+ * Kept back for each scanned page's blind second read, which every scanned page with money gets: measured at $0.02–0.08 a
+ * page. Reserved for every scanned page, since whether one prints money isn't known until it is transcribed.
+ */
 export const VERIFY_PAGE_USD = 0.08;
 
 export const NOT_REVIEWED = "This read wasn't checked for judgment calls. Start the read again; the pages already read are kept.";
@@ -71,7 +74,7 @@ export function defaultMaxUsd(): number {
 
 /**
  * An explicit limit is the whole budget; otherwise the default, plus what the scanned pages still to read are expected to
- * cost, a closer read of every scanned page (each read may pay for it again), and the review (`reviewUsd`), so compile's
+ * cost, a blind second read of every scanned page (each read may pay for it again), and the review (`reviewUsd`), so compile's
  * share isn't what pays for them.
  */
 export const readBudget = (maxUsd: number | undefined, untranscribedPages: number, scanned: number, reviewUsd: number) =>
