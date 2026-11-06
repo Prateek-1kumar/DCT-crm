@@ -1,7 +1,7 @@
 import { parseCents, parsePercent, type Relation, type Rulebook } from "@dct/shared";
 import type { ScanCell } from "../scan/cells";
 import type { GridResult, LoadedDoc, Problem } from "../types";
-import { cellOf, citeGrid, citeTerm, isMarked } from "./cells";
+import { cellOf, cellsOn, citeGrid, citeTerm, isMarked } from "./cells";
 import { amountsIn, usd } from "./text";
 
 /*
@@ -17,7 +17,9 @@ type Grid = Rulebook["grids"][number];
 /** Cell ids are only unique within a document, so a proven cell is keyed by both. */
 export const cellKey = (doc: string, id: string) => `${doc}:${id}`;
 
-const PERCENT = /[-−]?\d[\d,]*(?:\.\d+)?\s*(?:%|per\s*cent\b)/gi;
+const NUMBER = String.raw`\d[\d,]*(?:\.\d+)?|\.\d+`;
+const PERCENT = new RegExp(String.raw`[-−]?(?:${NUMBER})\s*(?:%|per\s*cent\b)`, "gi");
+const TOTAL = "a total has to add up every amount printed before it in its row or column, and be the last amount there; otherwise the cells may only happen to add up.";
 const MARKED = (id: string) => `${id} is handwritten, struck out or initialed, so a person checks it: arithmetic can't prove it.`;
 const ALIGNED = "the result and the cells it is made of have to be in one printed row or one printed column of one table, with the result after them (a row total, a column total, or a fee followed by the fee with overhead).";
 
@@ -49,8 +51,25 @@ function rateOf(cell: ScanCell): Rate | string {
   const value = parsePercent(printed);
   if (value === null) return `${cell.id} prints "${cell.text}", not one percent or count.`;
   if (value <= 0) return `${cell.id} prints "${cell.text}", and a rate has to be above zero.`;
-  const [, whole, decimals = ""] = /(\d[\d,]*)(?:\.(\d+))?/.exec(printed)!;
-  return { units: BigInt(whole!.replace(/,/g, "") + decimals), scale: decimals.length, percent: percents.length > 0 };
+  const [whole = "", decimals = ""] = new RegExp(NUMBER).exec(printed)![0].replace(/,/g, "").split(".");
+  const units = BigInt((whole || "0") + decimals);
+  // the digits counted have to be the number parsePercent read, not another one printed beside it ("Year 2 (3)")
+  if (Number(units) / 10 ** decimals.length !== value) return `${cell.id} prints "${cell.text}", not one percent or count.`;
+  return { units, scale: decimals.length, percent: percents.length > 0 };
+}
+
+const isAmount = (cell: ScanCell) => amountsIn(cell.text).length > 0 || parseCents(cell.text) !== null;
+
+/** Why the operands of a sum of two or more cells aren't every amount before the result in its row or column, or the result isn't the last. */
+function partial(doc: LoadedDoc, result: ScanCell, operands: ScanCell[]): string | null {
+  const inRow = operands.every((c) => c.row === result.row);
+  const line = (cellsOn(doc, result.page) ?? []).filter(
+    (c) => c.table === result.table && c.row !== null && c.col !== 0 && (inRow ? c.row === result.row : c.col === result.col) && isAmount(c),
+  );
+  const at = (c: ScanCell) => (inRow ? c.col! : c.row!);
+  const before = line.filter((c) => at(c) < at(result)).map((c) => c.id).sort();
+  const covered = before.join() === operands.map((c) => c.id).sort().join();
+  return covered && line.every((c) => at(c) <= at(result)) ? null : TOTAL;
 }
 
 /** n / d rounded half up to a multiple of `step` cents. */
@@ -101,13 +120,15 @@ function misaligned(r: Relation, result: ScanCell, operands: ScanCell[], rate: S
   return rate && rate.page !== result.page ? `the rate ${r.rate} is on p.${rate.page}: use one printed on p.${result.page}, the page of the result.` : null;
 }
 
-export type Evaluated = { proven: string[] } | { problem: string };
+/** `dollarTable`: the table (doc:p1.t2) whose result this relation could only match rounded to the dollar. */
+export type Evaluated = { proven: string[]; dollarTable?: string } | { problem: string };
 
 /**
  * A relation evaluated on the transcribed cells. When it holds, it proves the cells a one-cent change (or one in a rate's
- * last printed digit) would break it for: a misread of any other cell would pass it unnoticed.
+ * last printed digit) would break it for: a misread of any other cell would pass it unnoticed. `dollarTables` are the
+ * tables another relation showed to round to the dollar.
  */
-export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDoc[]): Evaluated {
+export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDoc[], dollarTables = new Set<string>()): Evaluated {
   const why = (reason: string) => ({ problem: `${formula(r)}: ${reason}` });
   const doc = docs.find((d) => d.name === r.doc);
   if (!doc) return why(`there is no document called "${r.doc}".`);
@@ -119,7 +140,9 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
   if (r.kind === "product" && (r.operands.length !== 1 || !r.rate)) return why("a product takes one cell and a rate: the cell printing the count or percent it is multiplied by.");
   if (r.kind === "sum" && r.operands.length < 2 && !r.rate) return why("a sum adds two or more cells, or one cell and a rate on top.");
   const rateCell = r.rate ? cellOf(doc, r.rate) : undefined;
-  const off = misaligned(r, cellOf(doc, r.result)!, r.operands.map((id) => cellOf(doc, id)!), rateCell);
+  const resultCell = cellOf(doc, r.result)!;
+  const operandCells = r.operands.map((id) => cellOf(doc, id)!);
+  const off = misaligned(r, resultCell, operandCells, rateCell) ?? (r.operands.length > 1 ? partial(doc, resultCell, operandCells) : null);
   if (off) return why(off);
 
   const amounts = [r.result, ...r.operands].map((id) => amountOf(cellOf(doc, id)!));
@@ -141,11 +164,21 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
 
   const rate = rateCell ? rateOf(rateCell) : null;
   if (typeof rate === "string") return why(rate);
-  const dollars = !holds(r.kind, result, operands, rate);
-  if (dollars && !holds(r.kind, result, operands, rate, true)) {
+  if (rate && !rate.percent) {
+    if (r.kind === "sum") return why(`${r.rate} prints "${rateCell!.text}", not a percent: a sum adds a percent on top; for a quantity use a product.`);
+    // a count belongs to its own line; a percent is a rule the page may print anywhere
+    const inRow = operandCells.every((c) => c.row === resultCell.row);
+    const own = rateCell!.row !== null && rateCell!.table === resultCell.table && (inRow ? rateCell!.row === resultCell.row : rateCell!.col === resultCell.col);
+    if (!own) return why(`the count ${r.rate} has to be in the result's own printed row (or its column, in a table printed sideways).`);
+  }
+  const table = `${r.doc}:${/^p\d+\.t\d+/.exec(r.result)![0]}`;
+  const toTheDollar = !holds(r.kind, result, operands, rate);
+  if (toTheDollar && !holds(r.kind, result, operands, rate, true)) {
     const want = rounded(...fraction(r.kind, operands, rate), 1n);
     return { problem: `${formula(r)} doesn't hold: the cells it is made of come to ${usd(want)}, but ${r.result} prints ${usd(result)}.` };
   }
+  // a table that rounds one result to the dollar may round them all: a round result's cent match is then no proof of its operands
+  const dollars = toTheDollar || (result % 100 === 0 && dollarTables.has(table));
 
   const breaks = (nudged: (by: number) => boolean) => !nudged(1) && !nudged(-1);
   const proven = [
@@ -154,7 +187,7 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
     ...(dollars ? [] : r.operands.filter((_, i) => breaks((by) => holds(r.kind, result, operands.map((o, j) => (j === i ? o + by : o)), rate)))),
     ...(rate && breaks((by) => holds(r.kind, result, operands, { ...rate, units: rate.units + BigInt(by) }, dollars)) ? [r.rate!] : []),
   ];
-  return { proven };
+  return { proven, ...(toTheDollar && { dollarTable: table }) };
 }
 
 /** What a holding relation proved, in words for the agent. */
@@ -166,16 +199,23 @@ export function provenText(r: Relation, proven: string[]): string {
   return `${formula(r)} proves ${proven.length} of its ${ids.length} cells${which}: it would still hold with ${left.join(", ")} misread by a cent (or a rate by its last digit), so those need other proof.`;
 }
 
-/** The cells (by cellKey) that a holding relation proves, and why each other relation proves nothing. */
-export function checkRelations(rulebook: Rulebook, docs: LoadedDoc[]): { proven: Set<string>; problems: Problem[] } {
+/**
+ * The cells (by cellKey) that a holding relation proves, and why each other relation proves nothing; `outcomes` follows the
+ * rulebook's relations one for one.
+ */
+export function checkRelations(rulebook: Rulebook, docs: LoadedDoc[]): { proven: Set<string>; problems: Problem[]; outcomes: Evaluated[] } {
+  const relations = rulebook.relations ?? [];
+  const first = relations.map((r) => evaluateRelation(r, rulebook, docs));
+  const dollarTables = new Set(first.flatMap((out) => ("dollarTable" in out && out.dollarTable ? [out.dollarTable] : [])));
+  const outcomes = dollarTables.size ? relations.map((r) => evaluateRelation(r, rulebook, docs, dollarTables)) : first;
   const proven = new Set<string>();
   const problems: Problem[] = [];
-  for (const r of rulebook.relations ?? []) {
-    const out = evaluateRelation(r, rulebook, docs);
-    if ("problem" in out) problems.push({ check: "relation", doc: r.doc, message: out.problem });
-    else for (const id of out.proven) proven.add(cellKey(r.doc, id));
-  }
-  return { proven, problems };
+  outcomes.forEach((out, i) => {
+    const doc = relations[i]!.doc;
+    if ("problem" in out) problems.push({ check: "relation", doc, message: out.problem });
+    else for (const id of out.proven) proven.add(cellKey(doc, id));
+  });
+  return { proven, problems, outcomes };
 }
 
 /**

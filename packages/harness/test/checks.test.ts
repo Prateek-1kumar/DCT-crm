@@ -645,7 +645,7 @@ describe("relations", () => {
 
   it("a sum over cells from different columns proves nothing", () => {
     const lab = scanned(
-      ["T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead | Extra | Total", "R 0.31-0.32 | Lab | $1,650.00 | $1,500.00 | $150.00 | $1,650.00", "R 0.33-0.34 | Visit | $1.00 | $2.00 | $1,500.00 | $3.00"].join("\n"),
+      ["T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead | Extra | Total", "R 0.31-0.32 | Lab | Invoice | $1,500.00 | $150.00 | $1,650.00", "R 0.33-0.34 | Visit | $1.00 | $2.00 | $1,500.00 | $3.00"].join("\n"),
       "L 0.1-0.12 | Total $3.00",
     );
     const across = [
@@ -667,5 +667,47 @@ describe("relations", () => {
     expect(problems([rel({ kind: "product", result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], rate: "p2.l1" })], [overhead])).toEqual([
       "p1.t1.r1.c2 = p1.t1.r1.c1 × p2.l1: the rate p2.l1 is on p.2: use one printed on p.1, the page of the result.",
     ]);
+  });
+
+  it("a sum can't use a count as its rate", () => {
+    const count = scanned(["T 0.3-0.6 | Fees", "H | Item | Unit | Qty | Total", "R 0.31-0.32 | Scan | $100.00 | 2 | $300.00"].join("\n"));
+    const r = rel({ result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r1.c2" });
+    expect(proven([r], [count])).toEqual([]);
+    expect(problems([r], [count])).toEqual(['p1.t1.r1.c3 = p1.t1.r1.c1 plus p1.t1.r1.c2 on top: p1.t1.r1.c2 prints "2", not a percent: a sum adds a percent on top; for a quantity use a product.']);
+  });
+
+  it("a count from another row can't prove a product", () => {
+    const rows = scanned(
+      ["L 0.1-0.12 | Overhead is 25%", "T 0.3-0.6 | Fees", "H | Item | Unit | Qty | Total", "R 0.31-0.32 | Scan | $300.00 | 3 | $2,400.00", "R 0.33-0.34 | Other | $10.00 | 8 | $80.00", "R 0.35-0.36 | Lab | $80.00 | | $20.00"].join("\n"),
+    );
+    const borrowed = rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r2.c2" });
+    expect(proven([borrowed], [rows])).toEqual([]);
+    expect(problems([borrowed], [rows])).toEqual(["p1.t1.r1.c3 = p1.t1.r1.c1 × p1.t1.r2.c2: the count p1.t1.r2.c2 has to be in the result's own printed row (or its column, in a table printed sideways)."]);
+    expect(proven([rel({ kind: "product", result: "p1.t1.r2.c3", operands: ["p1.t1.r2.c1"], rate: "p1.t1.r2.c2" })], [rows])).toEqual(keys("p1.t1.r2.c1", "p1.t1.r2.c2", "p1.t1.r2.c3"));
+    // a percent may be printed anywhere on the result's page
+    expect(proven([rel({ kind: "product", result: "p1.t1.r3.c3", operands: ["p1.t1.r3.c1"], rate: "p1.l1" })], [rows])).toEqual(keys("p1.t1.r3.c3", "p1.l1"));
+  });
+
+  it("a total must cover every amount before it in its row", () => {
+    const rows = scanned(["T 0.3-0.6 | Fees", "H | Item | A | B | C | Total", "R 0.31-0.32 | ECG | $150.00 | $150.00 | $300.00 | $600.00", "R 0.33-0.34 | Lab | $150.00 | $300.00 | $150.00 | $450.00"].join("\n"));
+    const partial = [rel({ result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1", "p1.t1.r1.c2"] }), rel({ result: "p1.t1.r2.c4", operands: ["p1.t1.r2.c2", "p1.t1.r2.c3"] })];
+    const TOTAL = "a total has to add up every amount printed before it in its row or column, and be the last amount there; otherwise the cells may only happen to add up.";
+    expect(proven(partial, [rows])).toEqual([]);
+    expect(problems(partial, [rows])).toEqual([`p1.t1.r1.c3 = p1.t1.r1.c1 + p1.t1.r1.c2: ${TOTAL}`, `p1.t1.r2.c4 = p1.t1.r2.c2 + p1.t1.r2.c3: ${TOTAL}`]);
+    expect(proven([rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c1", "p1.t1.r1.c3", "p1.t1.r1.c2"] })], [rows])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.t1.r1.c3", "p1.t1.r1.c4"));
+  });
+
+  it("a whole-dollar table never proves an operand by a round cent match", () => {
+    const rounding = scanned(["L 0.1-0.12 | Overhead of 30% is added to every fee", "T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead", "R 0.31-0.32 | Fee | $100.00 | $130.00", "R 0.33-0.34 | Fee2 | $100.30 | $130.00"].join("\n"));
+    const exact = rel({ result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], rate: "p1.l1" });
+    const toTheDollar = rel({ result: "p1.t1.r2.c2", operands: ["p1.t1.r2.c1"], rate: "p1.l1" });
+    expect(proven([exact], [rounding])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.l1"));
+    expect(proven([exact, toTheDollar], [rounding])).toEqual(keys("p1.t1.r1.c2", "p1.t1.r2.c2", "p1.l1"));
+  });
+
+  it("a rate printed as .5 is read as 0.5 everywhere", () => {
+    const half = scanned(["L 0.1-0.12 | Overhead of .5% is added to every fee", "T 0.3-0.6 | Fees", "H | Item | Fee | With overhead | Qty | Total", "R 0.31-0.32 | Visit | $1,000.00 | $1,005.00 | | ", "R 0.33-0.34 | Half | $100.00 | | .5 | $50.00"].join("\n"));
+    expect(proven([rel({ result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], rate: "p1.l1" })], [half])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.l1"));
+    expect(proven([rel({ kind: "product", result: "p1.t1.r2.c4", operands: ["p1.t1.r2.c1"], rate: "p1.t1.r2.c3" })], [half])).toEqual(keys("p1.t1.r2.c3", "p1.t1.r2.c4"));
   });
 });

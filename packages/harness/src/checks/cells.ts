@@ -18,7 +18,7 @@ export interface Marked {
 
 const MARKS = new Set<Doubt>(["handwritten", "struck_out", "initialed"]);
 
-const cellsOn = (doc: LoadedDoc, page: number) => doc.pages.find((p) => p.page === page)?.cells;
+export const cellsOn = (doc: LoadedDoc, page: number) => doc.pages.find((p) => p.page === page)?.cells;
 const pageOf = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
 export const cellOf = (doc: LoadedDoc, id: string) => cellsOn(doc, pageOf(id))?.find((c) => c.id === id);
 export const isMarked = (cell: ScanCell) => cell.doubts.some((d) => MARKS.has(d));

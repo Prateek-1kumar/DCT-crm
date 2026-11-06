@@ -212,14 +212,22 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       if (!args.success) return rejected("put_relations", argIssues(args.error));
       let saved = 0;
       // only a relation that holds is kept: one that fails would prove nothing and could never be fixed after the compile
-      const lines = args.data.relations.map((raw, i) => {
+      const verdicts = args.data.relations.map((raw): Relation | string => {
         const parsed = normalizeRelation(raw);
-        if (!parsed.ok) return `Relation #${i + 1}: ${parsed.issues.slice(0, 3).join("; ")}. Not saved.`;
+        if (!parsed.ok) return `${parsed.issues.slice(0, 3).join("; ")}.`;
         const out = evaluateRelation(parsed.value, rulebook(), docs);
-        if ("problem" in out) return `Relation #${i + 1}: ${out.problem} Not saved.`;
+        if ("problem" in out) return out.problem;
         relations.set(JSON.stringify(parsed.value), parsed.value);
         saved++;
-        return `Relation #${i + 1}: ${provenText(parsed.value, out.proven)}`;
+        return parsed.value;
+      });
+      // what each proves depends on the others: one relation rounding to the dollar takes the operand proof of its whole table
+      const all = [...relations.keys()];
+      const { outcomes } = checkRelations(rulebook(), docs);
+      const lines = verdicts.map((v, i) => {
+        if (typeof v === "string") return `Relation #${i + 1}: ${v} Not saved.`;
+        const out = outcomes[all.indexOf(JSON.stringify(v))]!;
+        return `Relation #${i + 1}: ${provenText(v, "proven" in out ? out.proven : [])}`;
       });
       const failed = lines.length - saved;
       const head = `Saved ${plural(saved, "relation")} (${relations.size} in all).${failed ? ` ${failed} NOT saved, fix and send again.` : ""}`;
