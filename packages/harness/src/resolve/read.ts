@@ -96,7 +96,7 @@ async function readTwice(run: Run, job: Pick<Job, "doc" | "pages" | "region">, i
 export const values = (n: number) => `${n} ${n === 1 ? "value" : "values"}`;
 
 /** Questions that go straight to a person with no model call: a marked value, or a spot that can't be found to look at closely. */
-export const personId = (target: string, cell?: [number, number]) => (cell ? `person:${target}:${cell[0]}:${cell[1]}` : `person:${target}`);
+export const personId = (target: string) => `person:${target}`;
 
 export function raise(run: Run, q: Pick<Question, "id" | "about" | "question" | "context" | "source" | "readings" | "options"> & Partial<Pick<Question, "kind">>) {
   const question: Question = {
@@ -332,7 +332,7 @@ export function readJobs(run: Run, report: CheckReport): Job[] {
  */
 export async function rereadScanGrids(run: Run, report: CheckReport) {
   for (const g of run.rulebook.grids.filter((x) => report.grids[x.id]?.problems.length && onScan(run, x.doc, x.pages))) {
-    if (run.rulebook.questions.some((q) => q.id.startsWith(`person:${g.id}:`))) continue;
+    if (run.rulebook.questions.some((q) => q.id === personId(g.id))) continue;
     const job = gridJob(g);
     const base = { id: `read:${g.id}`, about: { target: "grid" as const, id: g.id }, source: { doc: g.doc, page: g.pages[0]!, quote: "" } };
     const answers = (await tryAsk(run, [run.openai], job, job.items))?.[0];

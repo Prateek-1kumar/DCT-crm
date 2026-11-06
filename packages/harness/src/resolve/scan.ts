@@ -16,7 +16,7 @@ interface Spot {
   label: string;
   /** The id of the question raised when reads disagree, shared by the cells of one grid. */
   questionId: string;
-  /** The id of the question raised for this spot alone when it goes straight to a person. */
+  /** The id of the one question raised for the term, or for all the cells of the grid, that go straight to a person. */
   personId: string;
   current: number;
   /** What was transcribed at this spot: the quote's lines, or none when the quote can't be found. */
@@ -63,7 +63,7 @@ function spotsOf(run: Run, report: CheckReport): Spot[] {
       const page = pages.find((p) => findQuote(p.words, name).length) ?? pages[0]!;
       const band = lineBand(page.words, name);
       spots.push({
-        source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label: cellLabel(g, row, col), questionId: `read:${g.id}`, personId: personId(g.id, [row, col]),
+        source: { doc: g.doc, page: page.page, quote: "" }, about: { target: "grid", id: g.id }, label: cellLabel(g, row, col), questionId: `read:${g.id}`, personId: personId(g.id),
         current, words: wordsIn(page, band), failing,
         // from the top of the page, so the visit headings above the row are in the picture
         crop: band ? [0, 0, 1, Math.min(1, band[1] + PAD)] : undefined,
@@ -82,17 +82,21 @@ const grouped = <T>(items: T[], key: (t: T) => string) => {
 
 const markOf = (s: Spot) => s.words.flatMap((w) => (w.doubt && MARKS[w.doubt]) || [])[0];
 
-/** Why this spot is a person's with no reading: a mark is never settled by reads, and a spot that can't be found can't be looked at closely. */
-const whyPerson = (s: Spot) => {
-  const mark = markOf(s);
-  if (mark) return `p.${s.source.page} shows this value ${mark}`;
-  return s.failing || s.crop ? null : "The spot for this amount could not be found on the page, so it could not be looked at closely.";
-};
+const NOT_FOUND = "could not be found on the page";
 
-/** Grid cells in one question are shown from the top of the page to the lowest of them, so all are in the picture. */
+/** Why this spot is a person's with no reading: a mark is never settled by reads, and a spot that can't be found can't be seen to have none. */
+const whyPerson = (s: Spot) => markOf(s) ?? (s.crop ? undefined : NOT_FOUND);
+
+/** Grid cells in one question are shown from the top of the page to the lowest of them on the first one's page, so all are in the picture. */
 function remember(run: Run, id: string, spots: Spot[]) {
-  const crop = spots.map((s) => s.crop).filter((c): c is Region => c !== undefined).sort((a, b) => b[3] - a[3])[0];
+  const crop = spots.filter((s) => s.source.page === spots[0]!.source.page).map((s) => s.crop).filter((c): c is Region => c !== undefined).sort((a, b) => b[3] - a[3])[0];
   if (crop) run.crops.set(id, crop);
+}
+
+function personContext(group: Spot[]) {
+  const [s] = group;
+  if (group.length > 1) return `These values are marked on the page or could not be found there to look at closely: ${group.map((x) => `${x.label}: ${usd(x.current)} (${whyPerson(x)})`).join("; ")}.`;
+  return markOf(s!) ? `p.${s!.source.page} shows this value ${markOf(s!)}` : "The spot for this amount could not be found on the page, so it could not be looked at closely.";
 }
 
 const about = (id: string, spots: Spot[]) => ({ id, about: spots[0]!.about, source: spots[0]!.source, question: printQuestion(spots[0]!.source, spots.map((s) => s.label)) });
@@ -106,15 +110,20 @@ const place = (s: Spot) => `p.${s.source.page} (${s.source.doc})`;
 export async function relook(run: Run, report: CheckReport) {
   const spots = spotsOf(run, report);
 
-  for (const s of spots.filter(whyPerson)) {
-    remember(run, s.personId, [s]);
+  for (const group of grouped(spots.filter(whyPerson), (s) => s.personId)) {
+    const [first] = group;
+    const one = group.length === 1;
+    remember(run, first!.personId, group);
     raise(run, {
-      ...about(s.personId, [s]),
-      context: whyPerson(s)!,
+      id: first!.personId,
+      about: first!.about,
+      source: first!.source,
+      question: one ? printQuestion(first!.source, [first!.label]) : `What does p.${first!.source.page} of ${first!.source.doc} print for these ${group.length} values?`,
+      context: personContext(group),
       readings: [],
-      options: [{ label: `Use ${usd(s.current)}`, patches: [s.patch(s.current)] }],
+      options: [{ label: one ? `Use ${usd(first!.current)}` : "Use the values as written", patches: group.map((s) => s.patch(s.current)) }],
     });
-    run.log.push(`${place(s)}: ${s.label} ${markOf(s) ? `is marked ${markOf(s)}` : "could not be found on the page"}, so a person will be asked`);
+    run.log.push(`${place(first!)}: ${values(group.length)} marked on the page or not found there, so a person will be asked`);
   }
 
   const differ: { s: Spot; said: string | null }[] = [];
