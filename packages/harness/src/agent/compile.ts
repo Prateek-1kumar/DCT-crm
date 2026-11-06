@@ -1,5 +1,6 @@
 import { Rulebook } from "@dct/shared";
 import { checks } from "../checks";
+import { withRelationProof } from "../checks/relations";
 import type { CheckReport, LoadedDoc } from "../types";
 import type { ModelClient, ModelMessage, ModelParams } from "./client";
 import { priceFor, usdFor, type Usage } from "./cost";
@@ -139,7 +140,7 @@ export async function compile(docs: LoadedDoc[], opts: CompileOptions): Promise<
     }
   }
 
-  const draft = session.rulebook();
+  const draft = withRelationProof(session.rulebook(), docs);
   const report = checks.runChecks(draft, docs);
   const known = new Set(draft.questions.map((q) => q.id));
   const rulebook = Rulebook.parse({ ...draft, questions: [...draft.questions, ...report.required.filter((q) => !known.has(q.id))] });

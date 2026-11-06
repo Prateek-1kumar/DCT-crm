@@ -37,6 +37,12 @@ export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
     input_schema: object({ grid: { type: "object" } }, ["grid"]),
   },
   {
+    name: "put_relations",
+    description:
+      "Arithmetic a SCAN page prints between its cells, which proves those cells when it holds. Each: {doc, kind, result, operands, rate}, every one a cell or line id as read_pages shows it, never a typed number. kind sum: result = the operands added up, plus rate (a cell printing a percent) on top when given (a fee plus 30% overhead = the fee with overhead). kind product: result = the one operand times rate (a cell printing a count such as 8.00, or a percent): unit cost × quantity = total, subtotal × 30% = overhead. kind same: the one value a term or grid cites, printed again in a different cell. Code evaluates each on the cells as read; one that doesn't hold is refused with the reason and proves nothing. A relation for a result already sent replaces it.",
+    input_schema: object({ relations: array({ type: "object" }) }, ["relations"]),
+  },
+  {
     name: "put_accounted",
     description:
       "Explain dollar amounts on pages that are deliberately NOT rulebook values: {doc, page, amount, reason} for one amount, or {doc, pages: [..], reason} for whole pages (a budget superseded by an amendment, a sample invoice, insurance limits). Never use this to hide a billable amount.",

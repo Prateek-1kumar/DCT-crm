@@ -3,6 +3,7 @@ import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
 import { checkCitations } from "./cells";
 import { checkGrid } from "./grid";
 import { checkQuote } from "./quote";
+import { checkRelations, lessRelationProven } from "./relations";
 import { requiredDecisions } from "./required";
 import { unaccounted } from "./unaccounted";
 import { usd } from "./text";
@@ -16,10 +17,12 @@ export const needsProof = (t: Term, page: Page | undefined) => page !== undefine
 
 function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   const problems: Problem[] = [];
+  // a relation that fails is the agent's to fix while it compiles (put_relations), never a problem that blocks approval
+  const { proven } = checkRelations(rulebook, docs);
 
   const grids: CheckReport["grids"] = {};
   for (const g of rulebook.grids) {
-    const result = (grids[g.id] = checkGrid(g, docs));
+    const result = (grids[g.id] = lessRelationProven(g, checkGrid(g, docs), proven, docs));
     const where = { check: "grid", id: g.id, doc: g.doc, page: g.pages[0] } as const;
     result.problems.forEach((message) => problems.push({ ...where, message }));
     if (!result.problems.length && result.unproven.length) {

@@ -173,11 +173,27 @@ export const Question = z.object({
 });
 export type Question = z.infer<typeof Question>;
 
+/**
+ * Arithmetic the contract prints between cells of one document's scanned pages, by cell id. `sum`: result = the operands
+ * added up, plus the `rate` percent on top when given. `product`: result = the one operand times the `rate` (a percent or a
+ * count). `same`: one fee printed in two different cells. Code evaluates it on the transcribed cells: when it holds it proves
+ * them, and it never changes a value.
+ */
+export const Relation = z.object({
+  kind: z.enum(["sum", "product", "same"]),
+  doc: text,
+  result: text,
+  operands: z.array(text).min(1),
+  rate: text.optional(),
+});
+export type Relation = z.infer<typeof Relation>;
+
 export const Rulebook = z.object({
   study: Study,
   terms: z.array(Term),
   grids: z.array(Grid),
   accounted: z.array(Accounted),
   questions: z.array(Question),
+  relations: z.array(Relation).optional(),
 });
 export type Rulebook = z.infer<typeof Rulebook>;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
 import { checks } from "../src/checks";
 import { checkCitations } from "../src/checks/cells";
+import { cellKey, checkRelations, withRelationProof } from "../src/checks/relations";
 import { withScans } from "../src/scan";
 import { parseTranscription } from "../src/scan/transcribe";
 import type { LoadedDoc, Page, PageKind } from "../src/types";
@@ -491,5 +492,117 @@ describe("checkCitations", () => {
 
   it("goes into runChecks", () => {
     expect(checks.runChecks(rulebook({ terms: [cited(10100, "p1.t1.r1.c1", "Exam", { evidence: "person" })] }), [fees]).problems.map((p) => p.check)).toContain("cell");
+  });
+});
+
+describe("relations", () => {
+  type Relation = NonNullable<Rulebook["relations"]>[number];
+  const scanned = (text: string): LoadedDoc =>
+    withScans(doc("A.pdf", page(1, "image", "")), [{ page: 1, version: "v", rotation: 0, transcription: parseTranscription({ rotation: 0, text }) }]);
+  const fees = scanned(
+    [
+      "L 0.1-0.12 | Institutional overhead of 30% is added to every fee",
+      "T 0.3-0.6 | Fees",
+      "H | Item | Fee | Fee with overhead",
+      "R 0.31-0.32 | Exam | $100.00 | $130.00",
+      "R 0.33-0.34 | Visit | $123.45 | $160.49",
+      "R 0.35-0.36 | Labs | $1,050.00 | $1,370.00",
+      "R 0.37-0.38 | Recheck | $900.00{hw} | $1,170.00",
+      "L 0.7-0.72 | Exam fee $100.00 per visit",
+    ].join("\n"),
+  );
+  const procedures = scanned(["T 0.3-0.6 | Procedures", "H | Item | Unit | Qty | Total", "R 0.31-0.32 | ECG | $150.00 | 8.00 | $1,200.00", "R 0.33-0.34 | Exam | $100.00 | | $100.00"].join("\n"));
+  const rel = (over: Partial<Relation>): Relation => ({ kind: "sum", doc: "A.pdf", result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], ...over });
+  const cited = (id: string, cents: number, cell: string, quote: string) => term({ id, amountCents: cents, evidence: "none", source: { doc: "A.pdf", page: 1, quote, cell } });
+  const proven = (relations: Relation[], docs: LoadedDoc[], over: Partial<Rulebook> = {}) => [...checkRelations(rulebook({ relations, ...over }), docs).proven].sort();
+  const problems = (relations: Relation[], docs: LoadedDoc[], over: Partial<Rulebook> = {}) => checkRelations(rulebook({ relations, ...over }), docs).problems.map((p) => p.message);
+  const keys = (...ids: string[]) => ids.map((id) => cellKey("A.pdf", id)).sort();
+
+  it("fee and fee-with-overhead cells are proven by a cited overhead rate", () => {
+    const exam = cited("exam", 10000, "p1.t1.r1.c1", "Exam");
+    const overhead = rel({ rate: "p1.l1" });
+    expect(proven([overhead], [fees])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.l1"));
+    expect(problems([overhead], [fees])).toEqual([]);
+    // $123.45 plus 30% is $160.485: rounding to the printed cent holds
+    expect(proven([rel({ result: "p1.t1.r2.c2", operands: ["p1.t1.r2.c1"], rate: "p1.l1" })], [fees])).toEqual(keys("p1.t1.r2.c1", "p1.t1.r2.c2", "p1.l1"));
+
+    const rb = withRelationProof(rulebook({ terms: [exam, cited("visit", 12345, "p1.t1.r2.c1", "Visit")], relations: [overhead] }), [fees]);
+    expect(rb.terms.map((t) => t.evidence)).toEqual(["math", "none"]);
+    const report = checks.runChecks(rb, [fees]);
+    expect(report.quotes.exam).toBeUndefined();
+    expect(report.quotes.visit).toMatch(/^scanned page/);
+  });
+
+  it("a relation that doesn't hold proves nothing and goes back to the agent", () => {
+    const labs = rel({ result: "p1.t1.r3.c2", operands: ["p1.t1.r3.c1"], rate: "p1.l1" });
+    expect(proven([labs], [fees])).toEqual([]);
+    expect(problems([labs], [fees])).toEqual(["p1.t1.r3.c2 = p1.t1.r3.c1 plus p1.l1 on top doesn't hold: the cells it is made of come to $1,365.00, but p1.t1.r3.c2 prints $1,370.00."]);
+    const rb = withRelationProof(rulebook({ terms: [cited("labs", 105000, "p1.t1.r3.c1", "Labs")], relations: [labs] }), [fees]);
+    expect(rb.terms[0]!.evidence).toBe("none");
+  });
+
+  it("a marked cell is left to a person, never proven by arithmetic", () => {
+    expect(proven([rel({ result: "p1.t1.r4.c2", operands: ["p1.t1.r4.c1"], rate: "p1.l1" })], [fees])).toEqual([]);
+  });
+
+  it("unit × quantity = total proves all three", () => {
+    const ecg = rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r1.c2" });
+    expect(proven([ecg], [procedures])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.t1.r1.c3"));
+    expect(problems([ecg], [procedures])).toEqual([]);
+
+    // a grid cell citing a proven cell needs no second read
+    const g = grid({
+      rows: [
+        { name: "ECG", code: null, unitCostCents: null, cells: [15000, null], printedRowTotalCents: null },
+        { name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: 10000 },
+      ],
+      cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.1.cells.0": "p1.t1.r2.c1", "rows.1.printedRowTotalCents": "p1.t1.r2.c3" },
+    });
+    expect(checks.runChecks(rulebook({ grids: [g] }), [procedures]).grids.g1!.unproven).toEqual([{ row: 0, col: 0 }]);
+    const report = checks.runChecks(rulebook({ grids: [g], relations: [ecg] }), [procedures]);
+    expect(report.grids.g1!.unproven).toEqual([]);
+    expect(report.problems.filter((p) => p.check !== "unaccounted")).toEqual([]);
+  });
+
+  it("a relation over a typed number proves nothing", () => {
+    const typed = [
+      rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "8" }),
+      rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["$150.00"], rate: "p1.t1.r1.c2" }),
+      rel({ kind: "sum", result: "$1,200.00", operands: ["p1.t1.r1.c1", "p1.t1.r1.c1"] }),
+    ];
+    expect(proven(typed, [procedures])).toEqual([]);
+    expect(problems(typed, [procedures])).toEqual([
+      "p1.t1.r1.c3 = p1.t1.r1.c1 × 8: A.pdf has no cell or line called 8. A relation is made of cell ids as read_pages shows them, never typed numbers.",
+      "p1.t1.r1.c3 = $150.00 × p1.t1.r1.c2: A.pdf has no cell or line called $150.00. A relation is made of cell ids as read_pages shows them, never typed numbers.",
+      "$1,200.00 = p1.t1.r1.c1 + p1.t1.r1.c1: A.pdf has no cell or line called $1,200.00. A relation is made of cell ids as read_pages shows them, never typed numbers.",
+    ]);
+  });
+
+  it("a product by 1, or a sum that adds nothing, is not arithmetic", () => {
+    const one = scanned(["T 0.3-0.6 | Fees", "H | Item | Fee | Qty | Total | Extra", "R 0.31-0.32 | Exam | $100.00 | 1 | $100.00 | $0.00"].join("\n"));
+    expect(proven([rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r1.c2" })], [one])).toEqual([]);
+    expect(proven([rel({ result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1", "p1.t1.r1.c4"] })], [one])).toEqual([]);
+  });
+
+  it("'same' over one cell twice proves nothing", () => {
+    const exam = cited("exam", 10000, "p1.t1.r1.c1", "Exam");
+    expect(proven([rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.t1.r1.c1"] })], [fees], { terms: [exam] })).toEqual([]);
+    expect(problems([rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.t1.r1.c1"] })], [fees], { terms: [exam] })).toEqual([
+      "p1.t1.r1.c1 = p1.t1.r1.c1: a relation needs different cells; 'same' is for one fee printed in two different places.",
+    ]);
+    // the fee printed again in a line is the same fee, cited once
+    const twice = rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.l2"] });
+    expect(proven([twice], [fees], { terms: [exam] })).toEqual(keys("p1.t1.r1.c1", "p1.l2"));
+  });
+
+  it("'same' never proves two different values that print one amount", () => {
+    const twice = rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.l2"] });
+    const both = { terms: [cited("exam", 10000, "p1.t1.r1.c1", "Exam"), cited("fee", 10000, "p1.l2", "Exam fee")] };
+    expect(proven([twice], [fees], both)).toEqual([]);
+    expect(problems([twice], [fees], both)).toEqual([
+      "p1.t1.r1.c1 = p1.l2: these cells are cited by different rulebook values (term exam, term fee); 'same' only shows one value printed twice.",
+    ]);
+    expect(problems([twice], [fees])).toEqual(["p1.t1.r1.c1 = p1.l2: no rulebook value cites either cell; 'same' proves the one value that cites one of them, so write that first."]);
+    expect(proven([rel({ kind: "same", result: "p1.t1.r1.c1", operands: ["p1.t1.r2.c1"] })], [fees], { terms: [cited("exam", 10000, "p1.t1.r1.c1", "Exam")] })).toEqual([]);
   });
 });

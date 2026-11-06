@@ -349,6 +349,25 @@ describe("scanned values cite cells", () => {
     expect((await putTerms(fees, exam("$1,520.00", "p1.t1.r1.c2"))).answer.content).toContain(`but cell p1.t1.r1.c2 prints "$1,976.00"`);
   });
 
+  it("the agent writes relations, but only code decides what they prove", async () => {
+    const withOverhead = scanned(
+      ["L 0.1-0.12 | Overhead of 30% is added to every fee", "T 0.3-0.6 | Fees", "H | Item | Fee | Fee with overhead", "R 0.31-0.32 | Exam | $1,520.00 | $1,976.00", "R 0.33-0.34 | Labs | $100.00 | $140.00"].join("\n"),
+    );
+    const holds = { kind: "sum", doc: "A.pdf", result: "p1.t1.r1.c2", operands: ["p1.t1.r1.c1"], rate: "p1.l1" };
+    const fails = { ...holds, result: "p1.t1.r2.c2", operands: ["p1.t1.r2.c1"] };
+    const labs = { ...exam("$100.00"), id: "t2", name: "Labs", source: { doc: "A.pdf", page: 1, quote: "Labs", cell: "p1.t1.r2.c1" } };
+    const { result, calls } = await run(
+      [withOverhead],
+      [reply([call("put_terms", { terms: [exam("$1,520.00", "p1.t1.r1.c1"), labs] })]), reply([call("put_relations", { relations: [holds, fails, { ...holds, operands: "p1.t1.r1.c1", evidence: "math" }] })]), reply([])],
+      { maxTurns: 3 },
+    );
+    const answer = resultsAfter(calls[2]!.messages)[0]!;
+    expect(answer.is_error).toBe(true);
+    expect(answer.content).toContain("Relation #2: p1.t1.r2.c2 = p1.t1.r2.c1 plus p1.l1 on top doesn't hold: the cells it is made of come to $130.00, but p1.t1.r2.c2 prints $140.00.");
+    expect(result.rulebook.relations).toEqual([holds]);
+    expect(result.rulebook.terms.map((t) => t.evidence)).toEqual(["math", "none"]);
+  });
+
   it("text-page terms need no citation", async () => {
     const { saved, answer } = await putTerms(textDoc(...BUDGET), startup);
     expect(answer.is_error).toBe(false);

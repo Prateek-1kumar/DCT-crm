@@ -20,8 +20,8 @@ const MARKS = new Set<Doubt>(["handwritten", "struck_out", "initialed"]);
 
 const cellsOn = (doc: LoadedDoc, page: number) => doc.pages.find((p) => p.page === page)?.cells;
 const pageOf = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
-const cellOf = (doc: LoadedDoc, id: string) => cellsOn(doc, pageOf(id))?.find((c) => c.id === id);
-const isMarked = (cell: ScanCell) => cell.doubts.some((d) => MARKS.has(d));
+export const cellOf = (doc: LoadedDoc, id: string) => cellsOn(doc, pageOf(id))?.find((c) => c.id === id);
+export const isMarked = (cell: ScanCell) => cell.doubts.some((d) => MARKS.has(d));
 
 // A line's amount sits among its words, and a marked cell can hold a struck value and its replacement; any other cell prints
 // one amount, maybe with words ("$1,500.00 per visit") or bare ("1500").

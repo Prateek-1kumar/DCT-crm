@@ -1,11 +1,12 @@
-import { Region, type Accounted, type Grid, type Question, type Rulebook, type Study, type Term } from "@dct/shared";
+import { Region, type Accounted, type Grid, type Question, type Relation, type Rulebook, type Study, type Term } from "@dct/shared";
 import { z } from "zod";
 import { SCAN_PAGE_REASON, checks } from "../checks";
 import { citeGrid, citeTerm } from "../checks/cells";
+import { checkRelation } from "../checks/relations";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
 import { SCAN_NOTE } from "./prompt";
-import { normalizeAccounted, normalizeGrid, normalizeQuestion, normalizeStudy, normalizeTerm, type Parsed } from "./normalize";
+import { normalizeAccounted, normalizeGrid, normalizeQuestion, normalizeRelation, normalizeStudy, normalizeTerm, type Parsed } from "./normalize";
 
 export interface ImageBlock {
   type: "image";
@@ -37,7 +38,8 @@ const SearchArgs = z.object({ pattern: z.string().min(1) });
 const StudyArgs = z.object({ study: z.unknown() });
 const TermsArgs = z.object({ terms: z.array(z.unknown()) });
 const GridArgs = z.object({ grid: z.unknown() });
-const AccountedArgs = z.object({ items: z.array(z.unknown()) });
+const RelationsArgs = z.object({ relations: z.array(z.unknown()) });
+const AccountedArgs =z.object({ items: z.array(z.unknown()) });
 const QuestionsArgs = z.object({ questions: z.array(z.unknown()) });
 
 const argIssues = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
@@ -66,6 +68,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
   const grids = new Map<string, Grid>();
   const accounted = new Map<string, Accounted>();
   const questions = new Map<string, Question>();
+  const relations = new Map<string, Relation>();
   const state: { finishes: number; ending: Ending | null } = { finishes: 0, ending: null };
 
   const rulebook = (): Rulebook => ({
@@ -74,6 +77,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
     grids: [...grids.values()],
     accounted: [...accounted.values()],
     questions: [...questions.values()],
+    ...(relations.size ? { relations: [...relations.values()] } : {}),
   });
 
   const findDoc = (name: string) => docs.find((d) => d.name === name);
@@ -201,6 +205,20 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
         ...(unproven.length ? [`${plural(unproven.length, "cell")} not proven: no printed total covers them. Capture the printed row, subtotal or total lines.`] : []),
       ];
       return text(lines.join("\n"), problems.length ? `${where}: ${plural(problems.length, "problem")} with the totals` : `${where}: totals add up, but ${plural(unproven.length, "cell")} have no printed total backing them`);
+    },
+
+    put_relations(input) {
+      const args = RelationsArgs.safeParse(input);
+      if (!args.success) return rejected("put_relations", argIssues(args.error));
+      let saved = 0;
+      // only a relation that holds is kept: one that fails would prove nothing and could never be fixed after the compile
+      const holding = (raw: unknown): Parsed<Relation> => {
+        const result = normalizeRelation(raw);
+        const why = result.ok ? checkRelation(result.value, rulebook(), docs) : null;
+        return why ? { ok: false, issues: [why] } : result;
+      };
+      const failures = storeAll(args.data.relations, holding, (r) => (relations.set(`${r.doc} ${r.result}`, r), saved++), "Relation");
+      return storedReport("relation", saved, failures, relations.size);
     },
 
     put_accounted(input) {

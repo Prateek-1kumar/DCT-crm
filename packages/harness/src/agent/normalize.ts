@@ -1,4 +1,4 @@
-import { Accounted, Grid, isLockedField, Question, Study, Term, parseCents, parsePercent } from "@dct/shared";
+import { Accounted, Grid, isLockedField, Question, Relation, Study, Term, parseCents, parsePercent } from "@dct/shared";
 import type { z } from "zod";
 
 type Raw = Record<string, unknown>;
@@ -87,6 +87,11 @@ export function normalizeAccounted(raw: unknown): Parsed<Accounted> {
   if (!isObject(raw)) return notAnObject;
   const issues: string[] = [];
   return parse(Accounted, { ...raw, amountCents: raw.amount == null ? undefined : cents(raw.amount, "amount", issues) }, issues);
+}
+
+export function normalizeRelation(raw: unknown): Parsed<Relation> {
+  if (!isObject(raw)) return notAnObject;
+  return parse(Relation, { ...raw, operands: typeof raw.operands === "string" ? [raw.operands] : raw.operands }, []);
 }
 
 // An option's patch is applied when a person picks it, who never sees the patch: it can't carry the proof fields.
