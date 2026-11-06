@@ -290,6 +290,19 @@ describe("scanned pages: one closer look by the vision reader", () => {
     ]);
   });
 
+  it("marked cells on two pages of one scanned grid are asked once, naming each page", async () => {
+    const [budget, ...rest] = docs;
+    const page = (n: number, text: string) => ({ ...budget!.pages[n - 1]!, kind: "scan" as const, layout: text, raw: text, words: wordsOf(text).map((w) => (w.y0 >= 0.01 ? { ...w, doubt: "handwritten" as const } : w)) });
+    const scan = [{ ...budget!, pages: [page(1, "Exhibit A\nExam  $100.00  $250.00"), page(2, "Exhibit B\nLabs  $50.00  $50.00"), budget!.pages[2]!] }, ...rest];
+    const g = { ...openGrid(), pages: [1, 2] };
+    const r = readers({ fail: true }, { fail: true });
+    const out = await resolveOn(scan, r, rulebook({ grids: [g] }));
+
+    expect(r.openai.calls).toHaveLength(0);
+    expect(out.rulebook.questions.map((q) => q.id)).toEqual(["person:g1"]);
+    expect(question1(out.rulebook, "person:g1").context).toContain("row 'Exam' at visit 'V2': $250.00 (handwritten, p.1); row 'Labs' at visit 'V2': $50.00 (handwritten, p.2)");
+  });
+
   it("a failing scan grid whose row can't be found never settles its cells by a closer read", async () => {
     const lost = grid(20500);
     const b = rulebook({ grids: [{ ...lost, rows: lost.rows.map((row, i) => (i === 0 ? { ...row, name: "Phlebotomy" } : row)) }] });

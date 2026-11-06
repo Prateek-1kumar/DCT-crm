@@ -23,7 +23,7 @@ interface Spot {
   words: Word[];
   /** Where to look closer; undefined when the spot can't be found, so the whole page is shown. */
   crop?: Region;
-  /** A cell of a grid whose arithmetic fails: rereadScanGrids reads it with the whole grid, unless a mark sends it to a person. */
+  /** A cell of a grid whose arithmetic fails, which rereadScanGrids reads with the whole grid. A marked cell, or one whose row can't be found, is still asked about here. */
   failing: boolean;
   patch(value: number): Patch;
 }
@@ -84,7 +84,7 @@ const markOf = (s: Spot) => s.words.flatMap((w) => (w.doubt && MARKS[w.doubt]) |
 
 const NOT_FOUND = "could not be found on the page";
 
-/** Why this spot is a person's with no reading: a mark is never settled by reads, and a spot that can't be found can't be seen to have none. */
+/** A marked value, or one whose spot can't be found to check for marks, is never settled by a reading: a person is asked. */
 const whyPerson = (s: Spot) => markOf(s) ?? (s.crop ? undefined : NOT_FOUND);
 
 /** Grid cells in one question are shown from the top of the page to the lowest of them on the first one's page, so all are in the picture. */
@@ -95,8 +95,11 @@ function remember(run: Run, id: string, spots: Spot[]) {
 
 function personContext(group: Spot[]) {
   const [s] = group;
-  if (group.length > 1) return `These values are marked on the page or could not be found there to look at closely: ${group.map((x) => `${x.label}: ${usd(x.current)} (${whyPerson(x)})`).join("; ")}.`;
-  return markOf(s!) ? `p.${s!.source.page} shows this value ${markOf(s!)}` : "The spot for this amount could not be found on the page, so it could not be looked at closely.";
+  if (s!.about?.target === "term") return markOf(s!) ? `p.${s!.source.page} shows this value ${markOf(s!)}` : "The spot for this amount could not be found on the page, so it could not be looked at closely.";
+  const pages = new Set(group.map((x) => x.source.page)).size > 1;
+  const list = group.map((x) => `${x.label}: ${usd(x.current)} (${whyPerson(x)}${pages ? `, p.${x.source.page}` : ""})`).join("; ");
+  const one = group.length === 1;
+  return `Check ${one ? "this value" : "these values"} on the page: ${one ? "it is" : "they are"} marked or couldn't be found to read closely. ${list}.`;
 }
 
 const about = (id: string, spots: Spot[]) => ({ id, about: spots[0]!.about, source: spots[0]!.source, question: printQuestion(spots[0]!.source, spots.map((s) => s.label)) });
