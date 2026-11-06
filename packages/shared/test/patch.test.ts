@@ -48,6 +48,10 @@ describe("applyPatches", () => {
     expect(() => applyPatches(rulebook, [termPatch("t1", { ...term, name: "Other" })])).toThrow(/already exists/);
   });
 
+  it.each([null, "p.1"])("refuses a source of %s in plain words", (source) => {
+    expect(() => applyPatches(rulebook, [termPatch("t1", { source })])).toThrow("That answer would leave the term without a page to point to, so it wasn't applied.");
+  });
+
   it("refuses a field a term doesn't have", () => {
     expect(() => applyPatches(rulebook, [termPatch("t1", { amount: 5 })])).toThrow("A term has no field called 'amount'");
   });

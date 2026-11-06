@@ -35,6 +35,9 @@ function patchTerm(rulebook: Rulebook, { id, set }: Patch) {
     return;
   }
   if (Object.hasOwn(set, "id")) throw new Error(`Term '${id}' already exists, so it can't be added again.`);
+  if ("source" in set && (typeof set.source !== "object" || set.source === null || Array.isArray(set.source))) {
+    throw new Error("That answer would leave the term without a page to point to, so it wasn't applied.");
+  }
   const { [SOURCE_CELL]: cell, [SOURCE_CAP_CELL]: capCell, ...fields } = set;
   for (const key of Object.keys(fields)) {
     if (!Object.hasOwn(term, key)) throw new Error(`A term has no field called '${key}', so term '${id}' can't be changed that way.`);

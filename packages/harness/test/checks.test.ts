@@ -392,6 +392,8 @@ describe("checkCitations", () => {
     ]);
     expect(messages({ terms: [capped(500000)] })[0]).toMatch(/^the cap is on a scanned page, so it has to cite .*\(source\.capCell\)/);
     expect(messages({ terms: [capped(600000, undefined, "person")] })).toEqual([]);
+    const elsewhere = cited(50000, "p1.l2", "Closeout fee", { cap: { kind: "amount", value: 10000, period: null, text: "" }, source: { doc: "A.pdf", page: 1, quote: "Closeout fee", cell: "p1.l2", capCell: "p2.l1" } });
+    expect(messages({ terms: [elsewhere] })).toEqual([]);
   });
 
   it("a citation must be on the term's page, or one of the grid's pages", () => {
@@ -424,7 +426,36 @@ describe("checkCitations", () => {
 
   it("a grid row citing cells from two different printed rows is refused", () => {
     const g = grid({ rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 13000], printedRowTotalCents: null }], cellIds: { "rows.0.cells.0": "p1.t1.r3.c1", "rows.0.cells.1": "p1.t1.r1.c2" } });
-    expect(messages({ grids: [g] })).toEqual(["row 'Exam' cites cells of different printed rows on p.1 (p1.t1.r3, p1.t1.r1): every amount of one row comes from the same printed row."]);
+    expect(messages({ grids: [g] })).toEqual([
+      "row 'Exam' cites cells of different printed rows of table p1.t1 (p1.t1.r3, p1.t1.r1): in each printed table, every amount of one row comes from one printed row, and every amount of one visit from one printed column (or the other way round in a table printed sideways).",
+    ]);
+  });
+
+  const layout = (...lines: string[]) => scanned(lines.join("\n"));
+  const row = (name: string, cells: (number | null)[]) => ({ name, code: null, unitCostCents: null, cells, printedRowTotalCents: null });
+
+  it("two grid rows with the same name cite their own printed rows", () => {
+    const page1 = layout("T 0.1-0.5 | Budget", "H | Item | V1 | V2", "R 0.11-0.12 | Exam | $100.00 |", "R 0.13-0.14 | Exam | | $120.00");
+    const g = grid({ rows: [row("Exam", [10000, null]), row("Exam", [null, 12000])], cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.1.cells.1": "p1.t1.r2.c2" } });
+    expect(messages({ grids: [g] }, [page1])).toEqual([]);
+  });
+
+  it("a budget printed as two stacked tables on one page is accepted", () => {
+    const page1 = layout("T 0.1-0.3 | Budget", "H | Item | V1 | V2", "R 0.11-0.12 | Exam | $100.00 | $200.00", "T 0.4-0.6 | Budget (continued)", "H | Item | V3 | V4", "R 0.41-0.42 | Exam | $300.00 | $400.00");
+    const g = grid({
+      visits: ["V1", "V2", "V3", "V4"], rows: [row("Exam", [10000, 20000, 30000, 40000])],
+      cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2", "rows.0.cells.2": "p1.t2.r1.c1", "rows.0.cells.3": "p1.t2.r1.c2" },
+    });
+    expect(messages({ grids: [g] }, [page1])).toEqual([]);
+  });
+
+  it("a transposed budget table is accepted", () => {
+    const page1 = layout("T 0.1-0.5 | Budget", "H | Visit | Exam | Labs", "R 0.11-0.12 | V1 | $100.00 | $50.00", "R 0.13-0.14 | V2 | $250.00 | $50.00");
+    const g = grid({
+      rows: [row("Exam", [10000, 25000]), row("Labs", [5000, 5000])],
+      cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r2.c1", "rows.1.cells.0": "p1.t1.r1.c2", "rows.1.cells.1": "p1.t1.r2.c2" },
+    });
+    expect(messages({ grids: [g] }, [page1])).toEqual([]);
   });
 
   it("a visit citing cells from two different printed columns is refused", () => {
@@ -432,7 +463,9 @@ describe("checkCitations", () => {
       rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, null], printedRowTotalCents: null }, { name: "Visit fee", code: null, unitCostCents: null, cells: [13000, null], printedRowTotalCents: null }],
       cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.1.cells.0": "p1.t1.r3.c2" },
     });
-    expect(messages({ grids: [g] })).toEqual(["visit 'V1' cites cells of different printed columns on p.1 (p1.t1.c1, p1.t1.c2): every amount of one visit comes from the same printed column."]);
+    expect(messages({ grids: [g] })).toEqual([
+      "visit 'V1' cites cells of different printed columns of table p1.t1 (p1.t1.c1, p1.t1.c2): in each printed table, every amount of one row comes from one printed row, and every amount of one visit from one printed column (or the other way round in a table printed sideways).",
+    ]);
   });
 
   it("a grid value a person settled may drop its citation, or have it cleared", () => {

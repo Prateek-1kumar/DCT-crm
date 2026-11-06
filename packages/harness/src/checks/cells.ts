@@ -69,6 +69,8 @@ export function citeTerm(t: Term, docs: LoadedDoc[], marked: Marked[] = []): str
   const doc = docs.find((d) => d.name === t.source.doc);
   if (!doc || !cellsOn(doc, t.source.page)) return [];
   const base = { optional: t.evidence === "person", pages: [t.source.page], pagesText: `p.${t.source.page}, the term's page` };
+  // a cap is often printed away from the amount, so it may cite any scanned page of the document
+  const scanned = doc.pages.filter((p) => p.cells).map((p) => p.page);
   const mark = (path: string) => (cell: ScanCell) => marked.push({ target: "term", id: t.id, path, cell: cell.id, doubts: cell.doubts });
   // the quote names the row: an amount from another row that prints the same figure is the wrong one
   const misplaced = (cell: ScanCell) => {
@@ -78,7 +80,7 @@ export function citeTerm(t: Term, docs: LoadedDoc[], marked: Marked[] = []): str
   };
   const cites: Cite[] = [
     ...(t.amountCents === null ? [] : [{ ...base, what: "the amount", how: "source.cell", cents: t.amountCents, id: t.source.cell, misplaced, mark: mark("amountCents") }]),
-    ...(t.cap?.kind === "amount" && t.cap.value !== null ? [{ ...base, what: "the cap", how: "source.capCell", cents: t.cap.value, id: t.source.capCell, mark: mark("cap.value") }] : []),
+    ...(t.cap?.kind === "amount" && t.cap.value !== null ? [{ ...base, what: "the cap", how: "source.capCell", cents: t.cap.value, id: t.source.capCell, pages: scanned, pagesText: `a scanned page of ${doc.name}`, mark: mark("cap.value") }] : []),
   ];
   return cites.flatMap((c) => checkOne(doc, c) ?? []);
 }
@@ -87,56 +89,71 @@ interface Amount {
   path: string;
   cents: number;
   what: string;
-  /** The grid line it is on ("row 'Exam'", "the subtotal"), and its visit, when it has them. */
-  line?: string;
+  /** The grid line it is on, by its place ("rows.3", "subtotal") so two rows with one name stay apart, and its name. */
+  line?: { key: string; name: string };
   visit?: number;
 }
 
 /** Every amount of a grid, by its place as a patch names it, in plain words. */
 function amountsOf(g: Grid): Amount[] {
-  const at = (v: unknown, path: string, what: string, line?: string, visit?: number): Amount[] => (typeof v === "number" ? [{ path, cents: v, what, line, visit }] : []);
-  const cells = (values: Grid["subtotal"], path: string, line: string) => (values ?? []).flatMap((c, j) => at(c, `${path}.${j}`, `${line} at visit '${g.visits[j]}'`, line, j));
+  const at = (v: unknown, path: string, what: string, line?: Amount["line"], visit?: number): Amount[] => (typeof v === "number" ? [{ path, cents: v, what, line, visit }] : []);
+  const cells = (values: Grid["subtotal"], path: string, line: NonNullable<Amount["line"]>) =>
+    (values ?? []).flatMap((c, j) => at(c, `${path}.${j}`, `${line.name} at visit '${g.visits[j]}'`, line, j));
+  const lineOf = (key: "subtotal" | "overhead" | "total", name: string) => cells(g[key], key, { key, name });
   return [
     ...g.rows.flatMap((r, i) => {
-      const line = `row '${r.name}'`;
+      const line = { key: `rows.${i}`, name: `row '${r.name}'` };
       return [
-        ...at(r.unitCostCents, `rows.${i}.unitCostCents`, `the unit cost of ${line}`, line),
+        ...at(r.unitCostCents, `rows.${i}.unitCostCents`, `the unit cost of ${line.name}`, line),
         ...cells(r.cells, `rows.${i}.cells`, line),
-        ...at(r.printedRowTotalCents, `rows.${i}.printedRowTotalCents`, `the printed total of ${line}`, line),
+        ...at(r.printedRowTotalCents, `rows.${i}.printedRowTotalCents`, `the printed total of ${line.name}`, line),
       ];
     }),
-    ...cells(g.subtotal, "subtotal", "the subtotal"),
-    ...cells(g.overhead, "overhead", "the overhead"),
-    ...g.additions.flatMap((a, i) => cells(a.cells, `additions.${i}.cells`, `the added line '${a.name}'`)),
-    ...cells(g.total, "total", "the total"),
+    ...lineOf("subtotal", "the subtotal"),
+    ...lineOf("overhead", "the overhead"),
+    ...g.additions.flatMap((a, i) => cells(a.cells, `additions.${i}.cells`, { key: `additions.${i}`, name: `the added line '${a.name}'` })),
+    ...lineOf("total", "the total"),
     ...at(g.grandTotalCents, "grandTotalCents", "the grand total"),
   ];
 }
 
 const TABLE_CELL = /^(p\d+\.t\d+)\.r(\d+)\.c(\d+)$/;
-const printedRow = (id: string) => TABLE_CELL.exec(id)?.slice(1, 3).join(".r") ?? id;
-const printedColumn = (id: string) => (TABLE_CELL.exec(id) ? id.replace(TABLE_CELL, "$1.c$3") : id);
 
-/** The amounts of one grid line, or of one visit, have to come from one printed row, or one printed column, on each page. */
+const LAYOUT = "in each printed table, every amount of one row comes from one printed row, and every amount of one visit from one printed column (or the other way round in a table printed sideways).";
+
+/**
+ * In each printed table, each grid line cites one printed row and each visit one printed column, or, in a table printed
+ * sideways, the other way round. A budget may span several tables, on one page or more.
+ */
 function shapeIssues(cited: { amount: Amount; id: string }[], visits: string[]): string[] {
-  const clashes = (nameOf: (a: Amount) => string | undefined, printed: (id: string) => string) => {
-    const groups = new Map<string, { name: string; page: number; ids: Set<string> }>();
-    for (const { amount, id } of cited) {
-      const name = nameOf(amount);
-      if (name === undefined) continue;
-      const key = `${name} p.${pageOf(id)}`;
-      const group = groups.get(key) ?? { name, page: pageOf(id), ids: new Set<string>() };
-      groups.set(key, group);
-      group.ids.add(printed(id));
-    }
-    return [...groups.values()].filter((g) => g.ids.size > 1).map((g) => ({ ...g, ids: [...g.ids].join(", ") }));
-  };
-  return [
-    ...clashes((a) => a.line, printedRow).map((c) => `${c.name} cites cells of different printed rows on p.${c.page} (${c.ids}): every amount of one row comes from the same printed row.`),
-    ...clashes((a) => (a.visit === undefined ? undefined : `visit '${visits[a.visit]}'`), printedColumn).map(
-      (c) => `${c.name} cites cells of different printed columns on p.${c.page} (${c.ids}): every amount of one visit comes from the same printed column.`,
-    ),
-  ];
+  const tables = new Map<string, { amount: Amount; row: string; col: string }[]>();
+  for (const { amount, id } of cited) {
+    const m = TABLE_CELL.exec(id);
+    if (m) tables.set(m[1]!, [...(tables.get(m[1]!) ?? []), { amount, row: `${m[1]}.r${m[2]}`, col: `${m[1]}.c${m[3]}` }]);
+  }
+  return [...tables].flatMap(([table, cells]) => {
+    // each grid line or visit that cites more than one printed row (or column) of this table
+    const spread = (of: (a: Amount) => { key: string; name: string } | undefined, at: "row" | "col") => {
+      const groups = new Map<string, { name: string; ids: Set<string> }>();
+      for (const c of cells) {
+        const by = of(c.amount);
+        if (!by) continue;
+        const group = groups.get(by.key) ?? { name: by.name, ids: new Set<string>() };
+        group.ids.add(c[at]);
+        groups.set(by.key, group);
+      }
+      return [...groups.values()].filter((g) => g.ids.size > 1);
+    };
+    const line = (a: Amount) => a.line;
+    const visit = (a: Amount) => (a.visit === undefined ? undefined : { key: String(a.visit), name: `visit '${visits[a.visit]}'` });
+    const [rows, columns] = [spread(line, "row"), spread(visit, "col")];
+    if (!rows.length && !columns.length) return [];
+    if (!spread(line, "col").length && !spread(visit, "row").length) return [];
+    return [
+      ...rows.map((g) => `${g.name} cites cells of different printed rows of table ${table} (${[...g.ids].join(", ")}): ${LAYOUT}`),
+      ...columns.map((g) => `${g.name} cites cells of different printed columns of table ${table} (${[...g.ids].join(", ")}): ${LAYOUT}`),
+    ];
+  });
 }
 
 /** Why the amounts of a grid on a scanned page don't match the cells they cite. A grid on text pages needs no citations. */
