@@ -335,8 +335,13 @@ describe("scanned pages: a blind second read of the page", () => {
 
     expect(out.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000]);
     expect(out.rulebook.grids[0]!.cellIds).toEqual({ ...IDS, "rows.0.cells.1": null });
+    expect(out.rulebook.grids[0]!.cellsReadTwice).toContainEqual([0, 1]);
+    expect(out.rulebook.accounted).toEqual([{ doc: "Budget.pdf", page: 1, cell: "p1.t1.r1.c2", reason: "corrected by a second read" }]);
     expect(out.rulebook.questions).toEqual([]);
-    expect(checks.runChecks(out.rulebook, scan).grids["g1"]!.problems).toEqual([]);
+    // the sheet's fee and cap lines aren't in this rulebook; nothing else is left
+    const report = checks.runChecks(out.rulebook, scan);
+    expect(report.problems.filter((p) => p.check !== "unaccounted")).toEqual([]);
+    expect(report.unaccounted.map((u) => u.amountCents)).toEqual([7500, 60000]);
     expect(out.log).toContain("p.1 (Budget.pdf): the second read corrected 1 value and the totals now add up ✓");
   });
 

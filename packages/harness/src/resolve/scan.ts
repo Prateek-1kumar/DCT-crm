@@ -1,4 +1,4 @@
-import { applyPatches, parseCents, type Patch, type Source } from "@dct/shared";
+import { CORRECTED_BY_SECOND_READ, applyPatches, cellProofPatches, citationPatches, correctedCells, parseCents, type Patch, type Source } from "@dct/shared";
 import { checks, needsProof } from "../checks";
 import { checkCitations } from "../checks/cells";
 import { printedAmounts, printsTotals } from "../checks/grid";
@@ -199,7 +199,13 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
       const grid = after.grids[x.about.id];
       return !x.rowCell || !grid?.unproven.some(at) || !!grid.bySumOnly?.some(at);
     });
+  const before = run.rulebook;
   if (usable && rows.every((r) => r.s.checkable) && tryApply(run, use, covered)) {
+    // the arithmetic holds with the second read's figures (§5.5), so they are proven, and the cells that print the first
+    // read's figures are set aside; a term's own proof stays the checks' to give, as no arithmetic covers a changed term
+    const corrected = correctedCells(before, citationPatches(before, use), CORRECTED_BY_SECOND_READ);
+    const next = applyPatches(run.rulebook, cellProofPatches(run.rulebook, use));
+    run.rulebook = { ...next, accounted: [...next.accounted, ...corrected] };
     run.log.push(`${place(s)}: the second read corrected ${values(rows.length)} and the totals now add up ✓`);
     return;
   }

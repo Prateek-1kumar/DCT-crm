@@ -122,12 +122,13 @@ export function citationPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
 }
 
 export const CORRECTED = "corrected by a person";
+export const CORRECTED_BY_SECOND_READ = "corrected by a second read";
 
 /**
- * The cells the given citationPatches drop, set aside: each still prints the amount a person's answer replaced, which
- * would otherwise count as printed money nobody captured and block approval for good.
+ * The cells the given citationPatches drop, set aside: each still prints the amount an answer or a second read replaced,
+ * which would otherwise count as printed money nobody captured and block approval for good.
  */
-export function correctedCells(rulebook: Rulebook, dropped: Patch[]): Accounted[] {
+export function correctedCells(rulebook: Rulebook, dropped: Patch[], reason = CORRECTED): Accounted[] {
   return dropped.flatMap(({ target, id, set }) =>
     Object.keys(set).flatMap((key) => {
       const term = target === "term" ? rulebook.terms.find((t) => t.id === id) : undefined;
@@ -135,7 +136,7 @@ export function correctedCells(rulebook: Rulebook, dropped: Patch[]): Accounted[
       const cell = term ? { [SOURCE_CELL]: term.source.cell, [SOURCE_CAP_CELL]: term.source.capCell }[key] : key.startsWith(CITE) ? grid?.cellIds?.[key.slice(CITE.length)] : undefined;
       const doc = term?.source.doc ?? grid?.doc;
       const page = Number(/^p(\d+)\./.exec(cell ?? "")?.[1]);
-      return cell && doc && page > 0 ? [{ doc, page, cell, reason: CORRECTED }] : [];
+      return cell && doc && page > 0 ? [{ doc, page, cell, reason }] : [];
     }),
   );
 }

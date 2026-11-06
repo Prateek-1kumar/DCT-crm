@@ -81,3 +81,26 @@ describe("a figure slipped into a blank cell along a summed row or column is nev
     expect(open(rulebook).find((x) => x.about?.id === "g1")!.context).toContain("row 'Labs' at visit 'V1': $100.00");
   });
 });
+
+describe("a second read's figure that makes the arithmetic hold leaves nothing to fix (C3)", () => {
+  it("the corrected cell is proven, and the first read's figure is set aside as corrected", async () => {
+    const truth = read(["T 0.1-0.5 | Budget", "H | Procedure | V1 | V2", "R 0.2-0.21 | ECG | $100.00 | $40.00", "R 0.22-0.23 | Labs | $30.00 | $50.00", "R 0.24-0.25 | Subtotal | $130.00 | $90.00"]);
+    const first = read(["T 0.1-0.5 | Budget", "H | Procedure | V1 | V2", "R 0.2-0.21 | ECG | $180.00 | $40.00", "R 0.22-0.23 | Labs | $30.00 | $50.00", "R 0.24-0.25 | Subtotal | $130.00 | $90.00"]);
+    const g: Grid = {
+      id: "g1", name: "Budget", arm: null, doc: DOC, pages: [1], visits: ["V1", "V2"], overheadPct: null,
+      rows: [
+        { name: "ECG", code: null, unitCostCents: null, cells: [18000, 4000], printedRowTotalCents: null },
+        { name: "Labs", code: null, unitCostCents: null, cells: [3000, 5000], printedRowTotalCents: null },
+      ],
+      subtotal: [13000, 9000], overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false,
+      cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2", "rows.1.cells.0": "p1.t1.r2.c1", "rows.1.cells.1": "p1.t1.r2.c2", "subtotal.0": "p1.t1.r3.c1", "subtotal.1": "p1.t1.r3.c2" },
+    };
+    const { rulebook, report } = await settle(book({ grids: [g] }), [first], [truth]);
+
+    expect(rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 4000]);
+    expect(rulebook.grids[0]!.cellsReadTwice).toContainEqual([0, 0]);
+    expect(rulebook.accounted).toEqual([{ doc: DOC, page: 1, cell: "p1.t1.r1.c1", reason: "corrected by a second read" }]);
+    expect(open(rulebook)).toEqual([]);
+    expect(report.problems).toEqual([]);
+  });
+});
