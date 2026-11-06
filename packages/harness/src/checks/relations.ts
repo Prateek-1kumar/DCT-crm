@@ -127,8 +127,11 @@ function misaligned(r: Relation, result: ScanCell, operands: ScanCell[], rate: S
   return rate && rate.page !== result.page ? `the rate ${r.rate} is on p.${rate.page}: use one printed on p.${result.page}, the page of the result.` : null;
 }
 
-/** `dollarTable`: the table (doc:p1.t2) whose result this relation could only match rounded to the dollar. */
-export type Evaluated = { proven: string[]; dollarTable?: string } | { problem: string };
+/**
+ * `summed`: the cells a sum of several cells would prove, which on a scan it doesn't on its own. `dollarTable`: the table
+ * (doc:p1.t2) whose result this relation could only match rounded to the dollar.
+ */
+export type Evaluated = { proven: string[]; summed?: string[]; dollarTable?: string } | { problem: string };
 
 /**
  * A relation evaluated on the transcribed cells. When it holds, it proves the cells a one-cent change (or one in a rate's
@@ -204,12 +207,15 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
     ...(dollars ? [] : r.operands.filter((_, i) => breaks((by) => holds(r.kind, result, operands.map((o, j) => (j === i ? o + by : o)), rate)))),
     ...(rate && breaks((by) => holds(r.kind, result, operands, { ...rate, units: rate.units + BigInt(by) }, dollars)) ? [r.rate!] : []),
   ];
-  return { proven, ...(toTheDollar && { dollarTable: table }) };
+  // a figure slipped into a blank cell along the row or column keeps the sum, so only the second read can tell
+  const several = r.kind === "sum" && r.operands.length > 1;
+  return { proven: several ? [] : proven, ...(several && { summed: proven }), ...(toTheDollar && { dollarTable: table }) };
 }
 
-/** What a holding relation proved, in words for the agent. */
-export function provenText(r: Relation, proven: string[]): string {
+export function provenText(r: Relation, out: { proven: string[]; summed?: string[] }): string {
   const ids = [r.result, ...r.operands, ...(r.rate ? [r.rate] : [])];
+  if (out.summed) return `${formula(r)} holds, but a sum of several cells proves none of them on its own: a figure slipped into a blank cell along its row or column would keep it. Its cells get a second read, and a figure that read gives them stands only while this still holds.`;
+  const { proven } = out;
   if (proven.length === ids.length) return `${formula(r)} proves all ${ids.length} of its cells.`;
   const left = ids.filter((id) => !proven.includes(id));
   const which = proven.length ? ` (${proven.join(", ")})` : "";
@@ -220,19 +226,23 @@ export function provenText(r: Relation, proven: string[]): string {
  * The cells (by cellKey) that a holding relation proves, and why each other relation proves nothing; `outcomes` follows the
  * rulebook's relations one for one.
  */
-export function checkRelations(rulebook: Rulebook, docs: LoadedDoc[]): { proven: Set<string>; problems: Problem[]; outcomes: Evaluated[] } {
+export function checkRelations(rulebook: Rulebook, docs: LoadedDoc[]): { proven: Set<string>; summed: Set<string>; problems: Problem[]; outcomes: Evaluated[] } {
   const relations = rulebook.relations ?? [];
   const first = relations.map((r) => evaluateRelation(r, rulebook, docs));
   const dollarTables = new Set(first.flatMap((out) => ("dollarTable" in out && out.dollarTable ? [out.dollarTable] : [])));
   const outcomes = dollarTables.size ? relations.map((r) => evaluateRelation(r, rulebook, docs, dollarTables)) : first;
   const proven = new Set<string>();
+  const summed = new Set<string>();
   const problems: Problem[] = [];
   outcomes.forEach((out, i) => {
     const doc = relations[i]!.doc;
     if ("problem" in out) problems.push({ check: "relation", doc, message: out.problem });
-    else for (const id of out.proven) proven.add(cellKey(doc, id));
+    else {
+      for (const id of out.proven) proven.add(cellKey(doc, id));
+      for (const id of out.summed ?? []) summed.add(cellKey(doc, id));
+    }
   });
-  return { proven, problems, outcomes };
+  return { proven, summed, problems, outcomes };
 }
 
 /**
@@ -254,12 +264,17 @@ export function withRelationProof(rulebook: Rulebook, docs: LoadedDoc[], proven 
   return { ...rulebook, terms };
 }
 
-/** A grid's unproven cells without those whose cited cell a holding relation proves. A grid whose citations fail keeps them all. */
-export function lessRelationProven(g: Grid, result: GridResult, proven: Set<string>, docs: LoadedDoc[]): GridResult {
+/**
+ * A grid's unproven cells without those whose cited cell a holding relation proves, and with those a holding sum adds up
+ * among its `bySumOnly`. A grid whose citations fail keeps them all.
+ */
+export function lessRelationProven(g: Grid, result: GridResult, relations: { proven: Set<string>; summed: Set<string> }, docs: LoadedDoc[]): GridResult {
   if (!g.cellIds || citeGrid(g, docs).length) return result;
-  const byRelation = (row: number, col: number) => {
+  const by = (cells: Set<string>) => ({ row, col }: { row: number; col: number }) => {
     const id = g.cellIds?.[`rows.${row}.cells.${col}`];
-    return typeof id === "string" && proven.has(cellKey(g.doc, id));
+    return typeof id === "string" && cells.has(cellKey(g.doc, id));
   };
-  return { ...result, unproven: result.unproven.filter(({ row, col }) => !byRelation(row, col)) };
+  const unproven = result.unproven.filter((u) => !by(relations.proven)(u));
+  const bySumOnly = unproven.filter((u) => by(relations.summed)(u) || !!result.bySumOnly?.some((x) => x.row === u.row && x.col === u.col));
+  return { ...result, unproven, ...(bySumOnly.length > 0 && { bySumOnly }) };
 }

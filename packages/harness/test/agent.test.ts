@@ -377,7 +377,7 @@ describe("scanned values cite cells", () => {
     expect(result.rulebook.terms.map((t) => t.evidence)).toEqual(["math", "none"]);
   });
 
-  it("two relations on one result cell both count, and finish says what arithmetic proved", async () => {
+  it("two sums on one result cell are both kept, and prove nothing on their own", async () => {
     const totals = scanned(
       ["T 0.3-0.6 | Budget", "H | Item | V1 | V2 | Total", "R 0.31-0.32 | Exam | $100.00 | $200.00 | $300.00", "R 0.33-0.34 | Labs | $50.00 | $70.00 | $120.00", "R 0.35-0.36 | Total | $150.00 | $270.00 | $420.00"].join("\n"),
     );
@@ -390,8 +390,10 @@ describe("scanned values cite cells", () => {
       { maxTurns: 4 },
     );
     expect(String(resultsAfter(calls[2]!.messages)[0]!.content)).toContain("Saved 2 relations (2 in all).");
+    expect(String(resultsAfter(calls[2]!.messages)[0]!.content)).toContain("holds, but a sum of several cells proves none of them on its own");
     expect(result.rulebook.relations).toEqual([byRow, byColumn]);
-    expect(String(resultsAfter(calls[3]!.messages)[0]!.content)).toContain("Proven by arithmetic between cells: term t1.");
+    expect(String(resultsAfter(calls[3]!.messages)[0]!.content)).not.toContain("Proven by arithmetic");
+    expect(result.rulebook.terms[0]!.evidence).toBe("none");
   });
 
   it("text-page terms need no citation", async () => {
@@ -415,7 +417,7 @@ describe("scanned values cite cells", () => {
     const refused = resultsAfter(calls[1]!.messages)[0]!;
     expect(refused.is_error).toBe(true);
     expect(refused.content).toContain(`row 'Exam' at visit 'V3' is $300.00, but cell p1.t1.r1.c2 prints "$250.00"`);
-    expect(resultsAfter(calls[2]!.messages)[0]!.content).toContain("PROVEN");
+    expect(resultsAfter(calls[2]!.messages)[0]!.content).toContain("3 cells add up with the printed totals, but on a SCAN page a total alone doesn't prove a cell");
     expect(result.rulebook.grids[0]!.cellIds).toEqual({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2", "rows.0.cells.2": "p2.t1.r1.c1", "rows.0.printedRowTotalCents": "p2.t1.r1.c2" });
     expect(result.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000, 30000]);
   });

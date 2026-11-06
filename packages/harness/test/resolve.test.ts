@@ -251,15 +251,15 @@ describe("scanned pages: a blind second read of the page", () => {
     expect(out.rulebook.grids[0]!.cellsReadTwice).toEqual([[0, 0], [0, 1], [1, 0], [1, 1]]);
   });
 
-  it("a page whose values are all proven by arithmetic still gets a verify read, and catches a dropped row", async () => {
-    // on a scan only a row's own total pins its cells, so these rows prove themselves; the first read dropped ECG
+  it("a page whose values are all settled still gets a verify read, and catches a dropped row", async () => {
+    // a person settled every cell already; the first read dropped ECG
     const sheet = (ecg: boolean) => [
       ...SHEET.slice(0, 3), "H | Procedure | V1 | V2 | Total",
       "R 0.120-0.130 | Exam | $100.00 | $250.00 | $350.00", "R 0.140-0.150 | Labs | $50.00 | $50.00 | $100.00", ...(ecg ? ["R 0.160-0.170 | ECG | $40.00 | | $40.00"] : []),
     ];
     const g = grid(25000);
     const totalled: Grid = {
-      ...g, subtotal: null, grandTotalCents: null, rows: g.rows.map((row, i) => ({ ...row, printedRowTotalCents: [35000, 10000][i]! })),
+      ...g, subtotal: null, grandTotalCents: null, rows: g.rows.map((row, i) => ({ ...row, printedRowTotalCents: [35000, 10000][i]! })), cellsReadTwice: [[0, 0], [0, 1], [1, 0], [1, 1]],
       cellIds: Object.fromEntries([0, 1].flatMap((i) => [[`rows.${i}.cells.0`, `p1.t1.r${i + 1}.c1`], [`rows.${i}.cells.1`, `p1.t1.r${i + 1}.c2`], [`rows.${i}.printedRowTotalCents`, `p1.t1.r${i + 1}.c3`]])),
     };
     const book = rulebook({ terms: [fee({ evidence: "person" })], grids: [totalled] });

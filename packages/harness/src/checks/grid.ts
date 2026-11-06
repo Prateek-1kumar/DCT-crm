@@ -46,11 +46,11 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
 
   const problems: string[] = [];
   const covered = grid.rows.map((r) => r.cells.map(() => false));
-  // On a scan a figure that slipped into a blank cell of its own column keeps every column total and the grand total, so
-  // only a row's own total pins a cell there; the others leave it to the second read.
+  // On a scan a figure that slipped into a blank cell along a row or column keeps that line's total, so no sum pins a cell
+  // there: a summed cell rests on the second read, whose different figure may stand when the sums then hold.
   const scanned = onScan(grid, docs);
   const loose = grid.rows.map((r) => r.cells.map(() => false));
-  const coverRow = (i: number) => covered[i]!.fill(true);
+  const coverRow = (i: number) => (scanned ? loose : covered)[i]!.fill(true);
   const coverColumn = (j: number) => (scanned ? loose : covered).forEach((r) => (r[j] = true));
   const coverAll = () => (scanned ? loose : covered).forEach((r) => r.fill(true));
   const subtotal = grid.subtotal;
@@ -111,6 +111,6 @@ export function checkGrid(grid: Grid, docs: LoadedDoc[]): GridResult {
   }
   const printed = printedAmounts(grid, docs);
   const unproven = numericCells(grid).filter(({ row, col }) => !covered[row]![col]! && !printed.has(Math.abs(num(grid.rows[row]!.cells[col])!)));
-  const byColumnOnly = unproven.filter(({ row, col }) => loose[row]![col]);
-  return { problems, unproven, ...(byColumnOnly.length > 0 && { byColumnOnly }) };
+  const bySumOnly = unproven.filter(({ row, col }) => loose[row]![col]);
+  return { problems, unproven, ...(bySumOnly.length > 0 && { bySumOnly }) };
 }

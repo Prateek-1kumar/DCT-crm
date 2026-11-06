@@ -1,4 +1,4 @@
-import type { Cell, Grid, Relation, Rulebook, Term } from "@dct/shared";
+import type { Accounted, Cell, Grid, Relation, Rulebook, Term } from "@dct/shared";
 import { describe, expect, it } from "vitest";
 import { checks } from "../src/checks";
 import { coverage } from "../src/checks/coverage";
@@ -81,6 +81,7 @@ interface Book {
   grids: Grid[];
   relations: Relation[];
   values: Value[];
+  accounted?: Accounted[];
 }
 
 // the agent cites a handwritten replacement, never the value it strikes out
@@ -90,13 +91,16 @@ const TOTALS = /total/i;
 
 function gridBook(id: string, reads: Transcription[]): Book {
   const visits: string[] = [];
-  const rows = new Map<string, { name: string; cells: Map<number, [number, string]> }>();
+  type Row = { name: string; cells: Map<number, [number, string]>; total?: [number, string] };
+  const rows = new Map<string, Row>();
   const lines = { subtotal: new Map<number, [number, string]>(), grand: undefined as [number, string] | undefined };
   reads.forEach((t, i) => {
     const table = t.tables[0];
     if (!table) return;
     const from = visits.length;
-    visits.push(...table.columns.slice(1));
+    // a last column headed "Total" holds each row's printed total
+    const totalAt = TOTALS.test(table.columns.at(-1) ?? "") ? table.columns.length - 2 : -1;
+    visits.push(...table.columns.slice(1, totalAt < 0 ? undefined : -1));
     const seen = new Map<string, number>();
     table.rows.forEach((row, ri) => {
       const at = (k: number) => `p${i + 1}.t1.r${ri + 1}.c${k + 1}`;
@@ -109,8 +113,12 @@ function gridBook(id: string, reads: Transcription[]): Book {
         const n = (seen.get(row.label) ?? 0) + 1;
         seen.set(row.label, n);
         const key = `${row.label}#${n}`;
-        const entry = rows.get(key) ?? { name: row.label, cells: new Map() };
-        values.forEach((v, k) => v !== null && from + k < visits.length && entry.cells.set(from + k, [v, at(k)]));
+        const entry: Row = rows.get(key) ?? { name: row.label, cells: new Map() };
+        values.forEach((v, k) => {
+          if (v === null) return;
+          if (k === totalAt) entry.total = [v, at(k)];
+          else if (from + k < visits.length) entry.cells.set(from + k, [v, at(k)]);
+        });
         rows.set(key, entry);
       }
     });
@@ -125,10 +133,16 @@ function gridBook(id: string, reads: Transcription[]): Book {
       values.push({ target: "grid", id, path: path(j), key: key(j), cents: at[0] });
       return at[0];
     });
-  const gridRows = [...rows.values()].map((row, i) => ({
-    name: row.name, code: null, unitCostCents: null, printedRowTotalCents: null,
-    cells: line(row.cells, (j) => `rows.${i}.cells.${j}`, (j) => `${row.name}|${visits[j]}`),
-  }));
+  const gridRows = [...rows.values()].map((row, i) => {
+    if (row.total) {
+      cellIds[`rows.${i}.printedRowTotalCents`] = row.total[1];
+      values.push({ target: "grid", id, path: `rows.${i}.printedRowTotalCents`, key: `${row.name}|total`, cents: row.total[0] });
+    }
+    return {
+      name: row.name, code: null, unitCostCents: null, printedRowTotalCents: row.total?.[0] ?? null,
+      cells: line(row.cells, (j) => `rows.${i}.cells.${j}`, (j) => `${row.name}|${visits[j]}`),
+    };
+  });
   const subtotal = lines.subtotal.size ? line(lines.subtotal, (j) => `subtotal.${j}`, (j) => `subtotal|${visits[j]}`) : null;
   if (lines.grand) {
     cellIds.grandTotalCents = lines.grand[1];
@@ -172,6 +186,53 @@ const SHAPES: Shape[] = [
       return halves.map((h, i) => read(gridLines(i ? "Schedule of payments (continued)" : "Schedule of payments", h.visits, h.rows, i === at ? strikeIn(r, h.rows) : undefined)));
     },
     book: (reads) => gridBook("g1", reads),
+  },
+  {
+    name: "row-total grid",
+    pages(r, strike) {
+      const visits = Array.from({ length: 6 }, (_, i) => `V${i + 1}`);
+      // every row prints at least its first visit, so its total is never $0.00
+      const body = shuffled(r, PROCEDURES).slice(0, 7).map((label) => ({ label, values: visits.map((_, j) => (j && r() < 0.3 ? null : fee(r))) }));
+      const rows = body.map((row) => ({ ...row, values: [...row.values, sum(row.values)] }));
+      return [read(["L 0.02-0.03 | Exhibit B - Budget", ...gridLines("Per-visit budget", [...visits, "Total"], rows, strike ? strikeIn(r, body) : undefined)])];
+    },
+    book: (reads) => gridBook("g1", reads),
+  },
+  {
+    name: "column-sum relations",
+    pages(r, strike) {
+      const visits = ["Screening", "Treatment", "Follow-up"];
+      const body = shuffled(r, PROCEDURES).slice(0, 6).map((label) => ({ label, values: visits.map(() => (r() < 0.3 ? null : fee(r))) }));
+      const rows = [...body, { label: "Total", values: visits.map((_, j) => sum(body.map((row) => row.values[j]!))) }];
+      return [read(["L 0.02-0.03 | Exhibit C - Fees by period", ...gridLines("Fees by period", visits, rows, strike ? strikeIn(r, body) : undefined)])];
+    },
+    book([t]) {
+      // a term per fee, and the printed column totals as sums of the cells above them
+      const terms: Term[] = [];
+      const relations: Relation[] = [];
+      const values: Value[] = [];
+      const accounted: Accounted[] = [];
+      const table = t!.tables[0];
+      const width = table ? table.columns.length - 1 : 0;
+      for (let k = 0; k < width; k++) {
+        const operands: string[] = [];
+        table!.rows.forEach((row, i) => {
+          const cents = cited(row.cells[k]).at(-1);
+          if (cents === undefined) return;
+          const cell = `p1.t1.r${i + 1}.c${k + 1}`;
+          if (TOTALS.test(row.label)) {
+            accounted.push({ doc: DOC, page: 1, cell, reason: "the total of the fees above it" });
+            if (operands.length > 1) relations.push({ kind: "sum", doc: DOC, result: cell, operands: [...operands] });
+            return;
+          }
+          const id = `t${i + 1}.${k + 1}`;
+          terms.push({ ...term(id, `${row.label} (${table!.columns[k + 1]})`, cents, row.label, cell), unit: table!.columns[k + 1]! });
+          values.push({ target: "term", id, path: "amountCents", key: `${row.label}|${table!.columns[k + 1]}`, cents });
+          operands.push(cell);
+        });
+      }
+      return { terms, grids: [], relations, values, accounted };
+    },
   },
   {
     name: "fee / fee with overhead",
@@ -367,7 +428,7 @@ const rulebookOf = (book: Book): Rulebook => ({
     protocol: "P", sponsor: "S", payer: null, siteEntity: "E", siteNumber: null, pi: null, effectiveDate: null,
     documents: [{ doc: DOC, role: "budget", hasMoney: true, supersedes: [], effectiveFrom: null, retroactive: false, notes: null }],
   },
-  terms: book.terms, grids: book.grids, accounted: [], questions: [], relations: book.relations,
+  terms: book.terms, grids: book.grids, accounted: book.accounted ?? [], questions: [], relations: book.relations,
 });
 
 const valueAt = (node: unknown, path: string) => path.split(".").reduce<unknown>((n, key) => (typeof n === "object" && n !== null ? (n as Record<string, unknown>)[key] : undefined), node);

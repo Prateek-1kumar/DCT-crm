@@ -533,6 +533,7 @@ describe("relations", () => {
   const proven = (relations: Relation[], docs: LoadedDoc[], over: Partial<Rulebook> = {}) => [...checkRelations(rulebook({ relations, ...over }), docs).proven].sort();
   const problems = (relations: Relation[], docs: LoadedDoc[], over: Partial<Rulebook> = {}) => checkRelations(rulebook({ relations, ...over }), docs).problems.map((p) => p.message);
   const keys = (...ids: string[]) => ids.map((id) => cellKey("A.pdf", id)).sort();
+  const summed = (relations: Relation[], docs: LoadedDoc[]) => [...checkRelations(rulebook({ relations }), docs).summed].sort();
 
   it("fee and fee-with-overhead cells are proven by a cited overhead rate", () => {
     const exam = cited("exam", 10000, "p1.t1.r1.c1", "Exam");
@@ -574,10 +575,10 @@ describe("relations", () => {
       ],
       cellIds: { "rows.0.cells.0": "p1.t1.r1.c1", "rows.1.cells.0": "p1.t1.r2.c1", "rows.1.printedRowTotalCents": "p1.t1.r2.c3" },
     });
-    expect(checks.runChecks(rulebook({ grids: [g] }), [procedures]).grids.g1!.unproven).toEqual([{ row: 0, col: 0 }]);
+    expect(checks.runChecks(rulebook({ grids: [g] }), [procedures]).grids.g1!.unproven).toEqual([{ row: 0, col: 0 }, { row: 1, col: 0 }]);
     const report = checks.runChecks(rulebook({ grids: [g], relations: [ecg] }), [procedures]);
-    expect(report.grids.g1!.unproven).toEqual([]);
-    expect(report.problems.filter((p) => p.check !== "unaccounted")).toEqual([]);
+    // on a scan a row's total alone proves nothing: Exam waits for the second read, which may correct it while the total holds
+    expect(report.grids.g1).toMatchObject({ problems: [], unproven: [{ row: 1, col: 0 }], bySumOnly: [{ row: 1, col: 0 }] });
   });
 
   it("a relation over a typed number proves nothing", () => {
@@ -670,8 +671,10 @@ describe("relations", () => {
     const ALIGNED = "the result and the cells it is made of have to be in one printed row or one printed column of one table, with the result after them (a row total, a column total, or a fee followed by the fee with overhead).";
     expect(proven(across, [lab])).toEqual([]);
     expect(problems(across, [lab])).toEqual([`p1.t1.r1.c4 = p1.t1.r1.c2 + p1.t1.r2.c3: ${ALIGNED}`, `p2.l1 = p1.t1.r2.c1 + p1.t1.r2.c2: ${ALIGNED}`, `p1.t1.r1.c1 = p1.t1.r1.c2 + p1.t1.r1.c3: ${ALIGNED}`]);
-    // along one printed row it is a row total, and every cell in it is proven
-    expect(proven([rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c2", "p1.t1.r1.c3"] })], [lab])).toEqual(keys("p1.t1.r1.c4", "p1.t1.r1.c2", "p1.t1.r1.c3"));
+    // along one printed row it is a row total: it holds for every cell in it, but a sum of several cells proves none on a scan
+    const total = [rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c2", "p1.t1.r1.c3"] })];
+    expect(summed(total, [lab])).toEqual(keys("p1.t1.r1.c4", "p1.t1.r1.c2", "p1.t1.r1.c3"));
+    expect(proven(total, [lab])).toEqual([]);
   });
 
   it("×30% proves the overhead cell, not the fee", () => {
@@ -748,7 +751,7 @@ describe("relations", () => {
     const TOTAL = "a total has to add up every amount printed before it in its row or column, and be the last amount there; otherwise the cells may only happen to add up.";
     expect(proven(partial, [rows])).toEqual([]);
     expect(problems(partial, [rows])).toEqual([`p1.t1.r1.c3 = p1.t1.r1.c1 + p1.t1.r1.c2: ${TOTAL}`, `p1.t1.r2.c4 = p1.t1.r2.c2 + p1.t1.r2.c3: ${TOTAL}`]);
-    expect(proven([rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c1", "p1.t1.r1.c3", "p1.t1.r1.c2"] })], [rows])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.t1.r1.c3", "p1.t1.r1.c4"));
+    expect(summed([rel({ result: "p1.t1.r1.c4", operands: ["p1.t1.r1.c1", "p1.t1.r1.c3", "p1.t1.r1.c2"] })], [rows])).toEqual(keys("p1.t1.r1.c1", "p1.t1.r1.c2", "p1.t1.r1.c3", "p1.t1.r1.c4"));
   });
 
   it("a whole-dollar table never proves an operand by a round cent match", () => {

@@ -35,7 +35,7 @@ interface Spot {
   rowCell?: [number, number];
   /** The contract's arithmetic can prove it, so a second read's different figure may stand when the arithmetic then holds. */
   checkable: boolean;
-  patch(value: number): Patch;
+  patch(value: number | null): Patch;
 }
 
 const pageOfCell = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
@@ -187,15 +187,17 @@ function unreadPage(run: Run, doc: string, page: number) {
 /** Values the two reads disagree on: the second read's figures stand if they make the arithmetic hold; otherwise a person picks. */
 function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
   const [{ s }] = rows as [{ s: Spot; second: string }];
-  const seconds = rows.map((r) => centsOf(r.second));
-  const usable = seconds.every((v) => v !== null);
-  const use = rows.map((r, i) => r.s.patch(seconds[i]!));
+  // a grid cell the second read sees blank can be blank; anything else it can't read as one amount isn't offered
+  const seconds = rows.map((r) => centsOf(r.second) ?? (!r.second.trim() && r.s.about.target === "grid" ? null : undefined));
+  const offered = seconds.every((v) => v !== undefined);
+  const usable = seconds.every((v) => typeof v === "number");
+  const use = rows.map((r, i) => r.s.patch(seconds[i] as number | null));
   // a corrected cell rests on the second read, so a column total that adds up with it is enough
   const covered = (after: CheckReport) =>
     rows.every(({ s: x }) => {
       const at = (u: { row: number; col: number }) => u.row === x.rowCell?.[0] && u.col === x.rowCell[1];
       const grid = after.grids[x.about.id];
-      return !x.rowCell || !grid?.unproven.some(at) || !!grid.byColumnOnly?.some(at);
+      return !x.rowCell || !grid?.unproven.some(at) || !!grid.bySumOnly?.some(at);
     });
   if (usable && rows.every((r) => r.s.checkable) && tryApply(run, use, covered)) {
     run.log.push(`${place(s)}: the second read corrected ${values(rows.length)} and the totals now add up ✓`);
@@ -215,7 +217,7 @@ function settleDifferences(run: Run, rows: { s: Spot; second: string }[]) {
     ],
     options: [
       { label: one ? `Use the first reading (${usd(s.cents)})` : "Use the first readings", patches: rows.map((r) => r.s.patch(r.s.cents)) },
-      ...(usable ? [{ label: one ? `Use the second reading (${usd(seconds[0]!)})` : "Use the second readings", patches: use }] : []),
+      ...(offered ? [{ label: one ? `Use the second reading (${typeof seconds[0] === "number" ? usd(seconds[0]) : "blank"})` : "Use the second readings", patches: use }] : []),
     ],
   });
   run.log.push(`${place(s)}: a second read of the page reads ${values(rows.length)} differently, so a person will be asked`);

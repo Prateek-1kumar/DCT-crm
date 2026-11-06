@@ -198,12 +198,15 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       if (uncited.length) return rejected("put_grid", uncited);
       grids.set(grid.id, grid);
       const where = `Budget '${grid.name}' on p.${grid.pages[0]}`;
-      const { problems, unproven } = lessRelationProven(grid, checks.checkGrid(grid, docs), checkRelations(rulebook(), docs).proven, docs);
+      const { problems, unproven, bySumOnly = [] } = lessRelationProven(grid, checks.checkGrid(grid, docs), checkRelations(rulebook(), docs), docs);
       if (!problems.length && !unproven.length) return text("PROVEN: all printed arithmetic holds and every cell is covered.", `${where}: all printed totals add up`);
+      const open = unproven.length - bySumOnly.length;
       const lines = [
         ...(problems.length ? ["Arithmetic problems:", ...problems.slice(0, 40)] : []),
-        ...(unproven.length ? [`${plural(unproven.length, "cell")} not proven: no printed total covers them. Capture the printed row, subtotal or total lines, or write the arithmetic the page prints with put_relations.`] : []),
+        ...(open ? [`${plural(open, "cell")} not proven: no printed total covers them. Capture the printed row, subtotal or total lines, or write the arithmetic the page prints with put_relations.`] : []),
+        ...(bySumOnly.length ? [`${plural(bySumOnly.length, "cell")} add up with the printed totals, but on a SCAN page a total alone doesn't prove a cell (a figure slipped into a blank cell keeps it): they get a second read after you finish. Nothing to fix.`] : []),
       ];
+      if (!problems.length && !open) return text(lines.join("\n"), `${where}: all printed totals add up`);
       return text(lines.join("\n"), problems.length ? `${where}: ${plural(problems.length, "problem")} with the totals` : `${where}: totals add up, but ${plural(unproven.length, "cell")} have no printed total backing them`);
     },
 
@@ -227,7 +230,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       const lines = verdicts.map((v, i) => {
         if (typeof v === "string") return `Relation #${i + 1}: ${v} Not saved.`;
         const out = outcomes[all.indexOf(JSON.stringify(v))]!;
-        return `Relation #${i + 1}: ${provenText(v, "proven" in out ? out.proven : [])}`;
+        return `Relation #${i + 1}: ${provenText(v, "proven" in out ? out : { proven: [] })}`;
       });
       const failed = lines.length - saved;
       const head = `Saved ${plural(saved, "relation")} (${relations.size} in all).${failed ? ` ${failed} NOT saved, fix and send again.` : ""}`;

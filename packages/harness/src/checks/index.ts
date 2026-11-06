@@ -18,11 +18,11 @@ export const needsProof = (t: Term, page: Page | undefined) => page !== undefine
 function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   const problems: Problem[] = [];
   // a relation that fails is the agent's to fix while it compiles (put_relations), never a problem that blocks approval
-  const { proven } = checkRelations(rulebook, docs);
+  const relations = checkRelations(rulebook, docs);
 
   const grids: CheckReport["grids"] = {};
   for (const g of rulebook.grids) {
-    const result = (grids[g.id] = lessRelationProven(g, checkGrid(g, docs), proven, docs));
+    const result = (grids[g.id] = lessRelationProven(g, checkGrid(g, docs), relations, docs));
     const where = { check: "grid", id: g.id, doc: g.doc, page: g.pages[0] } as const;
     result.problems.forEach((message) => problems.push({ ...where, message }));
     if (!result.problems.length && result.unproven.length) {
@@ -34,7 +34,7 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
 
   const quotes: CheckReport["quotes"] = {};
   // re-derived, so a "math" the relations no longer back can't excuse a term from proof
-  for (const t of withRelationProof(rulebook, docs, proven).terms) {
+  for (const t of withRelationProof(rulebook, docs, relations.proven).terms) {
     const page = docs.find((d) => d.name === t.source.doc)?.pages.find((p) => p.page === t.source.page);
     const reason = checkQuote(t.source, docs) ?? (needsProof(t, page) ? SCAN_PAGE_REASON : null);
     if (!reason) continue;
