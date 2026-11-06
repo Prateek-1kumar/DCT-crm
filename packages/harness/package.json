@@ -13,7 +13,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "vision-bench": "tsx --env-file-if-exists=../../.env scripts/vision-bench.ts",
-    "read": "tsx --env-file-if-exists=../../.env src/cli.ts"
+    "read": "tsx --env-file-if-exists=../../.env src/cli.ts",
+    "scan-replay": "tsx scripts/scan-replay.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.5.0",
