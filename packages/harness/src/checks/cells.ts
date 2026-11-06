@@ -2,7 +2,7 @@ import { pageOfCell, type Rulebook } from "@dct/shared";
 import { amountsOf, centsOf, type ScanCell } from "../scan/cells";
 import type { Doubt, LoadedDoc, Problem } from "../types";
 import { printedAmounts } from "./grid";
-import { amountsIn, looseContains, usd } from "./text";
+import { amountsIn, looseContains, looseKey, usd } from "./text";
 
 type Term = Rulebook["terms"][number];
 type Grid = Rulebook["grids"][number];
@@ -122,6 +122,10 @@ const LAYOUT = "in each printed table, every amount of one row comes from one pr
 
 const alike = (a: string, b: string) => !a.trim() || !b.trim() || looseContains(a, b) || looseContains(b, a);
 
+/** A printed name that only loosely fits is refused when it is, to the letter, the name of another visit or grid line ("Fee" inside "Fee with overhead"). */
+const fits = (printed: string, name: string, others: string[]) =>
+  alike(printed, name) && (looseKey(printed) === looseKey(name) || !others.some((o) => looseKey(o) === looseKey(printed)));
+
 type Placed = { amount: Amount; row: string; col: string; cell: ScanCell | undefined };
 
 /**
@@ -129,7 +133,7 @@ type Placed = { amount: Amount; row: string; col: string; cell: ScanCell | undef
  * label, each visit its printed column's heading (where the table has headings), and no two grid lines share a printed row.
  * Sideways, rows and columns swap.
  */
-function namesOff(table: string, cells: Placed[], visits: string[], sideways: boolean): string[] {
+function namesOff(table: string, cells: Placed[], visits: string[], lineNames: Map<string, string>, sideways: boolean): string[] {
   // one message per grid line and per visit, keyed so the first cell that is off names it
   const out = new Map<string, string>();
   const lineAt = new Map<string, Map<string, string>>();
@@ -138,11 +142,12 @@ function namesOff(table: string, cells: Placed[], visits: string[], sideways: bo
     const [printedLine, lineName, visitName] = sideways ? [col, cell.heading ?? "", cell.rowLabel ?? ""] : [row, cell.rowLabel ?? "", cell.heading ?? ""];
     if (amount.line) lineAt.set(printedLine, (lineAt.get(printedLine) ?? new Map()).set(amount.line.key, amount.line.name));
     const name = amount.line?.key.startsWith("rows.") ? amount.line.name.replace(/^row '(.*)'$/, "$1") : undefined;
-    if (name !== undefined && !alike(lineName, name) && !out.has(amount.line!.key)) {
+    const otherLines = [...lineNames].filter(([key]) => key !== amount.line?.key).map(([, n]) => n);
+    if (name !== undefined && !fits(lineName, name, otherLines) && !out.has(amount.line!.key)) {
       out.set(amount.line!.key, `${amount.line!.name} cites ${cell.id}, printed under "${lineName}": cite the cells printed for that row, or name the grid row as printed.`);
     }
     const visit = amount.visit === undefined ? undefined : visits[amount.visit];
-    if (visit !== undefined && !alike(visitName, visit) && !out.has(`visit ${amount.visit}`)) {
+    if (visit !== undefined && !fits(visitName, visit, visits.filter((_, k) => k !== amount.visit)) && !out.has(`visit ${amount.visit}`)) {
       out.set(`visit ${amount.visit}`, `visit '${visit}' cites ${cell.id}, printed under "${visitName}": cite the cells printed for that visit, or name the visit as printed.`);
     }
   }
@@ -157,6 +162,7 @@ function namesOff(table: string, cells: Placed[], visits: string[], sideways: bo
  * or more.
  */
 function shapeIssues(doc: LoadedDoc, cited: { amount: Amount; id: string }[], visits: string[]): string[] {
+  const lineNames = new Map(cited.flatMap(({ amount: { line } }) => (line?.key.startsWith("rows.") ? [[line.key, line.name.replace(/^row '(.*)'$/, "$1")] as const] : [])));
   const tables = new Map<string, Placed[]>();
   for (const { amount, id } of cited) {
     const m = TABLE_CELL.exec(id);
@@ -180,7 +186,7 @@ function shapeIssues(doc: LoadedDoc, cited: { amount: Amount; id: string }[], vi
     const upright = !rows.length && !columns.length;
     const sideways = !spread(line, "col").length && !spread(visit, "row").length;
     // a table each line and visit cite one cell of reads either way round; the names say which
-    const named = [...(upright ? [namesOff(table, cells, visits, false)] : []), ...(sideways ? [namesOff(table, cells, visits, true)] : [])];
+    const named = [...(upright ? [namesOff(table, cells, visits, lineNames, false)] : []), ...(sideways ? [namesOff(table, cells, visits, lineNames, true)] : [])];
     if (named.length) return named.some((issues) => !issues.length) ? [] : named[0]!;
     return [
       ...rows.map((g) => `${g.name} cites cells of different printed rows of table ${table} (${[...g.ids].join(", ")}): ${LAYOUT}`),

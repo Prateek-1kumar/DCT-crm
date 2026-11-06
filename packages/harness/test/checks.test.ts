@@ -444,6 +444,7 @@ describe("checkCitations", () => {
   it("checks every amount of a grid on a scanned page against its cell, naming the place", () => {
     expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.printedRowTotalCents": "p1.t1.r1.c1", grandTotalCents: "p1.t1.r1.c1" })] }).problems).toEqual([]);
     expect(messages({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2", grandTotalCents: "p1.t1.r1.c1" })] })).toEqual([
+      `visit 'Fee' cites p1.t1.r1.c2, printed under "Fee with overhead": cite the cells printed for that visit, or name the visit as printed.`,
       `row 'Exam' at visit 'Fee' is $100.00, but cell p1.t1.r1.c2 prints "$130.00": write the amount as the cited cell prints it, or cite the cell it is printed in.`,
       "the printed total of row 'Exam' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
     ]);
@@ -503,6 +504,31 @@ describe("checkCitations", () => {
       ]);
     });
 
+    it("a loose match doesn't let a visit cite the column of another visit's exact name", () => {
+      const page = layout("T 0.1-0.5 | Budget", "H | Item | Fee | Fee with overhead", "R 0.11-0.12 | Exam | $100.00 | $115.00");
+      const g = (cells: number[], ids: string[]) => grid({ visits: ["Fee", "Fee with overhead"], rows: [row("Exam", cells)], cellIds: at([ids]) });
+      expect(messages({ grids: [g([10000, 11500], ["p1.t1.r1.c1", "p1.t1.r1.c2"])] }, [page])).toEqual([]);
+      expect(messages({ grids: [g([11500, 10000], ["p1.t1.r1.c2", "p1.t1.r1.c1"])] }, [page])).toEqual([
+        `visit 'Fee' cites p1.t1.r1.c2, printed under "Fee with overhead": cite the cells printed for that visit, or name the visit as printed.`,
+        `visit 'Fee with overhead' cites p1.t1.r1.c1, printed under "Fee": cite the cells printed for that visit, or name the visit as printed.`,
+      ]);
+    });
+
+    it("a loose match still serves a visit whose name no other visit has", () => {
+      const page = layout("T 0.1-0.5 | Budget", "H | Item | Fee with overhead", "R 0.11-0.12 | Exam | $115.00");
+      expect(messages({ grids: [grid({ visits: ["Fee"], rows: [row("Exam", [11500])], cellIds: { "rows.0.cells.0": "p1.t1.r1.c1" } })] }, [page])).toEqual([]);
+    });
+
+    it("a loose match doesn't let a grid row cite the printed row of another grid row's exact name", () => {
+      const page = layout("T 0.1-0.5 | Budget", "H | Item | V1", "R 0.11-0.12 | Exam | $100.00", "R 0.13-0.14 | Exam with contrast | $150.00");
+      const g = (cells: number[], ids: string[][]) => grid({ visits: ["V1"], rows: [row("Exam", [cells[0]!]), row("Exam with contrast", [cells[1]!])], cellIds: at(ids) });
+      expect(messages({ grids: [g([10000, 15000], [["p1.t1.r1.c1"], ["p1.t1.r2.c1"]])] }, [page])).toEqual([]);
+      expect(messages({ grids: [g([15000, 10000], [["p1.t1.r2.c1"], ["p1.t1.r1.c1"]])] }, [page])).toEqual([
+        `row 'Exam' cites p1.t1.r2.c1, printed under "Exam with contrast": cite the cells printed for that row, or name the grid row as printed.`,
+        `row 'Exam with contrast' cites p1.t1.r1.c1, printed under "Exam": cite the cells printed for that row, or name the grid row as printed.`,
+      ]);
+    });
+
     it("two grid lines can't cite one printed row", () => {
       const both = grid({ rows: [row("Labs", [10000, null]), row("Labs", [null, 10000])], cellIds: { "rows.0.cells.0": "p1.t1.r2.c1", "rows.1.cells.1": "p1.t1.r2.c2" } });
       expect(messages({ grids: [both] }, [page1])).toEqual(["row 'Labs' and row 'Labs' all cite printed row p1.t1.r2 of table p1.t1: each grid line comes from its own printed row."]);
@@ -542,7 +568,7 @@ describe("checkCitations", () => {
     expect(messages({ grids: [scannedToo] }, [mixed])).toEqual([
       "row 'Exam' at visit 'Fee with overhead' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
     ]);
-    expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2" }, { pages: [1, 2] })] }, [mixed]).problems).toHaveLength(1);
+    expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2" }, { pages: [1, 2] })] }, [mixed]).problems).toHaveLength(2);
   });
 
   it("reports a marked cell a grid cites", () => {
