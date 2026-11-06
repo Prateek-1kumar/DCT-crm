@@ -703,6 +703,32 @@ describe("relations", () => {
     expect(proven([rel({ kind: "product", result: "p1.t1.r4.c2", operands: ["p1.t1.r1.c2"], rate: "p1.t1.h2" })], [milestones])).toEqual(keys("p1.t1.h2", "p1.t1.r4.c2"));
   });
 
+  const PLACED = "has to be printed in the result's own row (or its column, in a table printed sideways), in its column's heading, or in a line of text on the page.";
+
+  it("a visit-number heading can't be used as a quantity", () => {
+    const visits = scanned(["T 0.3-0.6 | Visits", "H | Proc | Unit | 1 | 8", "R 0.31-0.32 | ECG | $150.00 | $150.00 | $1,200.00"].join("\n"));
+    const byHeading = rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.h3" });
+    expect(proven([byHeading], [visits])).toEqual([]);
+    expect(problems([byHeading], [visits])).toEqual([`p1.t1.r1.c3 = p1.t1.r1.c1 × p1.t1.h3: the rate p1.t1.h3 ${PLACED}`]);
+  });
+
+  it("a rate can't be borrowed past another rate on the same line", () => {
+    const column = scanned(
+      ["T 0.3-0.6 | Summary", "H | Item | Amount", "R 0.31-0.32 | Subtotal | $10,000.00", "R 0.33-0.34 | Overhead rate | 30%", "R 0.35-0.36 | Overhead | $3,000.00", "R 0.37-0.38 | Holdback rate | 10%", "R 0.39-0.40 | Holdback | $3,000.00"].join("\n"),
+    );
+    const row = scanned(["T 0.3-0.6 | Fees", "H | Item | Fee | OH % | OH | HB % | HB", "R 0.31-0.32 | Exam | $10,000.00 | 30% | $3,000.00 | 10% | $3,000.00"].join("\n"));
+    const downColumn = rel({ kind: "product", result: "p1.t1.r5.c1", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r2.c1" });
+    const alongRow = rel({ kind: "product", result: "p1.t1.r1.c5", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r1.c2" });
+    expect(proven([downColumn], [column])).toEqual([]);
+    expect(problems([downColumn], [column])).toEqual(["p1.t1.r5.c1 = p1.t1.r1.c1 × p1.t1.r2.c1: another rate (p1.t1.r4.c1) is printed between p1.t1.r2.c1 and the result: use the rate on the result's line nearest to it."]);
+    expect(proven([alongRow], [row])).toEqual([]);
+    expect(problems([alongRow], [row])).toEqual(["p1.t1.r1.c5 = p1.t1.r1.c1 × p1.t1.r1.c2: another rate (p1.t1.r1.c4) is printed between p1.t1.r1.c2 and the result: use the rate on the result's line nearest to it."]);
+
+    // the rate nearest the result still proves: a percent row directly above its amount, and a percent just before it in a row
+    expect(proven([rel({ kind: "product", result: "p1.t1.r3.c1", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r2.c1" })], [column])).toEqual(keys("p1.t1.r2.c1", "p1.t1.r3.c1"));
+    expect(proven([rel({ kind: "product", result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1"], rate: "p1.t1.r1.c2" })], [row])).toEqual(keys("p1.t1.r1.c2", "p1.t1.r1.c3"));
+  });
+
   it("a total must cover every amount before it in its row", () => {
     const rows = scanned(["T 0.3-0.6 | Fees", "H | Item | A | B | C | Total", "R 0.31-0.32 | ECG | $150.00 | $150.00 | $300.00 | $600.00", "R 0.33-0.34 | Lab | $150.00 | $300.00 | $150.00 | $450.00"].join("\n"));
     const partial = [rel({ result: "p1.t1.r1.c3", operands: ["p1.t1.r1.c1", "p1.t1.r1.c2"] }), rel({ result: "p1.t1.r2.c4", operands: ["p1.t1.r2.c2", "p1.t1.r2.c3"] })];

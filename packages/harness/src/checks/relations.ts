@@ -44,10 +44,17 @@ function amountOf(cell: ScanCell): number | string {
 }
 
 // a line prints its rate among words ("overhead of 30% is added"); a cell prints it bare ("30%", "8.00")
+function rateText(cell: ScanCell) {
+  const percents = cell.text.match(PERCENT) ?? [];
+  return { printed: percents.length === 1 ? percents[0]! : cell.text, percent: percents.length > 0 };
+}
+
+// a bare amount ("300.00") looks like a count too; counting it as a rate only refuses more
+const looksLikeRate = (cell: ScanCell) => parsePercent(rateText(cell).printed) !== null;
+
 function rateOf(cell: ScanCell): Rate | string {
   if (isMarked(cell)) return MARKED(cell.id);
-  const percents = cell.text.match(PERCENT) ?? [];
-  const printed = percents.length === 1 ? percents[0]! : cell.text;
+  const { printed, percent } = rateText(cell);
   const value = parsePercent(printed);
   if (value === null) return `${cell.id} prints "${cell.text}", not one percent or count.`;
   if (value <= 0) return `${cell.id} prints "${cell.text}", and a rate has to be above zero.`;
@@ -55,7 +62,7 @@ function rateOf(cell: ScanCell): Rate | string {
   const units = BigInt((whole || "0") + decimals);
   // the digits counted have to be the number parsePercent read, not another one printed beside it ("Year 2 (3)")
   if (Number(units) / 10 ** decimals.length !== value) return `${cell.id} prints "${cell.text}", not one percent or count.`;
-  return { units, scale: decimals.length, percent: percents.length > 0 };
+  return { units, scale: decimals.length, percent };
 }
 
 const isAmount = (cell: ScanCell) => amountsIn(cell.text).length > 0 || parseCents(cell.text) !== null;
@@ -168,11 +175,18 @@ export function evaluateRelation(r: Relation, rulebook: Rulebook, docs: LoadedDo
   if (rateCell && rateCell.table !== null) {
     // a rate in a table belongs to one line of it; a line of text states a rule for the page
     const inRow = operandCells.every((c) => c.row === resultCell.row);
-    const heading = rateCell.row === null && rateCell.col === resultCell.col;
+    // a bare number heading a column is a visit or year number, never a quantity
+    const heading = rate!.percent && rateCell.row === null && rateCell.col === resultCell.col;
     const line = rateCell.row === resultCell.row || (!inRow && rateCell.col === resultCell.col);
     if (rateCell.table !== resultCell.table || !(heading || line)) {
       return why(`the rate ${r.rate} has to be printed in the result's own row (or its column, in a table printed sideways), in its column's heading, or in a line of text on the page.`);
     }
+    const alongRow = rateCell.row === resultCell.row;
+    const between = (x: number | null, a: number, b: number) => x !== null && x > Math.min(a, b) && x < Math.max(a, b);
+    const past = (cellsOn(doc, resultCell.page) ?? []).find(
+      (c) => c.table === resultCell.table && (alongRow ? c.row === resultCell.row && between(c.col, rateCell.col!, resultCell.col!) : c.col === resultCell.col && between(c.row, rateCell.row ?? 0, resultCell.row!)) && looksLikeRate(c),
+    );
+    if (past) return why(`another rate (${past.id}) is printed between ${r.rate} and the result: use the rate on the result's line nearest to it.`);
   }
   const table = `${r.doc}:${/^p\d+\.t\d+/.exec(r.result)![0]}`;
   const toTheDollar = !holds(r.kind, result, operands, rate);
