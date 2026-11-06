@@ -250,8 +250,8 @@ describe("starting a read", () => {
   it("a page saved by an earlier model is charged and transcribed again", async () => {
     const s = await seedStudy({ scanPages: 2 });
     const { sha256 } = await contractOf(s.id);
-    await scanStore.put(sha256, { page: 1, version: "an-earlier-model", rotation: 0, words: [] });
-    await scanStore.put(sha256, { page: 2, version: scanVersion(fakes().openai), rotation: 0, words: [] });
+    await scanStore.put(sha256, { page: 1, version: "an-earlier-model", rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
+    await scanStore.put(sha256, { page: 2, version: scanVersion(fakes().openai), rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
     use(fakes());
     transcriptions = 0;
     const { readId } = (await post(built, s.id)).json();
@@ -306,7 +306,7 @@ describe("starting a read", () => {
 
   it("charges only for the scanned pages not yet transcribed, when a read stopped part way", async () => {
     const s = await seedStudy({ scanPages: 2 });
-    await scanStore.put((await contractOf(s.id)).sha256, { page: 1, version: scanVersion(fakes().openai), rotation: 0, words: [] });
+    await scanStore.put((await contractOf(s.id)).sha256, { page: 1, version: scanVersion(fakes().openai), rotation: 0, transcription: { rotation: 0, lines: [], tables: [] } });
     use(fakes());
     const { readId } = (await post(built, s.id)).json();
     expect((await get(built, readId)).budgetUsd).toBe(3.4);

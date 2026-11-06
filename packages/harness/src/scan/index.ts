@@ -14,7 +14,7 @@ export const SCAN_PAGE_USD = 0.4;
 const OUTPUT_TOKENS = 8000;
 const PARALLEL_PAGES = 4;
 
-export const scanVersion = (reader: Reader) => `transcribe-1 ${reader.model}`;
+export const scanVersion = (reader: Reader) => `transcribe-2 ${reader.model}`;
 
 const readyPages = async (doc: LoadedDoc, store: ScanStore, reader: Reader) => (await store.get(doc.sha256)).filter((p) => p.version === scanVersion(reader));
 const needsReading = (page: Page, saved: ScanPage[]) => page.kind === "image" && !saved.some((s) => s.page === page.page);
@@ -36,8 +36,7 @@ export function withScans(doc: LoadedDoc, pages: ScanPage[]): LoadedDoc {
     ...doc,
     pages: doc.pages.map((p) => {
       const scan = p.kind === "image" ? found.get(p.page) : undefined;
-      // copied, because masking bank numbers rewrites the words in place
-      return scan ? buildPage(p.page, scan.words.map((w) => ({ ...w })), "scan", scan.rotation) : p;
+      return scan ? buildPage(p.page, toWords(scan.transcription), "scan", scan.rotation) : p;
     }),
   };
 }
@@ -65,11 +64,11 @@ async function transcribePage(doc: LoadedDoc, page: Page, reader: Reader, budget
   const first = await transcribeWithin(reader, budget, await render(doc));
   if (!first) return undefined;
   const rotation = quarterTurn(first.rotation);
-  if (rotation === 0) return { page: page.page, version: scanVersion(reader), rotation, words: toWords(first) };
+  if (rotation === 0) return { page: page.page, version: scanVersion(reader), rotation, transcription: first };
 
   const turned = { ...doc, pages: doc.pages.map((p) => (p.page === page.page ? { ...p, rotation } : p)) };
   const second = await transcribeWithin(reader, budget, await render(turned));
-  return second && { page: page.page, version: scanVersion(reader), rotation, words: toWords(second) };
+  return second && { page: page.page, version: scanVersion(reader), rotation, transcription: second };
 }
 
 export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store: ScanStore; budget: Budget; onProgress?: (line: string) => void }): Promise<LoadedDoc[]> {
@@ -95,7 +94,7 @@ export async function scanDocs(docs: LoadedDoc[], opts: { reader: Reader; store:
         }
         await store.put(job.doc.sha256, scan);
         job.saved.push(scan);
-        if (!scan.words.length) opts.onProgress?.(`p.${job.page.page} of ${job.doc.name} looked blank when read from the image`);
+        if (!toWords(scan.transcription).length) opts.onProgress?.(`p.${job.page.page} of ${job.doc.name} looked blank when read from the image`);
         done++;
         progress();
       } catch (cause) {

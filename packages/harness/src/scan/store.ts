@@ -10,7 +10,9 @@ export function fileScanStore(dir: string): ScanStore {
 
   async function get(sha256: string): Promise<ScanPage[]> {
     try {
-      return JSON.parse(await readFile(file(sha256), "utf8")) as ScanPage[];
+      // pages saved before transcriptions were kept hold words only; they count as not read
+      const saved = JSON.parse(await readFile(file(sha256), "utf8")) as Partial<ScanPage>[];
+      return saved.filter((p): p is ScanPage => !!p.transcription);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;

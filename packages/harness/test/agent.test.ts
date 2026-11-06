@@ -216,7 +216,8 @@ describe("scan pages", () => {
   });
 
   it("read_pages shows a doubtful bank number masked, as it does a certain one", async () => {
-    const page = { page: 1, version: "v", rotation: 0, words: wordsOf("Account number 123456789\nFee $1,250.00").map((w) => (w.text === "123456789" ? { ...w, doubt: "unsure" as const } : w)) };
+    const lines = [{ text: "Account number", top: 0.1, bottom: 0.12, unsure: false, marks: [] }, { text: "123456789", top: 0.2, bottom: 0.22, unsure: true, marks: [] }, { text: "Fee $1,250.00", top: 0.3, bottom: 0.32, unsure: false, marks: [] }];
+    const page = { page: 1, version: "v", rotation: 0, transcription: { rotation: 0, lines, tables: [] } };
     const [masked] = [withScans({ ...textDoc("x"), pages: [{ ...textDoc("x").pages[0]!, kind: "image", words: [] }] }, [page])];
     const calls = await read(masked!);
     const shown = String(resultsAfter(calls[1]!.messages)[0]!.content);

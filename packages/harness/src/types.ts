@@ -1,4 +1,5 @@
 import type { Question, Region, Rulebook } from "@dct/shared";
+import type { Transcription } from "./scan/transcribe";
 
 /** A word on a page, positioned as fractions 0–1 of the page, origin top-left. */
 export interface Word {
@@ -36,14 +37,14 @@ export interface Page {
   rotation: number;
 }
 
-/** What the vision model transcribed from one page: kept per file, so each scan is paid for once. */
+/** What the vision model transcribed from one page: kept per file, so each scan is paid for once. The words are derived on load, so a fix to `toWords` reaches pages already saved. */
 export interface ScanPage {
   page: number;
   /** Names the transcription prompt and model, so a page read by another is read again. */
   version: string;
-  /** Degrees clockwise the page was turned to read (a sideways or upside-down scan); `words` are in the turned frame. */
+  /** Degrees clockwise the page was turned to read (a sideways or upside-down scan); the words are in the turned frame. */
   rotation: number;
-  words: Word[];
+  transcription: Transcription;
 }
 
 export interface ScanStore {

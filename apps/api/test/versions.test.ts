@@ -82,8 +82,8 @@ async function scannedDoc() {
   pdf.addPage([612, 792]);
   pdf.setTitle(randomUUID());
   const sha256 = await savePdf(Buffer.from(await pdf.save()));
-  const words = ["Exhibit", "A"].map((text, i) => ({ text, x0: 0.05 + i * 0.1, x1: 0.1 + i * 0.1, y0: 0.05, y1: 0.06 }));
-  await scanStore.put(sha256, { page: 1, version: "test", rotation: 0, words });
+  const lines = [{ text: "Exhibit A", top: 0.05, bottom: 0.06, unsure: false, marks: [] }];
+  await scanStore.put(sha256, { page: 1, version: "test", rotation: 0, transcription: { rotation: 0, lines, tables: [] } });
   const [doc] = await db().insert(documents).values({ sha256, name: "scan.pdf", bytes: 1, pages: [{ page: 1, kind: "scan", chars: 9, firstLine: "Exhibit A" }], createdBy: "test" }).returning();
   return doc!.id;
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCanvas } from "@napi-rs/canvas";
@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Ask, Budget, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { groupLines, rawLine } from "../src/pdf/lines";
-import { fileScanStore, scanDocs, scanVersion, untranscribed } from "../src/scan";
+import { fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "../src/scan";
 import type { Transcription } from "../src/scan/transcribe";
 import { toWords } from "../src/scan/words";
 import { ReadFailed } from "../src/read";
@@ -175,10 +175,24 @@ describe("scanDocs", () => {
     const { reader } = fakeReader(() => transcription());
     const store = memoryStore();
     expect(await untranscribed([doc], store, reader)).toBe(2);
-    await store.put(doc.sha256, { page: 1, version: "transcribe-1 other-model", rotation: 0, words: [] });
+    await store.put(doc.sha256, { page: 1, version: "transcribe-2 other-model", rotation: 0, transcription: transcription() });
     expect(await untranscribed([doc], store, reader)).toBe(2);
-    await store.put(doc.sha256, { page: 1, version: scanVersion(reader), rotation: 0, words: [] });
+    await store.put(doc.sha256, { page: 1, version: scanVersion(reader), rotation: 0, transcription: transcription() });
     expect(await untranscribed([doc], store, reader)).toBe(1);
+  });
+
+  it("a page saved in the old format is read again", async () => {
+    const doc = await imagePdf("old-format.pdf", [[612, 792]]);
+    const { reader, sent } = fakeReader(() => transcription());
+    const store = fileScanStore(join(dir, "scans-old"));
+    await mkdir(join(dir, "scans-old"), { recursive: true });
+    await writeFile(join(dir, "scans-old", `${doc.sha256}.scan.json`), JSON.stringify([{ page: 1, version: `transcribe-1 ${reader.model}`, rotation: 0, words: [] }]));
+    expect(await untranscribed([doc], store, reader)).toBe(1);
+
+    const [scanned] = await scanDocs([doc], { reader, store, budget: budgetOf(3) });
+    expect(sent).toHaveLength(1);
+    expect(scanned!.pages[0]!.kind).toBe("scan");
+    expect(await untranscribed([doc], store, reader)).toBe(0);
   });
 
   it("turns a sideways page and reads it again", async () => {
@@ -247,11 +261,21 @@ describe("scanDocs", () => {
   });
 });
 
+describe("withScans", () => {
+  it("a saved transcription is turned into words when loaded, so a later fix to toWords applies without reading the page again", async () => {
+    const doc = await imagePdf("load.pdf", [[612, 792]]);
+    const saved = transcription();
+    const loaded = withScans(doc, [{ page: 1, version: "v", rotation: 0, transcription: saved }]);
+    expect(loaded.pages[0]).toMatchObject({ kind: "scan", words: toWords(saved) });
+    expect(loaded.pages[0]!.words.length).toBeGreaterThan(0);
+  });
+});
+
 describe("fileScanStore", () => {
   it("keeps every page under parallel puts, one file per document", async () => {
     const store = fileScanStore(join(dir, "scans"));
     const sha = "a".repeat(64);
-    await Promise.all(Array.from({ length: 10 }, (_, i) => store.put(sha, { page: i + 1, version: "v", rotation: 0, words: [] })));
+    await Promise.all(Array.from({ length: 10 }, (_, i) => store.put(sha, { page: i + 1, version: "v", rotation: 0, transcription: transcription() })));
     expect((await store.get(sha)).map((p) => p.page).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(await readdir(join(dir, "scans"))).toEqual([`${sha}.scan.json`]);
     expect(await store.get("b".repeat(64))).toEqual([]);
@@ -259,8 +283,8 @@ describe("fileScanStore", () => {
 
   it("replaces a page put again", async () => {
     const store = fileScanStore(join(dir, "scans-again"));
-    await store.put("c", { page: 1, version: "old", rotation: 0, words: [] });
-    await store.put("c", { page: 1, version: "new", rotation: 0, words: [] });
+    await store.put("c", { page: 1, version: "old", rotation: 0, transcription: transcription() });
+    await store.put("c", { page: 1, version: "new", rotation: 0, transcription: transcription() });
     expect(await store.get("c")).toMatchObject([{ page: 1, version: "new" }]);
   });
 });
