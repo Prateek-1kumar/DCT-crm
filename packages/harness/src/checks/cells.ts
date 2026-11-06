@@ -1,6 +1,7 @@
 import { parseCents, type Rulebook } from "@dct/shared";
 import type { ScanCell } from "../scan/cells";
 import type { Doubt, LoadedDoc, Problem } from "../types";
+import { printedAmounts } from "./grid";
 import { amountsIn, looseContains, usd } from "./text";
 
 type Term = Rulebook["terms"][number];
@@ -22,9 +23,13 @@ const pageOf = (id: string) => Number(/^p(\d+)\./.exec(id)?.[1]);
 const cellOf = (doc: LoadedDoc, id: string) => cellsOn(doc, pageOf(id))?.find((c) => c.id === id);
 const isMarked = (cell: ScanCell) => cell.doubts.some((d) => MARKS.has(d));
 
-// A line's amount sits among its words, and a marked cell can hold a struck value and its replacement; any other cell is one amount.
-const prints = (cell: ScanCell, cents: number) =>
-  cell.table === null || isMarked(cell) ? [parseCents(cell.text), ...amountsIn(cell.text)].includes(cents) : parseCents(cell.text) === cents;
+// A line's amount sits among its words, and a marked cell can hold a struck value and its replacement; any other cell prints
+// one amount, maybe with words ("$1,500.00 per visit") or bare ("1500").
+function prints(cell: ScanCell, cents: number) {
+  const amounts = amountsIn(cell.text);
+  if (cell.table === null || isMarked(cell)) return [parseCents(cell.text), ...amounts].includes(cents);
+  return amounts.length ? amounts.length === 1 && amounts[0] === cents : parseCents(cell.text) === cents;
+}
 
 interface Cite {
   what: string;
@@ -33,7 +38,7 @@ interface Cite {
   cents: number;
   /** undefined when nothing is cited; null when an answer or a closer read changed the amount, so it no longer rests on a cell. */
   id: string | null | undefined;
-  /** It may cite nothing: a person settled it, or it may be printed on a page that isn't a scan. */
+  /** It may cite nothing: a person settled it, or the grid's text pages print it. */
   optional: boolean;
   pages: number[];
   pagesText: string;
@@ -138,8 +143,8 @@ function shapeIssues(cited: { amount: Amount; id: string }[], visits: string[]):
 export function citeGrid(g: Grid, docs: LoadedDoc[], marked: Marked[] = []): string[] {
   const doc = docs.find((d) => d.name === g.doc);
   if (!doc || !g.pages.some((n) => cellsOn(doc, n))) return [];
-  // an amount that cites nothing may be printed on a page with a text layer, which needs no citation
-  const mixed = g.pages.some((n) => !cellsOn(doc, n));
+  // an amount printed on one of the grid's pages with a text layer needs no citation
+  const onText = printedAmounts(g, docs);
   const settled = new Set(g.cellsReadTwice.map(([row, col]) => `rows.${row}.cells.${col}`));
   const amounts = amountsOf(g);
   const cited = amounts.flatMap((amount) => {
@@ -147,8 +152,9 @@ export function citeGrid(g: Grid, docs: LoadedDoc[], marked: Marked[] = []): str
     return typeof id === "string" ? [{ amount, id }] : [];
   });
   const values = amounts.flatMap(({ path, cents, what }) => {
+    const optional = onText.has(Math.abs(cents)) || settled.has(path);
     const mark = (cell: ScanCell) => marked.push({ target: "grid", id: g.id, path, cell: cell.id, doubts: cell.doubts });
-    const cite: Cite = { what, how: "write it as {value, cell}", cents, id: g.cellIds?.[path], optional: mixed || settled.has(path), pages: g.pages, pagesText: `the grid's pages (${g.pages.join(", ")})`, mark };
+    const cite: Cite = { what, how: "write it as {value, cell}", cents, id: g.cellIds?.[path], optional, pages: g.pages, pagesText: `the grid's pages (${g.pages.join(", ")})`, mark };
     return checkOne(doc, cite) ?? [];
   });
   return [...shapeIssues(cited, g.visits), ...values];

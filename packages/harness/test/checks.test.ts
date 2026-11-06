@@ -330,6 +330,7 @@ describe("checkCitations", () => {
       "R 0.33-0.34 | Labs | $900.00{x} $1,050.00{hw} | $1,365.00",
       "R 0.35-0.36 | Visit fee | $100.00 | $130.00",
       "R 0.37-0.38 | Bundle | $100.00 $130.00 |",
+      "R 0.39-0.40 | Per visit | $1,500.00 per visit |",
       "L 0.7-0.72 | Startup fee $2,000.00 payable on signature{in}",
       "L 0.8-0.82 | Closeout fee $500.00, at most $5,000.00 a year",
     ].join("\n"),
@@ -368,6 +369,11 @@ describe("checkCitations", () => {
     expect(messages({ terms: [cited(10000, "p1.t1.r4.c1", "Bundle")] })).toEqual([
       'the amount is $100.00, but cell p1.t1.r4.c1 prints "$100.00 $130.00": write the amount as the cited cell prints it, or cite the cell it is printed in.',
     ]);
+  });
+
+  it("a cell printing one amount with words can be cited", () => {
+    expect(messages({ terms: [cited(150000, "p1.t1.r5.c1", "Per visit")] })).toEqual([]);
+    expect(messages({ terms: [cited(15000, "p1.t1.r5.c1", "Per visit")] })).toHaveLength(1);
   });
 
   it("a term citing another row that prints the same amount is refused", () => {
@@ -434,9 +440,13 @@ describe("checkCitations", () => {
     expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.printedRowTotalCents": null, grandTotalCents: null })] }).problems).toEqual([]);
   });
 
-  it("a grid that also spans a text page needs no citation for an amount that may be printed there", () => {
+  it("listing a text page in a scanned grid doesn't excuse its scanned values from citing", () => {
     const mixed = doc("A.pdf", fees.pages[0]!, page(2, "text", "Exam $100.00"));
     expect(citations({ grids: [exam({}, { pages: [1, 2] })] }, [mixed]).problems).toEqual([]);
+    const scannedToo = exam({}, { pages: [1, 2], rows: [{ name: "Exam", code: null, unitCostCents: null, cells: [10000, 13000], printedRowTotalCents: 10000 }] });
+    expect(messages({ grids: [scannedToo] }, [mixed])).toEqual([
+      "row 'Exam' at visit 'V2' is on a scanned page, so it has to cite the cell or line it is printed in (write it as {value, cell}), with its id as read_pages shows it, e.g. p7.t1.r5.c3.",
+    ]);
     expect(citations({ grids: [exam({ "rows.0.cells.0": "p1.t1.r1.c2" }, { pages: [1, 2] })] }, [mixed]).problems).toHaveLength(1);
   });
 

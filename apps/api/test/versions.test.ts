@@ -452,7 +452,7 @@ describe("an answer that changes a scanned term's amount", () => {
   const scanSource = { doc: "scan.pdf", page: 1, quote: "Exam" };
   const options = [
     { label: "Use $260.00", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000 } }] },
-    { label: "Use the fee with overhead", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000, source: { ...scanSource, cell: "p1.t1.r1.c2" } } }] },
+    { label: "Use the fee with overhead", patches: [{ target: "term" as const, id: "t9", set: { amountCents: 26000, "source.cell": "p1.t1.r1.c2" } }] },
   ];
 
   it.each([

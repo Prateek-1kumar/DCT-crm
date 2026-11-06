@@ -141,11 +141,15 @@ export type Study = z.infer<typeof Study>;
 export const Patch = z.object({ target: z.enum(["term", "grid"]), id: text, set: z.record(z.string(), z.unknown()) });
 export type Patch = z.infer<typeof Patch>;
 
-/** What an agent's patch must never set: identity, and the proof only a check or a person earns. */
-const LOCKED_FIELDS = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted"]);
+/**
+ * What an agent's patch must never set: identity, the proof only a check or a person earns, and the cells scanned amounts
+ * cite, which only the agent's own put_terms and put_grid set and only a changed amount clears.
+ */
+const LOCKED_FIELDS = new Set(["id", "evidence", "cellsReadTwice", "acceptedAsPrinted", "cellIds"]);
+const LOCKED_PATHS = ["source.cell", "source.capCell"];
 
 /** Whether a patch key is a locked field or a path into one ("cellsReadTwice.0"). */
-export const isLockedField = (key: string) => LOCKED_FIELDS.has(key.split(".")[0]!);
+export const isLockedField = (key: string) => LOCKED_FIELDS.has(key.split(".")[0]!) || LOCKED_PATHS.some((path) => key === path || key.startsWith(`${path}.`));
 
 export const QuestionKind = z.enum(["reading", "elsewhere", "decision"]);
 export type QuestionKind = z.infer<typeof QuestionKind>;

@@ -22,6 +22,9 @@ function setPath(grid: Grid, path: string, value: unknown) {
 const issues = (error: { issues: { path: PropertyKey[]; message: string }[] }) =>
   error.issues.map((i) => `${i.path.join(".") || "the term"}: ${i.message}`).join("; ");
 
+const SOURCE_CELL = "source.cell";
+const SOURCE_CAP_CELL = "source.capCell";
+
 function patchTerm(rulebook: Rulebook, { id, set }: Patch) {
   const term = rulebook.terms.find((t) => t.id === id);
   if (!term) {
@@ -32,10 +35,15 @@ function patchTerm(rulebook: Rulebook, { id, set }: Patch) {
     return;
   }
   if (Object.hasOwn(set, "id")) throw new Error(`Term '${id}' already exists, so it can't be added again.`);
-  for (const key of Object.keys(set)) {
+  const { [SOURCE_CELL]: cell, [SOURCE_CAP_CELL]: capCell, ...fields } = set;
+  for (const key of Object.keys(fields)) {
     if (!Object.hasOwn(term, key)) throw new Error(`A term has no field called '${key}', so term '${id}' can't be changed that way.`);
   }
-  Object.assign(term, set);
+  const cites = { cell: SOURCE_CELL in set ? cell : term.source.cell, capCell: SOURCE_CAP_CELL in set ? capCell : term.source.capCell };
+  Object.assign(term, fields);
+  // a new source keeps the cells its amounts cite: only "source.cell" and "source.capCell" change those, and null clears one
+  const { cell: _cell, capCell: _capCell, ...source } = term.source;
+  term.source = { ...source, ...Object.fromEntries(Object.entries(cites).filter(([, v]) => v != null)) };
 }
 
 const CITE = "cellIds.";
@@ -93,11 +101,9 @@ export function citationPatches(rulebook: Rulebook, patches: Patch[]): Patch[] {
   const dropped: Patch[] = [];
   for (const t of rulebook.terms) {
     const sets = patches.filter((p) => p.target === "term" && p.id === t.id).map((p) => p.set);
-    if (sets.some((set) => "source" in set)) continue;
-    const { cell, capCell, ...source } = t.source;
-    const amount = cell !== undefined && sets.some((set) => "amountCents" in set && set.amountCents !== t.amountCents);
-    const cap = capCell !== undefined && sets.some((set) => "cap" in set && capAmount(set.cap) !== capAmount(t.cap));
-    if (amount || cap) dropped.push({ target: "term", id: t.id, set: { source: { ...source, ...(!amount && cell !== undefined && { cell }), ...(!cap && capCell !== undefined && { capCell }) } } });
+    const amount = t.source.cell !== undefined && !sets.some((set) => SOURCE_CELL in set) && sets.some((set) => "amountCents" in set && set.amountCents !== t.amountCents);
+    const cap = t.source.capCell !== undefined && !sets.some((set) => SOURCE_CAP_CELL in set) && sets.some((set) => "cap" in set && capAmount(set.cap) !== capAmount(t.cap));
+    if (amount || cap) dropped.push({ target: "term", id: t.id, set: { ...(amount && { [SOURCE_CELL]: null }), ...(cap && { [SOURCE_CAP_CELL]: null }) } });
   }
   for (const g of rulebook.grids) {
     const sets = patches.filter((p) => p.target === "grid" && p.id === g.id).flatMap((p) => Object.entries(p.set));

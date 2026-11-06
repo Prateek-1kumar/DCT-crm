@@ -28,7 +28,7 @@ function shapeProblems(grid: Grid): string[] {
 }
 
 // Amount-on-page only: it is not checked to sit in this cell's position. Upgrade path: match the word box in the grid's region.
-function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
+export function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
   const doc = docs.find((d) => d.name === grid.doc);
   const pages = doc?.pages.filter((p) => p.kind === "text" && grid.pages.includes(p.page)) ?? [];
   return new Set(pages.flatMap((p) => amountsIn(p.layout)));

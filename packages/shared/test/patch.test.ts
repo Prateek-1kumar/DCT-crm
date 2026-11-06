@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, cellProofPatches, citationPatches, type Patch, type Rulebook, type Term } from "../src/index.js";
+import { applyPatches, cellProofPatches, citationPatches, isLockedField, type Patch, type Rulebook, type Term } from "../src/index.js";
 
 const term: Term = {
   id: "t1", category: "site_fee", name: "Startup fee", amountCents: 100000, unit: null, billing: "auto_paid", trigger: null, cap: null,
@@ -90,10 +90,17 @@ describe("applyPatches", () => {
 });
 
 describe("a scanned value's citation", () => {
-  it("is kept on a term's source, and a patch re-points or clears it with the source", () => {
-    const cited = applyPatches(rulebook, [termPatch("t1", { source: { ...term.source, cell: "p1.t1.r1.c1" } })]);
-    expect(cited.terms[0]!.source.cell).toBe("p1.t1.r1.c1");
-    expect(applyPatches(cited, [termPatch("t1", { amountCents: 5, source: term.source })]).terms[0]!.source).toEqual(term.source);
+  it("of a term is set, re-pointed and cleared only by source.cell and source.capCell; a new source keeps them", () => {
+    const cited = applyPatches(rulebook, [termPatch("t1", { "source.cell": "p1.t1.r1.c1", "source.capCell": "p1.l2" })]);
+    expect(cited.terms[0]!.source).toEqual({ ...term.source, cell: "p1.t1.r1.c1", capCell: "p1.l2" });
+    const quoted = applyPatches(cited, [termPatch("t1", { source: { ...term.source, quote: "Startup", cell: "p9.l1" } })]);
+    expect(quoted.terms[0]!.source).toEqual({ ...term.source, quote: "Startup", cell: "p1.t1.r1.c1", capCell: "p1.l2" });
+    expect(applyPatches(cited, [termPatch("t1", { "source.cell": "p1.t1.r1.c2", "source.capCell": null })]).terms[0]!.source).toEqual({ ...term.source, cell: "p1.t1.r1.c2" });
+  });
+
+  it("is a locked field, so an option an agent or the reviewer writes can't set or clear it", () => {
+    expect(["source.cell", "source.capCell", "cellIds", "cellIds.rows.0.cells.1"].filter(isLockedField)).toHaveLength(4);
+    expect(["source", "amountCents", "rows.0.cells.1"].filter(isLockedField)).toEqual([]);
   });
 
   it("of a grid value is set, re-pointed and cleared at the value's path under cellIds", () => {
@@ -110,10 +117,11 @@ describe("a scanned value's citation", () => {
       terms: [{ ...term, source: { ...term.source, cell: "p1.t1.r1.c1", capCell: "p1.l2" }, cap: { kind: "amount", value: 500000, period: null, text: "" } }],
       grids: [{ ...rulebook.grids[0]!, cellIds: { "rows.0.cells.1": "p1.t1.r1.c2", "subtotal.1": "p1.t1.r2.c2", grandTotalCents: "p1.t1.r3.c1" } }],
     };
-    expect(citationPatches(cited, [termPatch("t1", { amountCents: 150000 })])).toEqual([termPatch("t1", { source: { ...term.source, capCell: "p1.l2" } })]);
-    expect(citationPatches(cited, [termPatch("t1", { cap: { kind: "amount", value: 1, period: null, text: "" } })])).toEqual([termPatch("t1", { source: { ...term.source, cell: "p1.t1.r1.c1" } })]);
+    expect(citationPatches(cited, [termPatch("t1", { amountCents: 150000 })])).toEqual([termPatch("t1", { "source.cell": null })]);
+    expect(citationPatches(cited, [termPatch("t1", { cap: { kind: "amount", value: 1, period: null, text: "" } })])).toEqual([termPatch("t1", { "source.capCell": null })]);
     expect(citationPatches(cited, [termPatch("t1", { amountCents: 100000, notes: "same amount" })])).toEqual([]);
-    expect(citationPatches(cited, [termPatch("t1", { amountCents: 1, source: { ...term.source, cell: "p1.t1.r1.c2" } })])).toEqual([]);
+    expect(citationPatches(cited, [termPatch("t1", { amountCents: 1, "source.cell": "p1.t1.r1.c2" })])).toEqual([]);
+    expect(citationPatches(cited, [termPatch("t1", { amountCents: 1, source: { ...term.source, cell: "p1.t1.r1.c2" } })])).toEqual([termPatch("t1", { "source.cell": null })]);
 
     expect(citationPatches(cited, [gridPatch({ "rows.0.cells.1": 250, "subtotal.1": 200 })])).toEqual([gridPatch({ "cellIds.rows.0.cells.1": null })]);
     expect(citationPatches(cited, [gridPatch({ subtotal: [100, 250] })])).toEqual([gridPatch({ "cellIds.subtotal.1": null })]);

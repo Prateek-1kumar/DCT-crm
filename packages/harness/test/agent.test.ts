@@ -266,6 +266,21 @@ describe("a question the agent writes", () => {
   });
 });
 
+describe("a citation in an option", () => {
+  it("an option written by the compile agent can't clear a citation", async () => {
+    const options = [
+      { label: "Use $250.00", patches: [{ target: "grid", id: "g1", set: { "rows.0.cells.1": 25000, "cellIds.rows.0.cells.0": null, cellIds: {} } }, { target: "term", id: "t1", set: { notes: "x", "source.cell": null, "source.capCell": "p1.l1" } }] },
+    ];
+    const asked = { id: "q1", kind: "decision", question: "Which one?", source: { doc: "A.pdf", page: 1, quote: "Exhibit A Budget" }, options };
+    const { result } = await run([textDoc(...BUDGET)], [reply([call("put_study", { study }), call("put_terms", { terms: [startup] }), call("put_grid", { grid }), call("put_questions", { questions: [asked] })]), reply([call("finish")])]);
+
+    expect(result.rulebook.questions[0]!.options[0]!.patches).toEqual([
+      { target: "grid", id: "g1", set: { "rows.0.cells.1": 25000 } },
+      { target: "term", id: "t1", set: { notes: "x" } },
+    ]);
+  });
+});
+
 describe("view_page", () => {
   let dir: string | undefined;
   afterAll(async () => {
