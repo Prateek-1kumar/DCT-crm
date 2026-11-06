@@ -8,7 +8,8 @@ import { compile, type CompileOptions } from "../src/agent";
 import { withScans } from "../src/scan";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
 import { pdfReader } from "../src/pdf";
-import type { Doubt, LoadedDoc } from "../src/types";
+import type { Transcription } from "../src/scan/transcribe";
+import type { LoadedDoc } from "../src/types";
 import { wordsOf } from "./words";
 
 const BUDGET = [
@@ -191,11 +192,12 @@ describe("compile", () => {
 });
 
 describe("scan pages", () => {
-  const scanDoc = (lines: string[], doubts: Record<string, Doubt> = {}): LoadedDoc => {
+  const scanDoc = (lines: string[]): LoadedDoc => {
     const doc = textDoc(...lines);
-    const page = doc.pages[0]!;
-    return { ...doc, pages: [{ ...page, kind: "scan", words: page.words.map((w) => (doubts[w.text] ? { ...w, doubt: doubts[w.text] } : w)) }] };
+    return { ...doc, pages: [{ ...doc.pages[0]!, kind: "scan" }] };
   };
+  const transcribed = (lines: Transcription["lines"]) =>
+    withScans({ ...textDoc("x"), pages: [{ ...textDoc("x").pages[0]!, kind: "image", words: [] }] }, [{ page: 1, version: "v", rotation: 0, transcription: { rotation: 0, lines, tables: [] } }]);
   const NOTE = "SCAN: text read from the page image by a vision model; amounts the contract's arithmetic doesn't prove are re-read at zoom after you finish. Quote the words as transcribed.";
   const read = async (doc: LoadedDoc) => {
     const { calls } = await run([doc], [reply([call("read_pages", { doc: "A.pdf", pages: [1] })]), reply([])], { maxTurns: 2 });
@@ -208,26 +210,16 @@ describe("scan pages", () => {
     expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).toBe(`=== A.pdf p1 ===\n(${NOTE})\n${BUDGET.join("\n")}`);
   });
 
-  it("read_pages lists doubtful words on a scan page", async () => {
-    const calls = await read(scanDoc(["Fee $1,250.00 and $900.00 and $50.00"], { "$1,250.00": "unsure", "$900.00": "handwritten" }));
-    expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).toBe(
-      `=== A.pdf p1 ===\n(${NOTE})\nFee $1,250.00 and $900.00 and $50.00\nDoubtful on this page: "$1,250.00" (unsure); "$900.00" (handwritten)`,
-    );
+  it("read_pages shows a scan page's doubts once, on the values they apply to", async () => {
+    const calls = await read(transcribed([{ text: "Fee $1,250.00 and $900.00", top: 0.1, bottom: 0.12, unsure: true, marks: ["handwritten"], parts: [{ text: "Fee $1,250.00 and", unsure: true, marks: [] }, { text: "$900.00", unsure: false, marks: ["handwritten"] }] }]));
+    expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).toBe(`=== A.pdf p1 ===\n(${NOTE})\np1.l1 | Fee $1,250.00 and{?} $900.00{hw}`);
   });
 
   it("read_pages shows a doubtful bank number masked, as it does a certain one", async () => {
-    const lines = [{ text: "Account number", top: 0.1, bottom: 0.12, unsure: false, marks: [] }, { text: "123456789", top: 0.2, bottom: 0.22, unsure: true, marks: [] }, { text: "Fee $1,250.00", top: 0.3, bottom: 0.32, unsure: false, marks: [] }];
-    const page = { page: 1, version: "v", rotation: 0, transcription: { rotation: 0, lines, tables: [] } };
-    const [masked] = [withScans({ ...textDoc("x"), pages: [{ ...textDoc("x").pages[0]!, kind: "image", words: [] }] }, [page])];
-    const calls = await read(masked!);
+    const calls = await read(transcribed([{ text: "Account number", top: 0.1, bottom: 0.12, unsure: false, marks: [] }, { text: "123456789", top: 0.2, bottom: 0.22, unsure: true, marks: [] }, { text: "Fee $1,250.00", top: 0.3, bottom: 0.32, unsure: false, marks: [] }]));
     const shown = String(resultsAfter(calls[1]!.messages)[0]!.content);
-    expect(shown).toContain('Doubtful on this page: "#########" (unsure)');
+    expect(shown).toContain("p1.l2 | #########{?}");
     expect(shown).not.toContain("123456789");
-  });
-
-  it("read_pages adds no doubt line when there are none", async () => {
-    const calls = await read(scanDoc(["Fee $1,250.00"]));
-    expect(String(resultsAfter(calls[1]!.messages)[0]!.content)).not.toContain("Doubtful");
   });
 
   it("leave their amounts to the harness's own proof, so finish can pass without them", async () => {

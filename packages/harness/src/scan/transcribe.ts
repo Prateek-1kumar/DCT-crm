@@ -52,7 +52,7 @@ const SPAN = /^(\d*\.?\d+)\s*[-\u2013]\s*(\d*\.?\d+)$/;
 
 type Span = [top: number, bottom: number];
 type Piece = z.infer<typeof Piece>;
-type Field = z.infer<typeof Cell>;
+export type Field = z.infer<typeof Cell>;
 type Item =
   | ({ kind: "L"; span?: Span } & Field)
   | { kind: "T"; span?: Span; title: string }
@@ -130,22 +130,6 @@ export function parseTranscription({ rotation, text }: Compact): Transcription {
     t.columns = [];
   }
   return { rotation, lines, tables };
-}
-
-const blank = (c: Field) => !c.text && !c.unsure && !c.marks.length;
-
-/** A row with a label but only blank cells is the label of the row above wrapping onto another line, so it joins that row. */
-export function joinWrapped(t: Transcription): Transcription {
-  const tables = t.tables.map((table) => ({
-    ...table,
-    rows: table.rows.reduce<Transcription["tables"][number]["rows"]>((rows, r) => {
-      const above = rows.at(-1);
-      if (above && r.label && r.cells.every(blank)) rows[rows.length - 1] = { ...above, label: [above.label, r.label].filter(Boolean).join(" "), bottom: Math.max(above.bottom, r.bottom) };
-      else rows.push(r);
-      return rows;
-    }, []),
-  }));
-  return { ...t, tables };
 }
 
 export const SCAN_DPI = 200;

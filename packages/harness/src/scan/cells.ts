@@ -1,6 +1,6 @@
 import { isBankHeading, maskBankDetails } from "../pdf/lines";
 import type { Doubt, Word } from "../types";
-import { DOUBTS, joinWrapped, type Transcription } from "./transcribe";
+import { DOUBTS, type Field, type Transcription } from "./transcribe";
 import { hide } from "./words";
 
 /** One cell, heading or line of a transcribed page, with an id derived from where it sits in the transcription. */
@@ -15,8 +15,6 @@ export interface ScanCell {
   heading?: string;
   rowLabel?: string;
 }
-
-type Field = { text: string; unsure: boolean; marks: Doubt[]; parts?: Field[] };
 
 interface Laid {
   id: string;
@@ -34,8 +32,7 @@ const textOf = (l: Laid) => l.parts.map((p) => p.words.map((w) => w.text).join("
 const shownOf = (l: Laid) => l.parts.map((p) => p.words.map((w) => w.text).join(" ") + p.doubts.map((d) => TAGS[d]).join("")).filter(Boolean).join(" ");
 
 /** The page's titles, headings, rows and lines in reading order, one array per printed line, with bank details masked as on a text page. */
-function laidOut(page: number, read: Transcription): Laid[][] {
-  const t = joinWrapped(read);
+function laidOut(page: number, t: Transcription): Laid[][] {
   const lay = (id: string, table: number | null, row: number | null, col: number | null, f: Field, masked = false): Laid => ({
     id, table, row, col, doubts: doubtsOf(f),
     parts: (f.parts ?? [f]).map((p) => ({ doubts: doubtsOf(p), words: p.text.split(/\s+/).filter(Boolean).map((w) => ({ text: masked ? hide(w) : w, x0: 0, y0: 0, x1: 0, y1: 0 })) })),

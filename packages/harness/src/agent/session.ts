@@ -107,9 +107,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       const out = wanted.map((n) => {
         const page = doc.pages[n - 1];
         if (!page) return `=== ${doc.name} p${n} ===\n(this document has only ${doc.pages.length} pages)`;
-        const doubtful = page.words.filter((w) => w.doubt).map((w) => `"${w.text}" (${w.doubt!.replace("_", " ")})`);
-        const scan = `(${SCAN_NOTE})\n${page.layout}` + (doubtful.length ? `\nDoubtful on this page: ${doubtful.join("; ")}` : "");
-        const body = { text: page.layout, scan, image: "(IMAGE page: no text layer, use view_page)" }[page.kind];
+        const body = { text: page.layout, scan: `(${SCAN_NOTE})\n${page.layout}`, image: "(IMAGE page: no text layer, use view_page)" }[page.kind];
         return `=== ${doc.name} p${n} ===\n${body}`;
       });
       if (args.data.pages.length > wanted.length) out.push(`Only the first ${MAX_PAGES_PER_READ} pages were returned; ask for the rest separately.`);

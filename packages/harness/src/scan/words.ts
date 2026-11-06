@@ -1,6 +1,6 @@
 import { isAmount, isBankHeading, median } from "../pdf/lines";
 import type { Doubt, Word } from "../types";
-import { joinWrapped, type Transcription } from "./transcribe";
+import type { Transcription } from "./transcribe";
 
 const CHAR = 1 / 120;
 const LEFT = 0.05;
@@ -84,8 +84,7 @@ function elementsOf(t: Transcription, height: number): Element[] {
  * close together stay apart. Only an element that would land on or too near the one before it is moved down, by just
  * enough to stay its own line, so a dense table's rows don't drift down the page.
  */
-export function toWords(read: Transcription): Word[] {
-  const t = joinWrapped(read);
+export function toWords(t: Transcription): Word[] {
   const reported = [...t.lines, ...t.tables.flatMap((table) => table.rows)];
   const centres = reported.map(centreOf).sort((a, b) => a - b);
   const gaps = centres.slice(1).map((c, i) => c - centres[i]!).filter((g) => g > SAME_CENTRE);

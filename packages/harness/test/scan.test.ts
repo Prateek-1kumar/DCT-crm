@@ -420,24 +420,28 @@ describe("scanned tables in what the agent reads", () => {
     expect(cellsOf(2, t).find((c) => c.id === "p2.t1.r2.c3")).toEqual({ id: "p2.t1.r2.c3", page: 2, table: 1, row: 2, col: 3, text: "$950.00", doubts: [], heading: "Total", rowLabel: "Visit 2" });
   });
 
-  it("a wrapped row label joins the row above", () => {
+  it("a label-only row stays its own row and holds no values", () => {
     const t = parseTranscription({
       rotation: 0,
-      text: [
-        "T 0.3-0.6 | Fees",
-        "H | Procedure | Fee | Total",
-        "R 0.31-0.32 | Physical examination, including | $200.00 | $200.00",
-        "R 0.32-0.33 | vital signs | |",
-        "R 0.34-0.35 | Pharmacy | | $5.00",
-        "R 0.36-0.37 | ECG | $100.00 | $100.00",
-      ].join("\n"),
+      text: ["T 0.3-0.6 | Fees", "H | Procedure | Fee | Total", "R 0.31-0.32 | Lab panel | $50.00 | $50.00", "R 0.33-0.34 | Treatment period | |", "R 0.35-0.36 | ECG | $100.00 | $100.00"].join("\n"),
     });
     const text = scanText(1, t);
-    expect(fields(text, "p1.t1.r1")).toEqual(["p1.t1.r1", "Physical examination, including vital signs", "$200.00", "$200.00"]);
-    expect(fields(text, "p1.t1.r2")).toEqual(["p1.t1.r2", "Pharmacy", "", "$5.00"]);
+    expect(fields(text, "p1.t1.r1")).toEqual(["p1.t1.r1", "Lab panel", "$50.00", "$50.00"]);
+    expect(fields(text, "p1.t1.r2")).toEqual(["p1.t1.r2", "Treatment period", "", ""]);
     expect(fields(text, "p1.t1.r3")).toEqual(["p1.t1.r3", "ECG", "$100.00", "$100.00"]);
-    expect(cellsOf(1, t).find((c) => c.id === "p1.t1.r1.c2")).toMatchObject({ text: "$200.00", rowLabel: "Physical examination, including vital signs", heading: "Total" });
-    expect(groupLines(toWords(t)).map(rawLine)).toContain("Physical examination, including vital signs $200.00 $200.00");
+    expect(cellsOf(1, t).filter((c) => c.row === 2).map((c) => c.text)).toEqual(["Treatment period", "", ""]);
+  });
+
+  it("a wrapped label with its amount on the last line keeps the amount on that line's row", () => {
+    const t = parseTranscription({
+      rotation: 0,
+      text: ["T 0.3-0.6 | Fees", "H | Procedure | Fee", "R 0.31-0.32 | Lab panel | $50.00", "R 0.33-0.34 | Physical examination, |", "R 0.35-0.36 | including vital signs | $200.00"].join("\n"),
+    });
+    const cells = cellsOf(1, t);
+    expect(cells.find((c) => c.text === "$50.00")).toMatchObject({ id: "p1.t1.r1.c1", rowLabel: "Lab panel", heading: "Fee" });
+    expect(cells.find((c) => c.text === "$200.00")).toMatchObject({ id: "p1.t1.r3.c1", rowLabel: "including vital signs", heading: "Fee" });
+    expect(fields(scanText(1, t), "p1.t1.r2")).toEqual(["p1.t1.r2", "Physical examination,", ""]);
+    expect(groupLines(toWords(t)).map(rawLine)).toEqual(["Fees", "Procedure Fee", "Lab panel $50.00", "Physical examination,", "including vital signs $200.00"]);
   });
 
   it("cell ids are the same every time a saved transcription is loaded", async () => {
@@ -480,8 +484,8 @@ describe("scanned tables in what the agent reads", () => {
         "L 0.100-0.112 | The Sponsor shall pay a one-time study start-up fee of $5,000.00 upon execution of this Agreement.",
         "T 0.3-0.6 | Visit fees",
         "H | Visit | Fee",
-        "R 0.31-0.32 | Visit 1, including | $1,200.00{hw}",
-        "R 0.32-0.33 | vital signs |",
+        "R 0.31-0.32 | Visit 1, including |",
+        "R 0.32-0.33 | vital signs | $1,200.00{hw}",
       ].join("\n"),
     );
     const docs = [{ ...imageDoc(), pages: [page] }];
@@ -489,7 +493,7 @@ describe("scanned tables in what the agent reads", () => {
       "one-time study start-up fee of $5,000.00 upon execution",
       "one time study start-up fee of $5000.00 upon executon",
       "Visit 1, including vital signs $1,200.00",
-      "Visit 1 including vital signs $1,2OO.00",
+      "including vital signs $1,2OO.00",
     ];
     for (const quote of quotes) {
       expect(checkQuote({ doc: "s.pdf", page: 1, quote }, docs), quote).toBeNull();
