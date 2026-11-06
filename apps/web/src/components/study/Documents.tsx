@@ -45,12 +45,16 @@ function RemoveDocument({ study, doc, onClose }: { study: Study; doc: StudyDocum
 }
 
 function ScannedPages({ doc }: { doc: StudyDocument }) {
-  const scanned = doc.scannedPages;
-  if (scanned.length === 0) return null;
+  const { scannedPages: unread, scansRead: read } = doc;
   return (
-    <p className="text-small text-muted">
-      Scanned {pageList(scanned).toLowerCase()} {scanned.length === 1 ? "is" : "are"} read from the image when the read starts (about $0.40 a page, the first time only).
-    </p>
+    <>
+      {read.length > 0 && <p className="text-small text-muted">Scanned {pageList(read).toLowerCase()} {read.length === 1 ? "was" : "were"} read from the image.</p>}
+      {unread.length > 0 && (
+        <p className="text-small text-muted">
+          Scanned {pageList(unread).toLowerCase()} {unread.length === 1 ? "is" : "are"} read from the image when the read starts (about $0.40 a page, the first time only).
+        </p>
+      )}
+    </>
   );
 }
 

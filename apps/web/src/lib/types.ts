@@ -34,7 +34,10 @@ export interface StudyDocument {
   name: string;
   bytes: number;
   pageCount: number;
+  /** Scanned pages not read from the image yet. */
   scannedPages: number[];
+  /** Scanned pages already read from the image. */
+  scansRead: number[];
 }
 
 export interface VersionSummary {

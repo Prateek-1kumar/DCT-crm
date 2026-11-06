@@ -151,6 +151,18 @@ describe("documents", () => {
     expect(await screen.findByText("Scanned pages 3–7 are read from the image when the read starts (about $0.40 a page, the first time only).")).toBeTruthy();
   });
 
+  it("says scanned pages already read from the image were read, with no cost, and keeps the cost for those still to read", async () => {
+    hub(null, { docs: [doc({ scansRead: [3, 4, 5, 6, 7], scannedPages: [9] })] });
+    expect(await screen.findByText("Scanned pages 3–7 were read from the image.")).toBeTruthy();
+    expect(screen.getByText("Scanned page 9 is read from the image when the read starts (about $0.40 a page, the first time only).")).toBeTruthy();
+  });
+
+  it("doesn't mention the cost of pages that were all read already", async () => {
+    hub(null, { docs: [doc({ scansRead: [3] })] });
+    expect(await screen.findByText("Scanned page 3 was read from the image.")).toBeTruthy();
+    expect(screen.queryByText(/\$0\.40/)).toBeNull();
+  });
+
   it("says it of a single scanned page too, without a warning", async () => {
     hub(null, { docs: [doc({ scannedPages: [3] })] });
     expect(await screen.findByText("Scanned page 3 is read from the image when the read starts (about $0.40 a page, the first time only).")).toBeTruthy();
