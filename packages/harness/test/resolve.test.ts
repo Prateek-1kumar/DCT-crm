@@ -9,7 +9,7 @@ import type { Ask, Budget, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
 import { resolve } from "../src/resolve";
 import type { LoadedDoc } from "../src/types";
-import { ocrWordsOf } from "./words";
+import { wordsOf } from "./words";
 
 type Term = Rulebook["terms"][number];
 type Grid = Rulebook["grids"][number];
@@ -181,7 +181,7 @@ describe("scanned pages: OCR first", () => {
   const scanned = (text: string): LoadedDoc[] => {
     const [budget, ...rest] = docs;
     const [first, ...pages] = budget!.pages;
-    return [{ ...budget!, pages: [{ ...first!, kind: "ocr", layout: text, raw: text, words: ocrWordsOf(text, 80), confidence: 80 }, ...pages] }, ...rest];
+    return [{ ...budget!, pages: [{ ...first!, kind: "scan", layout: text, raw: text, words: wordsOf(text) }, ...pages] }, ...rest];
   };
   const openGrid = (): Grid => ({ ...grid(25000), subtotal: [15000, null], grandTotalCents: null });
   const book = () => rulebook({ grids: [openGrid()], terms: [term({ amountCents: 7500, source: { doc: "Budget.pdf", page: 1, quote: "Screen failure fee" } })] });

@@ -7,15 +7,17 @@ export interface Word {
   y0: number;
   x1: number;
   y1: number;
-  /** OCR's confidence in this word, 0–100; absent for words from a real text layer. */
-  confidence?: number;
+  /** Set on a scanned word the reader wasn't sure of or saw marked up; absent on a real text layer. */
+  doubt?: Doubt;
 }
 
+export type Doubt = "unsure" | "handwritten" | "struck_out" | "initialed";
+
 /**
- * `text`: a real text layer, exact. `ocr`: a scan (or text drawn as outlines) whose words came from OCR on this machine:
- * positions are reliable, characters may be misread. `image`: a scan not OCR'd yet, so it has no words (§5.1).
+ * `text`: a real text layer, exact. `scan`: a scan (or text drawn as outlines) whose words were transcribed by the vision
+ * model. `image`: a scan not transcribed yet, so it has no words (§5.1).
  */
-export type PageKind = "text" | "ocr" | "image";
+export type PageKind = "text" | "scan" | "image";
 
 export interface Page {
   page: number;
@@ -27,8 +29,6 @@ export interface Page {
   /** Bank-detail regions, painted over in every rendered image. */
   maskBoxes: Region[];
   firstLine: string;
-  /** Mean OCR word confidence, 0–100, for an `ocr` page; null otherwise. */
-  confidence: number | null;
   /**
    * Degrees clockwise a sideways or upside-down scan was turned to read; 0 otherwise. Words, masks and rendered images are
    * all in the turned (readable) frame.
@@ -36,13 +36,19 @@ export interface Page {
   rotation: number;
 }
 
-/** What OCR found on one page: kept per file, so each scan is OCR'd once. */
-export interface OcrPage {
+/** What the vision model transcribed from one page: kept per file, so each scan is paid for once. */
+export interface ScanPage {
   page: number;
-  words: Word[];
-  confidence: number;
+  /** Names the transcription prompt and model, so a page read by another is read again. */
+  version: string;
   /** Degrees clockwise the page was turned to read (a sideways or upside-down scan); `words` are in the turned frame. */
   rotation: number;
+  words: Word[];
+}
+
+export interface ScanStore {
+  get(sha256: string): Promise<ScanPage[]>;
+  put(sha256: string, page: ScanPage): Promise<void>;
 }
 
 export interface LoadedDoc {
@@ -54,8 +60,8 @@ export interface LoadedDoc {
 
 export interface PdfReader {
   load(path: string): Promise<LoadedDoc>;
-  /** PNG of a page or a region of it, with the page's mask boxes painted over. dpi is capped at 300 and lowered if the image would exceed ~2.5 megapixels. */
-  render(doc: LoadedDoc, page: number, opts?: { region?: Region; dpi?: number }): Promise<Buffer>;
+  /** PNG of a page or a region of it, with the page's mask boxes painted over. dpi is capped at 300 and lowered if the image would exceed `maxPixels` (default ~2.5 megapixels). */
+  render(doc: LoadedDoc, page: number, opts?: { region?: Region; dpi?: number; maxPixels?: number }): Promise<Buffer>;
 }
 
 export interface Problem {

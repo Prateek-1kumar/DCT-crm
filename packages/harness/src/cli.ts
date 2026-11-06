@@ -5,7 +5,8 @@ import { Rulebook } from "@dct/shared";
 import OpenAI from "openai";
 import { claudeReader, openaiReader } from "./models";
 import { pdfReader } from "./pdf";
-import { read, type ReadResult } from "./read";
+import { defaultMaxUsd, read, type ReadResult } from "./read";
+import { SCAN_PAGE_USD, fileScanStore, untranscribed } from "./scan";
 import type { LoadedDoc } from "./types";
 
 function fail(message: string): never {
@@ -65,10 +66,14 @@ async function main() {
   }
 
   const anthropic = new Anthropic();
+  const openai = openaiReader(new OpenAI(), process.env.OPENAI_MODEL!);
+  const scans = fileScanStore(resolve(base, "data/scans"));
   const result = await read(docs, {
     anthropic,
     claude: claudeReader(anthropic, process.env.HARNESS_MODEL ?? "claude-sonnet-5-5"),
-    openai: openaiReader(new OpenAI(), process.env.OPENAI_MODEL!),
+    openai,
+    scans,
+    maxUsd: defaultMaxUsd() + SCAN_PAGE_USD * (await untranscribed(docs, scans, openai)),
     onProgress: console.log,
     ...(from && { rulebook: await earlier(resolve(base, from)) }),
   });

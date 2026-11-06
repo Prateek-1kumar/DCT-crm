@@ -42,8 +42,6 @@ function crop(image: Image, top: number, bottom: number): Buffer {
   return canvas.toBuffer("image/png");
 }
 
-export const cropPng = async (png: Buffer, top: number, bottom: number) => crop(await loadImage(png), top, bottom);
-
 /** The whole page, then strips each about 0.6 of the page width tall, overlapping so no line is cut in every strip. */
 export async function pageParts(png: Buffer): Promise<Part[]> {
   const image = await loadImage(png);
@@ -58,16 +56,8 @@ export async function pageParts(png: Buffer): Promise<Part[]> {
   return parts;
 }
 
+export const transcribeAsk = (parts: Part[]) => ({ name: "transcribe_page", system: SYSTEM, parts, schema: Transcription, effort: "low" as const });
+
 export async function transcribe(reader: Reader, png: Buffer) {
-  return reader.ask({ name: "transcribe_page", system: SYSTEM, parts: await pageParts(png), schema: Transcription, effort: "low" });
-}
-
-const REVIEW = `${SYSTEM}
-
-Another reader has already transcribed this page; its transcription follows the images. Check it against the page cell by cell and line by line, and return the complete transcription with every mistake fixed: a wrong digit, a value in the wrong column, a missed or extra row, a wrong position, an unsure or marks flag that should be set. Keep what is right exactly as it is.`;
-
-/** One reader checks another's transcription against the page and returns it corrected: the two working together rather than apart. */
-export async function review(reader: Reader, png: Buffer, draft: Transcription) {
-  const parts: Part[] = [...(await pageParts(png)), { type: "text", text: `The other reader's transcription:\n${JSON.stringify(draft)}` }];
-  return reader.ask({ name: "review_transcription", system: REVIEW, parts, schema: Transcription, effort: "low" });
+  return reader.ask(transcribeAsk(await pageParts(png)));
 }

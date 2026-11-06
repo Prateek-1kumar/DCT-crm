@@ -43,7 +43,7 @@ export interface CompileResult {
 const MAX_TOKENS = 64000;
 const CUT_OFF = ["refusal", "max_tokens", "model_context_window_exceeded"] as const;
 
-const KIND_NOTE = { text: "TEXT", ocr: OCR_NOTE, image: "IMAGE (use view_page)" };
+const KIND_NOTE = { text: "TEXT", scan: OCR_NOTE, image: "IMAGE (use view_page)" };
 
 function inventory(docs: LoadedDoc[]): string {
   return docs

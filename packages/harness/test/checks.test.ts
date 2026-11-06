@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
 import { checks } from "../src/checks";
 import type { LoadedDoc, Page, PageKind } from "../src/types";
-import { ocrWordsOf, wordsOf } from "./words";
+import { wordsOf } from "./words";
 
 type Grid = Rulebook["grids"][number];
 type Term = Rulebook["terms"][number];
 
-const page = (n: number, kind: PageKind, layout: string, raw = layout): Page => ({ page: n, kind, layout, raw, words: wordsOf(layout), maskBoxes: [], firstLine: "", confidence: null, rotation: 0 });
-const ocr = (n: number, layout: string, confidence = 90): Page => ({ ...page(n, "ocr", layout), words: ocrWordsOf(layout, confidence), confidence });
+const page = (n: number, kind: PageKind, layout: string, raw = layout): Page => ({ page: n, kind, layout, raw, words: wordsOf(layout), maskBoxes: [], firstLine: "", rotation: 0 });
+const scan = (n: number, layout: string): Page => page(n, "scan", layout);
 const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${name}`, sha256: "0", pages });
 
 const grid = (over: Partial<Grid>): Grid => ({
@@ -139,8 +139,8 @@ describe("checkQuote", () => {
   });
 });
 
-describe("checkQuote on an OCR page", () => {
-  const d = [doc("A.pdf", ocr(1, "The Site shal1 pay $1,2OO.00 within 45 days of the invoice.\nSchedu1e B"))];
+describe("checkQuote on a scanned page", () => {
+  const d = [doc("A.pdf", scan(1, "The Site shal1 pay $1,2OO.00 within 45 days of the invoice.\nSchedu1e B"))];
   const src = (quote: string) => ({ doc: "A.pdf", page: 1, quote });
 
   it("finds a quote despite OCR slips on either side", () => {
@@ -157,8 +157,8 @@ describe("checkQuote on an OCR page", () => {
   });
 });
 
-describe("an amount on an OCR page", () => {
-  const docs = [doc("A.pdf", ocr(1, "Startup fee $1,200.00"), page(2, "text", "Startup fee $1,200.00"))];
+describe("an amount on a scanned page", () => {
+  const docs = [doc("A.pdf", scan(1, "Startup fee $1,200.00"), page(2, "text", "Startup fee $1,200.00"))];
   const at = (page: number, over: Partial<Term> = {}) => term({ id: `t${page}`, amountCents: 120000, source: { doc: "A.pdf", page, quote: "Startup fee" }, ...over });
 
   it("needs arithmetic, a match with OCR, two reads or a person; an amount on a text page is as before", () => {

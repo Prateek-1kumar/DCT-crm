@@ -1,7 +1,7 @@
 import { applyPatches, type Patch, type Region } from "@dct/shared";
 import { needsProof } from "../checks";
 import { findQuote } from "../checks/coverage";
-import { ocrAmounts } from "../checks/text";
+import { looseAmounts } from "../checks/text";
 import { groupLines } from "../pdf/lines";
 import type { CheckReport, Page, Word } from "../types";
 import { askPages, cellLabel, proven, readCell, same, termLabel } from "./read";
@@ -32,7 +32,7 @@ const lineBand = (words: Word[], text: string): [number, number] | null => {
 const wordsIn = (page: Page, band: [number, number] | null) => (band ? page.words.filter((w) => (w.y0 + w.y1) / 2 >= band[0] && (w.y0 + w.y1) / 2 <= band[1]) : []);
 
 function spotsOf(run: Run, report: CheckReport): Spot[] {
-  const ocrPage = (doc: string, n: number) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === n && p.kind === "ocr");
+  const ocrPage = (doc: string, n: number) => run.docs.find((d) => d.name === doc)?.pages.find((p) => p.page === n && p.kind === "scan");
   const spots: Spot[] = [];
 
   for (const t of run.rulebook.terms) {
@@ -73,8 +73,8 @@ const inOrder = (read: number[], row: number[]) => row.length > 0 && read.some((
 function readByOcr(s: Spot) {
   return groupLines(s.words).some((line) => {
     const texts = line.map((w) => w.text);
-    if (s.row) return inOrder(ocrAmounts(texts, (c) => s.row!.includes(c)).map((a) => a.cents), s.row);
-    return ocrAmounts(texts, (c) => c === s.current).some((a) => a.cents === s.current);
+    if (s.row) return inOrder(looseAmounts(texts, (c) => s.row!.includes(c)).map((a) => a.cents), s.row);
+    return looseAmounts(texts, (c) => c === s.current).some((a) => a.cents === s.current);
   });
 }
 

@@ -5,7 +5,8 @@ import { checks } from "./checks";
 import type { Budget, Reader } from "./models";
 import { resolve } from "./resolve";
 import { review } from "./review";
-import type { CheckReport, LoadedDoc } from "./types";
+import { scanDocs } from "./scan";
+import type { CheckReport, LoadedDoc, ScanStore } from "./types";
 
 export interface ReadOptions {
   anthropic: ModelClient;
@@ -13,6 +14,8 @@ export interface ReadOptions {
   openai: Reader;
   maxUsd?: number;
   onProgress?: (line: string) => void;
+  /** Where transcribed scanned pages are kept; required when a file has pages with no text layer. */
+  scans?: ScanStore;
   /** A rulebook compiled earlier: skip compiling and only review and resolve it. */
   rulebook?: Rulebook;
 }
@@ -46,41 +49,38 @@ function withRequired(rulebook: Rulebook, report: CheckReport): Rulebook {
   return { ...rulebook, questions: [...rulebook.questions, ...report.required.filter((q) => !known.has(q.id))] };
 }
 
-/** Scanned pages not yet OCR'd, as "file p.1, 2, 5"; empty when every page has words. */
-export function scannedPages(docs: LoadedDoc[]): string[] {
-  return docs.flatMap((d) => {
-    const pages = d.pages.filter((p) => p.kind === "image").map((p) => p.page);
-    return pages.length ? [`${d.name} p.${pages.join(", ")}`] : [];
-  });
+export function defaultMaxUsd(): number {
+  const envUsd = Number(process.env.HARNESS_MAX_USD);
+  return envUsd > 0 ? envUsd : 3;
 }
 
 export async function read(docs: LoadedDoc[], opts: ReadOptions): Promise<ReadResult> {
-  // Bank details are found in a page's words, so a scan nobody has OCR'd can't be masked and must not leave the machine.
-  const unprepared = scannedPages(docs);
-  if (unprepared.length) {
-    throw new ReadFailed(`Pages ${unprepared.join("; ")} haven't been prepared yet. Their bank details can't be hidden until they are, so the contract wasn't sent to any model.`, 0);
+  if (!opts.scans && docs.some((d) => d.pages.some((p) => p.kind === "image"))) {
+    throw new ReadFailed("Some pages in these files are scans, and there's nowhere to keep what is read from them. Tell the team; nothing was sent to any model.", 0);
   }
-  const envUsd = Number(process.env.HARNESS_MAX_USD);
-  const budget: Budget = { limit: opts.maxUsd ?? (envUsd > 0 ? envUsd : 3), spent: 0 };
+  const budget: Budget = { limit: opts.maxUsd ?? defaultMaxUsd(), spent: 0 };
   try {
     return await stages(docs, opts, budget);
   } catch (err) {
+    if (err instanceof ReadFailed) throw err;
     throw new ReadFailed("The read stopped because of a problem on the server. Start it again; if it keeps happening, tell the team.", budget.spent, { cause: err });
   }
 }
 
-async function stages(docs: LoadedDoc[], opts: ReadOptions, budget: Budget): Promise<ReadResult> {
+async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget): Promise<ReadResult> {
   const log: string[] = [];
   const say = (line: string) => {
     log.push(line);
     opts.onProgress?.(line);
   };
 
+  const docs = opts.scans ? await scanDocs(unscanned, { reader: opts.openai, store: opts.scans, budget, onProgress: say }) : unscanned;
+
   let rulebook = opts.rulebook;
   let compiled: CompileResult | undefined;
   if (!rulebook) {
-    compiled = await compile(docs, { client: opts.anthropic, model: opts.claude.model, maxUsd: budget.limit * COMPILE_SHARE, onProgress: say });
-    budget.spent = compiled.usd;
+    compiled = await compile(docs, { client: opts.anthropic, model: opts.claude.model, maxUsd: (budget.limit - budget.spent) * COMPILE_SHARE, onProgress: say });
+    budget.spent += compiled.usd;
     if (!COMPILED.has(compiled.stopReason)) return { rulebook: compiled.rulebook, report: compiled.report, usd: budget.spent, compiled, log };
     rulebook = compiled.rulebook;
   }

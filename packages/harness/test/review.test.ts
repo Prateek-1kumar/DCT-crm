@@ -12,7 +12,7 @@ import type { LoadedDoc, Page, PageKind } from "../src/types";
 
 type Term = Rulebook["terms"][number];
 
-const page = (n: number, kind: PageKind, layout: string): Page => ({ page: n, kind, layout, raw: layout, words: [], maskBoxes: [], firstLine: "", confidence: null, rotation: 0 });
+const page = (n: number, kind: PageKind, layout: string): Page => ({ page: n, kind, layout, raw: layout, words: [], maskBoxes: [], firstLine: "", rotation: 0 });
 const doc = (name: string, ...pages: Page[]): LoadedDoc => ({ name, path: `/x/${name}`, sha256: "0", pages });
 
 const term = (over: Partial<Term>): Term => ({
@@ -103,7 +103,7 @@ describe("review input for an OCR page", () => {
     const path = join(dir, "ocr.pdf");
     await writeFile(path, await pdf.save());
     const loaded = await pdfReader.load(path);
-    const scan: LoadedDoc = { ...loaded, name: "CTA.pdf", pages: [{ ...loaded.pages[0]!, kind: "ocr", layout: "Screen failure  $5,995.00", confidence: 88 }] };
+    const scan: LoadedDoc = { ...loaded, name: "CTA.pdf", pages: [{ ...loaded.pages[0]!, kind: "scan", layout: "Screen failure  $5,995.00" }] };
 
     const { reader, calls } = fake([]);
     await review(rulebook(), [scan], { reader, budget: budget() });

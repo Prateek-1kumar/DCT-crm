@@ -2,13 +2,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Rulebook } from "@dct/shared";
+import { createCanvas } from "@napi-rs/canvas";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { ModelClient } from "../src/agent/client";
 import type { Ask, Reader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { ReadFailed, read } from "../src/read";
-import type { LoadedDoc } from "../src/types";
+import type { LoadedDoc, ScanPage, ScanStore } from "../src/types";
 
 const CLAUSE = "Screen failures are paid at the full visit rate of $500.00 per subject.";
 const FILLER = "This page carries ordinary contract wording so that it has a real text layer and is not mistaken for a scan.";
@@ -75,20 +76,42 @@ it("reviews a saved rulebook, settles the reader's elsewhere question by a verif
   ]);
 });
 
-it("refuses only pages nobody has OCR'd yet, before any model is called", async () => {
+it("won't start on a file with scanned pages when there's nowhere to keep what is read from them, and calls no model", async () => {
   const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "image" as const })) };
   const never = fake("x", {}, 1);
-  await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/Pages CTA\.pdf p\.1 haven't been prepared yet/);
+  await expect(read([scan], { anthropic: {} as ModelClient, claude: never, openai: never, rulebook })).rejects.toThrow(/nowhere to keep/);
 });
 
-it("reads OCR'd pages, proving an amount by what OCR read there without asking a model", async () => {
-  const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "ocr" as const, confidence: 90 })) };
+it("reads transcribed pages, proving an amount by what was transcribed there without asking a model again", async () => {
+  const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "scan" as const })) };
   const claude = fake("claude", {}, 1);
   const openai = fake("gpt", { review: { findings: [] } }, 0.4);
   const result = await read([scan], { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook });
   expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "ocr_match" });
   expect(result.report.problems).toEqual([]);
   expect(result.usd).toBeCloseTo(0.4);
+});
+
+it("transcribes scanned pages first, paid from the same budget, and saves them", async () => {
+  const image = await PDFDocument.create();
+  const canvas = createCanvas(40, 40);
+  canvas.getContext("2d").fillRect(0, 0, 40, 40);
+  image.addPage([612, 792]).drawImage(await image.embedPng(await canvas.encode("png")), { x: 0, y: 0, width: 612, height: 792 });
+  await writeFile(join(dir, "Scan.pdf"), await image.save());
+  const scanned = await pdfReader.load(join(dir, "Scan.pdf"));
+  expect(scanned.pages[0]!.kind).toBe("image");
+
+  const lines = [{ text: CLAUSE, top: 0.1, bottom: 0.12, unsure: false, marks: [] }];
+  const openai = fake("gpt", { transcribe_page: { rotation: 0, lines, tables: [] }, review: { findings: [] } }, 0.4);
+  const saved: ScanPage[] = [];
+  const scans: ScanStore = { get: async () => saved, put: async (_, page) => void saved.push(page) };
+  const progress: string[] = [];
+
+  const result = await read([scanned], { anthropic: {} as ModelClient, claude: fake("claude", {}, 1), openai, scans, maxUsd: 3, rulebook: { ...rulebook, terms: [{ ...rulebook.terms[0]!, source: { ...rulebook.terms[0]!.source, doc: "Scan.pdf" } }] }, onProgress: (l) => progress.push(l) });
+  expect(saved).toHaveLength(1);
+  expect(progress).toContain("Reading scanned pages: 1 of 1");
+  expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "ocr_match" });
+  expect(result.usd).toBeCloseTo(0.8);
 });
 
 it("reports what was spent when a read breaks part way, with a plain message", async () => {

@@ -1,21 +1,19 @@
-// Scores ways of reading scanned pages against an answer key: pages that have a real text layer are drawn as degraded
-// scans (bank details blacked out first), read by vision models, and compared with their own text. Prints numbers only.
+// Scores how well the OpenAI reader transcribes scanned pages: pages that have a real text layer are drawn as degraded
+// scans (bank details blacked out first), transcribed, and their amounts compared with the text layer's. Prints numbers only.
 //   pnpm vision-bench --cap 8 --out <dir> "a.pdf:6,7" "b.pdf:24"
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import Anthropic from "@anthropic-ai/sdk";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import OpenAI from "openai";
-import { amountsIn } from "../src/checks/text";
-import { claudeReader, estimateUsd, openaiReader } from "../src/models";
+import { amountsAt, amountsIn } from "../src/checks/text";
+import { estimateUsd, openaiReader } from "../src/models";
 import { pdfReader } from "../src/pdf";
 import { groupLines, rawLine } from "../src/pdf/lines";
 import { withPdf } from "../src/pdf/open";
-import type { Page } from "../src/types";
-import { compareReadings, moneyRows, type MoneyRow } from "../src/vision/compare";
-import { settle } from "../src/vision/settle";
-import { pageParts, review, transcribe, type Transcription } from "../src/vision/transcribe";
+import { pageParts, transcribe, type Transcription } from "../src/scan/transcribe";
+import { toWords } from "../src/scan/words";
+import type { Page, Word } from "../src/types";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {
@@ -28,10 +26,8 @@ const out = flag("--out");
 if (!out || !args.length) throw new Error('usage: vision-bench.ts --cap 8 --out <dir> "file.pdf:6,7" ...');
 await mkdir(out, { recursive: true });
 
-const claude = claudeReader(new Anthropic(), process.env.HARNESS_MODEL ?? "claude-sonnet-5-5");
 const gpt = openaiReader(new OpenAI(), process.env.OPENAI_MODEL!);
 let spent = 0;
-const cost = new Map<string, number>();
 
 async function cached<T>(name: string, run: () => Promise<{ value: T; usd: number }>): Promise<T> {
   const file = join(out!, `${name}.json`);
@@ -43,8 +39,6 @@ async function cached<T>(name: string, run: () => Promise<{ value: T; usd: numbe
     spent += saved.usd;
     await writeFile(file, JSON.stringify(saved));
   }
-  const step = name.replace(/^f\d+p\d+-/, "");
-  cost.set(step, (cost.get(step) ?? 0) + saved.usd);
   return saved.value;
 }
 
@@ -83,41 +77,24 @@ async function scanOf(path: string, page: Page): Promise<Buffer> {
   });
 }
 
-interface Score { truth: number; right: number; wrong: number; asked: number; missed: number; rows: number; rowsRight: number; questions: number }
-const zero = (): Score => ({ truth: 0, right: 0, wrong: 0, asked: 0, missed: 0, rows: 0, rowsRight: 0, questions: 0 });
+interface Score { truth: number; right: number; wrong: number; missed: number }
 
-function take(pool: Map<number, number>, cents: number) {
-  const left = pool.get(cents) ?? 0;
-  if (left > 0) pool.set(cents, left - 1);
-  return left > 0;
-}
+const amountsPerLine = (words: Word[]) => groupLines(words).flatMap((line) => amountsIn(rawLine(line)));
 
-/** Accepted rows go into the rulebook unasked; asked rows reach a person, who reads them right. */
-function score(truthRows: number[][], accepted: MoneyRow[], asked: MoneyRow[]): Score {
+function score(truth: number[], read: number[]): Score {
   const pool = new Map<number, number>();
-  for (const c of truthRows.flat()) pool.set(c, (pool.get(c) ?? 0) + 1);
-  const amounts = (rows: MoneyRow[]) => rows.flatMap((r) => r.cents.filter((c): c is number => c !== null));
-  const takenAccepted = amounts(accepted).map((c) => take(pool, c));
-  const right = takenAccepted.filter(Boolean).length;
-  const askedRight = amounts(asked).filter((c) => take(pool, c)).length;
-  const seqs = accepted.map((r) => JSON.stringify(r.cents.filter((c) => c !== null)));
-  const rowsRight = truthRows.filter((t) => {
-    const at = seqs.indexOf(JSON.stringify(t));
-    if (at !== -1) seqs.splice(at, 1);
-    return at !== -1;
+  for (const c of truth) pool.set(c, (pool.get(c) ?? 0) + 1);
+  const right = read.filter((c) => {
+    const left = pool.get(c) ?? 0;
+    if (left > 0) pool.set(c, left - 1);
+    return left > 0;
   }).length;
-  const truth = truthRows.flat().length;
-  return { truth, right, wrong: takenAccepted.length - right, asked: askedRight, missed: truth - right - askedRight, rows: truthRows.length, rowsRight, questions: asked.length };
+  return { truth: truth.length, right, wrong: read.length - right, missed: truth.length - right };
 }
 
-const totals: Record<string, Score> = {};
+const total: Score = { truth: 0, right: 0, wrong: 0, missed: 0 };
 let dryUsd = 0;
-const add = (arm: string, s: Score) => {
-  const t = (totals[arm] ??= zero());
-  for (const k of Object.keys(s) as (keyof Score)[]) t[k] += s[k];
-};
-const show = (s: Score) =>
-  `truth=${s.truth} right=${s.right} wrongAccepted=${s.wrong} asked=${s.asked} missed=${s.missed} rowsRight=${s.rowsRight}/${s.rows} questions=${s.questions}`;
+const show = (s: Score) => `truth=${s.truth} right=${s.right} wrong=${s.wrong} missed=${s.missed}`;
 
 for (const [fileIndex, spec] of args.entries()) {
   const at = spec.lastIndexOf(":");
@@ -125,43 +102,27 @@ for (const [fileIndex, spec] of args.entries()) {
   const doc = await pdfReader.load(path);
   for (const n of spec.slice(at + 1).split(",").map(Number)) {
     const page = doc.pages[n - 1]!;
-    const truthRows = groupLines(page.words).map((l) => amountsIn(rawLine(l))).filter((r) => r.length);
-    const png = await scanOf(path, page);
     const id = `f${fileIndex + 1}p${n}`;
+    if (!amountsAt(page.raw).some((a) => a.text.includes("$"))) {
+      console.log(`${id}: skipped, no dollar amounts`);
+      continue;
+    }
+    const truth = amountsPerLine(page.words);
+    const png = await scanOf(path, page);
     if (dry) {
       await writeFile(join(out, `${id}.png`), png);
       // ponytail: output guessed at ~30 tokens an amount plus layout; the real run reports actual spend
       const parts = await pageParts(png);
-      const output = truthRows.flat().length * 30 + 1500;
-      const usd = estimateUsd(claude, parts, output) + 2 * estimateUsd(gpt, parts, output * 2);
+      const usd = estimateUsd(gpt, parts, truth.length * 30 + 1500);
       dryUsd += usd;
-      console.log(`${id}: amounts=${truthRows.flat().length} rows=${truthRows.length} images=${parts.filter((p) => p.type === "image").length} estimate=$${usd.toFixed(2)}`);
+      console.log(`${id}: amounts=${truth.length} images=${parts.filter((p) => p.type === "image").length} estimate=$${usd.toFixed(2)}`);
       continue;
     }
     try {
-      const [a, b] = await Promise.all([
-        cached<Transcription>(`${id}-claude`, () => transcribe(claude, png)),
-        cached<Transcription>(`${id}-gpt`, () => transcribe(gpt, png)),
-      ]);
-      const reviewed = await cached<Transcription>(`${id}-gpt-review`, () => review(gpt, png, a));
-      const [ra, rb, rc] = [moneyRows(a), moneyRows(b), moneyRows(reviewed)];
-
-      const arms: [string, Score][] = [
-        ["A claude alone", score(truthRows, ra.filter((r) => !r.doubtful), ra.filter((r) => r.doubtful))],
-        ["B gpt alone", score(truthRows, rb.filter((r) => !r.doubtful), rb.filter((r) => r.doubtful))],
-      ];
-      for (const [arm, other, name] of [["C cooperative", rc, "coop"], ["D independent+converge", rb, "conv"]] as const) {
-        const { agreed, disputes } = compareReadings(ra, other);
-        const result = await cached(`${id}-settle-${name}`, async () => {
-          const r = disputes.length ? await settle(claude, gpt, png, disputes) : { settled: [], questions: [], usd: 0 };
-          return { value: { settled: r.settled.map((s) => s.row), questions: r.questions.map((q) => (q.a ?? q.b)!) }, usd: r.usd };
-        });
-        arms.push([arm, score(truthRows, [...agreed, ...result.settled], result.questions)]);
-      }
-      for (const [arm, s] of arms) {
-        add(arm, s);
-        console.log(`${id} ${arm}: ${show(s)}`);
-      }
+      const read = toWords(await cached<Transcription>(`${id}-gpt`, () => transcribe(gpt, png)));
+      const s = score(truth, amountsPerLine(read));
+      for (const k of Object.keys(s) as (keyof Score)[]) total[k] += s[k];
+      console.log(`${id}: ${show(s)}`);
     } catch (err) {
       console.log(`${id}: ${err instanceof Error ? err.message : "failed"}`);
       if (spent >= cap) break;
@@ -169,8 +130,6 @@ for (const [fileIndex, spec] of args.entries()) {
   }
 }
 
-for (const [arm, s] of Object.entries(totals)) console.log(`TOTAL ${arm}: ${show(s)}`);
-if (dry) console.log(`estimate before settling: $${dryUsd.toFixed(2)}`);
-const of = (...steps: string[]) => steps.reduce((n, step) => n + (cost.get(step) ?? 0), 0);
-console.log(`cost A=$${of("claude").toFixed(2)} B=$${of("gpt").toFixed(2)} C=$${of("claude", "gpt-review", "settle-coop").toFixed(2)} D=$${of("claude", "gpt", "settle-conv").toFixed(2)}`);
+if (dry) console.log(`estimate: $${dryUsd.toFixed(2)}`);
+else console.log(`TOTAL: ${show(total)}`);
 console.log(`spent this run: $${spent.toFixed(2)}`);

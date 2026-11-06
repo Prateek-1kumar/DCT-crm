@@ -9,19 +9,17 @@ import { withPdf } from "./open";
 import { buildPage } from "./page";
 import { extractWords } from "./text";
 
-export { OCR_VERSION, ocrPages, withOcr } from "./ocr";
-
 const DEFAULT_DPI = 150;
 const MAX_DPI = 300;
 // Keeps a page image well inside what a model accepts and what is affordable to send.
-const MAX_PIXELS = 2.5e6;
+const DEFAULT_MAX_PIXELS = 2.5e6;
 
 async function readPage(pdf: PDFDocumentProxy, number: number): Promise<Page> {
   const page = await pdf.getPage(number);
   try {
     const viewport = page.getViewport({ scale: 1 });
     const words = extractWords(await page.getTextContent(), viewport.transform, viewport.width, viewport.height);
-    return buildPage(number, words, classify(words.reduce((n, w) => n + w.text.length, 0)), null);
+    return buildPage(number, words, classify(words.reduce((n, w) => n + w.text.length, 0)));
   } finally {
     page.cleanup();
   }
@@ -56,7 +54,7 @@ export const pdfReader: PdfReader = {
         const rotation = (page.rotate + info.rotation) % 360;
         const { width, height } = page.getViewport({ scale: 1, rotation });
         const regionPoints = (rx1 - rx0) * width * ((ry1 - ry0) * height);
-        const scale = Math.min(Math.min(opts.dpi ?? DEFAULT_DPI, MAX_DPI) / 72, Math.sqrt(MAX_PIXELS / regionPoints));
+        const scale = Math.min(Math.min(opts.dpi ?? DEFAULT_DPI, MAX_DPI) / 72, Math.sqrt((opts.maxPixels ?? DEFAULT_MAX_PIXELS) / regionPoints));
         const left = rx0 * width * scale;
         const top = ry0 * height * scale;
         const canvas = createCanvas(Math.max(1, Math.floor((rx1 - rx0) * width * scale)), Math.max(1, Math.floor((ry1 - ry0) * height * scale)));

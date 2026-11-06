@@ -4,11 +4,12 @@ export type { CompileOptions, CompileResult, ModelClient, StopReason, TraceTurn 
 export { checks } from "./checks";
 export { coverage, findQuote } from "./checks/coverage";
 export type { AmountStatus, Coverage, CoverageAmount, CoverageClause, CoveragePage, CoverageRef } from "./checks/coverage";
-export { OCR_VERSION, ocrPages, pdfReader, withOcr } from "./pdf";
+export { pdfReader } from "./pdf";
+export { SCAN_PAGE_USD, fileScanStore, scanDocs, scanVersion, untranscribed, withScans } from "./scan";
 export { review } from "./review";
 export type { ReviewResult } from "./review";
 export { resolve } from "./resolve";
-export { ReadFailed, read, scannedPages } from "./read";
+export { ReadFailed, read } from "./read";
 export type { ReadOptions, ReadResult } from "./read";
 export { claudeReader, openaiReader } from "./models";
 export type { Budget, Reader } from "./models";

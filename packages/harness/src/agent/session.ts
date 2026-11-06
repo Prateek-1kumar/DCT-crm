@@ -107,7 +107,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       const out = wanted.map((n) => {
         const page = doc.pages[n - 1];
         if (!page) return `=== ${doc.name} p${n} ===\n(this document has only ${doc.pages.length} pages)`;
-        const body = { text: page.layout, ocr: `(${OCR_NOTE})\n${page.layout}`, image: "(IMAGE page: no text layer, use view_page)" }[page.kind];
+        const body = { text: page.layout, scan: `(${OCR_NOTE})\n${page.layout}`, image: "(IMAGE page: no text layer, use view_page)" }[page.kind];
         return `=== ${doc.name} p${n} ===\n${body}`;
       });
       if (args.data.pages.length > wanted.length) out.push(`Only the first ${MAX_PAGES_PER_READ} pages were returned; ask for the rest separately.`);

@@ -21,7 +21,7 @@ const INSURANCE = "Insurance limit $5,000.00 per claim.";
 
 const textDoc = (...lines: string[]): LoadedDoc => {
   const layout = lines.join("\n");
-  return { name: "A.pdf", path: "/x/A.pdf", sha256: "0", pages: [{ page: 1, kind: "text", layout, raw: layout, words: wordsOf(layout), maskBoxes: [], firstLine: lines[0]!, confidence: null, rotation: 0 }] };
+  return { name: "A.pdf", path: "/x/A.pdf", sha256: "0", pages: [{ page: 1, kind: "text", layout, raw: layout, words: wordsOf(layout), maskBoxes: [], firstLine: lines[0]!, rotation: 0 }] };
 };
 
 type Block = Record<string, unknown>;
@@ -192,7 +192,7 @@ describe("compile", () => {
 describe("OCR pages", () => {
   const ocrDoc = (...lines: string[]): LoadedDoc => {
     const doc = textDoc(...lines);
-    return { ...doc, pages: [{ ...doc.pages[0]!, kind: "ocr", confidence: 85 }] };
+    return { ...doc, pages: [{ ...doc.pages[0]!, kind: "scan" }] };
   };
   const NOTE = "OCR, scanned: text read by OCR may contain misreads; check numbers with view_page";
 
