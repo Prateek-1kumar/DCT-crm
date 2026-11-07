@@ -1,7 +1,7 @@
 import { ADDED_TO_GRID, SET_ASIDE, parseCents, valueAt, type Region, type Rulebook } from "@dct/shared";
 import { groupLines, rawLine } from "../pdf/lines";
 import { amountsOf, cellsOf, type ScanCell } from "../scan/cells";
-import { alignTables, diffReads } from "../scan/diff";
+import { alignTables, diffReads, type Verdict } from "../scan/diff";
 import { bandsOf } from "../scan/words";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
 import { amountsAt, amountsIn, looseAmounts, looseCents, looseContains, looseFind, looseKey } from "./text";
@@ -281,8 +281,8 @@ const decidedBy = (rulebook: Rulebook, doc: string, page: number, cents: number,
 
 /**
  * Amounts the page's second read found with nothing in the first read beside them: an unpaired row or line, or a cell the
- * first read left blank. Only tables that paired with one of the first read's count: a table that didn't has its cells
- * asked about already, and listing all of its amounts again would say nothing new. Nothing cites them, so each is missing
+ * first read left blank. A table that didn't pair with one of the first read's adds only the amounts the first read prints
+ * fewer times on the page. Nothing cites them, so each is missing
  * until a person settles it: a term of theirs with that amount on that row, or their "set aside" (or the whole page set
  * aside). The compile agent's listing of the amount never counts, since it can't tell a dropped fee from a double read.
  * A person's term clears the amounts of one printed row only, so a dropped sibling row with the same name and amount stays open.
@@ -303,26 +303,64 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
     return verdict !== undefined && (verdict.outcome === "agree" || verdict.outcome === "differ" || verdict.second !== undefined);
   };
   const twin = (line: string, cents: number) => `${looseKey(line)}|${cents}`;
+  const wordsOf = (line: string) => looseKey(amountsAt(line).reduceRight((t, a) => t.slice(0, a.start) + t.slice(a.end), line));
+  const secondCells = printedCells(pages.map((p, i) => (i === index ? second : p)), index);
+  const secondWords = new Set(secondCells.filter(({ printed }) => printed.length).map(({ line }) => wordsOf(line)));
+  // a first-read amount whose words the second read prints with another amount is that row's, not a spare for any other
+  const spare = (line: string) => !secondWords.has(wordsOf(line));
   const twins = new Map<string, number>();
-  for (const { cell, line, printed } of printedCells(pages, index)) for (const { cents } of printed) if (!lined(cell, cents)) twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) + 1);
-  return printedCells(pages.map((p, i) => (i === index ? second : p)), index).flatMap(({ cell, line, printed }) =>
+  const pool = new Map<number, number>();
+  for (const { cell, line, printed } of printedCells(pages, index)) {
+    for (const { cents } of printed) {
+      if (lined(cell, cents)) continue;
+      twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) + 1);
+      if (spare(line)) pool.set(cents, (pool.get(cents) ?? 0) + 1);
+    }
+  }
+  const spend = (line: string, cents: number) => {
+    twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) - 1);
+    if (spare(line)) pool.set(cents, (pool.get(cents) ?? 0) - 1);
+  };
+  const make = (cell: ScanCell, line: string, text: string, cents: number, verdict?: Verdict): CoverageAmount => {
+    const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || ([SET_ASIDE, ADDED_TO_GRID].includes(a.reason) && a.page === page.page && a.cell === secondReadCell(cell.id))));
+    const row = cell.id.replace(/\.c\d+$/, "");
+    const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line, (t) => (claimed.get(t.id) ?? row) === row);
+    if (added) claimed.set(added.id, row);
+    const status: AmountStatus = added ? "decided" : accounted ? "set_aside" : "missing";
+    const reason = accounted?.reason ?? (added ? null : `a second read of p.${page.page} found an amount the first read didn't`);
+    return { box: cellBand(second, cell.id), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id, ...(verdict?.blankAt && { firstReadBlank: verdict.blankAt }) };
+  };
+
+  const loose: { cell: ScanCell; line: string; text: string; cents: number }[] = [];
+  const found = secondCells.flatMap(({ cell, line, printed }) =>
     printed.flatMap(({ text, cents }): CoverageAmount[] => {
-      const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
-      if (!cents || !verdict || (cell.table !== null && !paired.has(cell.table - 1)) || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
-      const left = twins.get(twin(line, cents)) ?? 0;
-      if (verdict.outcome === "unaligned" && left > 0) {
-        twins.set(twin(line, cents), left - 1);
+      if (!cents) return [];
+      if (cell.table !== null && !paired.has(cell.table - 1)) {
+        loose.push({ cell, line, text, cents });
         return [];
       }
-      const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || ([SET_ASIDE, ADDED_TO_GRID].includes(a.reason) && a.page === page.page && a.cell === secondReadCell(cell.id))));
-      const row = cell.id.replace(/\.c\d+$/, "");
-      const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line, (t) => (claimed.get(t.id) ?? row) === row);
-      if (added) claimed.set(added.id, row);
-      const status: AmountStatus = added ? "decided" : accounted ? "set_aside" : "missing";
-      const reason = accounted?.reason ?? (added ? null : `a second read of p.${page.page} found an amount the first read didn't`);
-      return [{ box: cellBand(second, cell.id), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id, ...(verdict.blankAt && { firstReadBlank: verdict.blankAt }) }];
+      const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
+      if (!verdict || (verdict.second !== undefined && amountsOf(verdict.second).length > 0)) return [];
+      if (verdict.outcome === "unaligned" && (twins.get(twin(line, cents)) ?? 0) > 0) {
+        spend(line, cents);
+        return [];
+      }
+      return [make(cell, line, text, cents, verdict)];
     }),
   );
+  // a table that didn't pair has no cell to compare with, so what is new is only what the first read prints fewer times on
+  // the page: copies on the same words first, then any copy of the same amount that no pair has used
+  const rest = loose.filter(({ line, cents }) => {
+    if ((twins.get(twin(line, cents)) ?? 0) <= 0) return true;
+    spend(line, cents);
+    return false;
+  });
+  const surplus = rest.filter(({ cents }) => {
+    if ((pool.get(cents) ?? 0) <= 0) return true;
+    pool.set(cents, pool.get(cents)! - 1);
+    return false;
+  });
+  return [...found, ...surplus.map(({ cell, line, text, cents }) => make(cell, line, text, cents))];
 }
 
 export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {

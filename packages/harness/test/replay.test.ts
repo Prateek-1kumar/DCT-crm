@@ -29,9 +29,13 @@ describe("scan-replay", () => {
     expect(missedCount(transcriptionOf(PAGE), transcriptionOf(more))).toBe(2);
   });
 
-  it("lists nothing from a table of the second read that didn't pair with one of the first read's", () => {
+  it("lists from a table of the second read that didn't pair only the amounts the first read prints fewer times", () => {
     const extra = compact(...PAGE.text.split("\n"), "T 0.8-0.9 | Wire details", "H | Item | Fee", "R 0.81-0.82 | Wire fee | $25.00", "R 0.83-0.84 | Courier | $40.00");
-    expect(missedCount(transcriptionOf(PAGE), transcriptionOf(extra))).toBe(0);
+    expect(missedCount(transcriptionOf(PAGE), transcriptionOf(extra))).toBe(2);
+    // both reads print the same amounts in tables that didn't pair with each other: nothing is new
+    const first = compact(...PAGE.text.split("\n"), "T 0.8-0.9 | Wire details", "H | Item | Fee", "R 0.81-0.82 | Wire fee | $25.00", "R 0.83-0.84 | Courier | $40.00");
+    const second = compact(...PAGE.text.split("\n"), "T 0.8-0.9 | Bank details", "H | Item | Fee", "R 0.81-0.82 | Courier | $40.00", "R 0.83-0.84 | Wire | $25.00");
+    expect(missedCount(transcriptionOf(first), transcriptionOf(second))).toBe(0);
     // the same rows inside the table that did pair are listed
     const inside = compact(...PAGE.text.split("\n"), "R 0.35-0.36 | Wire fee | $25.00");
     expect(missedCount(transcriptionOf(PAGE), transcriptionOf(inside))).toBe(1);

@@ -331,6 +331,38 @@ describe("a first-read copy that already lined up can't hide a dropped twin", ()
   });
 });
 
+describe("a table that didn't pair adds only the amounts the first read prints fewer times", () => {
+  const fee = (id: string, name: string, cents: number, cell: string): Term => ({
+    id, category: "site_fee", name, amountCents: cents, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+    holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: name, cell }, evidence: "none", houseRuleIds: [], notes: null,
+  });
+  // "Fees" is the start of "Other fees", so neither table of one read pairs with a table of the other
+  const tables = (a: string[], b: string[]) => [...["T 0.1-0.3 | Fees", "H | Item | Fee", ...a], ...["T 0.4-0.6 | Other fees", "H | Item | Fee", ...b]];
+  const missedQuestions = async (terms: Term[], first: string[], second: string[]) => {
+    const { rulebook } = await settle(book({ terms }), [read(first)], [read(second)]);
+    return open(rulebook).filter((q) => q.missedRow).map((q) => q.id);
+  };
+  const terms = [fee("t1", "Labs", 25000, "p1.t1.r1.c1"), fee("t3", "Pharmacy", 7500, "p1.t2.r1.c1")];
+
+  it("a value the first read left blank in a table that didn't pair is asked about", async () => {
+    const first = tables(["R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam |"], ["R 0.52-0.53 | Pharmacy | $75.00"]);
+    const second = tables(["R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam | $100.00"], ["R 0.52-0.53 | Pharmacy | $75.00"]);
+    expect(await missedQuestions(terms, first, second)).toEqual(["read:Budget.pdf:p1:missed:t1.r2"]);
+  });
+
+  it("a row the first read dropped from a table that didn't pair is asked about", async () => {
+    const first = tables(["R 0.2-0.21 | Labs | $250.00"], ["R 0.52-0.53 | Pharmacy | $75.00"]);
+    const second = tables(["R 0.2-0.21 | Labs | $250.00"], ["R 0.52-0.53 | Pharmacy | $75.00", "R 0.54-0.55 | Exam | $100.00"]);
+    expect(await missedQuestions(terms, first, second)).toEqual(["read:Budget.pdf:p1:missed:t2.r2"]);
+  });
+
+  it("a page whose two reads print the same amounts in tables that didn't pair asks nothing about missed amounts", async () => {
+    const first = tables(["R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam | $100.00"], ["R 0.52-0.53 | Pharmacy | $75.00"]);
+    const second = tables(["R 0.2-0.21 | Exam | $100.00"], ["R 0.52-0.53 | Labs | $250.00", "R 0.54-0.55 | Pharmacy | $75.00"]);
+    expect(await missedQuestions(terms, first, second)).toEqual([]);
+  });
+});
+
 describe("closing a missed-row question needs the page's second read", () => {
   it("missed-row questions stay open when the second read isn't loaded", async () => {
     const first = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00"]);

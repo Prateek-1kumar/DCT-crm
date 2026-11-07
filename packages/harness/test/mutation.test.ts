@@ -166,6 +166,7 @@ const term = (id: string, name: string, cents: number, quote: string, cell: stri
 });
 
 const REPEATED = "same row repeated";
+const PREFIXED = "prefix-sharing titles";
 
 const SHAPES: Shape[] = [
   {
@@ -305,6 +306,16 @@ const SHAPES: Shape[] = [
       });
       return { terms, grids: [], relations: [], values };
     },
+  },
+  {
+    name: PREFIXED,
+    pages(r) {
+      const labels = shuffled(r, PROCEDURES).slice(0, 6);
+      const rows = (from: number) => labels.slice(from, from + 3).map((label) => ({ label, values: [fee(r)] }));
+      // "Fees" is the start of "Other fees", so neither table of the second read pairs with a table of the first
+      return [read([...gridLines("Fees", ["Fee"], rows(0)), ...gridLines("Other fees", ["Fee"], rows(3))])];
+    },
+    book: (reads) => SHAPES.find((x) => x.name === REPEATED)!.book(reads),
   },
   {
     name: "prose amounts",
@@ -658,10 +669,10 @@ describe("planted misreads", () => {
       const own = mutated.filter((x) => x.shape === shape.name);
       return `${shape.name} ${(total(own, (t) => t.questions) / total(own, (t) => t.pages)).toFixed(2)}`;
     });
-    const gated = mutated.filter((x) => x.shape !== REPEATED);
+    const gated = mutated.filter((x) => ![REPEATED, PREFIXED].includes(x.shape));
     const gatedPerPage = total(gated, (t) => t.questions) / total(gated, (t) => t.pages);
-    console.log(`questions per page with a misread second read: ${perPage.toFixed(2)} over all shapes, ${gatedPerPage.toFixed(2)} without the stress shape; of which the misread adds ${(total(mutated, (t) => t.questions - t.baseline) / pages).toFixed(2)}; by shape: ${perShape.join(", ")}`);
-    // the gate is the one the shapes before the repeated-row stress shape were held to; the owner decides what the stress shape's rate means
+    console.log(`questions per page with a misread second read: ${perPage.toFixed(2)} over all shapes, ${gatedPerPage.toFixed(2)} without the two stress shapes; of which the misread adds ${(total(mutated, (t) => t.questions - t.baseline) / pages).toFixed(2)}; by shape: ${perShape.join(", ")}`);
+    // the gate is the one the shapes before the two stress shapes were held to; the owner decides what the stress shapes' rate means
     expect(gatedPerPage).toBeLessThan(1);
   });
 });
