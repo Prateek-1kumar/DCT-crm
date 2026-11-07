@@ -272,7 +272,7 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
     };
     const states = (rb: Rulebook) => Object.fromEntries(rb.questions.map((q) => [q.id, q.state]));
     expect(states(closeSettledMissed(crowded, docs))).toEqual({
-      "read:Budget.pdf:p1:missed:t1.r2": "open", "read:Budget.pdf:p1:missed:t1.r9": "open", "read:Budget.pdf:p1:missed:t1.r2:x": "open", "read:Budget.pdf:p1:missed:t1.r3": "auto_resolved",
+      "read:Budget.pdf:p1:missed:t1.r2": "open", "read:Budget.pdf:p1:missed:t1.r9": "open", "read:Budget.pdf:p1:missed:t1.r2:x": "open", "read:Budget.pdf:p1:missed:t1.r3": "open",
     });
     const aside = pick(crowded, real.id, 1);
     expect(states(closeSettledMissed(aside, docs))).toMatchObject({ "read:Budget.pdf:p1:missed:t1.r9": "open", "read:Budget.pdf:p1:missed:t1.r2:x": "open" });
@@ -295,6 +295,56 @@ describe("an amount only the second read found is a person's to settle (C2)", ()
     expect(asked.ok && asked.value.options[0]!.patches).toEqual([]);
     // the compile agent is told so, and isn't asked to fix it
     expect(checks.runChecks(book({ terms: [ecg] }), docs).problems.filter((p) => p.check === "unaccounted")).toEqual([expect.objectContaining({ afterCompile: true })]);
+  });
+});
+
+describe("a first-read copy that already lined up can't hide a dropped twin", () => {
+  const fee = (id: string, name: string, cents: number, cell: string): Term => ({
+    id, category: "site_fee", name, amountCents: cents, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+    holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: name, cell }, evidence: "none", houseRuleIds: [], notes: null,
+  });
+  const fees = (...rows: string[]) => ["T 0.1-0.3 | Fees", "H | Item | Fee", ...rows];
+  const other = (...rows: string[]) => ["T 0.4-0.6 | Other", "H | Item | Fee", ...rows];
+  const asked = async (terms: Term[], first: string[], second: string[]) => {
+    const { rulebook } = await settle(book({ terms }), [read(first)], [read(second)]);
+    return open(rulebook).filter((q) => q.missedRow).map((q) => q.id);
+  };
+  const labs = fee("t1", "Labs", 25000, "p1.t1.r1.c1");
+  const exam = (id: string, cell: string) => fee(id, "Exam", 10000, cell);
+
+  it("a row printed twice that the first read has once is asked about one copy", async () => {
+    expect(await asked([exam("t1", "p1.t1.r1.c1")], fees("R 0.2-0.21 | Exam | $100.00"), fees("R 0.2-0.21 | Exam | $100.00", "R 0.22-0.23 | Exam | $100.00"))).toEqual(["read:Budget.pdf:p1:missed:t1.r2"]);
+    expect(await asked([labs, exam("t2", "p1.t1.r2.c1")], fees("R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam | $100.00"), fees("R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam | $100.00", "R 0.24-0.25 | Exam | $100.00"))).toEqual(["read:Budget.pdf:p1:missed:t1.r3"]);
+  });
+
+  it("the same row in two tables, dropped from the first or from the second", async () => {
+    const firstDrops = [...fees("R 0.2-0.21 | Labs | $250.00"), ...other("R 0.52-0.53 | Exam | $100.00")];
+    expect(await asked([labs, exam("t2", "p1.t2.r1.c1")], firstDrops, [...fees("R 0.2-0.21 | Exam | $100.00", "R 0.22-0.23 | Labs | $250.00"), ...other("R 0.52-0.53 | Exam | $100.00")])).toEqual(["read:Budget.pdf:p1:missed:t1.r1"]);
+    expect(await asked([exam("t1", "p1.t1.r1.c1"), fee("t2", "Labs", 25000, "p1.t2.r1.c1")], [...fees("R 0.2-0.21 | Exam | $100.00"), ...other("R 0.52-0.53 | Labs | $250.00")], [...fees("R 0.2-0.21 | Exam | $100.00"), ...other("R 0.52-0.53 | Labs | $250.00", "R 0.54-0.55 | Exam | $100.00")])).toEqual(["read:Budget.pdf:p1:missed:t2.r2"]);
+    expect(await asked([labs, exam("t2", "p1.t2.r1.c1")], firstDrops, [...fees("R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam | $100.00"), ...other("R 0.52-0.53 | Exam | $100.00")])).toEqual(["read:Budget.pdf:p1:missed:t1.r2"]);
+  });
+
+  it("a prose line printed twice that the first read has once, and a table row beside a prose line of the same words", async () => {
+    const prose = [...fees("R 0.2-0.21 | Labs | $250.00"), "L 0.7-0.72 | Exam fee $100.00"];
+    expect(await asked([labs], prose, [...fees("R 0.2-0.21 | Labs | $250.00"), "L 0.7-0.72 | Exam fee $100.00", "L 0.74-0.76 | Exam fee $100.00"])).toEqual(["read:Budget.pdf:p1:missed:l2"]);
+    expect(await asked([labs], prose, [...fees("R 0.2-0.21 | Labs | $250.00", "R 0.22-0.23 | Exam fee | $100.00"), "L 0.7-0.72 | Exam fee $100.00"])).toEqual(["read:Budget.pdf:p1:missed:t1.r2"]);
+  });
+});
+
+describe("closing a missed-row question needs the page's second read", () => {
+  it("missed-row questions stay open when the second read isn't loaded", async () => {
+    const first = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00"]);
+    const second = read(["T 0.1-0.5 | Fees", "H | Item | Fee", "R 0.2-0.21 | ECG | $100.00", "R 0.22-0.23 | Labs | $250.00"]);
+    const ecg: Term = {
+      id: "t1", category: "site_fee", name: "ECG", amountCents: 10000, unit: null, billing: "auto_paid", trigger: null, cap: null, formula: null, conditions: null,
+      holdbackApplies: "n/a", overheadApplies: "n/a", deadline: null, source: { doc: DOC, page: 1, quote: "ECG", cell: "p1.t1.r1.c1" }, evidence: "person", houseRuleIds: [], notes: null,
+    };
+    const { rulebook, docs } = await settle(book({ terms: [ecg] }), [first], [second]);
+    const asked = open(rulebook).filter((q) => q.missedRow);
+    expect(asked).toHaveLength(1);
+    const aside = pick(rulebook, asked[0]!.id, 1);
+    expect(open(closeSettledMissed({ ...aside, questions: aside.questions.map((q) => ({ ...q, state: "open" as const })) }, docs)).filter((q) => q.missedRow)).toEqual([]);
+    expect(open(closeSettledMissed({ ...aside, questions: aside.questions.map((q) => ({ ...q, state: "open" as const })) }, [docOf([first])])).filter((q) => q.missedRow)).toHaveLength(1);
   });
 });
 

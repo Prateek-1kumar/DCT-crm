@@ -295,10 +295,16 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
   const bands = Object.fromEntries([...bandsOf(page.second)].map(([key, band]) => [`p${page.page}.${key}`, band]));
   const second: Page = { ...page, cells: cellsOf(page.page, page.second), bands };
   const claimed = new Map<string, string>();
-  // an amount the second read couldn't line up, that the first read prints as many times on the same words, is accounted for there: only the copies beyond that are new
+  // an amount the second read couldn't line up is accounted for by a first-read copy on the same words that no second-read
+  // row lined up with; a copy that did line up is already spoken for by its own pair, so it never hides an extra one
+  const forth = diffReads(page.page, page.transcription, page.second);
+  const lined = (cell: ScanCell, cents: number) => {
+    const verdict = cell.table === null ? (forth.get(`${cell.id}#${cents}`) ?? forth.get(`${cell.id}#${-cents}`)) : forth.get(cell.id);
+    return verdict !== undefined && (verdict.outcome === "agree" || verdict.outcome === "differ" || verdict.second !== undefined);
+  };
   const twin = (line: string, cents: number) => `${looseKey(line)}|${cents}`;
   const twins = new Map<string, number>();
-  for (const { line, printed } of printedCells(pages, index)) for (const { cents } of printed) twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) + 1);
+  for (const { cell, line, printed } of printedCells(pages, index)) for (const { cents } of printed) if (!lined(cell, cents)) twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) + 1);
   return printedCells(pages.map((p, i) => (i === index ? second : p)), index).flatMap(({ cell, line, printed }) =>
     printed.flatMap(({ text, cents }): CoverageAmount[] => {
       const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);

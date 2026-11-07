@@ -344,11 +344,13 @@ function askMissed(run: Run) {
   }
 }
 
-/** Questions about amounts only a second read found that another answer has since settled, such as setting aside a whole page. */
+/** Questions about amounts only a second read found that another answer has since settled, such as setting aside a whole page. Without the page's second read nothing can be told, so they stay open. */
 export function closeSettledMissed(rulebook: Rulebook, docs: LoadedDoc[]): Rulebook {
   const key = (doc: string, page: number, row: string) => JSON.stringify([doc, page, row]);
   const stillMissing = new Set(coverage(rulebook, docs).pages.flatMap((p) => p.amounts.filter((a) => a.status === "missing" && a.secondRead !== undefined).map((a) => key(p.doc, p.page, rowOfCell(a.secondRead!)))));
-  const settled = (q: Question) => q.origin === "check" && q.state === "open" && q.missedRow !== undefined && !stillMissing.has(key(q.missedRow.doc, q.missedRow.page, q.missedRow.row));
+  const loaded = (doc: string, page: number) => docs.find((d) => d.name === doc)?.pages.find((p) => p.page === page)?.second !== undefined;
+  const settled = (q: Question) =>
+    q.origin === "check" && q.state === "open" && q.missedRow !== undefined && loaded(q.missedRow.doc, q.missedRow.page) && !stillMissing.has(key(q.missedRow.doc, q.missedRow.page, q.missedRow.row));
   return { ...rulebook, questions: rulebook.questions.map((q) => (settled(q) ? { ...q, state: "auto_resolved" as const } : q)) };
 }
 
