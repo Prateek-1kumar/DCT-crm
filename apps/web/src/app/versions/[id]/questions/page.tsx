@@ -1,6 +1,10 @@
+"use client";
+
+import { use } from "react";
 import { QuestionsView } from "@/components/version/QuestionsView";
 
-export default async function QuestionsPage({ params }: PageProps<"/versions/[id]/questions">) {
-  const { id } = await params;
+// read in the client, like the contract page: an awaited params in a server page makes Next drop the page from its instant-navigation check
+export default function QuestionsPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
   return <QuestionsView versionId={id} />;
 }

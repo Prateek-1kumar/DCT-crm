@@ -1,12 +1,11 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { api, keys } from "@/lib/queries";
 import type { Read, ReadStatus, VersionSummary } from "@/lib/types";
-import { btnCls, Spinner } from "../ui";
-import { elapsed, usd } from "./format";
+import { Card, ProgressBar, Spinner } from "../ui";
+import { elapsed } from "./format";
 import { StartReading } from "./StartReading";
 
 const POLL_MS = 1500;
@@ -63,14 +62,21 @@ function Meter({ read }: { read: Read }) {
   const now = useNow(running);
   const start = Date.parse(read.startedAt ?? read.createdAt);
   const end = running ? now : Date.parse(read.finishedAt ?? read.createdAt);
+  // Accountants never see money: the allowance is only a bar.
+  const used = read.budgetUsd > 0 ? (read.spentUsd / read.budgetUsd) * 100 : 0;
   return (
-    <p className="num text-small text-muted">
-      {running ? "Reading for" : "Took"} {elapsed(end - start)} · {usd(read.spentUsd)} of {usd(read.budgetUsd)}
-    </p>
+    <div className="flex flex-col gap-2">
+      <p className="num text-small text-muted">
+        {running ? "Reading for" : "Ran for"} {elapsed(end - start)}
+      </p>
+      <div className="max-w-[320px]">
+        <ProgressBar value={used} label="How much of the reading allowance is used" />
+      </div>
+    </div>
   );
 }
 
-/** The reader's feed under the next-step card, for a version that is being read, has just been read, or failed. */
+/** The reader's live feed (or why it stopped) for a version that is being read or whose read failed. */
 export function ReadingPanel({ studyId, version }: { studyId: string; version: VersionSummary }) {
   const queryClient = useQueryClient();
   const detail = useQuery({ queryKey: keys.version(version.id), queryFn: () => api.version(version.id) });
@@ -91,56 +97,38 @@ export function ReadingPanel({ studyId, version }: { studyId: string; version: V
   }, [status, studyId, version.id, queryClient]);
 
   const data = read.data;
-  const questions = detail.data?.rulebook?.questions;
-  const open = questions?.filter((q) => q.state === "open" && q.blocking).length;
-  const feed = data && (version.status === "reading" ? <ReadingFeed read={data} /> : <FeedHistory read={data} />);
 
   if (version.status === "failed")
     return (
-      <div className="flex flex-col gap-4">
+      <Card className="flex flex-col gap-4 p-6">
         <div>
-          <h3 className="text-heading font-semibold tracking-tight">The reading didn&apos;t finish</h3>
+          <h2 className="text-title font-semibold tracking-tight">The reading didn&apos;t finish</h2>
           <p className="mt-1 text-body text-muted">{data?.error ?? "The reading stopped before it was done."}</p>
+          <p className="mt-1 text-body text-muted">Scanned pages that were already transcribed are kept, so starting again won&apos;t redo them.</p>
         </div>
         {data && <Meter read={data} />}
-        <StartReading studyId={studyId} label="Start reading again" />
-        {feed}
-      </div>
-    );
-
-  if (version.status === "draft")
-    return (
-      <div className="flex flex-col gap-4">
-        <h3 className="text-heading font-semibold tracking-tight">
-          {open === undefined ? "Reading finished" : open === 0 ? "Reading finished: no questions need you" : `Reading finished: ${open} ${open === 1 ? "question needs" : "questions need"} you`}
-        </h3>
-        {data && <Meter read={data} />}
-        <div>
-          <Link href={`/versions/${version.id}/${open === 0 ? "approve" : "questions"}`} className={btnCls("primary", "lg")}>
-            {open === 0 ? "Review and approve" : "Answer questions"}
-          </Link>
-        </div>
-        {feed}
-      </div>
+        <StartReading studyId={studyId} label="Start again" />
+        {data && <FeedHistory read={data} />}
+      </Card>
     );
 
   return (
-    <div className="flex flex-col gap-4">
+    <Card className="flex flex-col gap-4 p-6">
       <div>
-        <h3 className="text-heading font-semibold tracking-tight">Reading the contract</h3>
-        <p className="mt-1 text-body text-muted">This takes a few minutes. You can leave this page; the reading carries on.</p>
+        <h2 className="text-title font-semibold tracking-tight">Reading the contract</h2>
+        <p className="mt-1 text-body text-muted">This takes a few minutes. You can leave this page; we&apos;ll keep reading and the contract will be ready when you come back.</p>
       </div>
       {data ? (
         <>
           <Meter read={data} />
-          {feed}
+          <ReadingFeed read={data} />
         </>
       ) : read.isError || detail.isError ? (
         <p className="text-body text-muted">We can&apos;t see the progress right now. It will show here when the connection is back.</p>
       ) : (
         <Spinner label="Getting ready to read" />
       )}
-    </div>
+    </Card>
   );
 }
 

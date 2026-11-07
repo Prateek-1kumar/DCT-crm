@@ -64,3 +64,14 @@ export const read = (over: Partial<Read> = {}): Read => ({
   finishedAt: null,
   ...over,
 });
+
+/** jsdom has no <dialog> behaviour: give it open/close so modals render their contents in tests. */
+export function stubDialog() {
+  HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  };
+  HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+    this.removeAttribute("open");
+    this.dispatchEvent(new Event("close"));
+  };
+}

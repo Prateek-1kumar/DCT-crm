@@ -1,4 +1,4 @@
-import type { Evidence, Grid, Rulebook, Term, TermCategory } from "@dct/shared";
+import type { Grid, Rulebook, Term } from "@dct/shared";
 import type { Tone } from "../ui";
 import type { AmountStatus, Coverage, CoveragePage, CoverageRef, Doubt, Version } from "@/lib/types";
 
@@ -66,25 +66,6 @@ export const STATUS: Record<AmountStatus, { tone: Tone; chip: string; proof: str
 
 export const DOUBT_WORDS: Record<Doubt, string> = { unsure: "unsure", handwritten: "handwritten", struck_out: "struck out", initialed: "initialed" };
 
-export const EVIDENCE_TONE: Record<Evidence, Tone> = { math: "ok", quote: "ok", two_reads: "ok", house_rule: "accent", person: "info", none: "warn" };
-
-export const GROUPS: { title: string; categories: TermCategory[] }[] = [
-  { title: "Fees paid once", categories: ["site_fee"] },
-  { title: "Recurring fees", categories: ["recurring_fee"] },
-  { title: "Per-visit and conditional payments", categories: ["conditional_procedure"] },
-  { title: "Things the site invoices", categories: ["invoiceable"] },
-  { title: "Screen failures", categories: ["screen_failure"] },
-  { title: "Unscheduled visits", categories: ["unscheduled_visit"] },
-  { title: "Stipends, travel and bonuses", categories: ["stipend_travel", "bonus"] },
-  { title: "Holdback", categories: ["holdback"] },
-  { title: "Overhead", categories: ["overhead"] },
-  { title: "Payment terms and deadlines", categories: ["payment_terms", "invoicing", "deadline"] },
-  { title: "Caps and limits", categories: ["cap_or_limit"] },
-  { title: "Other", categories: ["other"] },
-];
-
-export const groupTitle = (c: TermCategory) => GROUPS.find((g) => g.categories.includes(c))?.title ?? "Other";
-
 /** "Avery Chen: Pay it once", when a person answered a question about this term or grid. */
 export function decidedBy(d: ProofData, ref: CoverageRef): string | null {
   const q = d.rulebook.questions.find((x) => x.about?.target === ref.target && x.about.id === ref.id && d.version.answers.some((a) => a.questionId === x.id));
@@ -93,3 +74,6 @@ export function decidedBy(d: ProofData, ref: CoverageRef): string | null {
 }
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** The page to open for a line: a term's quote page, or a grid's own page (the one with the cell's amount, else its first). */
+export const spotFor = (d: ProofData, ref: CoverageRef): Spot | null => (ref.target === "term" ? (sourceOf(d, ref) ?? locate(d, ref)) : locate(d, ref));

@@ -5,7 +5,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checks, resolve, scanVersion, type Reader } from "@dct/harness";
 import { buildApp } from "../src/app.js";
-import { answers, auditLog, documents, parties, reads, studies, versions } from "../src/db/schema.js";
+import { answers, auditLog, documents, parties, proofreads, reads, studies, versions } from "../src/db/schema.js";
 import { loadDocs } from "../src/lib/docs.js";
 import { savePdf, scanStore } from "../src/lib/storage.js";
 import type { App, Built } from "./helpers.js";
@@ -144,7 +144,7 @@ describe("GET /versions/:id", () => {
     const res = await app.inject({ url: `/api/v1/versions/${id}` });
     const body = res.json();
     expect(res.statusCode).toBe(200);
-    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "documents", "id", "number", "problems", "read", "rulebook", "status", "studyId"]);
+    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "documents", "id", "number", "problems", "proofreads", "read", "rulebook", "status", "studyId"]);
     expect(body).toMatchObject({ id, studyId, number: 1, status: "draft", documentIds: [docId], createdBy: "test", approvedAt: null, approvedBy: null });
     expect(body.documents).toEqual([{ id: docId, name: "contract.pdf", pageCount: 1 }]);
     expect(body.answers).toEqual([{ questionId: "q1", option: 0, by: "Ana", at: expect.any(String) }]);
@@ -740,5 +740,183 @@ describe("the database refuses to change what is live", () => {
     expect(await refusal(db().delete(auditLog).where(and(eq(auditLog.entityId, id))))).toBe(message);
     expect(await refusal(db().execute(sql`TRUNCATE audit_log`))).toBe(message);
     expect(await audits(id)).toHaveLength(1);
+  });
+});
+
+const list = async (studyId: string) => (await app.inject({ url: "/api/v1/studies" })).json().find((s: { id: string }) => s.id === studyId);
+
+describe("GET /studies rows", () => {
+  it("says who the PI is, from the latest version that has a rulebook", async () => {
+    const { studyId } = await seed({ rulebook: rulebook({ study: { ...rulebook().study, pi: "Dr. Old" } }) });
+    await seed({ studyId, number: 2, status: "draft", rulebook: rulebook({ study: { ...rulebook().study, pi: "Dr. New" } }) });
+    await db().insert(versions).values({ studyId, number: 3, status: "reading", documentIds: [docId], createdBy: "test" });
+    const row = await list(studyId);
+    expect(row.pi).toBe("Dr. New");
+    expect(row.latestVersion).toMatchObject({ number: 3, status: "reading" });
+    expect(row.openDecisions).toBe(0);
+    expect(row.pi).not.toBeNull();
+    expect((await list(await study())).pi).toBeNull();
+  });
+
+  it("counts the latest draft's open blocking questions, not answered or non-blocking ones", async () => {
+    const { studyId, id } = await seed({ rulebook: rulebook({ questions: [question("a"), question("b"), question("c", { blocking: false }), question("d", { state: "answered" })] }) });
+    const row = await list(studyId);
+    expect(row).toMatchObject({ openDecisions: 2, liveVersion: null, newVersionInProgress: false, answeredBy: [], latestVersion: { id, number: 1, status: "draft" } });
+  });
+
+  it("counts failing checks as one decision only when no question is open", async () => {
+    const failing = await seed({ problems: [badQuote] });
+    expect((await list(failing.studyId)).openDecisions).toBe(1);
+    const both = await seed({ problems: [badQuote], rulebook: rulebook({ questions: [question("a"), question("b")] }) });
+    expect((await list(both.studyId)).openDecisions).toBe(2);
+    const clean = await seed();
+    expect((await list(clean.studyId)).openDecisions).toBe(0);
+  });
+
+  it("has nothing to decide on a live or failed latest version, and names who answered only a draft", async () => {
+    const live = await seed({ status: "approved", problems: [badQuote], rulebook: rulebook({ questions: [question("a")] }) });
+    expect(await list(live.studyId)).toMatchObject({ openDecisions: 0, liveVersion: 1, newVersionInProgress: false, answeredBy: [] });
+    const failed = await seed({ status: "failed", rulebook: rulebook({ questions: [question("a")] }) });
+    expect((await list(failed.studyId)).openDecisions).toBe(0);
+
+    const { studyId, id } = await seed({ rulebook: rulebook({ questions: [question("q1"), question("q2")] }) });
+    await answer(id, "q1", { option: 1, by: "Ben" });
+    await answer(id, "q2", { option: 1, by: "Ana" });
+    await answer(id, "q2", { option: 1, by: "Ana" });
+    expect(await list(studyId)).toMatchObject({ answeredBy: ["Ana", "Ben"], openDecisions: 0 });
+    await approve(id, { by: "Cy" });
+    expect((await list(studyId)).answeredBy).toEqual([]);
+  });
+
+  it("marks a newer draft or reading over the live version, and the live number stays", async () => {
+    const { studyId } = await seed({ status: "approved" });
+    expect((await list(studyId)).newVersionInProgress).toBe(false);
+    await seed({ studyId, number: 2, status: "draft" });
+    expect(await list(studyId)).toMatchObject({ liveVersion: 1, newVersionInProgress: true, latestVersion: { number: 2, status: "draft" } });
+    await db().update(versions).set({ status: "failed" }).where(and(eq(versions.studyId, studyId), eq(versions.number, 2)));
+    expect((await list(studyId)).newVersionInProgress).toBe(false);
+  });
+
+  it("updatedAt is the latest of the study's creation, its versions' creation and approval, and its reads' finish", async () => {
+    // a draft carrying an approval stamp: a live version's can't be edited to try this
+    const { studyId, id } = await seed();
+    const approvedAt = new Date(Date.now() + 60_000);
+    await db().update(versions).set({ approvedAt }).where(eq(versions.id, id));
+    expect((await list(studyId)).updatedAt).toBe(approvedAt.toISOString());
+    const finishedAt = new Date(Date.now() + 120_000);
+    await db().insert(reads).values({ versionId: id, budgetUsd: 1, status: "done", finishedAt });
+    expect((await list(studyId)).updatedAt).toBe(finishedAt.toISOString());
+    expect((await list(await study())).updatedAt).toEqual(expect.any(String));
+  });
+});
+
+const proofread = (id: string, body: unknown) => app.inject({ method: "POST", url: `/api/v1/versions/${id}/proofread`, payload: body as object });
+const unproofread = (id: string, by: string, item: string) => app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/proofread?by=${encodeURIComponent(by)}&item=${encodeURIComponent(item)}` });
+const gridded = () =>
+  rulebook({
+    grids: [{ id: "g:1", name: "Arm A", arm: null, doc: "contract.pdf", pages: [1], visits: ["V1", "V2"], overheadPct: null, rows: [{ name: "Labs", code: null, unitCostCents: null, cells: [100, 200], printedRowTotalCents: null }], subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null, cellsReadTwice: [], acceptedAsPrinted: false }],
+  });
+
+describe("proofreading a version", () => {
+  it("records marks on a draft, ordered by time, ignoring repeats, and returns the version", async () => {
+    const { id } = await seed({ rulebook: gridded() });
+    // marks made in one call share a timestamp, so they come back by item name
+    const res = await proofread(id, { by: "Ana", items: ["t1", "grid:g:1:0:1", "t1"] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().proofreads).toEqual([{ item: "grid:g:1:0:1", by: "Ana", at: expect.any(String) }, { item: "t1", by: "Ana", at: expect.any(String) }].map((m) => expect.objectContaining({ item: m.item, by: "Ana" })));
+    const again = await proofread(id, { by: "Ana", items: ["t1"] });
+    expect(again.json().proofreads).toHaveLength(2);
+    expect((await proofread(id, { by: "Ben", items: ["t1"] })).json().proofreads.map((m: { by: string }) => m.by)).toEqual(["Ana", "Ana", "Ben"]);
+    expect((await app.inject({ url: `/api/v1/versions/${id}` })).json().proofreads).toHaveLength(3);
+    expect((await audits(id)).map((a) => [a.action, a.by, a.detail])).toEqual([["version.proofread", "Ana", { items: ["t1", "grid:g:1:0:1"] }], ["version.proofread", "Ben", { items: ["t1"] }]]);
+  });
+
+  it("works on an approved version without touching the live rulebook", async () => {
+    const { id } = await seed({ status: "approved" });
+    const before = await stored(id);
+    const res = await proofread(id, { by: "Ana", items: ["t1"] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().proofreads).toHaveLength(1);
+    expect(await stored(id)).toEqual(before);
+    expect((await unproofread(id, "Ana", "t1")).json().proofreads).toEqual([]);
+    expect((await stored(id)).status).toBe("approved");
+  });
+
+  it("the guard on live rulebooks is still in force beside it", async () => {
+    const { id } = await seed({ status: "approved" });
+    await proofread(id, { by: "Ana", items: ["t1"] });
+    expect(await refusal(db().update(versions).set({ rulebook: rulebook({ terms: [] }) }).where(eq(versions.id, id)))).toBe("A live rulebook can't be changed: make a new version instead.");
+  });
+
+  it("does not hold up approval", async () => {
+    const { id } = await seed();
+    expect((await approve(id, { by: "Cy" })).statusCode).toBe(200);
+  });
+
+  it("refuses items that aren't in the rulebook, in plain words, and saves none of them", async () => {
+    const { id } = await seed({ rulebook: gridded() });
+    for (const item of ["nope", "grid:g:1:0:2", "grid:g:1:1:0", "grid:other:0:0", "grid:g:1:-1:0", "grid:g:1"]) {
+      const res = await proofread(id, { by: "Ana", items: ["t1", item] });
+      expect([res.statusCode, res.json().message]).toEqual([400, `"${item}" isn't a term or a grid cell in this rulebook, so it can't be proofread. Reload the page and try again.`]);
+    }
+    expect(await db().select().from(proofreads).where(eq(proofreads.versionId, id))).toEqual([]);
+  });
+
+  it("refuses a bad request", async () => {
+    const { id } = await seed();
+    const msg = async (body: unknown) => (await proofread(id, body)).json().message;
+    expect(await msg({ items: ["t1"] })).toBe("Say who is doing this: pick your name first.");
+    expect(await msg({ by: "Ana" })).toBe("Send the items to proofread as a list.");
+    expect(await msg({ by: "Ana", items: [] })).toBe("Pick at least one item to proofread.");
+    expect(await msg({ by: "Ana", items: Array.from({ length: 201 }, (_, i) => `t${i}`) })).toBe("Proofread at most 200 items at a time.");
+    expect(await msg({ by: "Ana", items: [""] })).toBe("An item's id can't be empty.");
+    expect((await proofread(id, { by: "Ana", items: [1] })).statusCode).toBe(400);
+  });
+
+  it("accepts 200 items", async () => {
+    const terms = Array.from({ length: 200 }, (_, i) => term(`x${i}`));
+    const { id } = await seed({ rulebook: rulebook({ terms }) });
+    expect((await proofread(id, { by: "Ana", items: terms.map((t) => t.id) })).json().proofreads).toHaveLength(200);
+  });
+
+  it("is refused on a reading, failed or superseded version, and an unknown one", async () => {
+    const reading = await seed({ status: "reading" });
+    const failed = await seed({ status: "failed" });
+    const old = await seed({ status: "superseded" });
+    const said = async (id: string) => { const r = await proofread(id, { by: "Ana", items: ["t1"] }); const d = await unproofread(id, "Ana", "t1"); expect(d.statusCode).toBe(409); expect(d.json().message).toBe(r.json().message); return [r.statusCode, r.json().message]; };
+    expect(await said(reading.id)).toEqual([409, "This version is still being read, so it can't be proofread yet. Wait for the read to finish."]);
+    expect(await said(failed.id)).toEqual([409, "This version couldn't be read, so there is nothing to proofread."]);
+    expect(await said(old.id)).toEqual([409, "This version has been replaced by a newer live one, so it can't be proofread. Open the live version instead."]);
+    const missing = await proofread(randomUUID(), { by: "Ana", items: ["t1"] });
+    expect([missing.statusCode, missing.json().message]).toEqual([404, "There is no such version."]);
+  });
+});
+
+describe("taking a proofread mark back", () => {
+  it("removes only the caller's own mark, and audits it", async () => {
+    const { id } = await seed();
+    await proofread(id, { by: "Ana", items: ["t1"] });
+    await proofread(id, { by: "Ben", items: ["t1"] });
+    const res = await unproofread(id, "Ana", "t1");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().proofreads.map((m: { by: string }) => m.by)).toEqual(["Ben"]);
+    expect((await audits(id)).map((a) => a.action)).toEqual(["version.proofread", "version.proofread", "version.unproofread"]);
+  });
+
+  it("treats a name the same whatever its letter case", async () => {
+    const { id } = await seed();
+    await proofread(id, { by: "Ana", items: ["t1"] });
+    expect((await proofread(id, { by: "ana", items: ["t1"] })).json().proofreads).toEqual([expect.objectContaining({ item: "t1", by: "Ana" })]);
+    expect((await audits(id)).map((a) => a.action)).toEqual(["version.proofread"]);
+    expect((await unproofread(id, "ana", "t1")).json().proofreads).toEqual([]);
+  });
+
+  it("says so when there is no such mark of yours, and asks who and what", async () => {
+    const { id } = await seed();
+    await proofread(id, { by: "Ben", items: ["t1"] });
+    const res = await unproofread(id, "Ana", "t1");
+    expect([res.statusCode, res.json().message]).toEqual([404, "You haven't proofread that item, so there is no mark of yours to take off."]);
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/proofread?item=t1` })).json().message).toBe("Say who is doing this: pick your name first.");
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/proofread?by=Ana` })).json().message).toBe("Say which item to take your mark off.");
   });
 });

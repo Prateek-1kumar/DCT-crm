@@ -1,61 +1,29 @@
-"use client";
+import type { Coverage } from "@/lib/types";
+import { Button, cx } from "../ui";
+import { plural } from "./model";
 
-import type { Coverage, AmountStatus } from "@/lib/types";
-import { Badge, Button, cx } from "../ui";
-import { plural, STATUS } from "./model";
-
-export interface Layers {
-  amounts: boolean;
-  clauses: boolean;
-}
-
-const COUNTS: [AmountStatus, keyof Coverage["totals"]][] = [
-  ["captured", "captured"],
-  ["decided", "decided"],
-  ["set_aside", "setAside"],
-  ["missing", "missing"],
-];
-
-function Toggle({ on, onClick, children }: { on: boolean; onClick: () => void; children: string }) {
+function Tile({ label, n, tone }: { label: string; n: number; tone?: string }) {
   return (
-    <button type="button" aria-pressed={on} onClick={onClick} className={cx("h-8 rounded-full border px-3.5 text-small font-medium", on ? "border-brand bg-brand-soft text-accent" : "border-line-strong bg-surface text-muted")}>
-      {children}
-    </button>
+    <div className="rounded-tile bg-sunken px-4 py-3">
+      <p className={cx("num text-heading font-semibold", tone)}>{n.toLocaleString("en-US")}</p>
+      <p className="text-small text-muted">{label}</p>
+    </div>
   );
 }
 
-export function TotalsBar({ totals, scanned, filter, onFilter, onNext, layers, onLayers }: {
-  totals: Coverage["totals"];
-  scanned: number;
-  filter: AmountStatus | null;
-  onFilter: (f: AmountStatus | null) => void;
-  onNext: () => void;
-  layers: Layers;
-  onLayers: (l: Layers) => void;
-}) {
+/** How every dollar amount printed in the contract ended up, from the coverage check. */
+export function TotalsBar({ totals, scanned, onNext }: { totals: Coverage["totals"]; scanned: number; onNext: () => void }) {
   return (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <p className="text-title font-semibold tracking-tight">{plural(totals.amounts, "amount")} in the contract</p>
-        <ul className="flex flex-wrap gap-2" aria-label="Filter by what happened to each amount">
-          {COUNTS.map(([status, key]) => (
-            <li key={status}>
-              <button type="button" aria-pressed={filter === status} disabled={totals[key] === 0} onClick={() => onFilter(filter === status ? null : status)} className="rounded-full disabled:cursor-default">
-                <Badge tone={STATUS[status].tone} className={cx("h-8 px-3.5 text-body", filter === status && "ring-2 ring-current")}>
-                  {totals[key]} {STATUS[status].chip}
-                </Badge>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="ml-auto flex flex-wrap gap-2" role="group" aria-label="Show on the pages">
-          <Toggle on={layers.amounts} onClick={() => onLayers({ ...layers, amounts: !layers.amounts })}>Amounts</Toggle>
-          <Toggle on={layers.clauses} onClick={() => onLayers({ ...layers, clauses: !layers.clauses })}>Rule wording</Toggle>
-        </div>
+    <section aria-label="How the amounts were checked" className="grid gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Tile label="Matched the PDF" n={totals.captured} tone="text-ok" />
+        <Tile label="Confirmed by a person" n={totals.decided} tone="text-info" />
+        <Tile label="Set aside on purpose" n={totals.setAside} />
+        <Tile label="Missing from the rulebook" n={totals.missing} tone={totals.missing ? "text-danger" : undefined} />
       </div>
       {totals.missing > 0 ? (
         <p role="alert" className="flex flex-wrap items-center gap-3 rounded-field bg-danger-soft px-4 py-3 text-body text-danger">
-          Not in the rulebook yet: this needs a look before approval.
+          {plural(totals.missing, "amount")} printed in the contract {totals.missing === 1 ? "isn't" : "aren't"} in the rulebook yet. This needs a look before approval.
           <Button variant="danger" size="sm" onClick={onNext}>
             Next missing
           </Button>
@@ -68,6 +36,6 @@ export function TotalsBar({ totals, scanned, filter, onFilter, onNext, layers, o
           {plural(scanned, "page")} in this contract {scanned === 1 ? "is" : "are"} scanned: amounts on {scanned === 1 ? "it" : "them"} can&apos;t be checked.
         </p>
       )}
-    </div>
+    </section>
   );
 }

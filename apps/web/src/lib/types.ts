@@ -11,6 +11,35 @@ export interface Party {
   createdBy: string;
 }
 
+/** A party as the parties page lists it: with how many contracts use it. */
+export interface PartyRow extends Party {
+  studies: number;
+}
+
+/** What the activity trail groups an entry as, for its icon. */
+export type ActivityKind = "files" | "reading" | "decision" | "approval" | "proofread" | "parties" | "other";
+
+export interface ActivityItem {
+  /** Newest first; also the cursor for the next page. */
+  id: number;
+  at: string;
+  /** Who did it: a person's name, or "Contract reader" for the reading itself. */
+  by: string;
+  /** A plain-English sentence: "Ana Answerer answered a decision on version 2". */
+  summary: string;
+  kind: ActivityKind;
+  /** The contract it belongs to, when it belongs to one. */
+  studyId: string | null;
+  studyTitle: string | null;
+  versionNumber: number | null;
+}
+
+export interface ActivityPage {
+  items: ActivityItem[];
+  /** Pass as `before` to get the next page; null at the end. */
+  next: number | null;
+}
+
 export type VersionStatus = "reading" | "draft" | "failed" | "approved" | "superseded";
 
 export interface StudyRow {
@@ -26,7 +55,20 @@ export interface StudyRow {
   payer: string | null;
   site: string | null;
   firstDocument: string | null;
-  latestVersion: { number: number; status: VersionStatus } | null;
+  /** The latest version, whatever its status; its id is what the workspace opens. */
+  latestVersion: { id: string; number: number; status: VersionStatus } | null;
+  /** The principal investigator the contract names; null until read. */
+  pi: string | null;
+  /** When anything about the contract last changed (a version made, read or approved). */
+  updatedAt: string;
+  /** Number of the approved version, if any. */
+  liveVersion: number | null;
+  /** Open blocking questions on the latest version, plus one when its checks fail with no question open. */
+  openDecisions: number;
+  /** A reading or draft version exists that is newer than the live one. */
+  newVersionInProgress: boolean;
+  /** Names that answered the latest draft's questions: they can't approve it (maker-checker). */
+  answeredBy: string[];
 }
 
 export interface StudyDocument {
@@ -110,6 +152,14 @@ export interface Version {
   approvedBy: string | null;
   answers: { questionId: string; option: number; by: string; at: string }[];
   read: { id: string; status: ReadStatus } | null;
+  /** Who checked what against the PDF. `item` is a term id, or `grid:<gridId>:<row>:<col>` for one grid cell. Record only: approval doesn't wait for it. */
+  proofreads: Proofread[];
+}
+
+export interface Proofread {
+  item: string;
+  by: string;
+  at: string;
 }
 
 export interface Word {

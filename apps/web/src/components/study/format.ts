@@ -1,14 +1,3 @@
-import type { VersionStatus } from "@/lib/types";
-import type { Tone } from "../ui";
-
-export const VERSION_PILL: Record<VersionStatus, { label: string; tone: Tone }> = {
-  reading: { label: "Reading", tone: "accent" },
-  draft: { label: "Questions to answer", tone: "warn" },
-  failed: { label: "Failed", tone: "danger" },
-  approved: { label: "Live", tone: "ok" },
-  superseded: { label: "Superseded", tone: "neutral" },
-};
-
 /** "Pages 3–5, 8": the pages in order, consecutive ones as a range. */
 export function pageList(pages: number[]): string {
   const runs: number[][] = [];
@@ -33,7 +22,27 @@ export function elapsed(ms: number): string {
 
 export const when = (iso: string) => new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
 
-export const usd = (amount: number) => `$${amount.toFixed(2)}`;
+/** A contract date as typed ("2026-01-15" becomes "Jan 15, 2026"); anything that isn't a plain date is shown as written. */
+export function plainDate(text: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text.trim());
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString("en-US", { dateStyle: "medium" }) : text.trim();
+}
+
+export const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { dateStyle: "medium" });
+
+/** "5 min ago", "Yesterday", "Nov 3": for the Updated column, where the exact time is in the tooltip. */
+export function relativeTime(iso: string, now = Date.now()): string {
+  const min = Math.floor((now - Date.parse(iso)) / 60_000);
+  if (min < 1) return "Just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return "Yesterday";
+  if (d < 7) return `${d} days ago`;
+  const date = new Date(iso);
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: date.getFullYear() === new Date(now).getFullYear() ? undefined : "numeric" });
+}
 
 export const studyTitle = (protocol: string | null, firstDocument?: string | null) => protocol ?? firstDocument ?? "New contract";
 

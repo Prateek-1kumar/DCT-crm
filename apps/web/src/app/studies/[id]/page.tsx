@@ -1,9 +1,9 @@
 "use client";
 
 import { use } from "react";
-import { StudyHub } from "@/components/study/StudyHub";
+import { Workspace } from "@/components/workspace/Workspace";
 
 export default function StudyPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  return <StudyHub id={id} />;
+  return <Workspace id={id} />;
 }

@@ -70,6 +70,7 @@ export const version = (over: Partial<Version> = {}): Version => ({
   approvedBy: null,
   answers: [],
   read: null,
+  proofreads: [],
   ...over,
 });
 

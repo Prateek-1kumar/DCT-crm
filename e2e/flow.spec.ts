@@ -9,14 +9,14 @@ test("a read contract is answered, proven against its pages, approved by a secon
   await page.getByRole("link", { name: /EX-101/ }).first().click();
   await expect(page.getByText("Example Pharma").first()).toBeVisible();
 
-  await expect(page.getByRole("heading", { name: /1 question needs you/ })).toBeVisible();
-  await page.getByRole("link", { name: "Answer questions" }).first().click();
+  await expect(page.getByRole("heading", { name: /1 decision needs you/ })).toBeVisible();
+  await page.getByRole("link", { name: "Answer 1 decision" }).first().click();
   await expect(page).toHaveURL(/\/questions/);
   await expect(page.getByText("How are these paid", { exact: false })).toBeVisible();
-  await page.getByRole("radio", { name: /invoices/i }).check();
-  await page.getByRole("button", { name: /^Answer/ }).click();
+  await page.locator("label", { hasText: /invoices/i }).first().click();
+  await page.getByRole("button", { name: "Use this answer" }).click();
 
-  await page.getByRole("link", { name: "Proof" }).click();
+  await page.getByRole("link", { name: "Proofread", exact: true }).click();
   await expect(page.getByText(/0 missing|Nothing missing/).first()).toBeVisible();
   await expect(page.getByRole("img", { name: /Page 1/i }).first()).toBeVisible();
 

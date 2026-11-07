@@ -1,6 +1,5 @@
-import { VersionShell } from "@/components/version/VersionShell";
+import { RoutedVersionShell } from "@/components/version/VersionShell";
 
-export default async function VersionLayout({ children, params }: LayoutProps<"/versions/[id]">) {
-  const { id } = await params;
-  return <VersionShell versionId={id}>{children}</VersionShell>;
+export default function VersionLayout({ children }: LayoutProps<"/versions/[id]">) {
+  return <RoutedVersionShell>{children}</RoutedVersionShell>;
 }

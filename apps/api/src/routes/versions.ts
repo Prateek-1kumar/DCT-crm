@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 import { applyPatches, cellProofPatches, citationPatches, correctedCells, isLockedPatch, type Question, type Rulebook } from "@dct/shared";
 import { asPrintedQuestion, checks, closeSettledMissed, coverage, forPerson, printsTotals } from "@dct/harness";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import type { Tx } from "../db/index.js";
-import { answers, documents, reads, studies, versions } from "../db/schema.js";
+import { answers, documents, proofreads, reads, studies, versions } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { By } from "../lib/by.js";
 import { loadDocs } from "../lib/docs.js";
@@ -20,6 +20,11 @@ const ApproveBody = z.object({
   by: By,
   ticked: z.array(z.string({ error: NOT_A_LIST }).max(200, { error: "A ticked item's id is too long." }), { error: NOT_A_LIST }).max(50, { error: "Tick at most 50 items." }).default([]),
 });
+const ProofreadBody = z.object({
+  by: By,
+  items: z.array(z.string({ error: "Send the items as a list of words." }).min(1, { error: "An item's id can't be empty." }).max(200, { error: "An item's id is too long." }), { error: "Send the items to proofread as a list." }).min(1, { error: "Pick at least one item to proofread." }).max(200, { error: "Proofread at most 200 items at a time." }),
+});
+const UnproofreadQuery = z.object({ by: By, item: z.string({ error: "Say which item to take your mark off." }).min(1, { error: "Say which item to take your mark off." }).max(200, { error: "That item's id is too long." }) });
 const AnswerBody = z.object({ option: z.int({ error: "Pick one of the options." }).min(0, "Pick one of the options."), by: By });
 
 const one = (rows: Version[]) => {
@@ -36,10 +41,11 @@ async function documentsOf(tx: Tx, ids: string[]) {
 }
 
 async function present(tx: Tx, v: Version) {
-  const [given, [read], docs] = await Promise.all([
+  const [given, [read], docs, marks] = await Promise.all([
     tx.select().from(answers).where(eq(answers.versionId, v.id)).orderBy(asc(answers.at), asc(answers.id)),
     tx.select({ id: reads.id, status: reads.status }).from(reads).where(eq(reads.versionId, v.id)),
     documentsOf(tx, v.documentIds),
+    tx.select().from(proofreads).where(eq(proofreads.versionId, v.id)).orderBy(asc(proofreads.at), asc(proofreads.item)),
   ]);
   return {
     id: v.id,
@@ -56,11 +62,34 @@ async function present(tx: Tx, v: Version) {
     approvedBy: v.approvedBy,
     answers: given.map((a) => ({ questionId: a.questionId, option: a.option, by: a.by, at: a.at })),
     read: read ?? null,
+    proofreads: marks.map((m) => ({ item: m.item, by: m.by, at: m.at })),
   };
 }
 
 function requireDraft(v: Version, doing: string) {
   if (v.status !== "draft") throw new HttpError(409, `This version is ${v.status}, so it can't be ${doing}. Only a draft can.`);
+}
+
+/** Why a version can't be proofread; only what has a rulebook worth checking against the PDF can. */
+const CANT_PROOFREAD: Partial<Record<Version["status"], string>> = {
+  reading: "This version is still being read, so it can't be proofread yet. Wait for the read to finish.",
+  failed: "This version couldn't be read, so there is nothing to proofread.",
+  superseded: "This version has been replaced by a newer live one, so it can't be proofread. Open the live version instead.",
+};
+
+const requireProofreadable = (v: Version) => {
+  const why = CANT_PROOFREAD[v.status];
+  if (why) throw new HttpError(409, why);
+  return v.rulebook!;
+};
+
+/** A term id of the rulebook, or `grid:<gridId>:<row>:<col>` for a cell of one of its grids (grid ids may hold colons, so the last two parts are the place). */
+function isProofreadItem(rulebook: Rulebook, item: string) {
+  if (rulebook.terms.some((t) => t.id === item)) return true;
+  const m = /^grid:(.+):(\d+):(\d+)$/.exec(item);
+  if (!m) return false;
+  const cells = rulebook.grids.find((g) => g.id === m[1])?.rows[Number(m[2])]?.cells;
+  return Number(m[3]) < (cells?.length ?? 0);
 }
 
 /** Terms an option changes or adds: a person chose them, whoever wrote the patch (design §5.5a). Grid cells it sets are proven by cellProofPatches. */
@@ -137,6 +166,37 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       await tx.insert(answers).values({ versionId: id, questionId, option, by });
       await audit(tx, { by, action: "version.answered", entity: "version", entityId: id, detail: { questionId, option, label: chosen.label } });
       return present(tx, updated!);
+    });
+  });
+
+  api.post<{ Params: { id: string } }>("/versions/:id/proofread", async (req) => {
+    const { by, items } = parse(ProofreadBody, req.body);
+    const { id } = req.params;
+    return db.transaction(async (tx) => {
+      const v = await lock(tx, id);
+      const rulebook = requireProofreadable(v);
+      const unknown = items.find((item) => !isProofreadItem(rulebook, item));
+      if (unknown !== undefined) throw new HttpError(400, `"${unknown}" isn't a term or a grid cell in this rulebook, so it can't be proofread. Reload the page and try again.`);
+      // marks are per person whatever the letter case, as approval's maker-checker is; the unique index only guards the exact spelling
+      const mine = new Set((await tx.select({ item: proofreads.item }).from(proofreads).where(and(eq(proofreads.versionId, id), sql`lower(${proofreads.by}) = lower(${by})`))).map((m) => m.item));
+      const fresh = [...new Set(items)].filter((item) => !mine.has(item));
+      const added = fresh.length ? await tx.insert(proofreads).values(fresh.map((item) => ({ versionId: id, item, by }))).onConflictDoNothing().returning({ item: proofreads.item }) : [];
+      // a repeat changes nothing, so it leaves nothing in the log either
+      if (added.length) await audit(tx, { by, action: "version.proofread", entity: "version", entityId: id, detail: { items: added.map((a) => a.item) } });
+      return present(tx, v);
+    });
+  });
+
+  api.delete<{ Params: { id: string } }>("/versions/:id/proofread", async (req) => {
+    const { by, item } = parse(UnproofreadQuery, req.query);
+    const { id } = req.params;
+    return db.transaction(async (tx) => {
+      const v = await lock(tx, id);
+      requireProofreadable(v);
+      const [gone] = await tx.delete(proofreads).where(and(eq(proofreads.versionId, id), eq(proofreads.item, item), sql`lower(${proofreads.by}) = lower(${by})`)).returning({ id: proofreads.id });
+      if (!gone) throw new HttpError(404, "You haven't proofread that item, so there is no mark of yours to take off.");
+      await audit(tx, { by, action: "version.unproofread", entity: "version", entityId: id, detail: { item } });
+      return present(tx, v);
     });
   });
 

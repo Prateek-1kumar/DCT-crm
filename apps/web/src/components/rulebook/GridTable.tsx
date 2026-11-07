@@ -4,7 +4,7 @@ import type { Cell, Grid } from "@dct/shared";
 import { cx } from "@/components/ui";
 import { formatCents } from "@/lib/money";
 
-const stickyHead = "sticky left-0 z-10 bg-sunken px-5 py-3 text-left font-medium";
+const stickyHead = "sticky left-0 z-30 bg-sunken px-5 py-3 text-left font-medium";
 const stickyCell = "sticky left-0 z-10 bg-surface px-5 py-2.5 text-left font-normal";
 
 function Pill({ children }: { children: string }) {
@@ -13,7 +13,8 @@ function Pill({ children }: { children: string }) {
 
 const show = (cell: Cell) => (typeof cell === "number" ? formatCents(cell) : cell);
 
-export function GridTable({ grid, selected, onCellClick }: { grid: Grid; selected?: { row: number; col: number } | null; onCellClick?: (row: number, col: number) => void }) {
+/** `proofread` / `doubtful`: "row:col" keys of item cells a person proofread, or that were missed or flagged when the page was checked. */
+export function GridTable({ grid, selected, onCellClick, proofread, doubtful }: { grid: Grid; selected?: { row: number; col: number } | null; onCellClick?: (row: number, col: number) => void; proofread?: Set<string>; doubtful?: Set<string> }) {
   const lines: { label: string; cells: Cell[]; total?: number | null; strong?: boolean }[] = [];
   if (grid.subtotal) lines.push({ label: "Subtotal", cells: grid.subtotal });
   if (grid.overhead) lines.push({ label: grid.overheadPct === null ? "Overhead" : `Overhead (${grid.overheadPct}%)`, cells: grid.overhead });
@@ -24,30 +25,36 @@ export function GridTable({ grid, selected, onCellClick }: { grid: Grid; selecte
     const on = selected?.row === row && selected.col === col;
     const text = show(value);
     const content = typeof value === "string" ? <Pill>{value}</Pill> : text;
+    const key = `${row}:${col}`;
+    const checked = proofread?.has(key);
+    const doubt = doubtful?.has(key);
     return (
-      <td key={col} className={cx("px-2 py-1.5 text-right", on && "bg-brand-soft")}>
+      <td key={col} title={doubt ? "Doubtful: this amount was missed or couldn't be read clearly. Check it against the contract." : checked ? "Proofread" : undefined} className={cx("px-2 py-1.5 text-right", doubt && "bg-warn-soft", on && "bg-brand-soft")}>
+        {checked && <span className="sr-only">Proofread. </span>}
+        {doubt && <span className="sr-only">Doubtful. </span>}
         {onCellClick && text !== null ? (
           <button
             type="button"
             aria-label={`${label}, ${grid.visits[col]}: ${text}`}
             aria-pressed={on}
             onClick={() => onCellClick(row, col)}
-            className={cx("w-full rounded-[8px] px-3 py-1 text-right hover:bg-brand-soft", on && "ring-2 ring-brand")}
+            className={cx("w-full rounded-[8px] px-3 py-1 text-right hover:bg-brand-soft", checked && "bg-ok-soft text-ok", on && "ring-2 ring-brand")}
           >
             {content}
           </button>
         ) : (
-          <span className="block px-3 py-1">{content}</span>
+          <span className={cx("block px-3 py-1", checked && "text-ok")}>{content}</span>
         )}
       </td>
     );
   };
 
   return (
-    <div className="overflow-x-auto">
+    // Its own scroll box in both directions: a wide grid never widens the page, and the item column and the visit headers stay in view.
+    <div className="max-h-[70vh] max-w-full overflow-auto">
       <table className="w-max min-w-full text-body">
         <caption className="sr-only">{grid.name}</caption>
-        <thead className="bg-sunken text-small text-muted">
+        <thead className="sticky top-0 z-20 bg-sunken text-small text-muted">
           <tr>
             <th scope="col" className={stickyHead}>
               Item
@@ -66,7 +73,7 @@ export function GridTable({ grid, selected, onCellClick }: { grid: Grid; selecte
           {grid.rows.map((row, r) => (
             <tr key={r}>
               <th scope="row" className={stickyCell}>
-                <span className="block font-medium">{row.name}</span>
+                <span className="block max-w-[28ch] font-medium break-words">{row.name}</span>
                 {(row.code || row.unitCostCents !== null) && (
                   <span className="num text-small text-faint">{[row.code, row.unitCostCents !== null && formatCents(row.unitCostCents)].filter(Boolean).join(" · ")}</span>
                 )}

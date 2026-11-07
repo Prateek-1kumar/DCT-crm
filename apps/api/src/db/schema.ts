@@ -127,6 +127,22 @@ export const answers = pgTable("answers", {
   at: createdAt(),
 });
 
+/**
+ * Who checked which item of a version against the PDF. `item` is a term id, or `grid:<gridId>:<row>:<col>` for one grid cell.
+ * A record beside the rulebook, never in it, so marking a live version doesn't trip its immutability trigger (migration 0002).
+ */
+export const proofreads = pgTable(
+  "proofreads",
+  {
+    id: id(),
+    versionId: uuid("version_id").notNull().references(() => versions.id),
+    item: text("item").notNull(),
+    by: text("by").notNull(),
+    at: createdAt(),
+  },
+  (t) => [uniqueIndex("proofreads_version_item_by").on(t.versionId, t.item, t.by), index("proofreads_version").on(t.versionId)],
+);
+
 /** Append-only: a trigger refuses updates and deletes (migration 0002). */
 export const auditLog = pgTable("audit_log", {
   id: bigserial("id", { mode: "number" }).primaryKey(),

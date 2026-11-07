@@ -25,7 +25,8 @@ const CSP = [
 
 const nextConfig: NextConfig = {
   // The e2e run (E2E=1) builds into its own folder: its API_URL is baked into the rewrites at build time.
-  distDir: process.env.E2E === "1" ? ".next-e2e" : ".next",
+  // E2E=dev is the e2e run of `next dev` (React's development-only checks): a third folder, so it never overwrites the production build's.
+  distDir: process.env.E2E === "1" ? ".next-e2e" : process.env.E2E === "dev" ? ".next-e2e-dev" : ".next",
   // The design-system reference (app/design/page.dev.tsx) is for `next dev` only, not a build.
   pageExtensions: ["tsx", "ts", ...(DEV ? ["dev.tsx"] : [])],
   cacheComponents: true,

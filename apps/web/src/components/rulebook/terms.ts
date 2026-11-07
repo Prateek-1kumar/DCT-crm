@@ -49,18 +49,37 @@ export const EVIDENCE_LABEL: Record<Term["evidence"], string> = {
   none: "Not checked yet",
 };
 
-const capText = ({ kind, value, period, text }: NonNullable<Term["cap"]>): string => {
+export const capText = ({ kind, value, period, text }: NonNullable<Term["cap"]>): string => {
   if (kind === "none") return "";
   if (value === null) return text;
   const limit = { amount: formatCents(value), hours: `${value} hours`, ratio: `${value}:1`, count: String(value) }[kind];
   return `capped at ${limit}${period ? ` per ${period.replace(/^per\s+/i, "")}` : ""}`;
 };
 
+/** The amount or rule alone, no cap: "$85.00 per hour". Empty when the term has neither. */
+export function termMoney(term: Term): string {
+  return term.formula ?? (term.amountCents === null ? "" : `${formatCents(term.amountCents)}${term.unit ? ` ${term.unit}` : ""}`);
+}
+
 /** The money without how it is paid: "$85.00 per hour · capped at 10 hours". Empty when the term has no amount or rule. */
 export function termAmount(term: Term): string {
-  const money = term.formula ?? (term.amountCents === null ? "" : `${formatCents(term.amountCents)}${term.unit ? ` ${term.unit}` : ""}`);
-  return [money, term.cap ? capText(term.cap) : ""].filter(Boolean).join(" · ");
+  return [termMoney(term), term.cap ? capText(term.cap) : ""].filter(Boolean).join(" · ");
 }
+
+/** Short billing words for a table column. */
+export const BILLING_SHORT: Record<Term["billing"], string> = { auto_paid: "Paid automatically", invoice: "You invoice for it", unknown: "Not settled yet" };
+
+/** What each proof means, in words an accountant can act on. */
+export const EVIDENCE_TITLE: Record<Term["evidence"], string> = {
+  math: "The totals printed in the contract add up to this amount.",
+  quote: "The words we quoted are on the contract page where we say they are.",
+  two_reads: "Two separate readings of the page found the same thing.",
+  house_rule: "This follows one of your standing rules, set up in advance.",
+  person: "A person looked at this and decided it.",
+  none: "Nothing has proven this yet. Check it against the contract.",
+};
+
+export const EVIDENCE_TONE: Record<Term["evidence"], "ok" | "info" | "neutral" | "warn"> = { math: "ok", quote: "ok", two_reads: "ok", house_rule: "neutral", person: "info", none: "warn" };
 
 const BILLING_NOTE: Partial<Record<Term["billing"], string>> = { invoice: "invoiced", unknown: "how it's paid isn't settled yet" };
 
