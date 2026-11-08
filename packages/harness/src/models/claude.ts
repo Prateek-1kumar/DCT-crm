@@ -2,6 +2,7 @@ import type { ModelClient } from "../agent/client";
 import { priceFor, usdFor } from "../agent/cost";
 import { jsonSchemaFor, parseAnswer } from "./schema";
 import { ModelError, type Ask, type Reader } from "./reader";
+import { retryDropped } from "./retry";
 
 const MAX_TOKENS = 64000;
 
@@ -11,7 +12,7 @@ export function claudeReader(client: ModelClient, model: string): Reader {
     model,
     price,
     async ask<T>(req: Ask<T>) {
-      const response = await client.beta.messages
+      const response = await retryDropped(() => client.beta.messages
         .stream({
           model,
           max_tokens: MAX_TOKENS,
@@ -30,7 +31,7 @@ export function claudeReader(client: ModelClient, model: string): Reader {
           betas: ["server-side-fallback-2026-07-01"],
           fallbacks: "default",
         })
-        .finalMessage();
+        .finalMessage());
 
       const usd = usdFor(price, {
         inputTokens: response.usage.input_tokens,

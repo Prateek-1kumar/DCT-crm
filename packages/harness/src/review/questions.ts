@@ -83,7 +83,13 @@ function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { o
 // The reviewer lists findings by money at stake; beyond these, a finding is shown but doesn't hold up approval.
 const MAX_BLOCKING = 6;
 
-/** A finding that ends with fewer than two answer choices is not raised, and `log` says so: an accountant can't answer a question that offers nothing to pick. */
+const RECORD_ONLY = "Your answer is kept on record, but it doesn't change the rulebook's figures by itself: check them against what you pick.";
+
+/**
+ * A finding whose choices don't all fit the rulebook keeps every choice it named, the unfitting ones with no changes and
+ * the question saying so: dropping it would hide a money question nobody else asks. A finding that names fewer than
+ * two choices is not raised, and `log` says so: an accountant can't answer a question that offers nothing to pick.
+ */
 export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: LoadedDoc[], log: string[] = []): Question[] {
   let blocking = 0;
   return findings.flatMap((f, n): Question[] => {
@@ -91,7 +97,13 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
     const region = validRegion(f.region);
     const source: Source = { doc: f.doc, page: f.page, quote: f.quote, ...(region && { region }) };
     if (checkQuote(source, docs)) source.quote = "";
-    const { options, option } = choices(f, n, source, rulebook);
+    let { options, option } = choices(f, n, source, rulebook);
+    let context = f.context;
+    if (options.length < 2 && f.options.length >= 2) {
+      options = f.options.map((o) => ({ label: o.label, patches: patchesOf(o.changes, rulebook) }));
+      option = f.suggestion?.option ?? -1;
+      context = `${context} ${RECORD_ONLY}`.trim();
+    }
     if (options.length < 2) {
       log.push(`The second reader's question "${f.question}" came with fewer than two answer choices, so it was not raised`);
       return [];
@@ -104,7 +116,7 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
         origin: "reviewer",
         about: exists(f.about, rulebook) ? { target: f.about.target as "term" | "grid" | "study", id: f.about.id! } : null,
         question: f.question,
-        context: f.context,
+        context,
         source,
         options,
         suggestion: f.suggestion && options[option] ? { option, reason: f.suggestion.reason } : null,

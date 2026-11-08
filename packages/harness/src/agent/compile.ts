@@ -7,6 +7,7 @@ import { priceFor, usdFor, type Usage } from "./cost";
 import { SCAN_NOTE, SYSTEM_PROMPT } from "./prompt";
 import { createSession } from "./session";
 import { TOOLS } from "./tools";
+import { retryDropped } from "../models/retry";
 
 export interface CompileOptions {
   client: ModelClient;
@@ -80,7 +81,7 @@ export async function compile(docs: LoadedDoc[], opts: CompileOptions): Promise<
 
     let response: ModelMessage;
     try {
-      response = await opts.client.beta.messages
+      response = await retryDropped(() => opts.client.beta.messages
         .stream({
           model,
           max_tokens: MAX_TOKENS,
@@ -92,7 +93,7 @@ export async function compile(docs: LoadedDoc[], opts: CompileOptions): Promise<
           betas: ["server-side-fallback-2026-07-01"],
           fallbacks: "default",
         })
-        .finalMessage();
+        .finalMessage());
     } catch (err) {
       stopReason = "error";
       error = err instanceof Error ? err.message : String(err);

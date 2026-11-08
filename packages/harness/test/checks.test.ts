@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
-import { checks, forPerson } from "../src/checks";
+import { SCAN_PAGE_REASON, checks, forPerson } from "../src/checks";
 import { checkCitations } from "../src/checks/cells";
 import { cellKey, checkRelations, withRelationProof } from "../src/checks/relations";
 import { withScans } from "../src/scan";
@@ -210,8 +210,10 @@ describe("unaccounted", () => {
   it("honours accounted pages and amounts, and documents without money", () => {
     const base = rulebook({ terms: [term({ amountCents: 10000 })] });
     const accounted = (a: object) => ({ ...base, accounted: [{ doc: "A.pdf", reason: "superseded", ...a }] });
-    expect(checks.unaccounted(accounted({ pages: [1, 2] }), d)).toEqual([]);
-    expect(checks.unaccounted(accounted({ pages: [1] }), d).map((u) => u.page)).toEqual([2]);
+    // page 1 holds the term's fee, so setting the whole page aside would hide a missed fee beside it
+    expect(checks.unaccounted(accounted({ pages: [1, 2] }), d).map((u) => u.page)).toEqual([1]);
+    expect(checks.unaccounted(accounted({ pages: [2] }), d).map((u) => u.page)).toEqual([1]);
+    expect(checks.unaccounted({ ...base, accounted: [{ doc: "A.pdf", reason: "superseded", pages: [2] }, { doc: "A.pdf", reason: "limit", page: 1, amountCents: 250000 }] }, d)).toEqual([]);
     expect(checks.unaccounted(accounted({ page: 1, amountCents: 250000 }), d)).toEqual([]);
     expect(checks.unaccounted({ ...base, study: { ...base.study, documents: [withDocs({ hasMoney: false })] } }, d)).toEqual([]);
     expect(checks.unaccounted({ ...base, study: { ...base.study, documents: [withDocs()] } }, d)).toHaveLength(2);
@@ -325,6 +327,7 @@ describe("problems in words for the accountant", () => {
     expect(stray!.message).toContain("list it as accounted");
     expect(forPerson(stray!)).toBe('$45.00 on p.1 of A.pdf is not in the rulebook ("Parking $45.00"): start the read again, or answer its question.');
     expect(forPerson({ check: "quote", doc: "A.pdf", page: 1, message: "quote not found on p.1 of A.pdf" })).toBe("quote not found on p.1 of A.pdf");
+    expect(forPerson({ check: "quote", doc: "A.pdf", page: 5, message: SCAN_PAGE_REASON })).toBe("An amount read from the scanned p.5 of A.pdf hasn't been checked against the page yet; answer its question.");
   });
 });
 

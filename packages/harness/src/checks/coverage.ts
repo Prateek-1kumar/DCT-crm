@@ -261,7 +261,7 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
       const match = cited.get(cell.id)?.find((c) => printed.length === 1 || struck.has(cents) || (c.cents !== null && Math.abs(c.cents) === cents));
       const accounted = match
         ? undefined
-        : rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || a.cell === cell.id || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents)));
+        : (wholePageAside(rulebook, doc, page.page) ?? rulebook.accounted.find((a) => a.doc === doc && (a.cell === cell.id || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents))));
       const status: AmountStatus = match ? (match.person ? "decided" : "captured") : accounted ? "set_aside" : "missing";
       return [{ box: cellBand(page, cell.id), text, cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line, doubt: cell.doubts[0] ?? null }];
     });
@@ -322,7 +322,7 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
     if (spare(line)) pool.set(cents, (pool.get(cents) ?? 0) - 1);
   };
   const make = (cell: ScanCell, line: string, text: string, cents: number, verdict?: Verdict): CoverageAmount => {
-    const accounted = rulebook.accounted.find((a) => a.doc === doc && (a.pages?.includes(page.page) || ([SET_ASIDE, ADDED_TO_GRID].includes(a.reason) && a.page === page.page && a.cell === secondReadCell(cell.id))));
+    const accounted = wholePageAside(rulebook, doc, page.page) ?? rulebook.accounted.find((a) => a.doc === doc && [SET_ASIDE, ADDED_TO_GRID].includes(a.reason) && a.page === page.page && a.cell === secondReadCell(cell.id));
     const row = cell.id.replace(/\.c\d+$/, "");
     const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line, (t) => (claimed.get(t.id) ?? row) === row);
     if (added) claimed.set(added.id, row);
@@ -363,6 +363,17 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
   return [...found, ...surplus.map(({ cell, line, text, cents }) => make(cell, line, text, cents))];
 }
 
+/**
+ * A whole page set aside covers every amount on it, so it is only for a page the rulebook takes no amount from (a superseded
+ * budget, an insurance schedule): on a fee page it would hide a missed fee beside the captured ones.
+ */
+function wholePageAside(rulebook: Rulebook, doc: string, page: number) {
+  const valued =
+    rulebook.terms.some((t) => t.source.doc === doc && t.source.page === page && (t.amountCents !== null || t.cap?.kind === "amount")) ||
+    rulebook.grids.some((g) => g.doc === doc && g.pages.includes(page));
+  return valued ? undefined : rulebook.accounted.find((a) => a.doc === doc && a.pages?.includes(page));
+}
+
 export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
   const known = candidates(rulebook);
   const cited = citations(rulebook);
@@ -381,7 +392,7 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
       else {
         // A whole page set aside (a superseded budget) wins over a coincidental match; a set-aside amount counts wherever
         // it was listed, as in the every-dollar check.
-        const wholePage = rulebook.accounted.find((a) => a.doc === doc.name && a.pages?.includes(page.page));
+        const wholePage = wholePageAside(rulebook, doc.name, page.page);
         const setAside = (cents: number) =>
           rulebook.accounted.find((a) => a.doc === doc.name && a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents) ??
           rulebook.accounted.find((a) => a.amountCents !== undefined && Math.abs(a.amountCents) === cents);

@@ -239,6 +239,17 @@ describe("finding to question", () => {
     ]);
   });
 
+  it("keeps a money question whose choices don't fit the rulebook, saying the answer changes no figures", async () => {
+    const bad = (label: string) => ({ label, changes: [{ target: "term" as const, id: "no_such_term", field: "billing", value: "invoice" }] });
+    const [q] = await run([finding({ options: [bad("Yes, one cap covers both"), bad("No, separate caps")], suggestion: { option: 1, reason: "r" } })]);
+    expect(q!.options).toEqual([
+      { label: "Yes, one cap covers both", patches: [] },
+      { label: "No, separate caps", patches: [] },
+    ]);
+    expect(q!.suggestion).toEqual({ option: 1, reason: "r" });
+    expect(q!.context).toContain("doesn't change the rulebook's figures");
+  });
+
   it("drops a suggestion that points at a dropped option", async () => {
     const [q] = await run([finding({ options: [{ label: "Bad", changes: [{ target: "term", id: "t1", field: "billing", value: "x" }] }, YES, NO], suggestion: { option: 0, reason: "r" } })]);
     expect(q!.options.map((o) => o.label)).toEqual([YES.label, NO.label]);

@@ -67,6 +67,7 @@ export function forPerson(p: Pick<Problem, "doc" | "page" | "message"> & { check
   const where = p.page === undefined ? (p.doc ?? "the contract") : `p.${p.page} of ${p.doc}`;
   if (p.check === "cell") return `A scanned amount on ${where} doesn't match what the page prints yet; start the read again or answer its question.`;
   if (p.check === "unaccounted" && p.message.endsWith(ACCOUNT_IT)) return `${p.message.slice(0, -ACCOUNT_IT.length)}: start the read again, or answer its question.`;
+  if (p.check === "quote" && p.message === SCAN_PAGE_REASON) return `An amount read from the scanned ${where} hasn't been checked against the page yet; answer its question.`;
   if (p.check === "grid" && p.message === NOT_PRINTED) return `Some figures of a budget on ${where} aren't proven by a printed total or a second reading yet; start the read again.`;
   return p.message;
 }

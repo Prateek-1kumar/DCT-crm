@@ -42,7 +42,7 @@ describe("day grouping", () => {
 
 describe("ActivityFeed", () => {
   it("shows entries under day headings with the contract linked, and the full time on hover", async () => {
-    stubApi({ "GET /activity": () => ({ items: [item(2), item(1, { at: at(2020, 1, 5), studyId: null, studyTitle: null, summary: "Someone did a thing" })], next: null } satisfies ActivityPage) });
+    stubApi({ "GET /activity": () => ({ items: [item(2, { at: new Date().toISOString() }), item(1, { at: at(2020, 1, 5), studyId: null, studyTitle: null, summary: "Someone did a thing" })], next: null } satisfies ActivityPage) });
     renderWithClient(<ActivityFeed />);
     expect(await screen.findByText("Entry 2")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Today" })).toBeTruthy();

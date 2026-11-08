@@ -3,6 +3,7 @@ import type { Response } from "openai/resources/responses/responses";
 import { openaiPrice, usdFor } from "../agent/cost";
 import { jsonSchemaFor, parseAnswer } from "./schema";
 import { ModelError, type Ask, type Reader } from "./reader";
+import { retryDropped } from "./retry";
 
 const MAX_OUTPUT_TOKENS = 64000;
 
@@ -18,7 +19,7 @@ export function openaiReader(client: OpenAIClient, model: string): Reader {
     price,
     async ask<T>(req: Ask<T>) {
       // Streamed so a long high-effort answer isn't cut off by Node's five-minute wait for a first byte.
-      const response = await client.responses
+      const response = await retryDropped(() => client.responses
         .stream({
           model,
           instructions: req.system,
@@ -37,7 +38,7 @@ export function openaiReader(client: OpenAIClient, model: string): Reader {
           max_output_tokens: MAX_OUTPUT_TOKENS,
           store: false,
         })
-        .finalResponse();
+        .finalResponse());
 
       if (!response.usage) throw new Error(`OpenAI didn't report how many tokens "${req.name}" used, so its spend can't be counted.`);
       // output_tokens already includes reasoning tokens

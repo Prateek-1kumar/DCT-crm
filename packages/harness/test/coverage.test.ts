@@ -151,6 +151,14 @@ describe("coverage amounts", () => {
     expect(page1(whole).amounts.every((a) => a.status === "set_aside" && a.reason === "old budget")).toBe(true);
   });
 
+  it("won't let a whole page set aside cover a page the rulebook takes an amount from", () => {
+    const rb = rulebook({ terms: [term("fee", { amountCents: 150000 })], accounted: [{ doc: "contract.pdf", pages: [1], reason: "summary totals" }] });
+    expect(amount(rb, 150000)).toMatchObject({ status: "captured", ref: { target: "term", id: "fee" } });
+    expect(amount(rb, 999).status).toBe("missing");
+    const onlyRules = rulebook({ terms: [term("rule", { amountCents: null })], accounted: [{ doc: "contract.pdf", pages: [1], reason: "old budget" }] });
+    expect(amount(onlyRules, 999)).toMatchObject({ status: "set_aside", reason: "old budget" });
+  });
+
   it("lets a captured value win over a set-aside one", () => {
     const rb = rulebook({ terms: [term("fee", { amountCents: 150000 })], accounted: [{ doc: "contract.pdf", page: 1, amountCents: 150000, reason: "r" }] });
     expect(amount(rb, 150000).status).toBe("captured");
