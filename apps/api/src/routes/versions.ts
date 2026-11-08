@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import type { Tx } from "../db/index.js";
-import { answers, documents, proofreads, reads, studies, versions } from "../db/schema.js";
+import { answers, documents, flags, proofreads, reads, studies, versions } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { By } from "../lib/by.js";
 import { loadDocs } from "../lib/docs.js";
@@ -25,6 +25,13 @@ const ProofreadBody = z.object({
   items: z.array(z.string({ error: "Send the items as a list of words." }).min(1, { error: "An item's id can't be empty." }).max(200, { error: "An item's id is too long." }), { error: "Send the items to proofread as a list." }).min(1, { error: "Pick at least one item to proofread." }).max(200, { error: "Proofread at most 200 items at a time." }),
 });
 const UnproofreadQuery = z.object({ by: By, item: z.string({ error: "Say which item to take your mark off." }).min(1, { error: "Say which item to take your mark off." }).max(200, { error: "That item's id is too long." }) });
+const NOTE = "Say what looks wrong, in a few words.";
+const FlagBody = z.object({
+  by: By,
+  item: z.string({ error: "Say which item looks wrong." }).min(1, { error: "Say which item looks wrong." }).max(200, { error: "That item's id is too long." }),
+  note: z.string({ error: NOTE }).trim().min(1, { error: NOTE }).max(500, { error: "That note is too long: keep it to 500 characters or fewer." }),
+});
+const UnflagQuery = z.object({ by: By, item: z.string({ error: "Say which item to take your flag off." }).min(1, { error: "Say which item to take your flag off." }).max(200, { error: "That item's id is too long." }) });
 const AnswerBody = z.object({ option: z.int({ error: "Pick one of the options." }).min(0, "Pick one of the options."), by: By });
 
 const one = (rows: Version[]) => {
@@ -41,11 +48,12 @@ async function documentsOf(tx: Tx, ids: string[]) {
 }
 
 async function present(tx: Tx, v: Version) {
-  const [given, [read], docs, marks] = await Promise.all([
+  const [given, [read], docs, marks, flagged] = await Promise.all([
     tx.select().from(answers).where(eq(answers.versionId, v.id)).orderBy(asc(answers.at), asc(answers.id)),
     tx.select({ id: reads.id, status: reads.status }).from(reads).where(eq(reads.versionId, v.id)),
     documentsOf(tx, v.documentIds),
     tx.select().from(proofreads).where(eq(proofreads.versionId, v.id)).orderBy(asc(proofreads.at), asc(proofreads.item)),
+    tx.select().from(flags).where(eq(flags.versionId, v.id)).orderBy(asc(flags.at), asc(flags.item)),
   ]);
   return {
     id: v.id,
@@ -63,6 +71,7 @@ async function present(tx: Tx, v: Version) {
     answers: given.map((a) => ({ questionId: a.questionId, option: a.option, by: a.by, at: a.at })),
     read: read ?? null,
     proofreads: marks.map((m) => ({ item: m.item, by: m.by, at: m.at })),
+    flags: flagged.map((f) => ({ item: f.item, by: f.by, note: f.note, at: f.at })),
   };
 }
 
@@ -196,6 +205,34 @@ export async function versionsRoutes(api: FastifyInstance, { db }: Ctx) {
       const [gone] = await tx.delete(proofreads).where(and(eq(proofreads.versionId, id), eq(proofreads.item, item), sql`lower(${proofreads.by}) = lower(${by})`)).returning({ id: proofreads.id });
       if (!gone) throw new HttpError(404, "You haven't proofread that item, so there is no mark of yours to take off.");
       await audit(tx, { by, action: "version.unproofread", entity: "version", entityId: id, detail: { item } });
+      return present(tx, v);
+    });
+  });
+
+  api.post<{ Params: { id: string } }>("/versions/:id/flag", async (req) => {
+    const { by, item, note } = parse(FlagBody, req.body);
+    const { id } = req.params;
+    return db.transaction(async (tx) => {
+      const v = await lock(tx, id);
+      const rulebook = requireProofreadable(v);
+      if (!isProofreadItem(rulebook, item)) throw new HttpError(400, `"${item}" isn't a term or a grid cell in this rulebook, so it can't be flagged. Reload the page and try again.`);
+      // one flag per person and item whatever the letter case; the version is locked, so replacing can't race a second flag
+      await tx.delete(flags).where(and(eq(flags.versionId, id), eq(flags.item, item), sql`lower(${flags.by}) = lower(${by})`));
+      await tx.insert(flags).values({ versionId: id, item, by, note });
+      await audit(tx, { by, action: "version.flagged", entity: "version", entityId: id, detail: { item, note } });
+      return present(tx, v);
+    });
+  });
+
+  api.delete<{ Params: { id: string } }>("/versions/:id/flag", async (req) => {
+    const { by, item } = parse(UnflagQuery, req.query);
+    const { id } = req.params;
+    return db.transaction(async (tx) => {
+      const v = await lock(tx, id);
+      requireProofreadable(v);
+      const [gone] = await tx.delete(flags).where(and(eq(flags.versionId, id), eq(flags.item, item), sql`lower(${flags.by}) = lower(${by})`)).returning({ id: flags.id });
+      if (!gone) throw new HttpError(404, "You haven't flagged that item, so there is no flag of yours to take off.");
+      await audit(tx, { by, action: "version.unflagged", entity: "version", entityId: id, detail: { item } });
       return present(tx, v);
     });
   });

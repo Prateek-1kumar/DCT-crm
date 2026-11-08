@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, max, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
 import { pdfReader, quoteBoxes } from "@dct/harness";
+import type { Region } from "@dct/shared";
 import { rm } from "node:fs/promises";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
@@ -43,7 +44,28 @@ const NewStudy = z.object({ by: By });
 const PartySearch = z.object({ kind: z.enum(KINDS, { error: "Kind must be sponsor, cro or site." }).optional(), q: z.string().optional() });
 const ByQuery = z.object({ by: By });
 const FindQuery = z.object({ q: z.string({ error: "Say which words to find." }).min(1, { error: "Say which words to find." }).max(1000, { error: "Those words are too long to find." }) });
-const ImageQuery = z.object({ dpi: z.coerce.number({ error: "dpi must be a whole number from 1 to 200." }).int({ error: "dpi must be a whole number from 1 to 200." }).min(1, { error: "dpi must be a whole number from 1 to 200." }).max(200, { error: "dpi must be a whole number from 1 to 200." }).default(110) });
+const DPI_ERROR = "dpi must be a whole number from 1 to 300.";
+const REGION_ERROR = "region must be four numbers from 0 to 1, separated by commas: left, top, right, bottom.";
+const ImageQuery = z.object({
+  dpi: z.coerce.number({ error: DPI_ERROR }).int({ error: DPI_ERROR }).min(1, { error: DPI_ERROR }).max(300, { error: DPI_ERROR }).default(110),
+  region: z.string({ error: REGION_ERROR }).optional(),
+});
+// A crop is never refused for being sharp: the picture is made smaller to fit these, and the client reads its real size.
+const MAX_SIDE = 4096;
+const MAX_PIXELS = 16e6;
+const MIN_REGION = 0.01;
+
+function parseRegion(raw: string): Region {
+  const parts = raw.split(",");
+  const r = parts.map((p) => (p.trim() === "" ? NaN : Number(p)));
+  if (r.length !== 4 || !r.every(Number.isFinite)) throw new HttpError(400, REGION_ERROR);
+  const [x0, y0, x1, y1] = r as Region;
+  if (![x0, y0, x1, y1].every((v) => v >= 0 && v <= 1)) throw new HttpError(400, "region must stay inside the page: every number from 0 to 1.");
+  if (x1 <= x0 || y1 <= y0) throw new HttpError(400, "region must run from the top left to the bottom right: left must be below right, and top below bottom.");
+  // a hair of slack, so 0.01 sent as a rounded 4-digit fraction isn't refused
+  if (x1 - x0 < MIN_REGION - 1e-9 || y1 - y0 < MIN_REGION - 1e-9) throw new HttpError(400, "region must be at least 1% of the page wide and tall.");
+  return [x0, y0, x1, y1];
+}
 
 const uniqueNormalised = (names: string[]) => [...new Map(names.map((n) => [norm(n), n])).values()];
 
@@ -360,9 +382,14 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
   };
 
   api.get<{ Params: { id: string; page: string } }>("/documents/:id/pages/:page/image", async (req, reply) => {
-    const { dpi } = parse(ImageQuery, req.query);
+    const { dpi, region: raw } = parse(ImageQuery, req.query);
+    const region = raw === undefined ? undefined : parseRegion(raw);
     const { doc, page } = await pageOf(req.params.id, req.params.page);
-    const png = await pdfReader.render(doc, page, { dpi });
+    // render draws only the region (its canvas is the crop's size), paints the page's bank-detail boxes over it, and caps the area
+    let png = await pdfReader.render(doc, page, { dpi, region, maxPixels: MAX_PIXELS });
+    // the page's size in points is only known inside render, so the long side is read off the PNG header (IHDR); only a page far larger than a letter sheet needs the second render
+    const side = Math.max(png.readUInt32BE(16), png.readUInt32BE(20));
+    if (side > MAX_SIDE) png = await pdfReader.render(doc, page, { dpi: (dpi * MAX_SIDE) / side, region, maxPixels: MAX_PIXELS });
     return reply.type("image/png").header("cache-control", "private, max-age=31536000, immutable").send(png);
   });
 

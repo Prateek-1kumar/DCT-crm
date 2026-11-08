@@ -5,7 +5,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checks, resolve, scanVersion, type Reader } from "@dct/harness";
 import { buildApp } from "../src/app.js";
-import { answers, auditLog, documents, parties, proofreads, reads, studies, versions } from "../src/db/schema.js";
+import { answers, auditLog, documents, flags, parties, proofreads, reads, studies, versions } from "../src/db/schema.js";
 import { loadDocs } from "../src/lib/docs.js";
 import { savePdf, scanStore } from "../src/lib/storage.js";
 import type { App, Built } from "./helpers.js";
@@ -144,7 +144,7 @@ describe("GET /versions/:id", () => {
     const res = await app.inject({ url: `/api/v1/versions/${id}` });
     const body = res.json();
     expect(res.statusCode).toBe(200);
-    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "documents", "id", "number", "problems", "proofreads", "read", "rulebook", "status", "studyId"]);
+    expect(Object.keys(body).sort()).toEqual(["answers", "approvedAt", "approvedBy", "createdAt", "createdBy", "documentIds", "documents", "flags", "id", "number", "problems", "proofreads", "read", "rulebook", "status", "studyId"]);
     expect(body).toMatchObject({ id, studyId, number: 1, status: "draft", documentIds: [docId], createdBy: "test", approvedAt: null, approvedBy: null });
     expect(body.documents).toEqual([{ id: docId, name: "contract.pdf", pageCount: 1 }]);
     expect(body.answers).toEqual([{ questionId: "q1", option: 0, by: "Ana", at: expect.any(String) }]);
@@ -918,5 +918,112 @@ describe("taking a proofread mark back", () => {
     expect([res.statusCode, res.json().message]).toEqual([404, "You haven't proofread that item, so there is no mark of yours to take off."]);
     expect((await app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/proofread?item=t1` })).json().message).toBe("Say who is doing this: pick your name first.");
     expect((await app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/proofread?by=Ana` })).json().message).toBe("Say which item to take your mark off.");
+  });
+});
+
+const flag = (id: string, body: unknown) => app.inject({ method: "POST", url: `/api/v1/versions/${id}/flag`, payload: body as object });
+const unflag = (id: string, by: string, item: string) => app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/flag?by=${encodeURIComponent(by)}&item=${encodeURIComponent(item)}` });
+
+describe("flagging an item", () => {
+  it("records a flag with its note, returns the version, and audits it", async () => {
+    const { id } = await seed({ rulebook: gridded() });
+    const res = await flag(id, { by: "Ana", item: "grid:g:1:0:1", note: "  The page says $2,000  " });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().flags).toEqual([{ item: "grid:g:1:0:1", by: "Ana", note: "The page says $2,000", at: expect.any(String) }]);
+    expect(res.json().id).toBe(id);
+    expect((await app.inject({ url: `/api/v1/versions/${id}` })).json().flags).toHaveLength(1);
+    expect((await audits(id)).map((a) => [a.action, a.by, a.detail])).toEqual([["version.flagged", "Ana", { item: "grid:g:1:0:1", note: "The page says $2,000" }]]);
+  });
+
+  it("a person flagging the same item again replaces their note, whatever the letter case of their name; others' flags stay", async () => {
+    const { id } = await seed();
+    await flag(id, { by: "Ana", item: "t1", note: "first" });
+    await flag(id, { by: "Ben", item: "t1", note: "ben's" });
+    const again = (await flag(id, { by: "ana", item: "t1", note: "second" })).json();
+    expect(again.flags.map((f: { by: string; note: string }) => [f.by, f.note])).toEqual([["Ben", "ben's"], ["ana", "second"]]);
+    expect(await db().select().from(flags).where(eq(flags.versionId, id))).toHaveLength(2);
+    expect((await audits(id)).map((a) => a.action)).toEqual(["version.flagged", "version.flagged", "version.flagged"]);
+  });
+
+  it("lists flags by time, then item", async () => {
+    const { id } = await seed({ rulebook: rulebook({ terms: [term("t1"), term("t2")] }) });
+    const at = new Date();
+    await db().insert(flags).values([{ versionId: id, item: "t2", by: "Ana", note: "x", at }, { versionId: id, item: "t1", by: "Ben", note: "y", at }, { versionId: id, item: "t1", by: "Cy", note: "z", at: new Date(at.getTime() - 1000) }]);
+    expect((await app.inject({ url: `/api/v1/versions/${id}` })).json().flags.map((f: { item: string; by: string }) => [f.item, f.by])).toEqual([["t1", "Cy"], ["t1", "Ben"], ["t2", "Ana"]]);
+  });
+
+  it("works on an approved version without touching the live rulebook, and never blocks approval", async () => {
+    const live = await seed({ status: "approved" });
+    const before = await stored(live.id);
+    expect((await flag(live.id, { by: "Ana", item: "t1", note: "looks off" })).json().flags).toHaveLength(1);
+    expect(await stored(live.id)).toEqual(before);
+    expect((await unflag(live.id, "Ana", "t1")).json().flags).toEqual([]);
+    expect(await refusal(db().update(versions).set({ rulebook: rulebook({ terms: [] }) }).where(eq(versions.id, live.id)))).toBe("A live rulebook can't be changed: make a new version instead.");
+
+    const draft = await seed();
+    await flag(draft.id, { by: "Ana", item: "t1", note: "looks off" });
+    expect((await approve(draft.id, { by: "Cy" })).statusCode).toBe(200);
+    // and a flag can be added to it once it is live
+    expect((await flag(draft.id, { by: "Ben", item: "t1", note: "still off" })).json().flags).toHaveLength(2);
+  });
+
+  it("refuses items that aren't in the rulebook, in plain words, and saves nothing", async () => {
+    const { id } = await seed({ rulebook: gridded() });
+    for (const item of ["nope", "grid:g:1:0:2", "grid:g:1:1:0", "grid:other:0:0", "grid:g:1"]) {
+      const res = await flag(id, { by: "Ana", item, note: "x" });
+      expect([res.statusCode, res.json().message]).toEqual([400, `"${item}" isn't a term or a grid cell in this rulebook, so it can't be flagged. Reload the page and try again.`]);
+    }
+    expect(await db().select().from(flags).where(eq(flags.versionId, id))).toEqual([]);
+  });
+
+  it("refuses a bad request in plain words", async () => {
+    const { id } = await seed();
+    const msg = async (body: unknown) => (await flag(id, body)).json().message;
+    expect(await msg({ item: "t1", note: "x" })).toBe("Say who is doing this: pick your name first.");
+    expect(await msg({ by: "Ana", note: "x" })).toBe("Say which item looks wrong.");
+    expect(await msg({ by: "Ana", item: "", note: "x" })).toBe("Say which item looks wrong.");
+    expect(await msg({ by: "Ana", item: "t".repeat(201), note: "x" })).toBe("That item's id is too long.");
+    expect(await msg({ by: "Ana", item: "t1" })).toBe("Say what looks wrong, in a few words.");
+    expect(await msg({ by: "Ana", item: "t1", note: "   " })).toBe("Say what looks wrong, in a few words.");
+    expect(await msg({ by: "Ana", item: "t1", note: "a".repeat(501) })).toBe("That note is too long: keep it to 500 characters or fewer.");
+    expect((await flag(id, { by: "Ana", item: "t1", note: "a".repeat(500) })).statusCode).toBe(200);
+    expect((await flag(id, { by: "Ana", item: "t1", note: 5 })).statusCode).toBe(400);
+  });
+
+  it("is refused on a reading, failed or superseded version, and an unknown one, with the proofreading messages", async () => {
+    const said = async (status: "reading" | "failed" | "superseded") => {
+      const { id } = await seed({ status });
+      const r = await flag(id, { by: "Ana", item: "t1", note: "x" });
+      const d = await unflag(id, "Ana", "t1");
+      expect(d.statusCode).toBe(409);
+      expect(d.json().message).toBe(r.json().message);
+      return [r.statusCode, r.json().message];
+    };
+    expect(await said("reading")).toEqual([409, "This version is still being read, so it can't be proofread yet. Wait for the read to finish."]);
+    expect(await said("failed")).toEqual([409, "This version couldn't be read, so there is nothing to proofread."]);
+    expect(await said("superseded")).toEqual([409, "This version has been replaced by a newer live one, so it can't be proofread. Open the live version instead."]);
+    const missing = await flag(randomUUID(), { by: "Ana", item: "t1", note: "x" });
+    expect([missing.statusCode, missing.json().message]).toEqual([404, "There is no such version."]);
+  });
+});
+
+describe("taking a flag back", () => {
+  it("removes only the caller's own flag, whatever the letter case of their name, and audits it", async () => {
+    const { id } = await seed();
+    await flag(id, { by: "Ana", item: "t1", note: "a" });
+    await flag(id, { by: "Ben", item: "t1", note: "b" });
+    const res = await unflag(id, "ANA", "t1");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().flags.map((f: { by: string }) => f.by)).toEqual(["Ben"]);
+    expect((await audits(id)).map((a) => [a.action, a.by, a.detail])).toEqual([["version.flagged", "Ana", { item: "t1", note: "a" }], ["version.flagged", "Ben", { item: "t1", note: "b" }], ["version.unflagged", "ANA", { item: "t1" }]]);
+  });
+
+  it("says so when there is no such flag of yours, and asks who and what", async () => {
+    const { id } = await seed();
+    await flag(id, { by: "Ben", item: "t1", note: "b" });
+    const res = await unflag(id, "Ana", "t1");
+    expect([res.statusCode, res.json().message]).toEqual([404, "You haven't flagged that item, so there is no flag of yours to take off."]);
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/flag?item=t1` })).json().message).toBe("Say who is doing this: pick your name first.");
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/versions/${id}/flag?by=Ana` })).json().message).toBe("Say which item to take your flag off.");
   });
 });

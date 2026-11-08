@@ -29,6 +29,8 @@ describe("describeAudit", () => {
     ["version.proofread", { items: ["a", "b"] }, 2, "Ana proofread 2 items on version 2", "proofread"],
     ["version.proofread", { items: ["a"] }, 2, "Ana proofread 1 item on version 2", "proofread"],
     ["version.unproofread", { item: "a" }, 2, "Ana took their proofreading mark off an item on version 2", "proofread"],
+    ["version.flagged", { item: "a", note: "Page says $2,000" }, 2, "Ana flagged something that looks wrong on version 2", "proofread"],
+    ["version.unflagged", { item: "a" }, 2, "Ana took their flag off an item on version 2", "proofread"],
     ["document.upload", { name: "budget.pdf" }, null, 'Ana uploaded "budget.pdf"', "files"],
     ["study.document.add", { name: "budget.pdf" }, null, 'Ana added "budget.pdf" to this contract', "files"],
     ["study.document.remove", { name: "budget.pdf" }, null, 'Ana removed "budget.pdf" from this contract', "files"],

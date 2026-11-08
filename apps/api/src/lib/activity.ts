@@ -50,6 +50,10 @@ export function describeAudit({ by, action, detail, versionNumber }: Entry): { s
     }
     case "version.unproofread":
       return { kind: "proofread", summary: `${by} took their proofreading mark off an item on ${version}` };
+    case "version.flagged":
+      return { kind: "proofread", summary: `${by} flagged something that looks wrong on ${version}` };
+    case "version.unflagged":
+      return { kind: "proofread", summary: `${by} took their flag off an item on ${version}` };
     case "document.upload":
       return { kind: "files", summary: `${by} uploaded ${file ? `"${clip(file)}"` : "a file"}` };
     case "study.document.add":

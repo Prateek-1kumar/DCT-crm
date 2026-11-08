@@ -143,6 +143,23 @@ export const proofreads = pgTable(
   (t) => [uniqueIndex("proofreads_version_item_by").on(t.versionId, t.item, t.by), index("proofreads_version").on(t.versionId)],
 );
 
+/**
+ * A reviewer's "this looks wrong" on one item, with a note. Like proofreads, a record beside the rulebook and never in it:
+ * flagging a live version must not trip its immutability trigger, and a flag never blocks approval. A person has one flag per item.
+ */
+export const flags = pgTable(
+  "flags",
+  {
+    id: id(),
+    versionId: uuid("version_id").notNull().references(() => versions.id),
+    item: text("item").notNull(),
+    by: text("by").notNull(),
+    note: text("note").notNull(),
+    at: createdAt(),
+  },
+  (t) => [uniqueIndex("flags_version_item_by").on(t.versionId, t.item, t.by), index("flags_version").on(t.versionId)],
+);
+
 /** Append-only: a trigger refuses updates and deletes (migration 0002). */
 export const auditLog = pgTable("audit_log", {
   id: bigserial("id", { mode: "number" }).primaryKey(),

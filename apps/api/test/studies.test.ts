@@ -1,6 +1,8 @@
 import { eq, sql } from "drizzle-orm";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
+import type { Region } from "@dct/shared";
 import { auditLog } from "../src/db/schema.js";
 import { type App, type Built, multipart, testApp } from "./helpers.js";
 
@@ -202,6 +204,104 @@ describe("documents", () => {
   });
 });
 
+/** PNG size from its header, so a test needn't decode the picture. */
+const sizeOf = (png: Buffer) => ({ w: png.readUInt32BE(16), h: png.readUInt32BE(20) });
+
+/** One page of the given size in points, with the given lines of text (a bank line is masked on load). */
+async function sizedPdf(width: number, height: number, lines: string[] = []) {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([width, height]);
+  lines.forEach((line, i) => page.drawText(line, { x: 50, y: height - 100 - i * 30, size: 14, font }));
+  return Buffer.from(await doc.save());
+}
+
+describe("page image regions and sharpness", () => {
+  const upload = async (data: Buffer) => (await uploadBy((await newStudy()).id, [{ name: `${unique()}.pdf`, data }])).json()[0].id as string;
+  const image = (docId: string, qs: string) => call("GET", `/documents/${docId}/pages/1/image?${qs}`);
+  let letter: string;
+  let huge: string;
+  beforeAll(async () => {
+    letter = await upload(await sizedPdf(612, 792));
+    huge = await upload(await sizedPdf(2000, 2000));
+  });
+
+  it("a crop is the region's size at the dpi of the whole page, and still cached for good", async () => {
+    const res = await image(letter, "dpi=72&region=0,0,0.5,0.25");
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+    expect(sizeOf(res.rawPayload)).toEqual({ w: 306, h: 198 });
+    expect(sizeOf((await image(letter, "dpi=144&region=0.5,0.5,1,1")).rawPayload)).toEqual({ w: 612, h: 792 });
+    expect(sizeOf((await image(letter, "dpi=300&region=0,0,1,1")).rawPayload)).toEqual({ w: 2550, h: 3300 });
+    expect(sizeOf((await image(letter, "dpi=300")).rawPayload)).toEqual({ w: 2550, h: 3300 });
+    expect(sizeOf((await image(letter, "")).rawPayload)).toEqual({ w: 934, h: 1210 });
+  });
+
+  it("clamps an oversize picture to 4096 px on a side and 16 megapixels instead of refusing it", async () => {
+    // 2000 pt square at 300 dpi would be 8333 px: the megapixel cap is what binds
+    const square = sizeOf((await image(huge, "dpi=300")).rawPayload);
+    expect(square.w * square.h).toBeLessThanOrEqual(16e6);
+    expect(square.w).toBeGreaterThan(3900);
+    // a thin strip is small in area but 8333 px tall: the 4096 side cap is what binds, and the width follows it down
+    const strip = sizeOf((await image(huge, "dpi=300&region=0,0,0.01,1")).rawPayload);
+    expect(strip.h).toBeGreaterThan(4000);
+    expect(strip.h).toBeLessThanOrEqual(4096);
+    expect(strip.w).toBeLessThan(60);
+  });
+
+  it("refuses a bad dpi or region in plain words", async () => {
+    const dpi = "dpi must be a whole number from 1 to 300.";
+    const regionWords = "region must be four numbers from 0 to 1, separated by commas: left, top, right, bottom.";
+    const inside = "region must stay inside the page: every number from 0 to 1.";
+    const order = "region must run from the top left to the bottom right: left must be below right, and top below bottom.";
+    const small = "region must be at least 1% of the page wide and tall.";
+    const cases: [string, string][] = [
+      ["dpi=0", dpi], ["dpi=301", dpi], ["dpi=1.5", dpi], ["dpi=abc", dpi],
+      ["region=", regionWords], ["region=0,0,1", regionWords], ["region=0,0,1,1,1", regionWords], ["region=a,0,1,1", regionWords], ["region=0,,1,1", regionWords], ["region=0,0,1,1&region=0,0,1,1", regionWords],
+      ["region=-0.1,0,1,1", inside], ["region=0,0,1.1,1", inside],
+      ["region=0.5,0,0.5,1", order], ["region=0.6,0,0.5,1", order], ["region=0,0.9,1,0.1", order],
+      ["region=0,0,0.005,1", small], ["region=0,0,1,0.009", small],
+    ];
+    for (const [qs, message] of cases) {
+      const res = await image(letter, qs);
+      expect([qs, res.statusCode, res.json().message]).toEqual([qs, 400, message]);
+    }
+    expect((await image(letter, "region=0,0,0.01,0.01")).statusCode).toBe(200);
+    expect((await image(letter, "dpi=1")).statusCode).toBe(200);
+    expect((await call("GET", `/documents/${letter}/pages/2/image?region=0,0,1,1`)).statusCode).toBe(404);
+  });
+
+  it("a crop of a page with bank details is masked just as the whole page is", async () => {
+    const id = await upload(await sizedPdf(612, 792, ["Account number 123456789012", "Ordinary sentence below it."]));
+    type Box = { text: string; x0: number; y0: number; x1: number; y1: number };
+    const { words } = (await call("GET", `/documents/${id}/pages/1/text`)).json() as { words: Box[] };
+    const hidden = words.find((w) => /^#+$/.test(w.text))!;
+    expect(hidden).toBeDefined();
+    const blackShare = async (qs: string, box: [number, number, number, number]) => {
+      const img = await loadImage((await image(id, qs)).rawPayload);
+      const canvas = createCanvas(img.width, img.height);
+      const g = canvas.getContext("2d");
+      g.drawImage(img, 0, 0);
+      const [x0, y0, x1, y1] = [Math.round(box[0] * img.width), Math.round(box[1] * img.height), Math.round(box[2] * img.width), Math.round(box[3] * img.height)] as const;
+      const { data } = g.getImageData(x0, y0, x1 - x0, y1 - y0);
+      let dark = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i]! < 10 && data[i + 1]! < 10 && data[i + 2]! < 10) dark++;
+      return dark / (data.length / 4);
+    };
+    // the crop's own coordinates: the word's box measured from the crop's top left
+    const r: Region = [Math.max(0, hidden.x0 - 0.05), Math.max(0, hidden.y0 - 0.02), Math.min(1, hidden.x1 + 0.05), Math.min(1, hidden.y1 + 0.02)];
+    const local = (v: number, lo: number, span: number) => (v - lo) / span;
+    const w = r[2] - r[0];
+    const h = r[3] - r[1];
+    const inCrop: [number, number, number, number] = [local(hidden.x0, r[0], w), local(hidden.y0, r[1], h), local(hidden.x1, r[0], w), local(hidden.y1, r[1], h)];
+    expect(await blackShare(`dpi=200&region=${r.join(",")}`, inCrop)).toBe(1);
+    expect(await blackShare("dpi=200", [hidden.x0, hidden.y0, hidden.x1, hidden.y1])).toBe(1);
+    // the ordinary sentence below is not painted over
+    const plain = words.find((w) => w.text === "Ordinary")!;
+    expect(await blackShare("dpi=200", [plain.x0, plain.y0, plain.x1, plain.y1])).toBeLessThan(0.5);
+  });
+});
+
 describe("pages", () => {
   let docId: string;
   beforeAll(async () => {
@@ -217,7 +317,7 @@ describe("pages", () => {
     expect(res.rawPayload.subarray(1, 4).toString()).toBe("PNG");
     const small = await call("GET", `/documents/${docId}/pages/1/image?dpi=40`);
     expect(small.rawPayload.length).toBeLessThan(res.rawPayload.length);
-    expect((await call("GET", `/documents/${docId}/pages/1/image?dpi=250`)).json().message).toBe("dpi must be a whole number from 1 to 200.");
+    expect((await call("GET", `/documents/${docId}/pages/1/image?dpi=250`)).statusCode).toBe(200);
   });
 
   it("serves a page's words with their positions", async () => {
