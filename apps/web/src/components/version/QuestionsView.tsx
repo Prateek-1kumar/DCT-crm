@@ -2,15 +2,17 @@
 
 import type { Question } from "@dct/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ContractPane } from "@/components/decisions/ContractPane";
 import { OptionCards } from "@/components/decisions/OptionCards";
-import { SourcePane } from "@/components/decisions/SourcePane";
 import { StartReading } from "@/components/study/StartReading";
 import { Badge, Button, btnCls, Card, cx, ErrorNote, LoadError, pageCls, ProgressBar } from "@/components/ui";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
 import type { Version } from "@/lib/types";
+import { useMounted } from "@/lib/use-mounted";
 import { answerers, answeredByMe, kindLabel, newQuestions, nextOpenWrapping, walkOrder, when } from "./questions";
 import { useVersion } from "./useVersion";
 
@@ -44,19 +46,17 @@ const Hints = () => (
   </p>
 );
 
+/** The shape of the split, so nothing jumps when the real screen arrives. */
 function Loading() {
   return (
-    <div className={pageCls} role="status" aria-label="Loading the decisions">
-      <div className="h-2 w-full animate-pulse rounded-full bg-sunken" />
-      <Card className="mt-6 grid gap-8 p-8 lg:grid-cols-2">
-        {[0, 1].map((i) => (
-          <div key={i} className="flex flex-col gap-4">
-            <div className="h-7 w-3/4 animate-pulse rounded-field bg-sunken" />
-            <div className="h-24 animate-pulse rounded-tile bg-sunken" />
-            <div className="h-56 animate-pulse rounded-tile bg-sunken" />
-          </div>
-        ))}
-      </Card>
+    <div role="status" aria-label="Loading the decisions" className={cx("mx-auto flex w-full max-w-[1800px] flex-col gap-4 px-4 py-4", `min-[1100px]:grid min-[1100px]:grid-cols-[minmax(380px,2fr)_minmax(0,3fr)] min-[1100px]:px-6`)}>
+      <div className="h-[60vh] animate-pulse rounded-tile bg-sunken min-[1100px]:order-2" />
+      <div className="flex flex-col gap-4 rounded-card p-2 min-[1100px]:order-1">
+        <div className="h-2 w-full animate-pulse rounded-full bg-sunken" />
+        <div className="h-7 w-3/4 animate-pulse rounded-field bg-sunken" />
+        <div className="h-24 animate-pulse rounded-tile bg-sunken" />
+        <div className="h-40 animate-pulse rounded-tile bg-sunken" />
+      </div>
     </div>
   );
 }
@@ -66,7 +66,7 @@ function Progress({ list, index, go }: { list: Question[]; index: number; go: (i
   const open = list.filter((q) => q.state === "open").length;
   const answered = list.filter((q) => q.state === "answered").length;
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
         <p aria-live="polite" className="text-lead font-semibold">
           Question {index + 1} of {list.length}
@@ -101,9 +101,9 @@ function Readings({ question }: { question: Question }) {
     <div>
       <h3 className="eyebrow mb-2">What each reading found</h3>
       <p className="mb-2 text-small text-muted">Pick the one that matches the page.</p>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-2 gap-3">
         {question.readings.map((r, i) => (
-          <div key={i} className="min-w-0 rounded-tile border border-line-strong p-4">
+          <div key={i} className="min-w-0 rounded-tile border border-line-strong p-3">
             <p className="text-small font-medium text-muted">{readingNames[i] ?? `Reading ${i + 1}`}</p>
             <p className="mt-1 text-body break-words">{r.answer}</p>
           </div>
@@ -113,6 +113,37 @@ function Readings({ question }: { question: Question }) {
   );
 }
 
+/** The context can run long, and the contract is what answers the question: keep it short until asked. (Long is judged by length, as the column's width isn't known here.) */
+function Context({ text }: { text: string }) {
+  const [more, setMore] = useState(false);
+  const long = text.length > 240;
+  return (
+    <div className="rounded-tile bg-sunken p-4">
+      <h3 className="eyebrow mb-1.5">What the contract says and doesn&apos;t</h3>
+      <p className={cx("text-body break-words text-ink-2", long && !more && "line-clamp-4")}>{text}</p>
+      {long && (
+        <button type="button" aria-expanded={more} onClick={() => setMore(!more)} className="mt-1.5 text-small font-medium text-accent hover:text-accent-hover">
+          {more ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function LockedNote({ version }: { version: Version }) {
+  const text = LOCKED[version.status];
+  if (!text) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-field bg-sunken px-4 py-3 text-body text-ink-2">
+      <p>{text}</p>
+      <Link href={`/studies/${version.studyId}`} className="font-medium text-accent hover:text-accent-hover">
+        Back to the contract
+      </Link>
+    </div>
+  );
+}
+
+/** The question side of the split. Keyed by question, so a half-made choice never carries over. */
 function Focus({
   version,
   list,
@@ -168,8 +199,9 @@ function Focus({
     answer.mutate(choice);
   };
 
+  // On this column only, not the contract beside it: the viewer uses arrows, +, - and [ ] for itself.
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
     const t = e.target as HTMLElement;
     const typing = t.isContentEditable || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || (t.tagName === "INPUT" && !["radio", "checkbox"].includes((t as HTMLInputElement).type));
     if (typing) return;
@@ -189,77 +221,94 @@ function Focus({
   };
 
   return (
-    <div ref={box} tabIndex={-1} onKeyDown={onKey} className="flex flex-col gap-6 outline-none">
-      <Progress list={list} index={index} go={go} />
-      {notice && (
-        <p role="status" className="rounded-field bg-info-soft px-4 py-3 text-body text-info">
-          {notice}
-        </p>
-      )}
-      <Card className="p-6 lg:p-8">
-        <div className="grid items-start gap-8 lg:grid-cols-2">
-          <div className="flex min-w-0 flex-col gap-5">
-            <div>
-              <div className="flex flex-wrap items-center gap-2.5">
-                <Badge tone={question.blocking ? "warn" : "neutral"}>{kindLabel(question)}</Badge>
-                {question.state === "answered" && <Badge tone="info">Answered</Badge>}
-              </div>
-              <h2 className="mt-3 text-heading font-semibold tracking-tight break-words">{question.question}</h2>
-              {!question.blocking && <p className="mt-2 text-body text-muted">This isn&apos;t holding up approval.</p>}
-            </div>
-            {question.context && (
-              <div className="rounded-tile bg-sunken p-5">
-                <h3 className="eyebrow mb-1.5">What the contract says and doesn&apos;t</h3>
-                <p className="text-body break-words text-ink-2">{question.context}</p>
-              </div>
-            )}
-            <SourcePane version={version} question={question} />
-          </div>
+    <Card className={cx("flex min-h-0 flex-col", `min-[1100px]:h-full`)}>
+      <div ref={box} tabIndex={-1} onKeyDown={onKey} className="flex min-h-0 flex-1 flex-col outline-none">
+        <div className="shrink-0 border-b border-line px-5 py-4">
+          <Progress list={list} index={index} go={go} />
+        </div>
 
-          <div className="flex min-w-0 flex-col gap-5">
-            <Readings question={question} />
-            {nothingToChoose ? (
-              <div className="flex flex-col items-start gap-3 rounded-tile bg-sunken p-5">
-                <p className="text-body text-ink-2">There&apos;s nothing to choose here. This part of the read needs to run again, and this can&apos;t be approved until it has. The pages already read are kept.</p>
-                {draft && <StartReading studyId={version.studyId} label="Start again" />}
-              </div>
-            ) : (
-              <OptionCards question={question} choice={choice} locked={locked} onChoose={setChoice} />
-            )}
-            {given && (
-              <p className="text-small text-muted">
-                Answered by {given.by} on {when(given.at)}.
-              </p>
-            )}
-            {!draft && LOCKED[version.status] && <p className="text-small text-muted">{LOCKED[version.status]}</p>}
-            <ErrorNote error={answer.error} />
-            {!locked && !nothingToChoose && (
-              <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex min-h-0 flex-1 flex-col gap-5 p-5 min-[1100px]:overflow-y-auto">
+          <LockedNote version={version} />
+          {notice && (
+            <p role="status" className="rounded-field bg-info-soft px-4 py-3 text-body text-info">
+              {notice}
+            </p>
+          )}
+          <div>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Badge tone={question.blocking ? "warn" : "neutral"}>{kindLabel(question)}</Badge>
+              {question.state === "answered" && <Badge tone="info">Answered</Badge>}
+            </div>
+            <h2 className="mt-3 text-heading font-semibold tracking-tight break-words">{question.question}</h2>
+            {!question.blocking && <p className="mt-2 text-body text-muted">This isn&apos;t holding up approval.</p>}
+          </div>
+          {question.context && <Context text={question.context} />}
+          <Readings question={question} />
+          {nothingToChoose ? (
+            <div className="flex flex-col items-start gap-3 rounded-tile bg-sunken p-4">
+              <p className="text-body text-ink-2">There&apos;s nothing to choose here. This part of the read needs to run again, and this can&apos;t be approved until it has. The pages already read are kept.</p>
+              {draft && <StartReading studyId={version.studyId} label="Start again" />}
+            </div>
+          ) : (
+            <OptionCards question={question} choice={choice} locked={locked} onChoose={setChoice} />
+          )}
+          {given && (
+            <p className="text-small text-muted">
+              Answered by {given.by} on {when(given.at)}.
+            </p>
+          )}
+          <ErrorNote error={answer.error} />
+        </div>
+
+        {/* Pinned: the answer buttons must never scroll out of reach of the question they belong to. */}
+        <div className="sticky bottom-0 z-10 flex shrink-0 flex-col gap-3 rounded-b-card border-t border-line bg-surface px-5 py-4">
+          <Hints />
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Button onClick={() => back && go(back)} disabled={!back}>
+              Back
+            </Button>
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2.5">
+              {!locked && others && <Button onClick={() => go(others.id)}>Skip for now</Button>}
+              {!locked && !nothingToChoose && (
                 <Button variant="primary" size="lg" onClick={confirm} disabled={choice === null || answer.isPending}>
                   {answer.isPending ? "Saving…" : "Use this answer"}
                 </Button>
-                {others && <Button size="lg" onClick={() => go(others.id)}>Skip for now</Button>}
-              </div>
-            )}
-            {!locked && nothingToChoose && others && (
-              <div>
-                <Button onClick={() => go(others.id)}>Skip for now</Button>
-              </div>
-            )}
+              )}
+              {locked && (
+                <Button onClick={() => forward && go(forward)} disabled={!forward}>
+                  Next
+                </Button>
+              )}
+            </div>
           </div>
         </div>
-        <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
-          <Button onClick={() => back && go(back)} disabled={!back}>
-            Back
-          </Button>
-          <Hints />
-          {locked && (
-            <Button onClick={() => forward && go(forward)} disabled={!forward}>
-              Next
-            </Button>
-          )}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Question on the left (about 40%), contract on the right (about 60%), together exactly the height under the header so the
+ * page itself never scrolls. Below 1100 px the contract comes first in a panel that folds away, then the question.
+ */
+function Split({ version, list, index, notice, go, onAnswered }: { version: Version; list: Question[]; index: number; notice: string | null; go: (id: string) => void; onAnswered: (v: Version, from: Question) => void }) {
+  // Drawn only after mount (see QuestionsView), so reading the screen width here can't disagree with the server's HTML.
+  const [open, setOpen] = useState(() => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 640px)").matches);
+  const question = list[index]!;
+  return (
+    <div className={cx("mx-auto flex w-full max-w-[1800px] flex-col gap-4 px-4 py-4", `min-[1100px]:grid min-[1100px]:h-[calc(100dvh-12rem)] min-[1100px]:min-h-[520px] min-[1100px]:grid-cols-[minmax(380px,2fr)_minmax(0,3fr)] min-[1100px]:gap-5 min-[1100px]:px-6 min-[1100px]:py-3`)}>
+      <section aria-label="The contract" className={cx("flex min-h-0 flex-col gap-2", `min-[1100px]:order-2 min-[1100px]:h-full`)}>
+        <button type="button" aria-expanded={open} aria-controls="contract-panel" onClick={() => setOpen(!open)} className={cx("flex w-full items-center justify-between rounded-field border border-line-strong bg-surface px-4 py-2.5 text-body font-medium shadow-button", `min-[1100px]:hidden`)}>
+          Contract
+          {open ? <ChevronUp aria-hidden className="size-4" /> : <ChevronDown aria-hidden className="size-4" />}
+        </button>
+        <div id="contract-panel" className={cx("min-h-0 flex-col", open ? "flex h-[60vh]" : "hidden", `min-[1100px]:flex min-[1100px]:h-auto min-[1100px]:flex-1`)}>
+          <ContractPane version={version} question={question} />
         </div>
-      </Card>
+      </section>
+      <div className={cx("min-h-0", `min-[1100px]:order-1 min-[1100px]:h-full`)}>
+        <Focus key={`${version.id}:${question.id}`} version={version} list={list} index={index} notice={notice} go={go} onAnswered={onAnswered} />
+      </div>
     </div>
   );
 }
@@ -335,15 +384,14 @@ function Screen({ version }: { version: Version }) {
     setAt(nextOpenWrapping(after, from.id)?.id ?? DONE);
   };
 
+  if (!settled && index >= 0 && list[index]) return <Split version={version} list={list} index={index} notice={notice} go={go} onAnswered={onAnswered} />;
+
   const locked = LOCKED[version.status];
   return (
     <div className={pageCls}>
       {locked && (
-        <div className="mb-6 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-field bg-sunken px-5 py-4 text-body text-ink-2">
-          <p>{locked}</p>
-          <Link href={`/studies/${version.studyId}`} className="font-medium text-accent hover:text-accent-hover">
-            Back to the contract
-          </Link>
+        <div className="mb-6">
+          <LockedNote version={version} />
         </div>
       )}
       {settled ? (
@@ -352,8 +400,6 @@ function Screen({ version }: { version: Version }) {
         ) : (
           <AllMade version={version} review={review} />
         )
-      ) : index >= 0 && list[index] ? (
-        <Focus key={`${version.id}:${list[index]!.id}`} version={version} list={list} index={index} notice={notice} go={go} onAnswered={onAnswered} />
       ) : (
         !locked && <p className="text-body text-muted">This version has no decisions to look at.</p>
       )}
@@ -363,7 +409,9 @@ function Screen({ version }: { version: Version }) {
 
 export function QuestionsView({ versionId }: { versionId: string }) {
   const v = useVersion(versionId);
-  if (v.isPending) return <Loading />;
+  // The sidebar may already have filled the cache: wait for mount so the first client render matches the server's.
+  const mounted = useMounted();
+  if (!mounted || v.isPending) return <Loading />;
   if (v.isError) return <LoadError error={v.error} retry={() => void v.refetch()} what="the decisions" back={{ href: "/", label: "Back to contracts" }} />;
   return <Screen version={v.data} />;
 }

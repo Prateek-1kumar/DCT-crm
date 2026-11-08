@@ -95,6 +95,7 @@ const version = (over: Partial<Version> = {}, rulebook: Rulebook | null = full):
   answers: [],
   read: null,
   proofreads: [],
+  flags: [],
   ...over,
 });
 

@@ -1,7 +1,8 @@
 import type { Evidence } from "@dct/shared";
 import { formatCents } from "@/lib/money";
 import type { CoverageRef, Version } from "@/lib/types";
-import { itemsOf, proofState } from "../contract/proofreads";
+import { itemsOf } from "../contract/proofreads";
+import { flagsFor, markState } from "../viewer/reviewState";
 import { GROUPS } from "../overview/model";
 import { gridProof } from "../rulebook/model";
 import { termValue } from "../rulebook/terms";
@@ -19,7 +20,10 @@ export interface Line {
   openQuestion: boolean;
 }
 
-export type LineFilter = "all" | "needs" | "mine";
+export type LineFilter = "all" | "needs" | "flagged" | "mine";
+
+/** How a row's dot reads: flagged by someone, needs a look (open question or nothing proves it, and nobody has checked it), checked by someone, or not checked. */
+export type LineStatus = "unchecked" | "checked" | "flagged" | "look";
 
 export const GRIDS_TITLE = "Budget grids";
 
@@ -36,7 +40,7 @@ export function buildLines(version: Version): Line[] {
       key: `grid:${g.id}`,
       ref,
       group: GRIDS_TITLE,
-      name: g.arm ? `${g.name} · ${g.arm}` : g.name,
+      name: `Budget grid: ${g.arm ? `${g.name} · ${g.arm}` : g.name}`,
       value: [plural(g.rows.length, "item"), plural(g.visits.length, "visit"), g.grandTotalCents !== null && `${formatCents(g.grandTotalCents)} per patient`].filter(Boolean).join(" · "),
       evidence: gridProof(g, version),
       items: itemsOf(rb, ref),
@@ -54,19 +58,42 @@ export function buildLines(version: Version): Line[] {
 /** Whether a line is the one a ref points at (a grid line stands for every cell of its grid). */
 export const isLine = (l: Line, ref: CoverageRef | null) => !!ref && l.ref.target === ref.target && l.ref.id === ref.id;
 
-/** Not proofread by anyone yet, nothing proves it, or a question about it is open. */
-export const needsChecking = (l: Line, version: Version) => l.openQuestion || l.evidence === "none" || (l.items.length > 0 && proofState(version, l.items, null).done < l.items.length);
+const checkedBySomeone = (l: Line, version: Version) => l.items.length > 0 && markState(version, l.items, null).done === l.items.length;
+
+/** Still to be checked: a line with something to mark that not every item of has a mark. What the filter, the count and "next" all mean. */
+export const needsChecking = (l: Line, version: Version) => l.items.length > 0 && !checkedBySomeone(l, version);
+
+export function lineStatus(l: Line, version: Version): LineStatus {
+  if (flagsFor(version, l.items).length > 0) return "flagged";
+  if (checkedBySomeone(l, version)) return "checked";
+  return l.openQuestion || l.evidence === "none" ? "look" : "unchecked";
+}
 
 export function filterLines(lines: Line[], version: Version, me: string | null, filter: LineFilter): Line[] {
   if (filter === "needs") return lines.filter((l) => needsChecking(l, version));
-  if (filter === "mine") return lines.filter((l) => proofState(version, l.items, me).mine.length > 0);
+  if (filter === "flagged") return lines.filter((l) => flagsFor(version, l.items).length > 0);
+  if (filter === "mine") return lines.filter((l) => markState(version, l.items, me).mine.length > 0);
   return lines;
 }
 
 /** "N of M checked by someone": a line counts once every one of its items has a mark. A line with nothing to mark isn't counted. */
 export function progress(lines: Line[], version: Version) {
   const markable = lines.filter((l) => l.items.length > 0);
-  return { done: markable.filter((l) => proofState(version, l.items, null).done === l.items.length).length, total: markable.length };
+  return { done: markable.filter((l) => checkedBySomeone(l, version)).length, total: markable.length };
+}
+
+/** The next line after `afterKey` (wrapping round, never the same line) that still needs checking: where one-key review goes after a mark. */
+export function nextUnchecked(lines: Line[], version: Version, afterKey: string | null): Line | undefined {
+  const at = lines.findIndex((l) => l.key === afterKey);
+  const order = [...lines.slice(at + 1), ...lines.slice(0, Math.max(at, 0))];
+  return order.find((l) => needsChecking(l, version));
+}
+
+/** The line `by` steps from the current one among the visible lines; with no current one visible, the first (forwards) or last (backwards). */
+export function stepLine(visible: Line[], currentKey: string | null, by: 1 | -1): Line | undefined {
+  const at = visible.findIndex((l) => l.key === currentKey);
+  if (at < 0) return by === 1 ? visible[0] : visible.at(-1);
+  return visible[Math.max(0, Math.min(visible.length - 1, at + by))];
 }
 
 export function sectionsOf(lines: Line[]): { title: string; lines: Line[] }[] {

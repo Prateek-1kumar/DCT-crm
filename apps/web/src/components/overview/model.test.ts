@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { question, rulebook, term, version } from "@/components/version/fixtures";
 import { bigGrid } from "../rulebook/test-data";
-import { amendmentCards, buildOverview, GROUPS, NONE_FOUND, proofreadCounts, saysNoHoldback, termCard } from "./model";
+import { amendmentCards, buildOverview, describeItem, flagPill, GROUPS, NONE_FOUND, proofreadCounts, saysNoHoldback, termCard } from "./model";
 
 const v = (terms = [] as ReturnType<typeof term>[], extra = {}) => version({ rulebook: rulebook({ terms, ...extra }) });
 const section = (sections: ReturnType<typeof buildOverview>, key: string) => sections.find((s) => s.key === key);
@@ -141,6 +141,58 @@ describe("search", () => {
 describe("proofread counts", () => {
   it("counts terms and grid cells that someone proofread", () => {
     const ver = { ...v([term("a"), term("b")]), proofreads: [{ item: "a", by: "Ana", at: "" }, { item: "a", by: "Bo", at: "" }, { item: "grid:g1:0:1", by: "Ana", at: "" }] };
-    expect(proofreadCounts(ver)).toEqual({ terms: 1, termsTotal: 2, cells: 1 });
+    expect(proofreadCounts(ver)).toEqual({ terms: 1, termsTotal: 2, cells: 1, flagged: 0 });
+  });
+});
+
+describe("flags", () => {
+  const at = "2026-11-03T10:00:00Z";
+  const flag = (item: string, by = "Ana", note = "Looks off") => ({ item, by, note, at });
+  const fees = [term("a", { category: "site_fee", name: "Startup fee" }), term("b", { category: "site_fee", name: "Archiving" }), term("c", { category: "site_fee", name: "Courier" })];
+  const withFlags = (flags: ReturnType<typeof flag>[], terms = fees, extra = {}) => ({ ...v(terms, extra), flags });
+  const cards = (ver: ReturnType<typeof withFlags>, q = "") => section(buildOverview(ver, q), "site_fees")!.cards;
+
+  it("counts a flagged card as needing attention, so it sorts first in its group", () => {
+    const list = cards(withFlags([flag("c")]));
+    expect(list.map((c) => c.termId)).toEqual(["c", "a", "b"]);
+    expect(list[0]!.attention).toBe(true);
+    expect(list[0]!.flags).toHaveLength(1);
+  });
+
+  it("finds a card by the words of a flag's note", () => {
+    const ver = withFlags([flag("b", "Ana", "Total is for a different arm")]);
+    expect(cards(ver, "different arm").map((c) => c.termId)).toEqual(["b"]);
+    expect(buildOverview(ver, "zebra")).toEqual([]);
+  });
+
+  it("shows the first note cut to about 60 characters, with the rest in the title and a count of the others", () => {
+    const long = "x".repeat(100);
+    const pill = flagPill([{ by: "Ana", note: long, at, where: null }, { by: "Bo", note: "Wrong date", at, where: "ECG, Week 4" }, { by: "Cy", note: "Same", at, where: null }])!;
+    expect(pill.text).toBe(`Flagged by Ana: ${"x".repeat(59)}…`);
+    expect(pill.more).toBe(2);
+    expect(pill.title).toBe(`Ana: ${long}\nBo (ECG, Week 4): Wrong date\nCy: Same`);
+    expect(flagPill([{ by: "Ana", note: "short", at, where: null }])).toMatchObject({ text: "Flagged by Ana: short", more: 0 });
+    expect(flagPill([])).toBeNull();
+  });
+
+  it("puts a grid-cell flag on that grid's card only, naming the cell", () => {
+    const ver = withFlags([flag("grid:g1:0:1", "Ana", "Wrong amount"), flag("grid:g2:0:0", "Bo", "Other grid")], [], { grids: [bigGrid(), bigGrid({ id: "g2", arm: "Arm B" })] });
+    const arms = section(buildOverview(ver), "arms")!.cards;
+    const g1 = arms.find((c) => c.key === "arm-g1")!;
+    expect(g1.flags).toEqual([{ by: "Ana", note: "Wrong amount", at, where: "Comprehensive metabolic panel with extended lipid profile and long description, Week 4" }]);
+    expect(arms.find((c) => c.key === "arm-g2")!.flags.map((f) => f.by)).toEqual(["Bo"]);
+    expect(g1.attention).toBe(true);
+  });
+
+  it("counts flagged items once each in the checks tally", () => {
+    expect(proofreadCounts(withFlags([flag("a"), flag("a", "Bo"), flag("grid:g1:0:0")])).flagged).toBe(2);
+  });
+
+  it("describes a flagged term or cell, and nothing for a line the rulebook no longer has", () => {
+    const rb = rulebook({ terms: [term("a", { name: "Startup fee", amountCents: 500000 })], grids: [bigGrid()] });
+    expect(describeItem(rb, "a")).toMatchObject({ name: "Startup fee", value: "$5,000.00", ref: { target: "term", id: "a" } });
+    expect(describeItem(rb, "grid:g1:1:0")).toMatchObject({ name: "ECG, Screening", value: "$98.00", ref: { target: "grid", id: "g1", row: 1, col: 0 } });
+    expect(describeItem(rb, "gone")).toBeNull();
+    expect(describeItem(rb, "grid:g9:0:0")).toBeNull();
   });
 });

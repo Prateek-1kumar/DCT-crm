@@ -154,11 +154,20 @@ export interface Version {
   read: { id: string; status: ReadStatus } | null;
   /** Who checked what against the PDF. `item` is a term id, or `grid:<gridId>:<row>:<col>` for one grid cell. Record only: approval doesn't wait for it. */
   proofreads: Proofread[];
+  flags: Flag[];
 }
 
 export interface Proofread {
   item: string;
   by: string;
+  at: string;
+}
+
+/** A reviewer's "something looks wrong" on one item: a plain-words note. A record only: it changes nothing in the rulebook and doesn't block approval. */
+export interface Flag {
+  item: string;
+  by: string;
+  note: string;
   at: string;
 }
 

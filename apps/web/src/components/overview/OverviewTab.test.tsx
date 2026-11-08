@@ -91,3 +91,40 @@ describe("OverviewTab", () => {
     expect(screen.getByText("Nothing to show yet")).toBeTruthy();
   });
 });
+
+describe("OverviewTab: flags", () => {
+  const at = "2026-11-03T10:00:00Z";
+  const flagged = (flags: { item: string; by: string; note: string }[], over: Partial<Parameters<typeof OverviewTab>[0]> = {}) => {
+    const ver = version({ rulebook: rulebook({ terms, grids: [bigGrid()] }), flags: flags.map((f) => ({ ...f, at })) });
+    render(<OverviewTab version={ver} coverage={coverage} query="" me="Bo" onShow={() => {}} onProofread={() => {}} {...over} />);
+  };
+
+  it("shows who flagged a card and the note, cut short with the whole note in a title", () => {
+    const note = "The contract says thirty days but this card says forty-five days, please check page 9";
+    flagged([{ item: "fee", by: "Ana", note }]);
+    const pill = screen.getByText(/^Flagged by Ana: /);
+    expect(pill.textContent).toBe(`Flagged by Ana: ${note.slice(0, 59).trimEnd()}…`);
+    expect(pill.closest("[title]")!.getAttribute("title")).toBe(`Ana: ${note}`);
+  });
+
+  it("says how many more flags a card has", () => {
+    flagged([{ item: "fee", by: "Ana", note: "one" }, { item: "fee", by: "Cy", note: "two" }, { item: "fee", by: "Di", note: "three" }]);
+    expect(screen.getByText("+2 more")).toBeTruthy();
+  });
+
+  it("flags the grid's card for a cell flag", () => {
+    flagged([{ item: "grid:g1:0:0", by: "Ana", note: "Wrong amount" }]);
+    const card = screen.getByText("$1,580,372.34").closest("li")!;
+    expect(within(card).getByText("Flagged by Ana: Wrong amount")).toBeTruthy();
+  });
+
+  it("counts flags in how the numbers were checked, and finds a card by its note", () => {
+    flagged([{ item: "fee", by: "Ana", note: "check the page" }, { item: "hb", by: "Bo", note: "unclear" }]);
+    const panel = screen.getByRole("heading", { name: "How the numbers were checked" }).closest("section")!;
+    expect(within(panel).getByText("Flagged by reviewers").previousElementSibling!.textContent).toBe("2");
+    cleanup();
+    flagged([{ item: "fee", by: "Ana", note: "check the page" }], { query: "check the page" });
+    expect(screen.getByText(/Startup fee/)).toBeTruthy();
+    expect(screen.queryByText("Holdback")).toBeNull();
+  });
+});

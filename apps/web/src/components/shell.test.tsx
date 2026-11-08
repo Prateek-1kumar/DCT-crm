@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
@@ -12,7 +13,10 @@ vi.mock("next/navigation", () => ({ usePathname: () => path, useSearchParams: ()
 vi.mock("next/image", () => ({ default: ({ alt }: { alt: string }) => <span role="img" aria-label={alt} /> }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: { href: string; children: ReactNode }) => <a href={href} {...p}>{children}</a> }));
 
-beforeEach(stubDialog);
+beforeEach(() => {
+  stubDialog();
+  localStorage.clear();
+});
 afterEach(() => {
   cleanup();
   push.mockReset();
@@ -72,5 +76,83 @@ describe("shell", () => {
     expect(screen.queryByText("ZRT-9")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /NWP-418-02/ }));
     await waitFor(() => expect(push).toHaveBeenCalledWith("/studies/s1"));
+  });
+
+  describe("collapsing", () => {
+    const toggle = (name: RegExp | string) => screen.getByRole("button", { name });
+
+    it("starts expanded on ordinary screens and collapsed on contract screens", () => {
+      stubApi({ "GET /studies": rows });
+      const { unmount } = renderWithClient(<Sidebar />);
+      expect(toggle("Collapse the sidebar").getAttribute("aria-expanded")).toBe("true");
+      unmount();
+      path = "/versions/v1/proof";
+      renderWithClient(<Sidebar />);
+      expect(toggle("Expand the sidebar").getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("link", { name: /Needs you/ })).toBeNull();
+    });
+
+    it("the rail names every icon and shows the counts", async () => {
+      stubApi({ "GET /studies": rows });
+      path = "/versions/v1/questions";
+      renderWithClient(<Sidebar />);
+      expect(await screen.findByRole("link", { name: "Contracts, 1 needs you" })).toBeTruthy();
+      expect(screen.getByRole("link", { name: "1 contract needs you" }).getAttribute("href")).toBe("/?filter=needs-you");
+      expect(screen.getAllByText("1").length).toBe(2); // the badge on the bell and on Contracts
+      for (const [name, href] of [["Activity", "/activity"], ["How it works", "/how-it-works"], ["Settings", "/settings"]] as const) {
+        const link = screen.getByRole("link", { name });
+        expect(link.getAttribute("href")).toBe(href);
+        expect(link.getAttribute("title")).toBe(name);
+      }
+      expect(toggle("Search").getAttribute("title")).toBe("Search (⌘K)");
+      expect(toggle("Choose your name").textContent).toBe("?");
+      fireEvent.click(toggle("Search"));
+      expect(await screen.findByRole("textbox", { name: "Search contracts" })).toBeTruthy();
+    });
+
+    it("the avatar shows the person's initials", () => {
+      localStorage.setItem("dct.actingAs", "Avery Chen");
+      stubApi({ "GET /studies": rows });
+      path = "/versions/v1/proof";
+      renderWithClient(<Sidebar />);
+      expect(toggle(/Avery Chen, working now/).textContent).toBe("AC");
+    });
+
+    it("collapsing on an ordinary screen is remembered for the other ordinary screens, not for contract screens", () => {
+      stubApi({ "GET /studies": rows });
+      const { unmount } = renderWithClient(<Sidebar />);
+      fireEvent.click(toggle("Collapse the sidebar"));
+      expect(toggle("Expand the sidebar")).toBeTruthy();
+      unmount();
+      path = "/activity";
+      renderWithClient(<Sidebar />);
+      expect(toggle("Expand the sidebar")).toBeTruthy();
+    });
+
+    it("expanding on a contract screen is remembered for contract screens only", () => {
+      stubApi({ "GET /studies": rows });
+      path = "/versions/v1/proof";
+      const { unmount } = renderWithClient(<Sidebar />);
+      fireEvent.click(toggle("Expand the sidebar"));
+      expect(toggle("Collapse the sidebar")).toBeTruthy();
+      unmount();
+      path = "/versions/v2/questions";
+      const second = renderWithClient(<Sidebar />);
+      expect(toggle("Collapse the sidebar")).toBeTruthy();
+      second.unmount();
+      path = "/";
+      renderWithClient(<Sidebar />);
+      expect(toggle("Collapse the sidebar")).toBeTruthy(); // the other kind is untouched: still its default, expanded
+    });
+
+    it("navigating between kinds applies each kind's own preference", () => {
+      stubApi({ "GET /studies": rows });
+      const client = new QueryClient();
+      const { rerender } = render(<QueryClientProvider client={client}><Sidebar /></QueryClientProvider>);
+      expect(toggle("Collapse the sidebar")).toBeTruthy();
+      path = "/versions/v1/proof";
+      rerender(<QueryClientProvider client={client}><Sidebar /></QueryClientProvider>);
+      expect(toggle("Expand the sidebar")).toBeTruthy();
+    });
   });
 });

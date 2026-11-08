@@ -1,13 +1,14 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Bell, ChevronDown, FileText, HelpCircle, History, Menu, Search, Settings, X, type LucideIcon } from "lucide-react";
+import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, FileText, HelpCircle, History, Menu, Search, Settings, X, type LucideIcon } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { askForPerson, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
+import { useSidebarCollapsed } from "@/lib/sidebar";
 import { LIST_TABS, matchesQuery, tabCounts, type ListTab } from "@/lib/steps";
 import { studySub, studyTitle } from "./study/format";
 import { Button, cx, Dialog, inputCls, Sheet } from "./ui";
@@ -200,7 +201,26 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function SidebarBody({ onNavigate, onClose, onSearch }: { onNavigate?: () => void; onClose?: () => void; onSearch: () => void }) {
+/** Same corner in both states (the bottom), so the person always knows where to find it. */
+function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? "Expand the sidebar" : "Collapse the sidebar";
+  const Icon = collapsed ? ChevronsRight : ChevronsLeft;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+      className={cx("group flex h-9 items-center rounded-[10px] text-body text-muted transition-colors hover:bg-ink/[0.045] hover:text-ink", collapsed ? "w-full justify-center" : "w-full gap-2.5 px-2.5")}
+    >
+      <Icon aria-hidden className="size-[17px] shrink-0" strokeWidth={1.75} />
+      {!collapsed && <span className="truncate">Collapse</span>}
+    </button>
+  );
+}
+
+function SidebarBody({ onNavigate, onClose, onSearch, onCollapse }: { onNavigate?: () => void; onClose?: () => void; onSearch: () => void; onCollapse?: () => void }) {
   const path = usePathname();
   return (
     <div className="flex h-full flex-col gap-5 p-4">
@@ -227,6 +247,69 @@ function SidebarBody({ onNavigate, onClose, onSearch }: { onNavigate?: () => voi
       <div className="mt-auto flex flex-col gap-1 border-t border-line-strong/70 pt-2">
         <NavLink href="/settings" label="Settings" icon={Settings} active={path === "/settings"} onNavigate={onNavigate} />
         <PersonChip />
+        {onCollapse && <CollapseToggle collapsed={false} onToggle={onCollapse} />}
+      </div>
+    </div>
+  );
+}
+
+const railItemCls = (active: boolean) =>
+  cx("group relative grid size-10 place-items-center rounded-[10px] transition-colors", active ? "bg-surface text-brand shadow-card" : "text-muted hover:bg-ink/[0.06] hover:text-ink");
+
+const Count = ({ n }: { n: number }) => (
+  <span aria-hidden className="num absolute top-0 right-0 grid min-w-4 place-items-center rounded-full bg-danger px-1 text-[10px] leading-4 font-semibold text-on-primary">
+    {n}
+  </span>
+);
+
+function RailLink({ href, label, icon: Icon, active, count = 0 }: { href: string; label: string; icon: LucideIcon; active: boolean; count?: number }) {
+  return (
+    <Link href={href} aria-label={label} title={label} aria-current={active ? "page" : undefined} className={railItemCls(active)}>
+      <Icon aria-hidden className="size-[18px]" strokeWidth={1.75} />
+      {count > 0 && <Count n={count} />}
+    </Link>
+  );
+}
+
+/** The collapsed sidebar: icons only, every one with a name and a tooltip. The Contracts filters live in the full sidebar. */
+function Rail({ onSearch, onExpand }: { onSearch: () => void; onExpand: () => void }) {
+  const path = usePathname();
+  const me = useActingAs();
+  const studies = useQuery({ queryKey: keys.studies, queryFn: api.studies });
+  const needs = studies.data ? tabCounts(studies.data, me)["needs-you"] : 0;
+  const who = me ? `${me}, working now. Switch person` : "Choose your name";
+  return (
+    <div className="flex h-full flex-col items-center gap-4 px-3 py-4">
+      <Link href="/" aria-label="Discovery Clinical Trials" title="Discovery Clinical Trials" className="grid size-10 place-items-center">
+        <Image src="/dct-mark.png" alt="Discovery Clinical Trials" width={28} height={25} preload />
+      </Link>
+
+      <div className="flex flex-col items-center gap-1">
+        <button type="button" aria-label="Search" title="Search (⌘K)" onClick={onSearch} className={railItemCls(false)}>
+          <Search aria-hidden className="size-[18px]" strokeWidth={1.75} />
+        </button>
+        <RailLink href="/?filter=needs-you" label={needs > 0 ? `${needs} ${needs === 1 ? "contract needs" : "contracts need"} you` : "Nothing needs you"} icon={Bell} active={false} count={needs} />
+      </div>
+
+      <nav aria-label="Main" className="flex flex-col items-center gap-1">
+        <RailLink href="/" label={needs > 0 ? `Contracts, ${needs} ${needs === 1 ? "needs" : "need"} you` : "Contracts"} icon={FileText} active={path === "/"} count={needs} />
+        <RailLink href="/activity" label="Activity" icon={History} active={path === "/activity"} />
+        <RailLink href="/how-it-works" label="How it works" icon={HelpCircle} active={path === "/how-it-works"} />
+      </nav>
+
+      <div className="mt-auto flex w-full flex-col items-center gap-1 border-t border-line-strong/70 pt-2">
+        <RailLink href="/settings" label="Settings" icon={Settings} active={path === "/settings"} />
+        <button type="button" aria-label={who} title={who} onClick={() => askForPerson()} className="grid size-10 place-items-center rounded-full hover:bg-ink/[0.045]">
+          <span
+            aria-hidden
+            className={cx("grid size-9 place-items-center rounded-full text-small font-semibold", me ? "bg-brand-soft text-accent" : "border border-dashed border-warn text-warn")}
+          >
+            {me ? initials(me) : "?"}
+          </span>
+        </button>
+        <div className="w-full">
+          <CollapseToggle collapsed onToggle={onExpand} />
+        </div>
       </div>
     </div>
   );
@@ -234,6 +317,7 @@ function SidebarBody({ onNavigate, onClose, onSearch }: { onNavigate?: () => voi
 
 /** Left column on desktop; a top bar with a slide-in menu on small screens. Owns the name picker. */
 export function Sidebar() {
+  const { collapsed, toggle } = useSidebarCollapsed(usePathname());
   const [menu, setMenu] = useState(false);
   const [searching, setSearching] = useState(false);
   useEffect(() => {
@@ -252,8 +336,17 @@ export function Sidebar() {
   };
   return (
     <>
-      <aside className="hidden lg:sticky lg:top-0 lg:block lg:h-screen lg:overflow-y-auto">
-        <SidebarBody onSearch={search} />
+      {/* The column width animates in AppFrame; clipping here and fixed inner widths keep the content from reflowing mid-slide. */}
+      <aside className="hidden lg:sticky lg:top-0 lg:block lg:h-screen lg:overflow-x-hidden lg:overflow-y-auto">
+        {collapsed ? (
+          <div className="h-full w-16">
+            <Rail onSearch={search} onExpand={toggle} />
+          </div>
+        ) : (
+          <div className="h-full w-[252px]">
+            <SidebarBody onSearch={search} onCollapse={toggle} />
+          </div>
+        )}
       </aside>
 
       <header className="sticky top-0 z-30 flex h-16 items-center gap-2 bg-canvas/85 px-4 backdrop-blur-md lg:hidden">

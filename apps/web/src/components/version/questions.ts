@@ -1,4 +1,4 @@
-import type { Question, Region } from "@dct/shared";
+import type { Question } from "@dct/shared";
 import type { Version } from "@/lib/types";
 
 export function questionCounts(v: Version) {
@@ -42,31 +42,3 @@ export const newQuestions = (before: Question[], after: Question[]) => {
   const seen = new Set(before.map((q) => q.id));
   return after.filter((q) => !seen.has(q.id)).length;
 };
-
-const MIN_W = 0.6;
-const MIN_H = 0.22;
-const PAD = 0.03;
-
-const around = (lo: number, hi: number, min: number): [number, number] => {
-  const mid = (lo + hi) / 2;
-  const half = Math.max((hi - lo) / 2 + PAD, min / 2);
-  const a = Math.max(0, mid - half);
-  const b = Math.min(1, mid + half);
-  // clamping one edge must not shrink the crop below the minimum: slide the other edge out instead
-  return b - a >= min - 1e-9 ? [a, b] : a === 0 ? [0, Math.min(1, min)] : [Math.max(0, 1 - min), 1];
-};
-
-/**
- * The part of the page to show for a question: the spot(s) it is about with room around them for context. Null (the whole
- * page) when nothing is located or the spot already fills most of the page.
- */
-export function cropFor(spots: Region[]): Region | null {
-  if (spots.length === 0) return null;
-  const x0 = Math.min(...spots.map((s) => s[0]));
-  const y0 = Math.min(...spots.map((s) => s[1]));
-  const x1 = Math.max(...spots.map((s) => s[2]));
-  const y1 = Math.max(...spots.map((s) => s[3]));
-  const [cx0, cx1] = around(x0, x1, MIN_W);
-  const [cy0, cy1] = around(y0, y1, MIN_H);
-  return cx1 - cx0 > 0.9 && cy1 - cy0 > 0.85 ? null : [cx0, cy0, cx1, cy1];
-}

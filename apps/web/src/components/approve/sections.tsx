@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Badge, Card, cx, Empty, inputBase } from "@/components/ui";
+import { useMounted } from "@/lib/use-mounted";
 import type { Version } from "@/lib/types";
-import { buildOverview, type CardModel } from "../overview/model";
+import { buildOverview, describeItem, type CardModel } from "../overview/model";
 import { encodeRef } from "../proof/model";
 import { gridProofreads, proofreaders, type ShowRef } from "../rulebook/model";
 import { ProofBadge } from "../rulebook/parts";
+import { when } from "../study/format";
 import type { KeyTerm } from "../version/key-terms";
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -22,6 +24,48 @@ function proofreadNames(version: Version, ref: ShowRef | null, termId: string | 
 }
 
 const ProofreadLine = ({ names }: { names: string[] }) => <span className="text-small text-muted">{names.length ? `Proofread by ${names.join(", ")}` : "Not proofread yet"}</span>;
+
+/** What reviewers flagged. It is a record, never a block: nothing here changes whether Approve is enabled. */
+export function FlaggedByReviewers({ version }: { version: Version }) {
+  // The cache may already hold the version, so a date is drawn only after mount to keep the first render equal to the server's.
+  const mounted = useMounted();
+  const rulebook = version.rulebook;
+  if (!rulebook || version.flags.length === 0) return null;
+  return (
+    <Card className="p-5 sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-title font-semibold tracking-tight">Flagged by reviewers</h2>
+        <Badge tone="warn" dot>
+          {plural(version.flags.length, "flag")}
+        </Badge>
+      </div>
+      <p className="mt-2 text-body text-ink-2">These don&apos;t stop you approving. Please look at them first.</p>
+      <ul className="mt-3 divide-y divide-line">
+        {version.flags.map((f) => {
+          const what = describeItem(rulebook, f.item);
+          return (
+            <li key={`${f.item}:${f.by}`} className="flex min-w-0 flex-col gap-1 py-3">
+              <p className="min-w-0 font-medium break-words">
+                {what ? what.name : "A line that is no longer in the rulebook"}
+                {what && <span className="num font-normal text-ink-2"> · {what.value}</span>}
+              </p>
+              <p className="text-small text-muted">
+                Flagged by {f.by}
+                {mounted ? ` · ${when(f.at)}` : ""}
+              </p>
+              <p className="text-body break-words whitespace-pre-wrap text-ink-2">{f.note}</p>
+              {what && (
+                <Link href={`/versions/${version.id}/proof?ref=${encodeRef(what.ref)}`} aria-label={`Check it in the contract: ${what.name}`} className={cx(linkCls, "self-start")}>
+                  Check it in the contract
+                </Link>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
 
 /** Approve is blocked while anything here exists; the Decisions screen is where it gets cleared. */
 export function NeedsDecision({ version, blocking, problems }: { version: Version; blocking: { id: string; question: string }[]; problems: Version["problems"] }) {

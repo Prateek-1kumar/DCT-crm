@@ -4,11 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setActingAs } from "@/lib/acting-as";
 import { mockApi, posts, question, renderWithClient, rulebook, version } from "./fixtures";
 import { QuestionsView } from "./QuestionsView";
-import { cropFor, kindLabel, newQuestions } from "./questions";
+import { kindLabel, newQuestions } from "./questions";
 
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: { href: string; children: ReactNode }) => <a href={href} {...p}>{children}</a> }));
-vi.mock("@/components/PageView", () => ({
-  PageView: ({ page, boxes }: { page: number; boxes: unknown[] }) => <div data-testid="page" data-page={page} data-boxes={boxes.length} />,
+// jsdom has no layout, so the real viewer is replaced by a stand-in that shows what it was asked to draw.
+vi.mock("@/components/viewer", () => ({
+  ContractViewer: ({ documentId, page, focus, boxes, startIn, onPageChange }: { documentId: string; page: number; focus: number[] | null; boxes: { tone: string }[]; startIn: string; onPageChange: (p: number) => void }) => (
+    <div data-testid="viewer" data-doc={documentId} data-page={page} data-focus={focus ? focus.join(",") : ""} data-boxes={boxes.length} data-tones={boxes.map((b) => b.tone).join(",")} data-start={startIn}>
+      <button onClick={() => onPageChange(page + 1)}>Stub next page</button>
+    </div>
+  ),
 }));
 
 beforeEach(() => setActingAs("Ana"));
@@ -137,21 +142,74 @@ describe("QuestionsView", () => {
     expect((screen.getByRole("radio", { name: /a option A/ }) as HTMLInputElement).checked).toBe(false);
   });
 
-  it("crops the page to the spot with a link to the whole page, or shows the whole page when nothing is located", async () => {
+  it("opens the contract at the passage: the quote's own words on its page, or the region when there is one", async () => {
     mockApi({
-      "GET /versions/v1": () => withQuestions(question("a", { source: { doc: "Contract.pdf", page: 2, quote: "net 45 days", region: [0.1, 0.5, 0.5, 0.55] } }), question("b", { source: { doc: "Contract.pdf", page: 4, quote: "lost words" } })),
-      "GET /documents/d1/pages/2/find": find(),
-      "GET /documents/d1/pages/4/find": find([]),
+      "GET /versions/v1": () => withQuestions(question("a", { source: { doc: "Contract.pdf", page: 2, quote: "net 45 days" } }), question("b", { source: { doc: "Contract.pdf", page: 4, quote: "scanned", region: [0.1, 0.5, 0.5, 0.55] } })),
+      "GET /documents/d1/pages/2/find": find([[0.1, 0.4, 0.4, 0.45], [0.1, 0.46, 0.3, 0.5]]),
     });
     view();
     await screen.findByText("Question text a");
-    await waitFor(() => expect(screen.getAllByRole("img", { name: /this question is about/ })).toHaveLength(2));
-    expect(screen.queryByTestId("page")).toBeNull();
-    expect(screen.getByRole("link", { name: "See the whole page" }).getAttribute("href")).toBe("/api/v1/documents/d1/pages/2/image");
+    const viewer = () => screen.getByTestId("viewer");
+    // two lines of the quote: both drawn as the focus, the viewer zooms to the box around them
+    await waitFor(() => expect(viewer().getAttribute("data-focus")).toBe("0.1,0.4,0.4,0.5"));
+    expect(viewer().getAttribute("data-tones")).toBe("focus,focus");
+    expect(viewer().getAttribute("data-start")).toBe("passage");
+    expect(viewer().getAttribute("data-page")).toBe("2");
+    expect(viewer().getAttribute("data-doc")).toBe("d1");
+    // another question: the viewer follows to its page and passage (the region, with no page-text search)
     skip();
+    await screen.findByText("Question text b");
+    await waitFor(() => expect(viewer().getAttribute("data-page")).toBe("4"));
+    expect(viewer().getAttribute("data-focus")).toBe("0.1,0.5,0.5,0.55");
+    expect(viewer().getAttribute("data-boxes")).toBe("1");
+  });
+
+  it("puts the quote, page and file in a strip above the contract and says when the words can't be found", async () => {
+    mockApi({ "GET /versions/v1": () => withQuestions(question("a", { source: { doc: "Contract.pdf", page: 2, quote: "lost words" } })), "GET /documents/d1/pages/2/find": find([]) });
+    view();
+    expect(await screen.findByText(/lost words/, { selector: "blockquote" })).toBeTruthy();
+    expect(screen.getByText("The contract says:")).toBeTruthy();
+    expect(screen.getByText(/page 2/)).toBeTruthy();
     expect(await screen.findByText("We couldn't highlight the exact words on this page.")).toBeTruthy();
-    expect(screen.getByTestId("page").getAttribute("data-page")).toBe("4");
-    expect(screen.queryByRole("link", { name: "See the whole page" })).toBeNull();
+    expect(screen.getByTestId("viewer").getAttribute("data-focus")).toBe("");
+  });
+
+  it("lets you turn to another page and come back to the passage", async () => {
+    mockApi({ "GET /versions/v1": () => withQuestions(question("a")), "GET /documents/d1/pages/2/find": find() });
+    view();
+    await screen.findByText("Question text a");
+    fireEvent.click(screen.getByRole("button", { name: "Stub next page" }));
+    expect(screen.getByTestId("viewer").getAttribute("data-page")).toBe("3");
+    expect(screen.getByTestId("viewer").getAttribute("data-boxes")).toBe("0");
+    fireEvent.click(screen.getByRole("button", { name: "Back to the passage" }));
+    expect(screen.getByTestId("viewer").getAttribute("data-page")).toBe("2");
+  });
+
+  it("says plainly when the page can't be shown, and the question stays answerable", async () => {
+    mockApi({ "GET /versions/v1": () => withQuestions(question("a", { source: { doc: "Missing.pdf", page: 1, quote: "" } })) });
+    view();
+    expect(await screen.findByText(/We couldn't show this page\. The question is still answerable/)).toBeTruthy();
+    expect(screen.queryByTestId("viewer")).toBeNull();
+    expect((screen.getByRole("radio", { name: /a option A/ }) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("folds the contract away in a panel when stacked", async () => {
+    mockApi({ "GET /versions/v1": () => withQuestions(question("a")), "GET /documents/d1/pages/2/find": find() });
+    view();
+    await screen.findByText("Question text a");
+    const toggle = screen.getByRole("button", { name: "Contract" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById("contract-panel")!.className).toContain("hidden");
+  });
+
+  it("clamps a long explanation until asked", async () => {
+    mockApi({ "GET /versions/v1": () => withQuestions(question("a", { context: "x ".repeat(200) })), "GET /documents/d1/pages/2/find": find() });
+    view();
+    await screen.findByText("Question text a");
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
   });
 
   it("all decisions made leads to Approve, or waits for a colleague when you answered", async () => {
@@ -232,20 +290,5 @@ describe("question helpers", () => {
 
   it("counts the questions an answer brought in", () => {
     expect(newQuestions([question("a")], [question("a"), question("b"), question("c")])).toBe(2);
-  });
-
-  it("crops around the spot with room to read, and falls back to the whole page", () => {
-    expect(cropFor([])).toBeNull();
-    const [x0, y0, x1, y1] = cropFor([[0.4, 0.4, 0.5, 0.42]])!;
-    expect(x1 - x0).toBeGreaterThanOrEqual(0.6 - 1e-9);
-    expect(y1 - y0).toBeGreaterThanOrEqual(0.22 - 1e-9);
-    expect(x0).toBeLessThanOrEqual(0.4);
-    expect(x1).toBeGreaterThanOrEqual(0.5 - 1e-9);
-    expect(y0).toBeLessThanOrEqual(0.4);
-    expect(y1).toBeGreaterThanOrEqual(0.42 - 1e-9);
-    const [a, , b] = cropFor([[0, 0.9, 0.05, 0.95]])!;
-    expect(a).toBe(0);
-    expect(b - a).toBeGreaterThanOrEqual(0.6 - 1e-9);
-    expect(cropFor([[0, 0, 1, 1]])).toBeNull();
   });
 });

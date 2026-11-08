@@ -71,6 +71,7 @@ export const version = (over: Partial<Version> = {}): Version => ({
   answers: [],
   read: null,
   proofreads: [],
+  flags: [],
   ...over,
 });
 

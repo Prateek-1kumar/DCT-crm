@@ -1,12 +1,15 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
+import { useSidebarCollapsed } from "@/lib/sidebar";
 import { Sidebar } from "./Sidebar";
 import { Spinner } from "./ui";
 
 export function AppFrame({ children }: { children: ReactNode }) {
+  const { collapsed } = useSidebarCollapsed(usePathname());
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-[252px_minmax(0,1fr)]">
+    <div className={`min-h-screen lg:grid lg:transition-[grid-template-columns] lg:duration-200 lg:ease-out ${collapsed ? "lg:grid-cols-[64px_minmax(0,1fr)]" : "lg:grid-cols-[252px_minmax(0,1fr)]"}`}>
       {/* First thing Tab reaches: past the sidebar to the page. */}
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-full focus:bg-surface focus:px-4 focus:py-2 focus:font-medium focus:shadow-raised">
         Skip to the page

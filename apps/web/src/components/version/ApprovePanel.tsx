@@ -9,7 +9,7 @@ import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { ApiError } from "@/lib/api";
 import { api, keys } from "@/lib/queries";
 import type { Version } from "@/lib/types";
-import { Everything, KeyTerms, NeedsDecision, plural } from "../approve/sections";
+import { Everything, FlaggedByReviewers, KeyTerms, NeedsDecision, plural } from "../approve/sections";
 import { Skeleton } from "../study/Skeleton";
 import { keyTerms } from "./key-terms";
 import { when } from "./questions";
@@ -96,6 +96,7 @@ function Review({ version }: { version: Version }) {
 
   return (
     <div className="grid min-w-0 gap-5">
+      <FlaggedByReviewers version={version} />
       <NeedsDecision version={version} blocking={blocking.map((q) => ({ id: q.id, question: q.question }))} problems={version.problems} />
       <KeyTerms version={version} terms={terms} ticked={ticked} onToggle={toggle} />
       <Everything version={version} shown={shown} />

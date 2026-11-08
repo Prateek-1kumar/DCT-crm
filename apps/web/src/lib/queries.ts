@@ -56,6 +56,10 @@ export const api = {
   proofread: (versionId: string, by: string, items: string[]) => request<Version>("POST", `/versions/${versionId}/proofread`, { by, items }),
   /** Takes back your own mark. */
   unproofread: (versionId: string, by: string, item: string) => request<Version>("DELETE", `/versions/${versionId}/proofread${q({ by, item })}`),
+  /** Says an item looks wrong, with a note; flagging again replaces your note. */
+  flag: (versionId: string, by: string, item: string, note: string) => request<Version>("POST", `/versions/${versionId}/flag`, { by, item, note }),
+  /** Takes back your own flag. */
+  unflag: (versionId: string, by: string, item: string) => request<Version>("DELETE", `/versions/${versionId}/flag${q({ by, item })}`),
 
   pageText: (documentId: string, page: number) => request<PageText>("GET", `/documents/${documentId}/pages/${page}/text`),
   /** Where `quote` sits on the page, as boxes to highlight; empty when the words aren't there. */
@@ -63,4 +67,11 @@ export const api = {
 };
 
 /** The page as a PNG, through the same-origin /api proxy (an <img> src). */
+/**
+ * A page, or just `region` of it (fractions 0–1, origin top-left), rendered at `dpi` (up to 300). The server shrinks the sharpness
+ * to keep one image within 4096 px, so read the picture's own size rather than assuming it.
+ */
+export const pageImageAt = (documentId: string, page: number, { dpi, region }: { dpi?: number; region?: Region } = {}) =>
+  `/api/v1/documents/${documentId}/pages/${page}/image${q({ dpi, region: region?.map((n) => n.toFixed(4)).join(",") })}`;
+
 export const pageImage = (documentId: string, page: number, dpi?: number) => `/api/v1/documents/${documentId}/pages/${page}/image${q({ dpi })}`;

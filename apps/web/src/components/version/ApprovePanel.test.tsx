@@ -100,6 +100,39 @@ describe("ApprovePanel: ready to approve", () => {
   });
 });
 
+describe("ApprovePanel: flagged by reviewers", () => {
+  const flags = [
+    { item: "pay", by: "Cy", note: "The contract says Net 30, not Net 45.", at: "2026-11-06T10:00:00Z" },
+    { item: "grid:g1:0:0", by: "Di", note: "Amount looks too high", at: "2026-11-06T11:00:00Z" },
+  ];
+
+  it("has no section when nobody flagged anything", async () => {
+    open(clean());
+    await screen.findByRole("checkbox", { name: "Payment terms" });
+    expect(screen.queryByRole("heading", { name: "Flagged by reviewers" })).toBeNull();
+  });
+
+  it("lists each flag first, with the item, who and when, the whole note, and a link into the contract", async () => {
+    open(clean({ flags }));
+    const heading = await screen.findByRole("heading", { name: "Flagged by reviewers" });
+    const section = heading.closest("section")!;
+    // first of the sections
+    expect(screen.getAllByRole("heading", { level: 2 })[0]).toBe(heading);
+    expect(within(section).getByText("Payment terms")).toBeTruthy();
+    expect(within(section).getByText(/Flagged by Cy/)).toBeTruthy();
+    expect(within(section).getByText("The contract says Net 30, not Net 45.")).toBeTruthy();
+    expect(within(section).getByRole("link", { name: "Check it in the contract: Payment terms" }).getAttribute("href")).toBe("/versions/v1/proof?ref=term:pay");
+    expect(within(section).getByText("These don't stop you approving. Please look at them first.")).toBeTruthy();
+  });
+
+  it("still lets the approver approve once everything is ticked", async () => {
+    open(clean({ flags }));
+    await screen.findByRole("heading", { name: "Flagged by reviewers" });
+    tickAll();
+    expect(approveButton().disabled).toBe(false);
+  });
+});
+
 describe("ApprovePanel: blocked", () => {
   it("lists open decisions and failing checks, links to the decisions and keeps Approve off", async () => {
     open(
