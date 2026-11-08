@@ -17,8 +17,10 @@ test("a read contract is answered, proven against its pages, approved by a secon
   await page.getByRole("button", { name: "Use this answer" }).click();
 
   await page.getByRole("link", { name: "Proofread", exact: true }).click();
-  await expect(page.getByText(/0 missing|Nothing missing/).first()).toBeVisible();
-  await expect(page.getByRole("img", { name: /Page 1/i }).first()).toBeVisible();
+  // the seeded contract is complete: the top bar offers "Next missing amount" only when some printed amount is missing
+  await expect(page.getByText(/\d+ of \d+ checked by someone/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Next missing amount/ })).toHaveCount(0);
+  await expect(page.getByRole("img", { name: /page \d+/i }).first()).toBeVisible();
 
   await page.getByRole("link", { name: "Approve" }).click();
   await expect(page).toHaveURL(/\/approve/);

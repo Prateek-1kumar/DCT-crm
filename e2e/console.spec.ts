@@ -43,7 +43,7 @@ test("no screen throws or logs an error", async ({ page }) => {
   await page.locator('[aria-label^="Show in the contract"]').first().click();
   await expect(page.getByRole("button", { name: "Close the contract panel" })).toBeVisible();
   await healthy("the contract side panel");
-  await page.getByRole("button", { name: "Open full view" }).click();
+  await page.getByRole("button", { name: "Expand" }).click();
   await expect(page.getByRole("heading", { name: "Proofread", exact: true })).toBeVisible();
   await expect(page.getByRole("img", { name: /page \d+/i }).first()).toBeVisible();
   await healthy("the Proofread screen");
