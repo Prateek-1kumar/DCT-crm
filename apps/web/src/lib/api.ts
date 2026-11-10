@@ -1,24 +1,4 @@
-import type {
-  AlertListQuery,
-  AlertPage,
-  AuditListQuery,
-  AuditPage,
-  DiffEntry,
-  DocumentDto,
-  DocumentKind,
-  JobDto,
-  MasterSearch,
-  RulebookVersionDto,
-  SearchResults,
-  SettingsDto,
-  SignOffBody,
-  StudyCounts,
-  StudyDetailDto,
-  StudyListQuery,
-  StudyPage,
-} from "@dct/shared";
-
-/** Typed client for the HTTP API in docs/phase-1/api.md. Everything goes through `request`. */
+/** The one way the web talks to the API; screens add their own typed calls on top of `request`. */
 
 /** Every route of the real API is under /api/v1 (the Next rewrite forwards /api/* as is). */
 const BASE = "/api/v1";
@@ -27,6 +7,8 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The API's x-request-id, so the team can find the failed request in its log. */
+    public requestId?: string,
   ) {
     super(message);
   }
@@ -51,7 +33,7 @@ const bodyKey = (body: Body) =>
  * double click, Enter pressed twice: the button disables only once React re-renders) is that same action: it shares the
  * first one's request and answer, so it can't apply twice. Once the answer is in, the same write is a new action.
  */
-function request<T>(method: string, path: string, body?: Body): Promise<T> {
+export function request<T>(method: string, path: string, body?: Body): Promise<T> {
   if (method === "GET") return send<T>(method, path, body);
   const same = `${method} ${path} ${bodyKey(body)}`;
   let p = inflight.get(same) as Promise<T> | undefined;
@@ -83,13 +65,13 @@ async function send<T>(method: string, path: string, body: Body, key?: string): 
       res = await fetch(`${BASE}${path}`, init);
       if (!retry || ![500, 502, 503, 504].includes(res.status)) break;
     } catch {
-      if (!retry) throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
+      if (!retry) throw new ApiError(0, "Can't reach DCT Finance right now. Check your connection, then try again.");
     }
     await new Promise((r) => setTimeout(r, RETRY_MS[attempt]));
   }
   const text = await res.text();
   const json: unknown = text ? safeJson(text) : null;
-  if (!res.ok) throw new ApiError(res.status, errorMessage(json, res.status));
+  if (!res.ok) throw new ApiError(res.status, errorMessage(json, res.status), res.headers.get("x-request-id") ?? undefined);
   return json as T;
 }
 
@@ -108,110 +90,5 @@ function errorMessage(json: unknown, status: number): string {
     const o = json as Record<string, unknown>;
     for (const k of ["message", "error"]) if (typeof o[k] === "string" && o[k]) return o[k] as string;
   }
-  return `Request failed (${status})`;
+  return status >= 500 ? "Something went wrong on the server. Try again; if it keeps happening, tell the team." : "That didn't go through. Try again.";
 }
-
-const q = encodeURIComponent;
-/** `?a=1&b=2` from the set values, or "". */
-const qs = (o: Record<string, string | number | undefined | null>) => {
-  const p = new URLSearchParams();
-  for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v));
-  const t = p.toString();
-  return t ? `?${t}` : "";
-};
-
-export const api = {
-  /** One page of the contract list; the server filters, orders and pages. Pass `nextCursor` back for the next page. */
-  listStudies: (query: StudyListQuery) => request<StudyPage>("GET", `/studies${qs(query)}`),
-  studyCounts: (site?: string) => request<StudyCounts>("GET", `/studies/counts${qs({ site })}`),
-  /** ⌘K: contracts and rates in live contracts. */
-  search: (text: string, limit = 8) => request<SearchResults>("GET", `/search${qs({ q: text, limit })}`),
-  /** What in one invoicing master matches. */
-  searchMaster: (id: string, v: number, text: string) => request<MasterSearch>("GET", `/studies/${q(id)}/versions/${v}/search${qs({ q: text })}`),
-  getStudy: (id: string) => request<StudyDetailDto>("GET", `/studies/${q(id)}`),
-  getVersion: (id: string, v: number) => request<RulebookVersionDto>("GET", `/studies/${q(id)}/versions/${v}`),
-  getDiff: (id: string, v: number, against: number) =>
-    request<DiffEntry[]>("GET", `/studies/${q(id)}/versions/${v}/diff?against=${against}`),
-
-  /** `by` is an extra form field for the audit log. Files join a study via createStudy or extract({documentIds}). */
-  upload: (files: File[], by: string) => {
-    const fd = new FormData();
-    fd.append("by", by);
-    for (const f of files) fd.append("files[]", f, f.name);
-    return request<DocumentDto[]>("POST", "/uploads", fd);
-  },
-  /** The sponsor's budget spreadsheet checked against a draft's grids (ADR-003 P2): the result is a notice in its warnings. */
-  budgetCheck: (id: string, v: number, file: File, by: string) => {
-    const fd = new FormData();
-    fd.append("by", by);
-    fd.append("files[]", file, file.name);
-    return request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/budget-check`, fd);
-  },
-  createStudy: (documentIds: string[], by: string) => request<{ studyId: string; jobId: string }>("POST", "/studies", { documentIds, by }),
-  confirmStudy: (id: string, body: { sponsor: string; protocol: string; siteName: string; investigator: string; by: string }) =>
-    request<StudyDetailDto>("PATCH", `/studies/${q(id)}`, body),
-  setDocumentKind: (docId: string, kind: DocumentKind, by: string) =>
-    request<DocumentDto>("PATCH", `/documents/${q(docId)}`, { kind, by }),
-  /** `documentIds` adds documents to the study first (amendment journey). */
-  extract: (id: string, by: string, documentIds?: string[]) =>
-    request<{ jobId: string; version: number }>("POST", `/studies/${q(id)}/extract`, { by, ...(documentIds?.length ? { documentIds } : {}) }),
-  getJob: (jobId: string) => request<JobDto>("GET", `/jobs/${q(jobId)}`),
-
-  /** One answer to one question (AnswerReviewBody). Returns the version with the outcome filled in. */
-  answerReview: (id: string, v: number, itemId: string, body: { value?: unknown; optionId?: string; cantTell?: boolean; note?: string; by: string }) =>
-    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/review/${q(itemId)}`, body),
-  /** "This looks wrong" (ReportValueBody). On a draft: adds a question. On the live version: opens a correction draft. Returns the draft. */
-  reportValue: (id: string, v: number, body: { path: string; note: string; by: string }) =>
-    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/report`, body),
-  /** The approver reopens answered questions with a note (SendBackBody). */
-  sendBack: (id: string, v: number, body: { itemIds: string[]; note: string; by: string }) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/send-back`, body),
-  /** Values that looked right to someone proofreading (ProofreadBody); any version with a master, live ones too. */
-  proofread: (id: string, v: number, body: { paths: string[]; by: string }) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/proofread`, body),
-  /** A blank draft to type a contract in by hand (ByHandBody). */
-  startByHand: (id: string, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/by-hand`, { by }),
-  /** Type one value; by-hand drafts only. */
-  typeValue: (id: string, v: number, body: { path: string; value: unknown; by: string }) =>
-    request<RulebookVersionDto>("PATCH", `/studies/${q(id)}/versions/${v}/values`, { ...body, note: "Typed by hand" }),
-  /** Typing is done: the checks run on what was typed, and what nobody typed is asked. */
-  finishByHand: (id: string, v: number, by: string) => request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/by-hand/done`, { by }),
-  /** `asOf`: the version's `updatedAt` as the approver saw it; a 409 if anything changed since. */
-  signOff: (id: string, v: number, body: SignOffBody) =>
-    request<RulebookVersionDto>("POST", `/studies/${q(id)}/versions/${v}/sign-off`, body),
-
-  /** Alerts for one person (everyone sees every alert; read state is theirs), newest first. */
-  alerts: (query: AlertListQuery) => request<AlertPage>("GET", `/alerts${qs(query)}`),
-  /** Marks `ids`, or every alert, read for `by`. */
-  readAlerts: (body: { by: string; ids?: string[] }) => request<{ unread: number }>("POST", "/alerts/read", body),
-
-  /** One page of the activity log, newest first; the server narrows, searches and pages. Pass `nextCursor` back for older ones. */
-  audit: (query: AuditListQuery) => request<AuditPage>("GET", `/audit${qs(query)}`),
-  getSettings: () => request<SettingsDto>("GET", "/settings"),
-  patchSettings: (body: Partial<SettingsDto> & { by?: string }) => request<SettingsDto>("PATCH", "/settings", body),
-
-  /**
-   * Downloads the invoicing master as an Excel file, built by the server. Fetched rather than linked to, so a refusal or a
-   * failure throws for the screen to show instead of downloading as a file.
-   * Never retried: each export is logged.
-   */
-  exportXlsx: async (id: string, v: number, by: string) => {
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/studies/${q(id)}/versions/${v}/export.xlsx${qs({ by })}`);
-    } catch {
-      throw new ApiError(0, "Can't reach the API. Is it running on port 4100?");
-    }
-    if (!res.ok) {
-      const text = await res.text();
-      throw new ApiError(res.status, errorMessage(text ? safeJson(text) : null, res.status));
-    }
-    if (!/spreadsheetml/.test(res.headers.get("content-type") ?? "")) throw new ApiError(502, "The export didn't come back as a spreadsheet.");
-    const named = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1];
-    const file = { blob: await res.blob(), filename: named ?? `invoicing-master-v${v}.xlsx` };
-    const href = URL.createObjectURL(file.blob);
-    Object.assign(document.createElement("a"), { href, download: file.filename }).click();
-    setTimeout(() => URL.revokeObjectURL(href), 10_000);
-  },
-
-  /** URL for an <img>. `dpi`: sharper page for close-ups. */
-  pageSrc: async (docId: string, page: number, dpi?: number): Promise<string> => `${BASE}/documents/${q(docId)}/pages/${page}.png${dpi ? `?dpi=${dpi}` : ""}`,
-};

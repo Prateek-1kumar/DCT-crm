@@ -1,19 +1,13 @@
 import { buildApp } from "./app.js";
-import { config, readingProblem } from "./config.js";
+import { config } from "./config.js";
 
-// This server runs the reading (its job workers), so it needs the AI key: fail fast, before anything listens.
-const problem = readingProblem();
-if (problem) {
-  console.error(problem);
-  process.exit(1);
-}
 const { app } = await buildApp({ logger: true });
 await app.listen({ port: config.port, host: config.listenHost });
 
 /**
  * SIGTERM / SIGINT: stop taking requests (new ones get 503, readiness too), let in-flight requests finish, then the jobs
  * (pg-boss, up to its own limit), then close the pool (app.ts onClose). Past SHUTDOWN_TIMEOUT_MS, or on a second
- * signal, exit anyway: a read still running is failed by pg-boss and marked so at the next start.
+ * signal, exit anyway.
  */
 let stopping = false;
 async function shutdown(signal: string) {

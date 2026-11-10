@@ -1,6 +1,6 @@
 /**
- * Amounts and percentages as contracts print them and people type them, read one way everywhere: the binder, the
- * bill-by-hand list, answers, search and the web. By string, never float math on amounts.
+ * Amounts and percentages as contracts print them and people type them, read one way everywhere. By string, never float
+ * math on amounts.
  */
 
 // A full stop, comma or colon after the number ends the sentence; it isn't part of the number ("$7,455.00.").
@@ -12,7 +12,7 @@ const AMOUNT = new RegExp(`^([-−])?\\s*(?:US\\$|USD|\\$)?\\s*([-−])?\\s*(${W
 /**
  * Integer cents of an amount: "$1,234.56", "1234.5", "US$ 98", "-12.05", "$7,455.00.". In brackets, "(1,500.00)" is a
  * credit and comes out below zero (a bracket on one side only isn't), unless `restates`: brackets that restate an amount in words ("Three Thousand Dollars
- * ($3,000.00)", the binder decides from the word before). null for anything else, a third decimal too: the master holds
+ * ($3,000.00)", the caller decides from the word before). null for anything else, a third decimal too: the master holds
  * whole cents, so a fraction of one is asked, never rounded into a match.
  */
 export function parseCents(text: string, { restates = false } = {}): number | null {

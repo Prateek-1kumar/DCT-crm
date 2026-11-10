@@ -1,64 +1,51 @@
-import type { AlertKind, ContractAnomaly, ProofreadMark, ReviewItem, Rulebook, ValueEvidence } from "@dct/shared";
+import type { Rulebook } from "@dct/shared";
 import { sql } from "drizzle-orm";
-import {
-  bigserial,
-  boolean,
-  check,
-  doublePrecision,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  primaryKey,
-  text,
-  timestamp,
-  unique,
-  uniqueIndex,
-  uuid,
-} from "drizzle-orm/pg-core";
-import type { ExtractionNote, ExtractionOutput } from "../extraction/port.js";
+import { bigserial, check, doublePrecision, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
-const ts = (name: string) => timestamp(name, { withTimezone: true }).notNull().defaultNow();
+const id = () => uuid("id").primaryKey().defaultRandom();
+const at = (name: string) => timestamp(name, { withTimezone: true });
+const createdAt = () => at("created_at").notNull().defaultNow();
 
-/**
- * Contract-list order as one ascending key: needs you oldest first, every other stage newest first, to the microsecond.
- * `extract` from an interval is immutable, so it can be indexed; queries must use this exact expression to hit the index.
- */
-export const listKey = sql`(CASE WHEN stage = 0 THEN 1 ELSE -1 END * extract(epoch FROM updated_at - timestamptz 'epoch'))`;
+export const partyKind = pgEnum("party_kind", ["sponsor", "cro", "site"]);
 
-export const studies = pgTable(
-  "studies",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    sponsor: text("sponsor"),
-    protocol: text("protocol"),
-    siteName: text("site_name"),
-    investigator: text("investigator"),
-    status: text("status").notNull().default("setting_up"),
-    /** What needs a person on the latest draft; kept by refreshStudyStatus. */
-    needsYou: integer("needs_you").notNull().default(0),
-    /** Contract-list urgency: 0 needs you · 1 couldn't read · 2 setting up · 3 waiting for approval · 4 extracting · 5 live. */
-    stage: integer("stage")
-      .notNull()
-      .generatedAlwaysAs(
-        sql`CASE WHEN status IN ('needs_review', 'amendment_in_review') THEN (CASE WHEN needs_you > 0 THEN 0 ELSE 3 END) WHEN status = 'extraction_failed' THEN 1 WHEN status = 'setting_up' THEN 2 WHEN status = 'extracting' THEN 4 ELSE 5 END`,
-      ),
-    createdAt: ts("created_at"),
-    updatedAt: ts("updated_at"),
-  },
-  (t) => [index("studies_list_idx").on(t.stage, listKey, t.id), index("studies_site_idx").on(t.siteName)],
-);
+/** Sponsors, CROs and site entities. House rules attach to these records, so matching is exact on the record (design §6). */
+export const parties = pgTable("parties", {
+  id: id(),
+  kind: partyKind("kind").notNull(),
+  name: text("name").notNull(),
+  aliases: text("aliases").array().notNull().default(sql`'{}'::text[]`),
+  createdAt: createdAt(),
+  createdBy: text("created_by").notNull(),
+});
 
+export const studies = pgTable("studies", {
+  id: id(),
+  /** Empty until the first read of the contract finishes. */
+  protocol: text("protocol"),
+  sponsorId: uuid("sponsor_id").references(() => parties.id),
+  payerId: uuid("payer_id").references(() => parties.id),
+  siteId: uuid("site_id").references(() => parties.id),
+  createdAt: createdAt(),
+  createdBy: text("created_by").notNull(),
+});
+
+export interface PageInfo {
+  page: number;
+  /** "image" until a read has transcribed a scanned page, then "scan". */
+  kind: "text" | "scan" | "image";
+  chars: number;
+  firstLine: string;
+}
+
+/** A PDF, stored once by its sha256 (the file lives in the upload folder under that name). */
 export const documents = pgTable("documents", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: id(),
   sha256: text("sha256").notNull().unique(),
-  filename: text("filename").notNull(),
-  kind: text("kind").notNull().default("other"),
-  pageCount: integer("page_count").notNull(),
-  storagePath: text("storage_path").notNull(),
-  /** From the PDF's own text at upload: "text" when any page has a real text layer, else "scan"; null = not known. */
-  textSource: text("text_source").$type<"text" | "scan">(),
-  uploadedAt: ts("uploaded_at"),
+  name: text("name").notNull(),
+  bytes: integer("bytes").notNull(),
+  pages: jsonb("pages").$type<PageInfo[]>().notNull(),
+  createdAt: createdAt(),
+  createdBy: text("created_by").notNull(),
 });
 
 export const studyDocuments = pgTable(
@@ -66,147 +53,134 @@ export const studyDocuments = pgTable(
   {
     studyId: uuid("study_id").notNull().references(() => studies.id),
     documentId: uuid("document_id").notNull().references(() => documents.id),
-    addedAt: ts("added_at"),
+    addedAt: createdAt(),
+    addedBy: text("added_by").notNull(),
   },
   (t) => [primaryKey({ columns: [t.studyId, t.documentId] })],
 );
 
-export const rulebookVersions = pgTable(
-  "rulebook_versions",
+export const versionStatus = pgEnum("version_status", ["reading", "draft", "failed", "approved", "superseded"]);
+
+export interface Problem {
+  check: string;
+  id?: string;
+  doc?: string;
+  page?: number;
+  message: string;
+}
+
+/** One rulebook per version. Once approved its rulebook can't change, enforced by a trigger (migration 0002). */
+export const versions = pgTable(
+  "versions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: id(),
     studyId: uuid("study_id").notNull().references(() => studies.id),
-    version: integer("version").notNull(),
-    /** extracting | draft | signed | superseded | failed */
-    status: text("status").notNull().default("extracting"),
+    number: integer("number").notNull(),
+    status: versionStatus("status").notNull(),
+    /** The documents this version was read from, fixed when the read starts. */
+    documentIds: uuid("document_ids").array().notNull(),
     rulebook: jsonb("rulebook").$type<Rulebook>(),
-    crossRead: jsonb("cross_read").$type<Rulebook>(),
-    anomalies: jsonb("anomalies").$type<ContractAnomaly[]>().notNull().default([]),
-    pages: jsonb("pages").$type<ExtractionOutput["pages"]>().notNull().default([]),
-    notes: jsonb("notes").$type<ExtractionNote[]>().notNull().default([]),
-    /** What made the reading weaker than usual, in plain words (jobs.ts plainWarnings); shown with the version. */
-    warnings: jsonb("warnings").$type<string[]>().notNull().default([]),
-    cost: jsonb("cost").$type<ExtractionOutput["cost"]>().notNull().default([]),
-    costUsd: doublePrecision("cost_usd").notNull().default(0),
-    inputTokens: integer("input_tokens").notNull().default(0),
-    outputTokens: integer("output_tokens").notNull().default(0),
-    appliesFrom: text("applies_from"),
-    editors: jsonb("editors").$type<string[]>().notNull().default([]),
-    /** Evidence ledger, one status per money value (ADR-001). */
-    evidence: jsonb("evidence").$type<ValueEvidence[]>().notNull().default([]),
-    /** What a person answers before approval. */
-    review: jsonb("review").$type<ReviewItem[]>().notNull().default([]),
-    /** Money values checked against the PDF's own text; null for a scan. */
-    pdfCheck: jsonb("pdf_check").$type<{ values: number; matched: number }>(),
-    byHand: boolean("by_hand").notNull().default(false),
-    /** When typing by hand was marked done; null until then. Its own mark: a contract typed in full has no questions. */
-    typingDoneAt: timestamp("typing_done_at", { withTimezone: true }),
-    /** "Looks right" marks; the one column a signed version still takes (see the immutability trigger). */
-    proofread: jsonb("proofread").$type<ProofreadMark[]>().notNull().default([]),
-    signedBy: text("signed_by"),
-    signedAt: timestamp("signed_at", { withTimezone: true }),
-    signNote: text("sign_note"),
-    error: text("error"),
-    createdAt: ts("created_at"),
-    updatedAt: ts("updated_at"),
+    /** What the checks still find wrong, recomputed after every answer; approval needs none. */
+    problems: jsonb("problems").$type<Problem[]>().notNull().default(sql`'[]'::jsonb`),
+    createdAt: createdAt(),
+    createdBy: text("created_by").notNull(),
+    approvedAt: at("approved_at"),
+    approvedBy: text("approved_by"),
   },
-  (t) => [unique().on(t.studyId, t.version)],
+  (t) => [
+    uniqueIndex("versions_study_number").on(t.studyId, t.number),
+    // one read at a time per study
+    uniqueIndex("versions_one_reading").on(t.studyId).where(sql`${t.status} = 'reading'`),
+    uniqueIndex("versions_one_live").on(t.studyId).where(sql`${t.status} = 'approved'`),
+  ],
 );
 
-/**
- * Our view of background jobs (pg-boss job id = this id), so GET /jobs/:id can report progress. Queued in the same
- * transaction as its pg-boss job (jobs.ts queueJob), and finished (succeeded or failed) in the same one as its result.
- */
-export const jobs = pgTable(
-  "jobs",
+export const readStatus = pgEnum("read_status", ["queued", "running", "done", "failed"]);
+
+export const reads = pgTable(
+  "reads",
   {
-    id: uuid("id").primaryKey(),
-    kind: text("kind").notNull(),
-    studyId: uuid("study_id").references(() => studies.id),
-    version: integer("version"),
-    /** queued | running | succeeded | failed */
-    state: text("state").notNull().default("queued"),
-    progress: integer("progress").notNull().default(0),
-    step: text("step").notNull().default("queued"),
-    /** What a person reads when it failed: plain words, never SQL, values or internals (jobs.ts failure). */
+    id: id(),
+    versionId: uuid("version_id").notNull().unique().references(() => versions.id),
+    status: readStatus("status").notNull().default("queued"),
+    budgetUsd: doublePrecision("budget_usd").notNull(),
+    spentUsd: doublePrecision("spent_usd").notNull().default(0),
+    /** Plain-English progress lines, appended as the read goes: the live feed. */
+    progress: jsonb("progress").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    trace: jsonb("trace"),
+    /** Why it failed, in plain English. */
     error: text("error"),
-    /** The technical reason, for the team. */
-    errorDetail: text("error_detail"),
-    createdAt: ts("created_at"),
-    updatedAt: ts("updated_at"),
+    createdAt: createdAt(),
+    startedAt: at("started_at"),
+    finishedAt: at("finished_at"),
   },
-  // At most one read of a version at a time: two would each pay for AI calls.
-  (t) => [uniqueIndex("jobs_one_live_read_idx").on(t.studyId, t.version).where(sql`kind = 'extract' AND state IN ('queued', 'running')`)],
+  (t) => [check("reads_spend", sql`${t.spentUsd} >= 0 AND ${t.budgetUsd} > 0`)],
+);
+
+/** Who answered which question of a version, with what. The rulebook carries the result; this is the record of who chose it. */
+export const answers = pgTable("answers", {
+  id: id(),
+  versionId: uuid("version_id").notNull().references(() => versions.id),
+  questionId: text("question_id").notNull(),
+  option: integer("option").notNull(),
+  by: text("by").notNull(),
+  at: createdAt(),
+});
+
+/**
+ * Who checked which item of a version against the PDF. `item` is a term id, or `grid:<gridId>:<row>:<col>` for one grid cell.
+ * A record beside the rulebook, never in it, so marking a live version doesn't trip its immutability trigger (migration 0002).
+ */
+export const proofreads = pgTable(
+  "proofreads",
+  {
+    id: id(),
+    versionId: uuid("version_id").notNull().references(() => versions.id),
+    item: text("item").notNull(),
+    by: text("by").notNull(),
+    at: createdAt(),
+  },
+  (t) => [uniqueIndex("proofreads_version_item_by").on(t.versionId, t.item, t.by), index("proofreads_version").on(t.versionId)],
 );
 
 /**
- * A write's saved response, by its Idempotency-Key (lib/idempotency.ts): the same key again gets this response instead
- * of a second write. Saved in the write's own transaction; deleted a day later (jobs.ts maintenance).
+ * A reviewer's "this looks wrong" on one item, with a note. Like proofreads, a record beside the rulebook and never in it:
+ * flagging a live version must not trip its immutability trigger, and a flag never blocks approval. A person has one flag per item.
  */
+export const flags = pgTable(
+  "flags",
+  {
+    id: id(),
+    versionId: uuid("version_id").notNull().references(() => versions.id),
+    item: text("item").notNull(),
+    by: text("by").notNull(),
+    note: text("note").notNull(),
+    at: createdAt(),
+  },
+  (t) => [uniqueIndex("flags_version_item_by").on(t.versionId, t.item, t.by), index("flags_version").on(t.versionId)],
+);
+
+/** Append-only: a trigger refuses updates and deletes (migration 0002). */
+export const auditLog = pgTable("audit_log", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  at: createdAt(),
+  by: text("by").notNull(),
+  action: text("action").notNull(),
+  entity: text("entity").notNull(),
+  entityId: uuid("entity_id").notNull(),
+  detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+});
+
+/** A write's Idempotency-Key: the first request with it runs, and its answer is replayed to a resend. `status` is null while that request is still running. */
 export const idempotencyKeys = pgTable(
   "idempotency_keys",
   {
     key: text("key").primaryKey(),
-    /** sha256 of the method, URL and body: the same key with a different request is refused. */
-    fingerprint: text("fingerprint").notNull(),
-    status: integer("status").notNull(),
-    /** The JSON body as it was sent, so a replay is the same byte for byte. */
-    response: text("response").notNull(),
-    createdAt: ts("created_at"),
+    method: text("method").notNull(),
+    path: text("path").notNull(),
+    status: integer("status"),
+    body: jsonb("body"),
+    createdAt: createdAt(),
   },
-  (t) => [index("idempotency_keys_created_idx").on(t.createdAt)],
-);
-
-/** Append-only: UPDATE/DELETE are rejected by a trigger (see the custom migration). */
-export const auditLog = pgTable(
-  "audit_log",
-  {
-    id: bigserial("id", { mode: "number" }).primaryKey(),
-    at: ts("at"),
-    by: text("by").notNull(),
-    studyId: uuid("study_id").references(() => studies.id),
-    action: text("action").notNull(),
-    detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
-  },
-  // one contract's log, newest first, a page at a time (GET /audit?studyId=): read backwards
-  // ponytail: `q` is an ILIKE scan over the page order; a pg_trgm GIN index on a search column if the log gets large.
-  (t) => [index("audit_log_study_idx").on(t.studyId, t.id)],
-);
-
-/** A contract reached a step where someone is needed (see AlertDto); raised by refreshStudyStatus. Everyone sees every alert. */
-export const alerts = pgTable(
-  "alerts",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    kind: text("kind").$type<AlertKind>().notNull(),
-    studyId: uuid("study_id").notNull().references(() => studies.id),
-    version: integer("version").notNull(),
-    by: text("by").notNull(),
-    count: integer("count"),
-    note: text("note"),
-    createdAt: ts("created_at"),
-  },
-  // NULLS FIRST, as ORDER BY … DESC means: with drizzle-kit's default NULLS LAST the planner won't use it for that order
-  (t) => [index("alerts_list_idx").on(t.createdAt.desc().nullsFirst(), t.id.desc().nullsFirst())],
-);
-
-/** Read state per person (the name they picked). An alert is also read for whoever caused it, without a row. */
-export const alertReads = pgTable(
-  "alert_reads",
-  {
-    alertId: uuid("alert_id").notNull().references(() => alerts.id),
-    person: text("person").notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.alertId, t.person] })],
-);
-
-/** Single row (id = 1), seeded by migration. Maker-checker is on unless someone turns it off (ADR-001 §10). */
-export const settings = pgTable(
-  "settings",
-  {
-    id: integer("id").primaryKey().default(1),
-    people: jsonb("people").$type<string[]>().notNull().default([]),
-    makerChecker: boolean("maker_checker").notNull().default(true),
-  },
-  (t) => [check("settings_single_row", sql`${t.id} = 1`)],
+  (t) => [index("idempotency_keys_created").on(t.createdAt)],
 );

@@ -1,92 +1,50 @@
-import { eq, sql } from "drizzle-orm";
-import type { FastifyReply, FastifyRequest } from "fastify";
-import { createHash } from "node:crypto";
-import type { Db, Tx } from "../db/index.js";
+import { eq, lt } from "drizzle-orm";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { Db } from "../db/index.js";
 import { idempotencyKeys } from "../db/schema.js";
 import { HttpError } from "./http.js";
 
-/** How long a saved response is replayed. A key used again after that runs as a new request (Stripe: 24 hours). */
-const KEY_TTL_HOURS = 24;
-
-/** Advisory-lock key space for idempotency keys (the two-int form; it doesn't overlap the one-bigint locks elsewhere). */
-const LOCKS = 7101;
+const KEEP_MS = 24 * 60 * 60 * 1000;
+const MAX_KEY = 200;
 
 /**
- * The request's Idempotency-Key: a structured-field string (`"…"`, IETF draft-ietf-httpapi-idempotency-key-header) or a
- * bare token (as Stripe takes it), 1–255 printable characters. Null when it has none.
+ * Applies each write once per `Idempotency-Key`: the first request runs and its answer is kept; a resend with the same
+ * key gets that answer back instead of running again. Answers of 500 and up aren't kept: that request saved nothing,
+ * so the key is freed and a retry runs afresh.
  */
-function keyOf(req: FastifyRequest): string | null {
-  const raw = req.headers["idempotency-key"];
-  if (raw === undefined) return null;
-  const m = /^"([\x21\x23-\x5b\x5d-\x7e]{1,255})"$|^([\x21\x23-\x5b\x5d-\x7e]{1,255})$/.exec(String(raw).trim());
-  if (!m) throw new HttpError(400, "The Idempotency-Key header must be 1 to 255 letters, digits or symbols, such as a UUID.");
-  return m[1] ?? m[2]!;
-}
+export function idempotency(api: FastifyInstance, db: Db) {
+  const claimed = new WeakMap<FastifyRequest, string>();
+  const keyOf = (req: FastifyRequest) => {
+    const raw = req.headers["idempotency-key"];
+    if (raw === undefined || ["GET", "HEAD", "OPTIONS"].includes(req.method)) return null;
+    const key = String(raw).trim().replace(/^"(.*)"$/, "$1").trim();
+    if (!key || key.length > MAX_KEY) throw new HttpError(400, "This request's key isn't valid. Reload the page and try again.");
+    return key;
+  };
 
-/** What makes two requests the same one: method, URL (path and query) and body. */
-export const fingerprintOf = (req: FastifyRequest, body: unknown = req.body) =>
-  createHash("sha256").update(`${req.method} ${req.url}\n${JSON.stringify(body ?? null)}`).digest("hex");
-
-type Saved = { status: number; response: string; replayed: boolean };
-
-/**
- * One write, all or nothing: `fn` runs in one transaction and its result is the response. With an Idempotency-Key, the
- * key, the request's fingerprint and that response are saved in the same transaction, so a write and its saved response
- * commit together or not at all (one atomic phase, as Brandur Leach describes for Stripe). Then:
- * - the same key and request again: the saved response, nothing written (`Idempotent-Replayed: true`);
- * - the same key with a different request: 422;
- * - the same key while the first is still running: waits for it on the key's lock, then replays its response; a 409
- *   if that takes longer than the lock timeout.
- * A request that fails saves nothing (it changed nothing), so a retry runs it again. `after` runs last, inside the
- * transaction once the response is saved (an upload moves its files into place there).
- */
-export async function write<T>(
-  db: Db,
-  req: FastifyRequest,
-  reply: FastifyReply,
-  fn: (tx: Tx) => Promise<T>,
-  opts: { status?: number; fingerprint?: string; after?: () => Promise<void> } = {},
-) {
-  const key = keyOf(req);
-  const status = opts.status ?? 200;
-  const out = await db.transaction(async (tx): Promise<Saved> => {
-    const print = key ? (opts.fingerprint ?? fingerprintOf(req)) : "";
-    if (key) {
-      const saved = await claim(tx, key, print);
-      if (saved) return saved;
+  api.addHook("onRequest", async (req, reply) => {
+    const key = keyOf(req);
+    if (!key) return;
+    const method = req.method;
+    const path = req.url.split("?")[0]!;
+    await db.delete(idempotencyKeys).where(lt(idempotencyKeys.createdAt, new Date(Date.now() - KEEP_MS)));
+    const [mine] = await db.insert(idempotencyKeys).values({ key, method, path }).onConflictDoNothing().returning({ key: idempotencyKeys.key });
+    if (mine) {
+      claimed.set(req, key);
+      return;
     }
-    const response = JSON.stringify(await fn(tx));
-    if (key) await tx.insert(idempotencyKeys).values({ key, fingerprint: print, status, response });
-    await opts.after?.();
-    return { status, response, replayed: false };
+    const [first] = await db.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, key));
+    if (first && (first.method !== method || first.path !== path))
+      throw new HttpError(422, "This request's key was already used for a different action. Reload the page and try again.");
+    if (first?.status == null) throw new HttpError(409, "This is already being done. Wait a moment, then reload.");
+    return reply.status(first.status).send(first.body);
   });
-  if (out.replayed) reply.header("idempotent-replayed", "true");
-  return reply.status(out.status).type("application/json; charset=utf-8").send(out.response);
+
+  api.addHook("onSend", async (req, reply, payload) => {
+    const key = claimed.get(req);
+    if (!key) return payload;
+    if (reply.statusCode >= 500) await db.delete(idempotencyKeys).where(eq(idempotencyKeys.key, key));
+    else await db.update(idempotencyKeys).set({ status: reply.statusCode, body: typeof payload === "string" && payload ? JSON.parse(payload) : null }).where(eq(idempotencyKeys.key, key));
+    return payload;
+  });
 }
-
-/** Takes the key's lock (held until this transaction ends) and returns its saved response, if it has a live one. */
-async function claim(tx: Tx, key: string, print: string): Promise<Saved | null> {
-  try {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS}, hashtext(${key}))`);
-  } catch (err) {
-    if ((err as { cause?: { code?: string } }).cause?.code === "55P03")
-      throw new HttpError(409, "This request is still being processed. Wait a moment, then try again.");
-    throw err;
-  }
-  const [row] = await tx
-    .select({ fingerprint: idempotencyKeys.fingerprint, status: idempotencyKeys.status, response: idempotencyKeys.response, expired: expired() })
-    .from(idempotencyKeys)
-    .where(eq(idempotencyKeys.key, key));
-  if (!row) return null;
-  if (row.expired) {
-    await tx.delete(idempotencyKeys).where(eq(idempotencyKeys.key, key));
-    return null;
-  }
-  if (row.fingerprint !== print) throw new HttpError(422, "This Idempotency-Key was already used for a different request. Send a new key for each new action.");
-  return { status: row.status, response: row.response, replayed: true };
-}
-
-const expired = () => sql<boolean>`${idempotencyKeys.createdAt} < now() - make_interval(hours => ${KEY_TTL_HOURS})`;
-
-/** Deletes saved responses past their time (jobs.ts maintenance). */
-export const deleteExpiredKeys = (db: Db) => db.delete(idempotencyKeys).where(expired());

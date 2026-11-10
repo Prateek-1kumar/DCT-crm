@@ -1,236 +1,172 @@
-import type { DocumentDto, JobDto, RulebookVersionDto } from "@dct/shared";
-import { sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fakeControls } from "../src/extraction/fake.js";
-import { maintain } from "../src/jobs.js";
-import { type App, type Built, makeBudgetXlsx, makePdf, makeTextPdf, multipart, resetDb, settleAll, storedVersion, testApp, waitJob } from "./helpers.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "../src/app.js";
+import { idempotencyKeys } from "../src/db/schema.js";
+import { multipart, type App, type Built } from "./helpers.js";
 
-// Every write route, sent twice with one Idempotency-Key: the second gets the first's response, byte for byte, and
-// changes nothing (rows, audit entries, alerts, jobs). Sent at once (a double click): one effect.
-
-let app: App;
 let built: Built;
+let app: App;
+const runs = new Map<string, number>();
+const ran = (name: string) => runs.get(name) ?? 0;
+const hit = (name: string) => runs.set(name, ran(name) + 1);
+let release: () => void = () => {};
+let started: () => void = () => {};
+
 beforeAll(async () => {
-  built = await testApp();
+  built = await buildApp({
+    routes: (api) => {
+      api.post<{ Params: { name: string } }>("/test/write/:name", async (req, reply) => {
+        hit(req.params.name);
+        return reply.status(201).send({ run: ran(req.params.name) });
+      });
+      api.delete("/test/write", async () => ({ ok: true }));
+      api.delete("/test/write/:name", async () => ({ ok: true }));
+      api.get("/test/read", async () => ({ ok: true }));
+      api.post("/test/bad", async () => {
+        hit("bad");
+        throw new Error("secret");
+      });
+      api.post("/test/refused", async () => {
+        hit("refused");
+        return Promise.reject(Object.assign(new Error("No."), { statusCode: 409 }));
+      });
+      api.post("/test/fails-once", async (req, reply) => {
+        hit("fails-once");
+        if (ran("fails-once") === 1) throw new Error("boom");
+        return reply.send({ run: ran("fails-once") });
+      });
+      api.post("/test/slow", async () => {
+        hit("slow");
+        started();
+        await new Promise<void>((r) => (release = r));
+        return { run: ran("slow") };
+      });
+      api.post("/test/files", async (req) => {
+        hit("files");
+        const names: string[] = [];
+        for await (const part of req.files()) {
+          await part.toBuffer();
+          names.push(part.filename);
+        }
+        return { run: ran("files"), names };
+      });
+    },
+  });
   app = built.app;
 });
 afterAll(() => app.close());
-beforeEach(async () => {
-  fakeControls.failNext = 0;
-  await resetDb(built);
-});
 
-const G2_TOTAL = "/budgetGrids/1/visits/1/totalCents"; // read 8,488.00, printed 8,489.00 (test/helpers.ts makeTextPdf)
-const FEE = "/siteFees/0/amountCents"; // confirmed by the PDF's text
+const key = () => `"${randomUUID()}"`;
+const post = (url: string, k?: string, payload: object = {}) => app.inject({ method: "POST", url: `/api/v1${url}`, headers: k ? { "idempotency-key": k } : {}, payload });
 
-type Req = { method: "POST" | "PATCH"; url: string; payload?: object | Buffer; headers?: Record<string, string> };
-const send = (r: Req, key?: string) =>
-  app.inject({ method: r.method, url: `/api/v1${r.url}`, payload: r.payload as object, headers: { ...r.headers, ...(key ? { "idempotency-key": key } : {}) } });
-const quoted = () => `"${randomUUID()}"`; // a structured-field string, as the web sends it
-/** Version 1 as the approver last saw it, as the approve page sends it with the approval. */
-const asOf = async (studyId: string) => (await app.inject({ url: `/api/v1/studies/${studyId}/versions/1` })).json<RulebookVersionDto>().updatedAt;
-
-/**
- * Everything a write can leave behind: every row of every table it writes, each column (a version's evidence, editors and
- * `updated_at` too, which approval's `asOf` compares), and how many audit entries, alerts, reads and saved keys there are.
- */
-async function effects() {
-  const every = (table: string, order: string) => sql.raw(`(SELECT coalesce(json_agg(t ORDER BY ${order}), '[]') FROM ${table} t)::text`);
-  const { rows } = await built.ctx.db.execute(sql`SELECT
-    ${every("documents", "id")} AS documents, ${every("studies", "id")} AS studies, ${every("study_documents", "study_id, document_id")} AS links,
-    ${every("rulebook_versions", "study_id, version")} AS versions, ${every("jobs", "id")} AS jobs, ${every("settings", "id")} AS settings,
-    (SELECT count(*) FROM pgboss.job WHERE name IN ('identify', 'extract'))::int AS queued,
-    (SELECT count(*) FROM audit_log)::int AS audit, (SELECT count(*) FROM alerts)::int AS alerts,
-    (SELECT count(*) FROM alert_reads)::int AS reads, (SELECT count(*) FROM idempotency_keys)::int AS keys`);
-  return rows[0]!;
-}
-
-/** Waits for whatever job a response started, so its own writes aren't counted as the repeat's. */
-async function settled(res: { json: () => unknown }) {
-  const { jobId } = (res.json() ?? {}) as { jobId?: string };
-  if (jobId) await waitJob(app, jobId);
-}
-
-/** Sends `r` with a key, then again with the same key: the same response, marked replayed, and no second effect. */
-async function twice(r: Req, status = 200) {
-  const key = quoted();
-  const first = await send(r, key);
-  expect(first.statusCode, first.body).toBe(status);
-  expect(first.headers["idempotent-replayed"]).toBeUndefined();
-  await settled(first);
-  const before = await effects();
-  const again = await send(r, key);
-  expect(again.statusCode).toBe(status);
-  expect(again.body).toBe(first.body);
-  expect(again.headers["idempotent-replayed"]).toBe("true");
-  expect(await effects()).toEqual(before);
-  return first;
-}
-
-async function uploadReq(seed: string, scan = false): Promise<Req> {
-  const { payload, headers } = await multipart([{ name: "Work Order.pdf", data: scan ? await makePdf(seed) : await makeTextPdf(seed) }], { by: "Asha" });
-  return { method: "POST", url: "/uploads", payload, headers };
-}
-
-describe("every write, sent twice with one key, writes once", () => {
-  it("the read workflow: upload, kind, create, confirm, read, answer, report, proofread, send back, approve, report on live, alerts, settings", async () => {
-    const [doc] = (await twice(await uploadReq("idem"), 201)).json<DocumentDto[]>();
-    expect(doc!.duplicateOf).toBeNull(); // the replay says the same: not a duplicate of itself
-    await twice({ method: "PATCH", url: `/documents/${doc!.id}`, payload: { kind: "work_order", by: "Asha" } });
-    const { studyId } = (await twice({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id], by: "Asha" } }, 201)).json<{ studyId: string }>();
-    await twice({ method: "PATCH", url: `/studies/${studyId}`, payload: { sponsor: "Synthetic Pharma Inc", protocol: "SYN-001", siteName: "Site A", investigator: "Dr. Test", by: "Asha" } });
-    const read = (await twice({ method: "POST", url: `/studies/${studyId}/extract`, payload: { by: "Asha" } }, 202)).json<{ jobId: string }>();
-    expect((await app.inject({ url: `/api/v1/jobs/${read.jobId}` })).json<JobDto>().state).toBe("succeeded");
-
-    // The read's own figure, which the page doesn't print: "differs". Applied twice, the second would settle it as chosen.
-    const v = `/studies/${studyId}/versions/1`;
-    const answered = await twice({ method: "POST", url: `${v}/review/${encodeURIComponent(`confirm:${G2_TOTAL}`)}`, payload: { value: 848800, note: "as read", by: "Sam" } });
-    expect(answered.json<RulebookVersionDto>().review.find((i) => i.id === `confirm:${G2_TOTAL}`)!.outcome).toBe("differs");
-    expect((await storedVersion(built, studyId, 1)).review.find((i) => i.id === `confirm:${G2_TOTAL}`)!.outcome).toBe("differs");
-
-    await twice({ method: "POST", url: `${v}/report`, payload: { path: FEE, note: "check", by: "Sam" } });
-    // listing a term to bill by hand writes the master's list once
-    const term = (await storedVersion(built, studyId, 1)).review.find((i) => i.reason === "UNACCOUNTED_TERM")!.id;
-    await twice({ method: "POST", url: `${v}/review/${encodeURIComponent(term)}`, payload: { optionId: "bill_by_hand", by: "Sam" } });
-    expect((await storedVersion(built, studyId, 1)).rulebook!.unclassified).toHaveLength(1);
-    await twice({ method: "POST", url: `${v}/proofread`, payload: { paths: ["/invoiceables/0/amountCents"], by: "Sam" } });
-    await settleAll(built, studyId, 1);
-    await twice({ method: "POST", url: `${v}/send-back`, payload: { itemIds: [`confirm:${G2_TOTAL}`], note: "look again", by: "Morgan" } });
-    await settleAll(built, studyId, 1);
-    await twice({ method: "POST", url: `${v}/sign-off`, payload: { by: "Ben", asOf: await asOf(studyId) } });
-    // on the live version: a correction draft, once (a repeat without the key is a 409: version 2 is in progress)
-    await twice({ method: "POST", url: `${v}/report`, payload: { path: FEE, note: "looks off", by: "Sam" } });
-    expect((await storedVersion(built, studyId, 2)).status).toBe("draft");
-    await twice({ method: "POST", url: "/alerts/read", payload: { by: "Ben" } });
-    await twice({ method: "PATCH", url: "/settings", payload: { people: ["Asha", "Ben"], by: "Asha" } });
+describe("idempotency keys", () => {
+  it("runs a write once and replays its status and body to a resend", async () => {
+    const k = key();
+    const first = await post("/test/write/once", k);
+    const again = await post("/test/write/once", k);
+    expect(first.statusCode).toBe(201);
+    expect([again.statusCode, again.json()]).toEqual([201, { run: 1 }]);
+    expect(ran("once")).toBe(1);
+    const [row] = await built.ctx.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, k.slice(1, -1)));
+    expect(row).toMatchObject({ method: "POST", path: "/api/v1/test/write/once", status: 201, body: { run: 1 } });
   });
 
-  it("a pick that differs from the read: each answer once", async () => {
-    const [doc] = (await send(await uploadReq("miss"))).json<DocumentDto[]>();
-    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
-    await waitJob(app, jobId);
-    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
-    const v = `/studies/${studyId}/versions/1`;
-    const pay = `${v}/review/${encodeURIComponent("interpret:/payment/visitPayment/value")}`;
-    await twice({ method: "POST", url: pay, payload: { optionId: "invoice", by: "Sam" } });
-    await twice({ method: "POST", url: pay, payload: { optionId: "invoice", note: "§4.1 says invoiced", by: "Sam" } });
+  it("treats a different key as a different action, and a write without a key as today", async () => {
+    await post("/test/write/many", key());
+    await post("/test/write/many", key());
+    await post("/test/write/many");
+    await post("/test/write/many");
+    expect(ran("many")).toBe(4);
   });
 
-  it("the budget spreadsheet check (ADR-003 P2): once, its notice and its log entry", async () => {
-    const [doc] = (await send(await uploadReq("budget"))).json<DocumentDto[]>();
-    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
-    await waitJob(app, jobId);
-    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
-    const { payload, headers } = await multipart([{ name: "Ex A-1 Final.xlsx", data: await makeBudgetXlsx() }], { by: "Sam" });
-    await twice({ method: "POST", url: `/studies/${studyId}/versions/1/budget-check`, payload, headers });
+  it("accepts an unquoted key too", async () => {
+    const k = randomUUID();
+    await post("/test/write/bare", k);
+    await post("/test/write/bare", `"${k}"`);
+    expect(ran("bare")).toBe(1);
   });
 
-  it("typing in by hand: start, type a value, done", async () => {
-    const [doc] = (await send(await uploadReq("hand", true))).json<DocumentDto[]>();
-    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
-    await waitJob(app, jobId);
-    fakeControls.failNext = 1;
-    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
-    await twice({ method: "POST", url: `/studies/${studyId}/versions/by-hand`, payload: { by: "Avery" } }, 201);
-    await twice({ method: "PATCH", url: `/studies/${studyId}/versions/1/values`, payload: { path: "/payment/netDays/value", value: 45, note: "x", by: "Avery" } });
-    await twice({ method: "POST", url: `/studies/${studyId}/versions/1/by-hand/done`, payload: { by: "Avery" } });
-  });
-});
-
-describe("a double click: the same request at once, one key", () => {
-  async function readDraft() {
-    const [doc] = (await send(await uploadReq("click"))).json<DocumentDto[]>();
-    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
-    await waitJob(app, jobId);
-    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
-    return studyId;
-  }
-  const all = async (r: Req, n = 3) => {
-    const key = quoted();
-    const res = await Promise.all(Array.from({ length: n }, () => send(r, key)));
-    for (const x of res) expect([x.statusCode, x.body]).toEqual([res[0]!.statusCode, res[0]!.body]);
-    return res[0]!;
-  };
-  const count = async (action: string) => (await built.ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM audit_log WHERE action = ${action}`)).rows[0]!.n;
-
-  it("an answer, an approval and a report on the live version each happen once", async () => {
-    const studyId = await readDraft();
-    const v = `/studies/${studyId}/versions/1`;
-    const res = await all({ method: "POST", url: `${v}/review/${encodeURIComponent(`confirm:${G2_TOTAL}`)}`, payload: { value: 848800, note: "as read", by: "Sam" } });
-    expect(res.statusCode).toBe(200);
-    expect(await count("review.answered")).toBe(1);
-    expect(await count("review.changed")).toBe(0);
-    await settleAll(built, studyId, 1);
-    expect((await all({ method: "POST", url: `${v}/sign-off`, payload: { by: "Ben", asOf: await asOf(studyId) } })).statusCode).toBe(200);
-    expect(await count("version.signed")).toBe(1);
-    expect((await all({ method: "POST", url: `${v}/report`, payload: { path: FEE, note: "looks off", by: "Sam" } })).statusCode).toBe(200);
-    expect(await count("version.correction_opened")).toBe(1);
-    expect((await built.ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM rulebook_versions WHERE study_id = ${studyId}`)).rows[0]!.n).toBe(2);
-  });
-
-  it("an upload and a read again after a failure each happen once", async () => {
-    const res = await all(await uploadReq("dbl"));
-    expect(res.statusCode).toBe(201);
-    expect(res.json<DocumentDto[]>()[0]!.duplicateOf).toBeNull();
-    expect(await count("document.uploaded")).toBe(1);
-
-    const doc = res.json<DocumentDto[]>()[0]!;
-    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc.id] } })).json<{ studyId: string; jobId: string }>();
-    await waitJob(app, jobId);
-    fakeControls.failNext = 1;
-    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
-    const calls = fakeControls.calls.extract;
-    const again = await all({ method: "POST", url: `/studies/${studyId}/extract`, payload: { by: "Asha" } });
-    await settled(again);
-    expect(fakeControls.calls.extract - calls).toBe(1); // one AI read paid for
-    expect(await count("extraction.queued")).toBe(2); // the failed read and this one
-  });
-});
-
-describe("the key's rules", () => {
-  const settings = (people: string[], makerChecker?: boolean): Req => ({ method: "PATCH", url: "/settings", payload: { people, by: "Asha", ...(makerChecker === undefined ? {} : { makerChecker }) } });
-
-  it("the same key with a different request is refused in plain words (422)", async () => {
-    const key = quoted();
-    expect((await send(settings(["A"]), key)).statusCode).toBe(200);
-    const other = await send(settings(["B"]), key);
+  it("refuses a key from another method or path in plain words", async () => {
+    const k = key();
+    await post("/test/write/first", k);
+    const other = await post("/test/write/second", k);
+    const del = await app.inject({ method: "DELETE", url: "/api/v1/test/write/first", headers: { "idempotency-key": k } });
     expect(other.statusCode).toBe(422);
-    expect(other.json().message).toBe("This Idempotency-Key was already used for a different request. Send a new key for each new action.");
-    expect((await send({ method: "POST", url: "/alerts/read", payload: { by: "Asha" } }, key)).statusCode).toBe(422);
-    expect((await app.inject({ url: "/api/v1/settings" })).json().people).toEqual(["A"]);
+    expect(other.json().message).toBe("This request's key was already used for a different action. Reload the page and try again.");
+    expect(del.statusCode).toBe(422);
+    expect(ran("second")).toBe(0);
   });
 
-  it("takes a bare token too, and refuses a key that isn't 1–255 printable characters (400)", async () => {
-    expect((await send(settings(["A"]), randomUUID())).statusCode).toBe(200);
-    for (const bad of ['""', `"${"x".repeat(256)}"`, "two words", '"quote"inside"'])
-      expect((await send(settings(["A"]), bad)).json()).toMatchObject({ statusCode: 400, message: "The Idempotency-Key header must be 1 to 255 letters, digits or symbols, such as a UUID." });
+  it("ignores the query string when comparing paths", async () => {
+    const k = key();
+    const first = await app.inject({ method: "DELETE", url: "/api/v1/test/write?by=A", headers: { "idempotency-key": k } });
+    const again = await app.inject({ method: "DELETE", url: "/api/v1/test/write?by=A", headers: { "idempotency-key": k } });
+    expect([first.statusCode, again.statusCode]).toEqual([200, 200]);
   });
 
-  it("a request that fails saves nothing, so the same key runs it again once the problem is fixed", async () => {
-    const [doc] = (await send(await uploadReq("fail"))).json<DocumentDto[]>();
-    const { studyId, jobId } = (await send({ method: "POST", url: "/studies", payload: { documentIds: [doc!.id] } })).json<{ studyId: string; jobId: string }>();
-    await waitJob(app, jobId);
-    await settled(await send({ method: "POST", url: `/studies/${studyId}/extract`, payload: {} }));
-    const key = quoted();
-    await settleAll(built, studyId, 1, "Ben");
-    await send(settings(["Ben"], true));
-    const signOff: Req = { method: "POST", url: `/studies/${studyId}/versions/1/sign-off`, payload: { by: "Ben", asOf: await asOf(studyId) } };
-    expect((await send(signOff, key)).statusCode).toBe(409); // maker-checker: Ben answered
-    expect((await effects()).keys).toBe(0);
-    await send(settings(["Ben"], false));
-    const ok = await send(signOff, key);
-    expect([ok.statusCode, ok.headers["idempotent-replayed"]]).toEqual([200, undefined]);
+  it("is not applied to reads", async () => {
+    const k = key();
+    for (let i = 0; i < 2; i++) expect((await app.inject({ method: "GET", url: "/api/v1/test/read", headers: { "idempotency-key": k } })).statusCode).toBe(200);
+    expect(await built.ctx.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, k.slice(1, -1)))).toEqual([]);
   });
 
-  it("a saved response is replayed for a day; after that the key runs as new, and maintenance deletes it", async () => {
-    const key = quoted();
-    await send(settings(["A"]), key);
-    await built.ctx.db.execute(sql`UPDATE idempotency_keys SET created_at = now() - interval '25 hours'`);
-    const later = await send(settings(["B"]), key); // a different request is fine once the old one is gone
-    expect([later.statusCode, later.headers["idempotent-replayed"]]).toEqual([200, undefined]);
-    await built.ctx.db.execute(sql`UPDATE idempotency_keys SET created_at = now() - interval '25 hours'`);
-    await maintain(built.ctx, built.ctx.boss);
-    expect((await effects()).keys).toBe(0);
+  it("rejects a key that is empty or too long", async () => {
+    expect((await post("/test/write/bad-key", '""')).statusCode).toBe(400);
+    expect((await post("/test/write/bad-key", "k".repeat(201))).statusCode).toBe(400);
+    expect(ran("bad-key")).toBe(0);
+  });
+
+  it("keeps and replays a 4xx answer", async () => {
+    const k = key();
+    const first = await post("/test/refused", k);
+    const again = await post("/test/refused", k);
+    expect([first.statusCode, again.statusCode]).toEqual([409, 409]);
+    expect(again.json().message).toBe("No.");
+    expect(ran("refused")).toBe(1);
+  });
+
+  it("tells a resend that arrives while the first is still running to wait, then replays the first's answer", async () => {
+    const k = key();
+    const running = new Promise<void>((r) => (started = r));
+    const first = post("/test/slow", k);
+    await running;
+    const early = await post("/test/slow", k);
+    expect(early.statusCode).toBe(409);
+    expect(early.json().message).toBe("This is already being done. Wait a moment, then reload.");
+    release();
+    expect((await first).json()).toEqual({ run: 1 });
+    const later = await post("/test/slow", k);
+    expect(later.json()).toEqual({ run: 1 });
+    expect(ran("slow")).toBe(1);
+  });
+
+  it("frees the key after a 5xx so the retry runs again", async () => {
+    const k = key();
+    expect((await post("/test/fails-once", k)).statusCode).toBe(500);
+    expect(await built.ctx.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, k.slice(1, -1)))).toEqual([]);
+    const retry = await post("/test/fails-once", k);
+    expect([retry.statusCode, retry.json()]).toEqual([200, { run: 2 }]);
+    expect((await post("/test/fails-once", k)).json()).toEqual({ run: 2 });
+    expect(ran("fails-once")).toBe(2);
+  });
+
+  it("works for multipart uploads", async () => {
+    const k = key();
+    const { payload, headers } = await multipart([{ name: "a.pdf", data: Buffer.from("%PDF-1.4") }]);
+    const send = () => app.inject({ method: "POST", url: "/api/v1/test/files", headers: { ...headers, "idempotency-key": k }, payload });
+    const first = await send();
+    const again = await send();
+    expect(first.json()).toEqual({ run: 1, names: ["a.pdf"] });
+    expect(again.json()).toEqual({ run: 1, names: ["a.pdf"] });
+    expect(ran("files")).toBe(1);
+  });
+
+  it("removes keys older than a day when a new key is stored", async () => {
+    const old = randomUUID();
+    const db = built.ctx.db;
+    await db.insert(idempotencyKeys).values({ key: old, method: "POST", path: "/x", status: 200, body: {}, createdAt: new Date(Date.now() - 25 * 3600_000) });
+    await post("/test/write/sweep", key());
+    expect(await db.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, old))).toEqual([]);
   });
 });

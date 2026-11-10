@@ -1,0 +1,130 @@
+import { Term, isLockedField, applyPatches, parseCents, parsePercent, type Patch, type Question, type Region, type Rulebook, type Source } from "@dct/shared";
+import { checkQuote } from "../checks/quote";
+import type { LoadedDoc } from "../types";
+import type { Change, Finding, NewTerm } from "./schema";
+
+const CELL_PATH = /^((rows|additions)\.\d+\.cells|subtotal|overhead|total)\.\d+$/;
+
+function validRegion(r: number[] | null): Region | undefined {
+  if (r?.length !== 4 || r.some((n) => !(n >= 0 && n <= 1))) return undefined;
+  const [x0, y0, x1, y1] = r as Region;
+  return x0 < x1 && y0 < y1 ? [x0, y0, x1, y1] : undefined;
+}
+
+function converted(c: Change): [string, unknown] {
+  if (c.target === "term") return c.field === "amount" ? ["amountCents", parseCents(c.value) ?? c.value] : [c.field, c.value];
+  if (c.field === "overheadPct") return [c.field, parsePercent(c.value) ?? c.value];
+  return [c.field, CELL_PATH.test(c.field) || c.field.endsWith("Cents") ? (parseCents(c.value) ?? c.value) : c.value];
+}
+
+// A change is kept only if the rulebook still validates with it and every change kept before it; a term change can't create a term.
+function patchesOf(changes: Change[], rulebook: Rulebook): Patch[] {
+  const kept: Patch[] = [];
+  for (const c of changes) {
+    const [key, value] = converted(c);
+    if (isLockedField(key) || (c.target === "term" && !rulebook.terms.some((t) => t.id === c.id))) continue;
+    const patch: Patch = { target: c.target, id: c.id, set: { [key]: value } };
+    try {
+      applyPatches(rulebook, [...kept, patch]);
+      kept.push(patch);
+    } catch {
+      continue;
+    }
+  }
+  return kept;
+}
+
+function freeId(rulebook: Rulebook, base: string): string {
+  let id = base;
+  for (let i = 2; rulebook.terms.some((t) => t.id === id); i++) id = `${base}_${i}`;
+  return id;
+}
+
+function newTerm(n: NewTerm, id: string, source: Source): Term | null {
+  const { category, name, unit, billing, trigger, formula, conditions, deadline, notes } = n;
+  const parsed = Term.safeParse({
+    id, category, name, unit, billing, trigger, formula, conditions, deadline, notes,
+    amountCents: n.amount === null ? null : (parseCents(n.amount) ?? n.amount),
+    cap: null, holdbackApplies: "n/a", overheadApplies: "n/a", source, evidence: "none", houseRuleIds: [],
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+const exists = (about: Finding["about"], rulebook: Rulebook) =>
+  about.id !== null &&
+  (about.target === "term"
+    ? rulebook.terms.some((t) => t.id === about.id)
+    : about.target === "grid"
+      ? rulebook.grids.some((g) => g.id === about.id)
+      : about.target === "study" && rulebook.study.documents.some((d) => d.doc === about.id));
+
+// option is the suggestion's index among the options that survived, -1 when it points at one that didn't.
+function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { options: Question["options"]; option: number } {
+  const created = f.type === "missed_rule" && f.newTerm ? newTerm(f.newTerm, freeId(rulebook, `rv_${n}`), source) : null;
+  if (created) {
+    return {
+      options: [
+        { label: "Add it to the rulebook", patches: [{ target: "term", id: created.id, set: created }] },
+        { label: "No, leave the rulebook as it is", patches: [] },
+      ],
+      option: f.suggestion?.option ?? -1,
+    };
+  }
+  const kept: number[] = [];
+  const options = f.options.flatMap((o, i) => {
+    const patches = patchesOf(o.changes, rulebook);
+    if (o.changes.length && !patches.length) return [];
+    kept.push(i);
+    return [{ label: o.label, patches }];
+  });
+  return { options, option: kept.indexOf(f.suggestion?.option ?? -1) };
+}
+
+// The reviewer lists findings by money at stake; beyond these, a finding is shown but doesn't hold up approval.
+const MAX_BLOCKING = 6;
+
+const RECORD_ONLY = "Your answer is kept on record, but it doesn't change the rulebook's figures by itself: check them against what you pick.";
+
+/**
+ * A finding whose choices don't all fit the rulebook keeps every choice it named, the unfitting ones with no changes and
+ * the question saying so: dropping it would hide a money question nobody else asks. A finding that names fewer than
+ * two choices is not raised, and `log` says so: an accountant can't answer a question that offers nothing to pick.
+ */
+export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: LoadedDoc[], log: string[] = []): Question[] {
+  let blocking = 0;
+  return findings.flatMap((f, n): Question[] => {
+    if (f.affects === "none" || !docs.find((d) => d.name === f.doc)?.pages.some((p) => p.page === f.page)) return [];
+    const region = validRegion(f.region);
+    const source: Source = { doc: f.doc, page: f.page, quote: f.quote, ...(region && { region }) };
+    if (checkQuote(source, docs)) source.quote = "";
+    let { options, option } = choices(f, n, source, rulebook);
+    let context = f.context;
+    if (options.length < 2 && f.options.length >= 2) {
+      options = f.options.map((o) => ({ label: o.label, patches: patchesOf(o.changes, rulebook) }));
+      option = f.suggestion?.option ?? -1;
+      context = `${context} ${RECORD_ONLY}`.trim();
+    }
+    if (options.length < 2) {
+      log.push(`The second reader's question "${f.question}" came with fewer than two answer choices, so it was not raised`);
+      return [];
+    }
+    return [
+      {
+        id: `review:${n}`,
+        // A model's judgment call is never settled by a model citing the clause it found unclear.
+        kind: "decision",
+        origin: "reviewer",
+        about: exists(f.about, rulebook) ? { target: f.about.target as "term" | "grid" | "study", id: f.about.id! } : null,
+        question: f.question,
+        context,
+        source,
+        options,
+        suggestion: f.suggestion && options[option] ? { option, reason: f.suggestion.reason } : null,
+        state: "open",
+        blocking: blocking++ < MAX_BLOCKING,
+        readings: [],
+        resolution: null,
+      },
+    ];
+  });
+}

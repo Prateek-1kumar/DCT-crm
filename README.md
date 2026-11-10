@@ -1,65 +1,22 @@
 # DCT Finance
 
-DCT Finance turns the signed sponsor contracts of Discovery Clinical Trials' studies into an approved **invoicing master**: every fee, cap, due day and budget-grid amount the contract sets, each with the page it comes from. An AI reads the contract; then every number is checked against the PDF's own text, and whatever can't be confirmed is typed by a person who doesn't see the AI's answer. Only then can someone approve it. Approved versions are locked, and amendments make new versions.
+Turns clinical-trial site contracts into an approved **rulebook** for Discovery Clinical Trials' accountants. An AI agent reads the contract bundle; code checks everything it writes; only real decisions reach a person. Design: [docs/superpowers/specs/2026-11-05-contract-harness-design.md](docs/superpowers/specs/2026-11-05-contract-harness-design.md). Working rules: [AGENTS.md](AGENTS.md).
 
-It's used by DCT's accountants, who aren't technical, so every screen and message is in plain English. One rule shapes the code: **no silent errors**. A wrong number that gets approved costs the client real money, so a value counts as unconfirmed until the PDF or a person confirms it. Phase 1 (contracts) is built; checking billing data against the contracts comes next ([docs/PHASES.md](docs/PHASES.md)).
+> Status: rebuilding on `feature/contract-harness`. The app is currently a bare skeleton (health probes and an empty web shell).
 
 ## Quick start
 
-You need Node 24 (`.nvmrc`; `engines` asks for 24 or later), pnpm 10, and Apple [`container`](https://github.com/apple/container) (not Docker). Postgres 16 runs in a container named `dct-postgres` on port 5434. Google Chrome is needed only for the browser tests.
-
-### First time
+Needs Node 24 (`.nvmrc`), pnpm 10, and Apple [`container`](https://github.com/apple/container) (Postgres 16 runs in `dct-postgres` on port 5434). Google Chrome only for browser tests.
 
 ```sh
-cp .env.example .env    # fill in ANTHROPIC_API_KEY
-pnpm run setup          # install, start Postgres, apply the migrations
+cp .env.example .env     # fill in keys
+pnpm run setup           # install, start Postgres, apply migrations
+pnpm dev                 # Postgres + API (4100) + web (3100)
 ```
-
-Use `pnpm run setup`: `pnpm setup` runs pnpm's own setup command instead. Only starting the server needs `ANTHROPIC_API_KEY`; the migration step doesn't.
-
-### Every day
-
-```sh
-pnpm dev                # Postgres + API + web, with real AI reads (costs money)
-```
-
-Open http://127.0.0.1:3100. Ctrl-C stops the API and the web; Postgres keeps running until `pnpm db:stop`. After pulling a change that adds a migration, run `pnpm --filter @dct/api db:migrate` and restart.
-
-## Commands
 
 | Command | What it does |
 |---|---|
-| `pnpm run setup` | Install, start Postgres, apply migrations to the dev database |
-| `pnpm dev` | Postgres, API on 127.0.0.1:4100 and web on 127.0.0.1:3100, with real AI reads (costs money) |
-| `pnpm dev:api` / `pnpm dev:web` | One side on its own (the web always talks to the real API) |
-| `pnpm db:start` / `pnpm db:stop` | Start or stop the Postgres container |
-| `pnpm --filter @dct/api db:migrate` | Apply new migrations to the database in `DATABASE_URL` |
-| `pnpm test` | Every package's unit tests (the API's need Postgres) |
-| `pnpm e2e` | The browser journey on production builds, on its own ports and database |
-| `pnpm -r typecheck` · `pnpm lint` | TypeScript, and ESLint in every package |
-| `pnpm eval [name]` | Live reads of the real contracts in `data/contracts/`, scored against `data/golden/` (costs money) |
-| `pnpm probe` | Checks every AI schema against the live APIs (a few cents) |
-
-Package commands are in each package's `AGENTS.md`. Running a production build: [docs/runbook.md](docs/runbook.md).
-
-## Repo layout
-
-| Path | What's there |
-|---|---|
-| `apps/api` | Fastify API under `/api/v1`, Postgres through Drizzle, background jobs with pg-boss |
-| `apps/web` | Next.js 16 app |
-| `packages/shared` | zod schemas shared by everything: the rulebook, evidence, API bodies and responses |
-| `packages/extraction` | PDF text and page images (mupdf), the AI reads, the evidence binder, the contract checks |
-| `e2e/` | The Playwright journey (`playwright.config.ts` at the root) |
-| `docs/` | Architecture, runbook, security, the phase plans and the ADR |
-| `data/` | Git-ignored: real contracts, answer keys, saved reads, uploads |
-
-Real contracts and exports go in `data/`, and uploaded files are stored in `data/uploads/`. Never commit anything from `data/` or `.env`.
-
-## Documentation
-
-- [docs/architecture.md](docs/architecture.md): components, data flow, jobs, study stages, glossary.
-- [docs/runbook.md](docs/runbook.md): settings, production build, migrations, health checks, AI models and the spend cap, logs, troubleshooting.
-- [docs/security.md](docs/security.md): the threat model and what must change before more than one person uses it.
-- [AGENTS.md](AGENTS.md): rules for engineers and coding agents working in this repo.
-- [docs/README.md](docs/README.md): every doc, with its status.
+| `pnpm test` | All unit and API tests (needs Postgres; uses `dct_finance_test`) |
+| `pnpm e2e` | Browser tests against production builds (`dct_finance_e2e`, ports 3301/4301) |
+| `pnpm -r typecheck` / `pnpm lint` | Types and lint |
+| `pnpm db:start` / `pnpm db:stop` | Start or stop Postgres |

@@ -1,24 +1,17 @@
 "use client";
 
-import { BookOpen, ChevronRight, FileText, History, Menu, Search, Settings, X, type LucideIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, FileText, HelpCircle, History, Menu, Search, Settings, X, type LucideIcon } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
-import { askForPerson, askForPersonOnce, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
-import { useSettings, useStudyCounts } from "@/lib/queries";
-import { VIEWS, type ViewId } from "@/lib/review";
-import { AlertBell, AlertWatcher } from "./Alerts";
-import { CommandPalette } from "./CommandPalette";
-import { HowItWorks } from "./HowItWorks";
-import { Button, cx, Dialog, Sheet } from "./ui";
-
-const VIEW_BADGE: Record<ViewId, string> = {
-  "needs-you": "bg-warn-soft text-warn",
-  approval: "bg-brand-soft text-accent",
-  live: "bg-ink/[0.06] text-ink-2",
-  failed: "bg-danger-soft text-danger",
-};
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { askForPerson, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
+import { api, keys } from "@/lib/queries";
+import { useSidebarCollapsed } from "@/lib/sidebar";
+import { LIST_TABS, matchesQuery, tabCounts, type ListTab } from "@/lib/steps";
+import { studySub, studyTitle } from "./study/format";
+import { Button, cx, Dialog, inputCls, Sheet } from "./ui";
 
 export const initials = (name: string) =>
   name
@@ -28,11 +21,6 @@ export const initials = (name: string) =>
     .map((w) => w[0]!.toUpperCase())
     .join("");
 
-function Count({ n, cls }: { n: number; cls: string }) {
-  if (!n) return null;
-  return <span className={cx("num grid h-6 min-w-6 place-items-center rounded-full px-1.5 text-caption font-semibold", cls)}>{n}</span>;
-}
-
 const itemCls = (active: boolean) =>
   cx(
     "group flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-body transition-[background-color,box-shadow,color] duration-150",
@@ -41,88 +29,16 @@ const itemCls = (active: boolean) =>
 
 const iconCls = (active: boolean) => cx("size-[17px] shrink-0 transition-colors", active ? "text-brand" : "text-muted group-hover:text-ink-2");
 
-function NavLink({ href, label, icon: Icon, active, badge, onNavigate }: { href: string; label: string; icon: LucideIcon; active: boolean; badge?: ReactNode; onNavigate?: () => void }) {
+function NavLink({ href, label, icon: Icon, active, onNavigate }: { href: string; label: string; icon: LucideIcon; active: boolean; onNavigate?: () => void }) {
   return (
     <Link href={href} aria-current={active ? "page" : undefined} className={itemCls(active)} onClick={onNavigate}>
       <Icon className={iconCls(active)} strokeWidth={1.75} />
       <span className="truncate">{label}</span>
-      {badge && <span className="ml-auto">{badge}</span>}
     </Link>
   );
 }
 
-function NavButton({ label, icon: Icon, onClick, hint }: { label: string; icon: LucideIcon; onClick: () => void; hint?: string }) {
-  return (
-    <button type="button" className={itemCls(false)} onClick={onClick}>
-      <Icon className={iconCls(false)} strokeWidth={1.75} />
-      <span className="truncate">{label}</span>
-      {hint && <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">{hint}</kbd>}
-    </button>
-  );
-}
-
-/** Contracts, with the four shortcuts into the list underneath (open unless folded). */
-function ContractsNav({ onNavigate }: { onNavigate?: () => void }) {
-  const path = usePathname();
-  const view = useSearchParams().get("view");
-  const { data } = useStudyCounts();
-  const [open, setOpen] = useState(true);
-  const count = (id: ViewId) => data?.views[id] ?? 0;
-  const waiting = count("needs-you") + count("approval") + count("failed");
-  const onContracts = path === "/" || path.startsWith("/studies");
-
-  return (
-    <div className="flex flex-col">
-      <div className={cx(itemCls(onContracts && !view), "pr-1.5")}>
-        <Link href="/" aria-current={onContracts && !view ? "page" : undefined} onClick={onNavigate} className="flex min-w-0 flex-1 items-center gap-3 self-stretch">
-          <FileText className={iconCls(onContracts && !view)} strokeWidth={1.75} />
-          <span className="truncate">Contracts</span>
-        </Link>
-        {/* The total only while the shortcuts (which carry their own counts) are folded. */}
-        {!open && <Count n={waiting} cls="bg-warn-soft text-warn" />}
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-label={open ? "Hide contract shortcuts" : "Show contract shortcuts"}
-          onClick={() => setOpen(!open)}
-          className="grid size-7 shrink-0 place-items-center rounded-lg text-faint hover:bg-ink/[0.06] hover:text-ink"
-        >
-          <ChevronRight className={cx("size-4 transition-transform duration-200", open && "rotate-90")} strokeWidth={2} />
-        </button>
-      </div>
-      <div className={cx("grid transition-[grid-template-rows,opacity] duration-300 ease-out", open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
-        <div className="relative min-h-0 overflow-hidden">
-          <span aria-hidden className="absolute top-1 bottom-1 left-[18px] w-px bg-line-strong" />
-          <ul className="flex flex-col gap-0.5 py-1 pl-8">
-            {VIEWS.map((v) => {
-              const active = path === "/" && view === v.id;
-              return (
-                <li key={v.id}>
-                  <Link
-                    href={`/?view=${v.id}`}
-                    aria-current={active ? "page" : undefined}
-                    onClick={onNavigate}
-                    className={cx(
-                      "flex h-8 items-center gap-2 rounded-[9px] px-2.5 text-small transition-colors",
-                      active ? "bg-surface font-medium text-ink shadow-card" : "text-muted hover:bg-ink/[0.045] hover:text-ink",
-                    )}
-                  >
-                    <span className="truncate">{v.label}</span>
-                    <span className="ml-auto">
-                      <Count n={count(v.id)} cls={VIEW_BADGE[v.id]} />
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Bottom of the sidebar: who is working. No login yet, so people pick their name. */
+/** Bottom of the sidebar: who is working. No login yet, so people give their name. */
 function PersonChip() {
   const me = useActingAs();
   return (
@@ -142,76 +58,172 @@ function PersonChip() {
       </span>
       <span className="min-w-0 flex-1">
         <span className={cx("block truncate text-body font-medium", me ? "text-ink" : "text-warn")}>{me ?? "Choose your name"}</span>
-        <span className="block text-caption text-faint">{me ? "Working now · switch" : "So your answers are signed"}</span>
+        <span className="block text-caption text-faint">{me ? "Working now · switch" : "So your work is signed"}</span>
       </span>
     </button>
   );
 }
 
-/** "Who's working today?" Opens from the chip, or once when an action first needs a name. */
+/** "Who's working today?" Opens from the chip. The name is remembered in this browser only. */
 function PersonPicker() {
   const open = usePersonPrompt();
   const me = useActingAs();
-  const { data } = useSettings();
-  const people = data?.people ?? [];
-  // Forget a name that was removed from the people list.
-  useEffect(() => {
-    if (data && me && !data.people.includes(me)) setActingAs(null);
-  }, [data, me]);
+  const [draft, setDraft] = useState("");
+  const done = (e: FormEvent) => {
+    e.preventDefault();
+    const name = draft.trim();
+    if (!name) return;
+    setActingAs(name);
+    setDraft("");
+    askForPerson(false);
+  };
   return (
     <Dialog open={open} onClose={() => askForPerson(false)} title="Who's working today?">
-      <p className="text-body text-muted">There&apos;s no login yet, so pick your name. Every answer, correction and approval is signed with it.</p>
-      <ul className="mt-5 grid gap-2">
-        {people.map((p) => (
-          <li key={p}>
-            <button
-              type="button"
-              onClick={() => {
-                setActingAs(p);
-                askForPerson(false);
-              }}
-              className={cx(
-                "flex w-full items-center gap-3 rounded-tile border p-3 text-left transition-colors",
-                p === me ? "border-brand bg-brand-soft" : "border-line hover:border-line-strong hover:bg-sunken",
-              )}
-            >
-              <span aria-hidden className="grid size-10 place-items-center rounded-full bg-brand-soft text-small font-semibold text-accent">
-                {initials(p)}
-              </span>
-              <span className="text-body font-medium">{p}</span>
-              {p === me && <span className="ml-auto text-small text-accent">You</span>}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-5 text-small text-faint">
-        Not on the list? Add people in{" "}
-        <Link href="/settings" className="text-accent hover:underline" onClick={() => askForPerson(false)}>
-          Settings
-        </Link>
-        .
-      </p>
+      <form onSubmit={done} className="grid gap-4">
+        <p className="text-body text-muted">There&apos;s no login yet, so type your name. It is recorded with what you do.</p>
+        <input aria-label="Your name" data-autofocus className={inputCls} value={draft} placeholder={me ?? "Your name"} onChange={(e) => setDraft(e.target.value)} />
+        <div className="flex justify-end gap-2.5">
+          <Button onClick={() => askForPerson(false)}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={!draft.trim()}>
+            Use this name
+          </Button>
+        </div>
+      </form>
     </Dialog>
   );
 }
 
-/** Inline note next to actions that need a name; opens the picker the first time it appears. */
-export function NeedsPerson() {
-  useEffect(() => askForPersonOnce(), []);
+/** The four filters under Contracts; each links to the list with that filter on. */
+const SUB_FILTERS = LIST_TABS.filter((t): t is { id: Exclude<ListTab, "all">; label: string } => t.id !== "all");
+
+function ContractsGroup({ onNavigate }: { onNavigate?: () => void }) {
+  const path = usePathname();
+  const filter = useSearchParams().get("filter");
+  const me = useActingAs();
+  const studies = useQuery({ queryKey: keys.studies, queryFn: api.studies });
+  const counts = useMemo(() => (studies.data ? tabCounts(studies.data, me) : null), [studies.data, me]);
+  const [open, setOpen] = useState(true);
+  const onList = path === "/";
   return (
-    <p className="flex flex-wrap items-center gap-x-2 text-small text-warn">
-      Pick your name first, so this is signed by you.
-      <button type="button" onClick={() => askForPerson()} className="font-medium underline underline-offset-2">
-        Choose name
-      </button>
-    </p>
+    <div>
+      <div className={cx("flex items-center rounded-[10px]", onList && !filter && "bg-surface shadow-card")}>
+        <Link href="/" aria-current={onList && !filter ? "page" : undefined} onClick={onNavigate} className={cx("group flex h-9 min-w-0 flex-1 items-center gap-2.5 px-2.5 text-body", onList && !filter ? "font-medium text-ink" : "text-ink-2 hover:text-ink")}>
+          <FileText className={iconCls(onList && !filter)} strokeWidth={1.75} />
+          <span className="truncate">Contracts</span>
+        </Link>
+        <button type="button" aria-label="Contract filters" aria-expanded={open} onClick={() => setOpen(!open)} className="mr-1 grid size-7 place-items-center rounded-lg text-muted hover:bg-ink/[0.06]">
+          <ChevronDown aria-hidden className={cx("size-4 transition-transform", !open && "-rotate-90")} />
+        </button>
+      </div>
+      {open && (
+        <ul className="mt-1 ml-[18px] flex flex-col gap-0.5 border-l border-line-strong/70 pl-2">
+          {SUB_FILTERS.map((t) => {
+            const active = onList && filter === t.id;
+            return (
+              <li key={t.id}>
+                <Link href={`/?filter=${t.id}`} aria-current={active ? "page" : undefined} onClick={onNavigate} className={cx("flex h-8 items-center justify-between gap-2 rounded-[10px] px-2.5 text-small", active ? "bg-surface font-medium text-ink shadow-card" : "text-ink-2 hover:bg-ink/[0.045] hover:text-ink")}>
+                  <span className="truncate">{t.label}</span>
+                  {counts && <span className="num text-faint">{counts[t.id]}</span>}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
-function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () => void; onGuide: () => void; onNavigate?: () => void; onClose?: () => void }) {
+/** Search box and bell. The bell counts the contracts that need this person and opens that list. */
+function SearchRow({ onSearch, onNavigate }: { onSearch: () => void; onNavigate?: () => void }) {
+  const me = useActingAs();
+  const studies = useQuery({ queryKey: keys.studies, queryFn: api.studies });
+  const needs = studies.data ? tabCounts(studies.data, me)["needs-you"] : 0;
+  return (
+    <div className="flex items-center gap-2">
+      <button type="button" onClick={onSearch} className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[10px] border border-line-strong bg-surface px-2.5 text-body text-faint shadow-button hover:border-ink/25">
+        <Search aria-hidden className="size-[15px] shrink-0" strokeWidth={1.75} />
+        <span className="flex-1 truncate text-left">Search</span>
+        <kbd className="rounded-md bg-sunken px-1.5 text-caption font-medium text-muted">⌘K</kbd>
+      </button>
+      <Link href="/?filter=needs-you" onClick={onNavigate} aria-label={needs > 0 ? `${needs} ${needs === 1 ? "contract needs" : "contracts need"} you` : "Nothing needs you"} className="relative grid size-9 shrink-0 place-items-center rounded-[10px] text-muted hover:bg-ink/[0.06] hover:text-ink">
+        <Bell aria-hidden className="size-[17px]" strokeWidth={1.75} />
+        {needs > 0 && <span className="num absolute top-0.5 right-0.5 grid min-w-4 place-items-center rounded-full bg-danger px-1 text-[10px] leading-4 font-semibold text-on-primary">{needs}</span>}
+      </Link>
+    </div>
+  );
+}
+
+/** ⌘K: type a protocol, sponsor, site or doctor and open the contract. */
+function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const router = useRouter();
+  const studies = useQuery({ queryKey: keys.studies, queryFn: api.studies, enabled: open });
+  const [q, setQ] = useState("");
+  const found = (studies.data ?? []).filter((s) => matchesQuery(s, q)).slice(0, 8);
+  const go = (id: string) => {
+    onClose();
+    router.push(`/studies/${id}`);
+  };
+  const close = () => {
+    setQ("");
+    onClose();
+  };
+  return (
+    <Dialog open={open} onClose={close} title="Search contracts">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (found[0]) go(found[0].id);
+        }}
+        className="grid gap-3"
+      >
+        <input aria-label="Search contracts" data-autofocus className={inputCls} value={q} placeholder="Protocol, sponsor, site or doctor" onChange={(e) => setQ(e.target.value)} />
+        {studies.isPending ? (
+          <p className="text-body text-muted">Loading your contracts…</p>
+        ) : studies.isError ? (
+          <p className="text-body text-danger">We couldn&apos;t load your contracts. Close this and try again.</p>
+        ) : found.length === 0 ? (
+          <p className="text-body text-muted">{q.trim() ? "No contract matches that. Try a protocol number, a sponsor, a site or a doctor." : "You have no contracts yet."}</p>
+        ) : (
+          <ul className="flex flex-col">
+            {found.map((s) => (
+              <li key={s.id}>
+                <button type="button" onClick={() => go(s.id)} className="flex w-full flex-col rounded-[10px] px-3 py-2 text-left hover:bg-sunken">
+                  <span className="truncate text-body font-medium">{studyTitle(s.protocol, s.firstDocument)}</span>
+                  <span className="truncate text-small text-muted">{studySub(s.protocol, [s.sponsor, s.payer, s.site, s.pi])}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
+/** Same corner in both states (the bottom), so the person always knows where to find it. */
+function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? "Expand the sidebar" : "Collapse the sidebar";
+  const Icon = collapsed ? ChevronsRight : ChevronsLeft;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+      className={cx("group flex h-9 items-center rounded-[10px] text-body text-muted transition-colors hover:bg-ink/[0.045] hover:text-ink", collapsed ? "w-full justify-center" : "w-full gap-2.5 px-2.5")}
+    >
+      <Icon aria-hidden className="size-[17px] shrink-0" strokeWidth={1.75} />
+      {!collapsed && <span className="truncate">Collapse</span>}
+    </button>
+  );
+}
+
+function SidebarBody({ onNavigate, onClose, onSearch, onCollapse }: { onNavigate?: () => void; onClose?: () => void; onSearch: () => void; onCollapse?: () => void }) {
   const path = usePathname();
   return (
-    <div className="flex h-full flex-col gap-6 p-4">
+    <div className="flex h-full flex-col gap-5 p-4">
       <div className="flex items-start justify-between gap-2">
         <Link href="/" onClick={onNavigate} className="flex flex-col gap-1.5 px-2 pt-2">
           <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={168} height={32} preload />
@@ -224,88 +236,133 @@ function SidebarBody({ onSearch, onGuide, onNavigate, onClose }: { onSearch: () 
         )}
       </div>
 
-      <div className="flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={onSearch}
-          className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-[10px] bg-surface/70 px-2.5 text-left text-body text-faint shadow-button ring-1 ring-ink/[0.06] transition hover:bg-surface hover:text-muted"
-        >
-          <Search className="size-[17px]" strokeWidth={1.75} />
-          Search
-          <kbd className="ml-auto rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-sans text-caption text-muted">⌘K</kbd>
-        </button>
-        <AlertBell />
-      </div>
+      <SearchRow onSearch={onSearch} onNavigate={onNavigate} />
 
       <nav aria-label="Main" className="flex flex-col gap-1">
-        <ContractsNav onNavigate={onNavigate} />
-        <NavLink href="/audit" label="Activity" icon={History} active={path.startsWith("/audit")} onNavigate={onNavigate} />
+        <ContractsGroup onNavigate={onNavigate} />
+        <NavLink href="/activity" label="Activity" icon={History} active={path === "/activity"} onNavigate={onNavigate} />
+        <NavLink href="/how-it-works" label="How it works" icon={HelpCircle} active={path === "/how-it-works"} onNavigate={onNavigate} />
       </nav>
 
-      <div className="mt-auto flex flex-col gap-1">
-        <NavButton label="How it works" icon={BookOpen} onClick={onGuide} />
-        <NavLink href="/settings" label="Settings" icon={Settings} active={path.startsWith("/settings")} onNavigate={onNavigate} />
-        <div className="mt-2 border-t border-line-strong/70 pt-2">
-          <PersonChip />
+      <div className="mt-auto flex flex-col gap-1 border-t border-line-strong/70 pt-2">
+        <NavLink href="/settings" label="Settings" icon={Settings} active={path === "/settings"} onNavigate={onNavigate} />
+        <PersonChip />
+        {onCollapse && <CollapseToggle collapsed={false} onToggle={onCollapse} />}
+      </div>
+    </div>
+  );
+}
+
+const railItemCls = (active: boolean) =>
+  cx("group relative grid size-10 place-items-center rounded-[10px] transition-colors", active ? "bg-surface text-brand shadow-card" : "text-muted hover:bg-ink/[0.06] hover:text-ink");
+
+const Count = ({ n }: { n: number }) => (
+  <span aria-hidden className="num absolute top-0 right-0 grid min-w-4 place-items-center rounded-full bg-danger px-1 text-[10px] leading-4 font-semibold text-on-primary">
+    {n}
+  </span>
+);
+
+function RailLink({ href, label, icon: Icon, active, count = 0 }: { href: string; label: string; icon: LucideIcon; active: boolean; count?: number }) {
+  return (
+    <Link href={href} aria-label={label} title={label} aria-current={active ? "page" : undefined} className={railItemCls(active)}>
+      <Icon aria-hidden className="size-[18px]" strokeWidth={1.75} />
+      {count > 0 && <Count n={count} />}
+    </Link>
+  );
+}
+
+/** The collapsed sidebar: icons only, every one with a name and a tooltip. The Contracts filters live in the full sidebar. */
+function Rail({ onSearch, onExpand }: { onSearch: () => void; onExpand: () => void }) {
+  const path = usePathname();
+  const me = useActingAs();
+  const studies = useQuery({ queryKey: keys.studies, queryFn: api.studies });
+  const needs = studies.data ? tabCounts(studies.data, me)["needs-you"] : 0;
+  const who = me ? `${me}, working now. Switch person` : "Choose your name";
+  return (
+    <div className="flex h-full flex-col items-center gap-4 px-3 py-4">
+      <Link href="/" aria-label="Discovery Clinical Trials" title="Discovery Clinical Trials" className="grid size-10 place-items-center">
+        <Image src="/dct-mark.png" alt="Discovery Clinical Trials" width={28} height={25} preload />
+      </Link>
+
+      <div className="flex flex-col items-center gap-1">
+        <button type="button" aria-label="Search" title="Search (⌘K)" onClick={onSearch} className={railItemCls(false)}>
+          <Search aria-hidden className="size-[18px]" strokeWidth={1.75} />
+        </button>
+        <RailLink href="/?filter=needs-you" label={needs > 0 ? `${needs} ${needs === 1 ? "contract needs" : "contracts need"} you` : "Nothing needs you"} icon={Bell} active={false} count={needs} />
+      </div>
+
+      <nav aria-label="Main" className="flex flex-col items-center gap-1">
+        <RailLink href="/" label={needs > 0 ? `Contracts, ${needs} ${needs === 1 ? "needs" : "need"} you` : "Contracts"} icon={FileText} active={path === "/"} count={needs} />
+        <RailLink href="/activity" label="Activity" icon={History} active={path === "/activity"} />
+        <RailLink href="/how-it-works" label="How it works" icon={HelpCircle} active={path === "/how-it-works"} />
+      </nav>
+
+      <div className="mt-auto flex w-full flex-col items-center gap-1 border-t border-line-strong/70 pt-2">
+        <RailLink href="/settings" label="Settings" icon={Settings} active={path === "/settings"} />
+        <button type="button" aria-label={who} title={who} onClick={() => askForPerson()} className="grid size-10 place-items-center rounded-full hover:bg-ink/[0.045]">
+          <span
+            aria-hidden
+            className={cx("grid size-9 place-items-center rounded-full text-small font-semibold", me ? "bg-brand-soft text-accent" : "border border-dashed border-warn text-warn")}
+          >
+            {me ? initials(me) : "?"}
+          </span>
+        </button>
+        <div className="w-full">
+          <CollapseToggle collapsed onToggle={onExpand} />
         </div>
       </div>
     </div>
   );
 }
 
-/**
- * Left column on desktop; a top bar with a slide-in menu on small screens. Owns ⌘K search, the guide and the name picker.
- * `bare` (focus mode): only those three, no navigation, so the page gets the whole window.
- */
-export function Sidebar({ bare }: { bare?: boolean }) {
-  const me = useActingAs();
-  const [search, setSearch] = useState(false);
-  const [guide, setGuide] = useState(false);
+/** Left column on desktop; a top bar with a slide-in menu on small screens. Owns the name picker. */
+export function Sidebar() {
+  const { collapsed, toggle } = useSidebarCollapsed(usePathname());
   const [menu, setMenu] = useState(false);
-
+  const [searching, setSearching] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setSearch((s) => !s);
+        setSearching(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const body = (drawer?: () => void) => <SidebarBody onSearch={() => setSearch(true)} onGuide={() => setGuide(true)} onNavigate={drawer} onClose={drawer} />;
-  const dialogs = (
-    <>
-      <CommandPalette open={search} onClose={() => setSearch(false)} onGuide={() => setGuide(true)} />
-      <HowItWorks open={guide} onClose={() => setGuide(false)} />
-      <PersonPicker />
-      <AlertWatcher key={me ?? ""} />
-    </>
-  );
-  if (bare) return dialogs;
-
+  const search = () => {
+    setMenu(false);
+    setSearching(true);
+  };
   return (
     <>
-      <aside className="hidden lg:sticky lg:top-0 lg:block lg:h-screen lg:overflow-y-auto">{body()}</aside>
+      {/* The column width animates in AppFrame; clipping here and fixed inner widths keep the content from reflowing mid-slide. */}
+      <aside className="hidden lg:sticky lg:top-0 lg:block lg:h-screen lg:overflow-x-hidden lg:overflow-y-auto">
+        {collapsed ? (
+          <div className="h-full w-16">
+            <Rail onSearch={search} onExpand={toggle} />
+          </div>
+        ) : (
+          <div className="h-full w-[252px]">
+            <SidebarBody onSearch={search} onCollapse={toggle} />
+          </div>
+        )}
+      </aside>
 
       <header className="sticky top-0 z-30 flex h-16 items-center gap-2 bg-canvas/85 px-4 backdrop-blur-md lg:hidden">
         <Link href="/" className="mr-auto">
           <Image src="/dct-logo.png" alt="Discovery Clinical Trials" width={132} height={25} />
         </Link>
-        <AlertBell />
-        <Button variant="ghost" size="icon" aria-label="Search" onClick={() => setSearch(true)}>
-          <Search className="size-5" strokeWidth={1.75} />
-        </Button>
         <Button variant="ghost" size="icon" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(true)}>
           <Menu className="size-5" strokeWidth={1.75} />
         </Button>
       </header>
       <Sheet open={menu} onClose={() => setMenu(false)} label="Menu" width="w-[288px] max-w-[85vw]">
-        {body(() => setMenu(false))}
+        <SidebarBody onNavigate={() => setMenu(false)} onClose={() => setMenu(false)} onSearch={search} />
       </Sheet>
 
-      {dialogs}
+      <SearchDialog open={searching} onClose={() => setSearching(false)} />
+      <PersonPicker />
     </>
   );
 }

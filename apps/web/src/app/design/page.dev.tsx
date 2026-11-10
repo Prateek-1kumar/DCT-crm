@@ -38,7 +38,7 @@ const statuses: [string, Tone, string, string][] = [
 const typeScale = [
   ["Figure", "text-figure font-semibold tracking-tight", "34 / 40 · 600", "$1,245,020"],
   ["Display", "text-display font-semibold tracking-tight", "28 / 34 · 600", "Contracts"],
-  ["Heading", "text-heading font-semibold tracking-tight", "22 / 28 · 600", "Check the summary, then approve"],
+  ["Heading", "text-heading font-semibold tracking-tight", "22 / 28 · 600", "Check the summary, then save"],
   ["Title", "text-title font-semibold tracking-tight", "17.5 / 25 · 600", "Northwind Pharma · NWP-418-02"],
   ["Lead", "text-lead text-muted", "15.5 / 24 · 400", "Each signed contract becomes an invoicing master."],
   ["Body", "text-body", "14 / 22 · 400", "What amount is printed for the Visit 4 total?"],
@@ -94,14 +94,14 @@ export default function DesignPage() {
           <div className="grid gap-6 sm:grid-cols-2">
             <div className="flex flex-col items-start gap-3 rounded-tile bg-sunken p-6">
               <button type="button" className="inline-flex h-10 items-center rounded-full bg-brand px-5 font-medium text-white shadow-button">
-                Approve invoicing master
+                Save changes
               </button>
               <p className="text-small text-muted">
                 <span className="num font-medium text-ink">#6487D7</span> · white text 3.5:1 · too faint for button text
               </p>
             </div>
             <div className="flex flex-col items-start gap-3 rounded-tile bg-sunken p-6">
-              <Button variant="primary">Approve invoicing master</Button>
+              <Button variant="primary">Save changes</Button>
               <p className="text-small text-muted">
                 <span className="num font-medium text-ink">#4A6CC4</span> · white text 5.0:1 · recommended for buttons; #6487D7 stays the brand color
               </p>
@@ -203,16 +203,16 @@ export default function DesignPage() {
         <Section title="Buttons">
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" size="lg">
-              Start answering →
+              Continue →
             </Button>
-            <Button variant="primary">Approve</Button>
-            <Button>Read it again</Button>
-            <Button variant="ghost">Can&apos;t tell</Button>
+            <Button variant="primary">Save</Button>
+            <Button>Cancel</Button>
+            <Button variant="ghost">Skip</Button>
             <Button variant="danger">Remove file</Button>
             <Button variant="primary" disabled>
-              Approve
+              Save
             </Button>
-            <Button size="sm">This looks wrong</Button>
+            <Button size="sm">Edit</Button>
           </div>
         </Section>
 
@@ -255,7 +255,7 @@ export default function DesignPage() {
               <ProgressBar value={42} label="Checked so far" />
               <p className="num text-small text-muted">1,212 of 1,219 numbers match the contract PDF</p>
               <Button variant="primary" className="self-start">
-                Start answering →
+                Continue →
               </Button>
             </div>
             <div className="overflow-hidden rounded-card bg-surface shadow-card">

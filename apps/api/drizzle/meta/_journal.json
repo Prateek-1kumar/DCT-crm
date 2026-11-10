@@ -5,92 +5,64 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1792946741835,
-      "tag": "0000_init",
+      "when": 1793831047382,
+      "tag": "0000_baseline",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1792946742180,
-      "tag": "0001_guards",
+      "when": 1793874834075,
+      "tag": "0001_harness",
       "breakpoints": true
     },
     {
       "idx": 2,
       "version": "7",
-      "when": 1792947928576,
-      "tag": "0002_sturdy_alex_power",
+      "when": 1793874834419,
+      "tag": "0002_immutability",
       "breakpoints": true
     },
     {
       "idx": 3,
       "version": "7",
-      "when": 1793192313612,
-      "tag": "0003_lame_scalphunter",
+      "when": 1793876728912,
+      "tag": "0003_spotty_susan_delgado",
       "breakpoints": true
     },
     {
       "idx": 4,
       "version": "7",
-      "when": 1793195813734,
-      "tag": "0004_gigantic_stature",
+      "when": 1793878791137,
+      "tag": "0004_workable_pestilence",
       "breakpoints": true
     },
     {
       "idx": 5,
       "version": "7",
-      "when": 1793197306466,
-      "tag": "0005_talented_slyde",
+      "when": 1793903506411,
+      "tag": "0005_glossy_omega_red",
       "breakpoints": true
     },
     {
       "idx": 6,
       "version": "7",
-      "when": 1793200355235,
-      "tag": "0006_signed_versions_locked",
+      "when": 1793944217375,
+      "tag": "0006_furry_marten_broadcloak",
       "breakpoints": true
     },
     {
       "idx": 7,
       "version": "7",
-      "when": 1793205722393,
-      "tag": "0007_sharp_barracuda",
+      "when": 1794051212056,
+      "tag": "0007_sweet_sheva_callister",
       "breakpoints": true
     },
     {
       "idx": 8,
       "version": "7",
-      "when": 1793208967565,
-      "tag": "0008_unique_captain_midlands",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1793210951562,
-      "tag": "0009_idempotency_and_one_live_read",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1793217075298,
-      "tag": "0010_perfect_virginia_dare",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1793217085633,
-      "tag": "0011_truncate_guards",
-      "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1793534683257,
-      "tag": "0012_typing_done_at",
+      "when": 1794138089700,
+      "tag": "0008_smart_taskmaster",
       "breakpoints": true
     }
   ]

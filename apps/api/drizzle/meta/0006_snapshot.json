@@ -1,58 +1,11 @@
 {
-  "id": "b5735ffd-5b75-4dfc-a8e4-833f097914fa",
-  "prevId": "99cbeae7-eeca-487c-bfb0-c092e5fd0675",
+  "id": "972c8a20-2689-4f46-bec3-8783905f1d89",
+  "prevId": "3f98bb41-ee1e-43a3-9e1d-e338c0d44262",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.alert_reads": {
-      "name": "alert_reads",
-      "schema": "",
-      "columns": {
-        "alert_id": {
-          "name": "alert_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "person": {
-          "name": "person",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "alert_reads_alert_id_alerts_id_fk": {
-          "name": "alert_reads_alert_id_alerts_id_fk",
-          "tableFrom": "alert_reads",
-          "columnsFrom": [
-            "alert_id"
-          ],
-          "tableTo": "alerts",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "alert_reads_alert_id_person_pk": {
-          "name": "alert_reads_alert_id_person_pk",
-          "columns": [
-            "alert_id",
-            "person"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.alerts": {
-      "name": "alerts",
+    "public.answers": {
+      "name": "answers",
       "schema": "",
       "columns": {
         "id": {
@@ -62,20 +15,20 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "study_id": {
-          "name": "study_id",
+        "version_id": {
+          "name": "version_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "version": {
-          "name": "version",
+        "question_id": {
+          "name": "question_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "option": {
+          "name": "option",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
@@ -86,18 +39,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "count": {
-          "name": "count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "note": {
-          "name": "note",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -106,42 +47,20 @@
           "default": "now()"
         }
       },
-      "indexes": {
-        "alerts_list_idx": {
-          "name": "alerts_list_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "first"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "first"
-            }
-          ],
-          "isUnique": false,
-          "with": {},
-          "method": "btree",
-          "concurrently": false
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
-        "alerts_study_id_studies_id_fk": {
-          "name": "alerts_study_id_studies_id_fk",
-          "tableFrom": "alerts",
+        "answers_version_id_versions_id_fk": {
+          "name": "answers_version_id_versions_id_fk",
+          "tableFrom": "answers",
+          "tableTo": "versions",
           "columnsFrom": [
-            "study_id"
+            "version_id"
           ],
-          "tableTo": "studies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -160,8 +79,8 @@
           "primaryKey": true,
           "notNull": true
         },
-        "at": {
-          "name": "at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -173,15 +92,21 @@
           "primaryKey": false,
           "notNull": true
         },
-        "study_id": {
-          "name": "study_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "action": {
           "name": "action",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity": {
+          "name": "entity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
@@ -194,21 +119,7 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "audit_log_study_id_studies_id_fk": {
-          "name": "audit_log_study_id_studies_id_fk",
-          "tableFrom": "audit_log",
-          "columnsFrom": [
-            "study_id"
-          ],
-          "tableTo": "studies",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -232,43 +143,36 @@
           "primaryKey": false,
           "notNull": true
         },
-        "filename": {
-          "name": "filename",
+        "name": {
+          "name": "name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'other'"
-        },
-        "page_count": {
-          "name": "page_count",
+        "bytes": {
+          "name": "bytes",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
-        "storage_path": {
-          "name": "storage_path",
-          "type": "text",
+        "pages": {
+          "name": "pages",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         },
-        "text_source": {
-          "name": "text_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "uploaded_at": {
-          "name": "uploaded_at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {},
@@ -277,68 +181,47 @@
       "uniqueConstraints": {
         "documents_sha256_unique": {
           "name": "documents_sha256_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "sha256"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.jobs": {
-      "name": "jobs",
+    "public.idempotency_keys": {
+      "name": "idempotency_keys",
       "schema": "",
       "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
+        "key": {
+          "name": "key",
+          "type": "text",
           "primaryKey": true,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
+        "method": {
+          "name": "method",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "study_id": {
-          "name": "study_id",
-          "type": "uuid",
+        "path": {
+          "name": "path",
+          "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "version": {
-          "name": "version",
+        "status": {
+          "name": "status",
           "type": "integer",
           "primaryKey": false,
           "notNull": false
         },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "progress": {
-          "name": "progress",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "step": {
-          "name": "step",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
+        "body": {
+          "name": "body",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -348,39 +231,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
-      "indexes": {},
-      "foreignKeys": {
-        "jobs_study_id_studies_id_fk": {
-          "name": "jobs_study_id_studies_id_fk",
-          "tableFrom": "jobs",
-          "columnsFrom": [
-            "study_id"
+      "indexes": {
+        "idempotency_keys_created": {
+          "name": "idempotency_keys_created",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
           ],
-          "tableTo": "studies",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.rulebook_versions": {
-      "name": "rulebook_versions",
+    "public.parties": {
+      "name": "parties",
       "schema": "",
       "columns": {
         "id": {
@@ -390,148 +268,96 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "study_id": {
-          "name": "study_id",
-          "type": "uuid",
+        "kind": {
+          "name": "kind",
+          "type": "party_kind",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true
         },
-        "version": {
-          "name": "version",
-          "type": "integer",
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "aliases": {
+          "name": "aliases",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.reads": {
+      "name": "reads",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "version_id": {
+          "name": "version_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
         "status": {
           "name": "status",
-          "type": "text",
+          "type": "read_status",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
-          "default": "'extracting'"
+          "default": "'queued'"
         },
-        "rulebook": {
-          "name": "rulebook",
-          "type": "jsonb",
+        "budget_usd": {
+          "name": "budget_usd",
+          "type": "double precision",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "cross_read": {
-          "name": "cross_read",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "anomalies": {
-          "name": "anomalies",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "pages": {
-          "name": "pages",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "notes": {
-          "name": "notes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "cost": {
-          "name": "cost",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "cost_usd": {
-          "name": "cost_usd",
+        "spent_usd": {
+          "name": "spent_usd",
           "type": "double precision",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
-        "input_tokens": {
-          "name": "input_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "output_tokens": {
-          "name": "output_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "applies_from": {
-          "name": "applies_from",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "editors": {
-          "name": "editors",
+        "progress": {
+          "name": "progress",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "evidence": {
-          "name": "evidence",
+        "trace": {
+          "name": "trace",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "review": {
-          "name": "review",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "pdf_check": {
-          "name": "pdf_check",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "by_hand": {
-          "name": "by_hand",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "proofread": {
-          "name": "proofread",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "signed_by": {
-          "name": "signed_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "signed_at": {
-          "name": "signed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "sign_note": {
-          "name": "sign_note",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -548,80 +374,50 @@
           "notNull": true,
           "default": "now()"
         },
-        "updated_at": {
-          "name": "updated_at",
+        "started_at": {
+          "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
       "foreignKeys": {
-        "rulebook_versions_study_id_studies_id_fk": {
-          "name": "rulebook_versions_study_id_studies_id_fk",
-          "tableFrom": "rulebook_versions",
+        "reads_version_id_versions_id_fk": {
+          "name": "reads_version_id_versions_id_fk",
+          "tableFrom": "reads",
+          "tableTo": "versions",
           "columnsFrom": [
-            "study_id"
+            "version_id"
           ],
-          "tableTo": "studies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "rulebook_versions_study_id_version_unique": {
-          "name": "rulebook_versions_study_id_version_unique",
+        "reads_version_id_unique": {
+          "name": "reads_version_id_unique",
+          "nullsNotDistinct": false,
           "columns": [
-            "study_id",
-            "version"
-          ],
-          "nullsNotDistinct": false
+            "version_id"
+          ]
         }
       },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.settings": {
-      "name": "settings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "default": 1
-        },
-        "people": {
-          "name": "people",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "maker_checker": {
-          "name": "maker_checker",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "settings_single_row": {
-          "name": "settings_single_row",
-          "value": "\"settings\".\"id\" = 1"
+        "reads_spend": {
+          "name": "reads_spend",
+          "value": "\"reads\".\"spent_usd\" >= 0 AND \"reads\".\"budget_usd\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -637,53 +433,29 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "sponsor": {
-          "name": "sponsor",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "protocol": {
           "name": "protocol",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "site_name": {
-          "name": "site_name",
-          "type": "text",
+        "sponsor_id": {
+          "name": "sponsor_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "investigator": {
-          "name": "investigator",
-          "type": "text",
+        "payer_id": {
+          "name": "payer_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "status": {
-          "name": "status",
-          "type": "text",
+        "site_id": {
+          "name": "site_id",
+          "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'setting_up'"
-        },
-        "needs_you": {
-          "name": "needs_you",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "stage": {
-          "name": "stage",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "type": "stored",
-            "as": "CASE WHEN status IN ('needs_review', 'amendment_in_review') THEN (CASE WHEN needs_you > 0 THEN 0 ELSE 3 END) WHEN status = 'extraction_failed' THEN 1 WHEN status = 'setting_up' THEN 2 WHEN status = 'extracting' THEN 4 ELSE 5 END"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -692,59 +464,55 @@
           "notNull": true,
           "default": "now()"
         },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": true
         }
       },
-      "indexes": {
-        "studies_list_idx": {
-          "name": "studies_list_idx",
-          "columns": [
-            {
-              "expression": "stage",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "(CASE WHEN stage = 0 THEN 1 ELSE -1 END * extract(epoch FROM updated_at - timestamptz 'epoch'))",
-              "isExpression": true,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
+      "indexes": {},
+      "foreignKeys": {
+        "studies_sponsor_id_parties_id_fk": {
+          "name": "studies_sponsor_id_parties_id_fk",
+          "tableFrom": "studies",
+          "tableTo": "parties",
+          "columnsFrom": [
+            "sponsor_id"
           ],
-          "isUnique": false,
-          "with": {},
-          "method": "btree",
-          "concurrently": false
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
-        "studies_site_idx": {
-          "name": "studies_site_idx",
-          "columns": [
-            {
-              "expression": "site_name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
+        "studies_payer_id_parties_id_fk": {
+          "name": "studies_payer_id_parties_id_fk",
+          "tableFrom": "studies",
+          "tableTo": "parties",
+          "columnsFrom": [
+            "payer_id"
           ],
-          "isUnique": false,
-          "with": {},
-          "method": "btree",
-          "concurrently": false
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "studies_site_id_parties_id_fk": {
+          "name": "studies_site_id_parties_id_fk",
+          "tableFrom": "studies",
+          "tableTo": "parties",
+          "columnsFrom": [
+            "site_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
-      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -767,12 +535,18 @@
           "primaryKey": false,
           "notNull": true
         },
-        "added_at": {
-          "name": "added_at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "added_by": {
+          "name": "added_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {},
@@ -780,28 +554,28 @@
         "study_documents_study_id_studies_id_fk": {
           "name": "study_documents_study_id_studies_id_fk",
           "tableFrom": "study_documents",
+          "tableTo": "studies",
           "columnsFrom": [
             "study_id"
           ],
-          "tableTo": "studies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "study_documents_document_id_documents_id_fk": {
           "name": "study_documents_document_id_documents_id_fk",
           "tableFrom": "study_documents",
+          "tableTo": "documents",
           "columnsFrom": [
             "document_id"
           ],
-          "tableTo": "documents",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -817,14 +591,196 @@
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
+    },
+    "public.versions": {
+      "name": "versions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "study_id": {
+          "name": "study_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "number": {
+          "name": "number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "version_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document_ids": {
+          "name": "document_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rulebook": {
+          "name": "rulebook",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "problems": {
+          "name": "problems",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approved_at": {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_by": {
+          "name": "approved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "versions_study_number": {
+          "name": "versions_study_number",
+          "columns": [
+            {
+              "expression": "study_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "versions_one_reading": {
+          "name": "versions_one_reading",
+          "columns": [
+            {
+              "expression": "study_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"versions\".\"status\" = 'reading'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "versions_one_live": {
+          "name": "versions_one_live",
+          "columns": [
+            {
+              "expression": "study_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"versions\".\"status\" = 'approved'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "versions_study_id_studies_id_fk": {
+          "name": "versions_study_id_studies_id_fk",
+          "tableFrom": "versions",
+          "tableTo": "studies",
+          "columnsFrom": [
+            "study_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
-  "enums": {},
+  "enums": {
+    "public.party_kind": {
+      "name": "party_kind",
+      "schema": "public",
+      "values": [
+        "sponsor",
+        "cro",
+        "site"
+      ]
+    },
+    "public.read_status": {
+      "name": "read_status",
+      "schema": "public",
+      "values": [
+        "queued",
+        "running",
+        "done",
+        "failed"
+      ]
+    },
+    "public.version_status": {
+      "name": "version_status",
+      "schema": "public",
+      "values": [
+        "reading",
+        "draft",
+        "failed",
+        "approved",
+        "superseded"
+      ]
+    }
+  },
   "schemas": {},
-  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

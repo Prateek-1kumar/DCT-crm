@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { centsToInput, formatCents, parseDollars } from "./money";
-import { formatValue, inferKind } from "./format";
 
 describe("formatCents", () => {
   it("formats integer cents as USD", () => {
@@ -29,24 +28,5 @@ describe("parseDollars", () => {
   });
   it("round-trips through the editor format", () => {
     for (const c of [0, 1, 99, 100, 745500, -305]) expect(parseDollars(centsToInput(c))).toBe(c);
-  });
-});
-
-describe("formatValue / inferKind", () => {
-  it("formats by field", () => {
-    expect(formatValue("/invoiceables/0/amountCents", 57200)).toBe("$572.00");
-    expect(formatValue("/budgetGrids/0/procedures/1/cells/V2", "invoiceable")).toBe("Invoiceable");
-    expect(formatValue("/overhead/pct/value", 30)).toBe("30%");
-    expect(formatValue("/payment/visitPayment/value", "auto_edc")).toBe("Automatic (from EDC)");
-    expect(formatValue("/payment/netDays/value", null)).toBe("Not stated");
-  });
-  it("picks an editor", () => {
-    expect(inferKind("/budgetGrids/0/procedures/1/cells/V2", 2500)).toBe("cell");
-    expect(inferKind("/screenFail/amountCents", 61000)).toBe("money");
-    expect(inferKind("/payment/netDays/value", 45)).toBe("int");
-    expect(inferKind("/deadlines/0/value", 90)).toBe("int");
-    expect(inferKind("/payment/frequency/value", "monthly")).toBe("enum");
-    expect(inferKind("/appliesFrom/value", null)).toBe("date");
-    expect(inferKind("/payment/requiredReferences/value", ["a"])).toBe("list");
   });
 });

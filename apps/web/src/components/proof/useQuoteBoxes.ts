@@ -1,0 +1,23 @@
+"use client";
+
+import type { Region } from "@dct/shared";
+import { useQuery } from "@tanstack/react-query";
+import { api, keys } from "@/lib/queries";
+import type { CoverageRef } from "@/lib/types";
+import { findTerm, pageAt, sourceOf, type ProofData, type Spot } from "./model";
+
+/** Where the words a term quotes sit on its page: found by searching a text page, else the boxes the checker saved. Empty unless `spot` is the quote's own page. */
+export function useQuoteBoxes(data: ProofData, ref: CoverageRef | null, spot: Spot | null): Region[] {
+  const term = ref?.target === "term" ? findTerm(data, ref.id) : undefined;
+  const home = term && ref ? sourceOf(data, ref) : null;
+  const homePage = pageAt(data, home);
+  const quote = term?.source.quote ?? "";
+  const search = useQuery({
+    queryKey: keys.find(home?.doc ?? "", home?.page ?? 0, quote),
+    queryFn: () => api.find(home!.doc, home!.page, quote),
+    enabled: !!home && homePage?.kind === "text" && quote !== "",
+  });
+  if (!home || !spot || home.doc !== spot.doc || home.page !== spot.page) return [];
+  const saved = homePage?.clauses.filter((c) => c.termId === term?.id).flatMap((c) => c.boxes) ?? [];
+  return search.data?.boxes.length ? search.data.boxes : saved;
+}
