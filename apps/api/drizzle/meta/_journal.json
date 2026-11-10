@@ -64,6 +64,13 @@
       "when": 1794138089700,
       "tag": "0008_smart_taskmaster",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794291963629,
+      "tag": "0009_zippy_christian_walker",
+      "breakpoints": true
     }
   ]
 }

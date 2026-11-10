@@ -7,7 +7,10 @@ import { Sidebar } from "./Sidebar";
 import { Spinner } from "./ui";
 
 export function AppFrame({ children }: { children: ReactNode }) {
-  const { collapsed } = useSidebarCollapsed(usePathname());
+  const pathname = usePathname();
+  const { collapsed } = useSidebarCollapsed(pathname);
+  // the sign-in page has no sidebar (it would ask the API for contracts before anyone is signed in)
+  if (pathname === "/login") return <>{children}</>;
   return (
     <div className={`min-h-screen lg:grid lg:transition-[grid-template-columns] lg:duration-200 lg:ease-out ${collapsed ? "lg:grid-cols-[64px_minmax(0,1fr)]" : "lg:grid-cols-[252px_minmax(0,1fr)]"}`}>
       {/* First thing Tab reaches: past the sidebar to the page. */}

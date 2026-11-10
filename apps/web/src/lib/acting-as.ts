@@ -2,12 +2,28 @@
 
 import { useSyncExternalStore } from "react";
 
-/** "Acting as" person, remembered per browser. No login in Phase 1. */
+/**
+ * "Acting as" person. Signed in (UAT login): the name the sign-in set in the dct_user cookie, fixed. Otherwise a name
+ * picked in this browser.
+ * ponytail: the page asserts its own name to the API either way; real authentication takes it from the session.
+ */
 
 const KEY = "dct.actingAs";
 const listeners = new Set<() => void>();
 
+/** The display name the sign-in set, or null when nobody signed in. */
+function signedIn(): string | null {
+  const m = document.cookie.match(/(?:^|; )dct_user=([^;]*)/);
+  try {
+    return m ? decodeURIComponent(m[1]!) : null;
+  } catch {
+    return null;
+  }
+}
+
 function read(): string | null {
+  const name = signedIn();
+  if (name) return name;
   try {
     return localStorage.getItem(KEY);
   } catch {
@@ -16,6 +32,7 @@ function read(): string | null {
 }
 
 export function setActingAs(name: string | null) {
+  if (signedIn()) return;
   try {
     if (name) localStorage.setItem(KEY, name);
     else localStorage.removeItem(KEY);
@@ -38,6 +55,9 @@ function subscribe(l: () => void) {
 export function useActingAs(): string | null {
   return useSyncExternalStore(subscribe, read, () => null);
 }
+
+/** True when the name comes from a sign-in, so it can't be switched here. */
+export const useSignedIn = () => useSyncExternalStore(subscribe, () => signedIn() !== null, () => false);
 
 /** "Who's working today?" picker, opened from the sidebar. */
 const promptListeners = new Set<() => void>();
