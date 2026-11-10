@@ -10,7 +10,8 @@ import { buildProof, encodeRef, type ProofData } from "../proof/model";
 import type { ShowRef } from "../rulebook";
 import { ProofBadge } from "../rulebook/parts";
 import { Skeleton } from "../study/Skeleton";
-import { Button, cx, Empty, LoadError } from "../ui";
+import { plainAmount } from "@/lib/money";
+import { Button, CopyButton, cx, Empty, LoadError } from "../ui";
 import { APPROX_NOTE, ContractViewer, ReviewActions } from "../viewer";
 import { itemsOf } from "./proofreads";
 import { headOf, usePassage } from "./side/passage";
@@ -97,6 +98,15 @@ function Header({ data, line, version, onOpenFull, onClose, heading }: { data: P
             <button type="button" aria-expanded={details} onClick={() => setDetails(!details)} className="font-medium text-accent hover:text-accent-hover hover:underline">
               Details
             </button>
+            {/* the amount as a plain number, ready for a spreadsheet or the billing system */}
+            <CopyButton label={`Copy the amount: ${head.value}`} text={plainAmount(head.value)}>
+              Copy amount
+            </CopyButton>
+            {head.quote && (
+              <CopyButton label="Copy the contract wording" text={head.quote}>
+                Copy wording
+              </CopyButton>
+            )}
           </p>
           {head.quote && (
             <p className={cx("mt-1 text-small text-ink-2 break-words", !fullQuote && "line-clamp-2")}>

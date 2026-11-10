@@ -31,3 +31,9 @@ export function parseDollars(input: string): number | null {
   if (input.trim() === "") return null;
   return parseCents(input) ?? Number.NaN;
 }
+
+/** For pasting into a spreadsheet or a billing system: "$1,234.56" becomes "1234.56"; anything that isn't one amount stays as written. */
+export function plainAmount(text: string): string {
+  const m = /^(−|-)?\$([\d,]+\.\d{2})$/.exec(text.trim());
+  return m ? `${m[1] ? "-" : ""}${m[2]!.replaceAll(",", "")}` : text;
+}

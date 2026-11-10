@@ -17,7 +17,10 @@ export function AppFrame({ children }: { children: ReactNode }) {
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-full focus:bg-surface focus:px-4 focus:py-2 focus:font-medium focus:shadow-raised">
         Skip to the page
       </a>
-      <Sidebar />
+      {/* `contents` keeps the sidebar a grid child on screen; on paper the wrapper (and so the sidebar) is dropped */}
+      <div data-noprint className="contents">
+        <Sidebar />
+      </div>
       {/* The work area is a white sheet resting on the off-white frame the sidebar uses. */}
       <div className="flex min-w-0 flex-col lg:py-2 lg:pr-2">
         <main id="main" className="flex flex-1 flex-col bg-surface lg:min-h-[calc(100vh-1rem)] lg:rounded-[20px] lg:shadow-sheet lg:ring-1 lg:ring-ink/[0.05]">

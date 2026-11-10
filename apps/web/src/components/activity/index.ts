@@ -1,1 +1,1 @@
-export { ActivityFeed, HistoryTab } from "./ActivityFeed";
+export { ActivityExport, ActivityFeed, HistoryTab } from "./ActivityFeed";

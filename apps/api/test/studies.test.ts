@@ -226,6 +226,15 @@ describe("page image regions and sharpness", () => {
     huge = await upload(await sizedPdf(2000, 2000));
   });
 
+  it("the uploaded file can be downloaded again as it was, and a document that doesn't exist says so", async () => {
+    const res = await call("GET", `/documents/${letter}/file`);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/pdf");
+    expect(String(res.headers["content-disposition"])).toMatch(/^attachment; filename=".+\.pdf"; filename\*=UTF-8''.+\.pdf$/);
+    expect(res.rawPayload.subarray(0, 5).toString()).toBe("%PDF-");
+    expect((await call("GET", "/documents/00000000-0000-4000-8000-000000000000/file")).statusCode).toBe(404);
+  });
+
   it("a crop is the region's size at the dpi of the whole page, and still cached for good", async () => {
     const res = await image(letter, "dpi=72&region=0,0,0.5,0.25");
     expect(res.statusCode).toBe(200);

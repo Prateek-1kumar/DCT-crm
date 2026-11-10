@@ -9,11 +9,11 @@ import { DecisionPill, ProofBadge } from "./parts";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function GridCard({ grid, decision, version, coverage, onShow }: { grid: Grid; decision: boolean } & Pick<TabProps, "version" | "coverage" | "onShow">) {
+function GridCard({ grid, decision, version, coverage, onShow, query, unreadOnly }: { grid: Grid; decision: boolean } & Pick<TabProps, "version" | "coverage" | "onShow" | "query" | "unreadOnly">) {
   const { names, cells } = gridProofreads(version, grid.id);
   const doubtful = doubtfulCells(coverage, grid.id);
   return (
-    <Card className="min-w-0 overflow-hidden">
+    <Card className="min-w-0 overflow-hidden print:overflow-visible print:shadow-none">
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 px-5 pt-5 pb-4 sm:px-6">
         <div className="min-w-0">
           <h2 className="text-title font-semibold tracking-tight break-words">{grid.arm ?? grid.name}</h2>
@@ -35,13 +35,13 @@ function GridCard({ grid, decision, version, coverage, onShow }: { grid: Grid; d
         <span>{cells ? `${plural(cells, "cell")} proofread${names.length ? ` by ${names.join(", ")}` : ""}` : "No cells proofread yet"}</span>
         {doubtful.size > 0 && <span className="font-medium text-warn">{plural(doubtful.size, "cell")} to double-check</span>}
       </div>
-      <GridTable grid={grid} proofread={proofreadCells(version, grid.id)} doubtful={doubtful} onCellClick={(row, col) => onShow({ target: "grid", id: grid.id, row, col })} />
+      <GridTable grid={grid} query={query} unreadOnly={unreadOnly} proofread={proofreadCells(version, grid.id)} doubtful={doubtful} onCellClick={(row, col) => onShow({ target: "grid", id: grid.id, row, col })} />
     </Card>
   );
 }
 
 /** Each grid by arm: the per-patient total, the overhead rate, proof status, and the grid itself in its own scroll box. */
-export function BudgetGridTab({ version, coverage, query, onShow }: TabProps) {
+export function BudgetGridTab({ version, coverage, query, unreadOnly, onShow }: TabProps) {
   const rulebook = version.rulebook;
   if (!rulebook) return <Empty title="Nothing to show yet">The budget grids appear here once the contract has been read.</Empty>;
   if (!rulebook.grids.length) return <Empty title="No budget grid found in this contract">The contract has no table of visits and prices. Fees that aren&apos;t tied to a visit are under Fees &amp; invoiceables.</Empty>;
@@ -53,7 +53,7 @@ export function BudgetGridTab({ version, coverage, query, onShow }: TabProps) {
   return (
     <div className="grid min-w-0 gap-6">
       {grids.map((g) => (
-        <GridCard key={g.id} grid={g} decision={decision.has(g.id)} version={version} coverage={coverage} onShow={onShow} />
+        <GridCard key={g.id} grid={g} decision={decision.has(g.id)} version={version} coverage={coverage} onShow={onShow} query={query} unreadOnly={unreadOnly} />
       ))}
     </div>
   );

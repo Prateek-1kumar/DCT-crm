@@ -19,6 +19,10 @@ export const CATEGORY_LABEL: Record<Term["category"], string> = {
   other: "Other",
 };
 
+/** What the "Fees & invoiceables" tab lists: everything paid outside the visit grid, or invoiced for. */
+export const FEE_CATEGORIES: Term["category"][] = ["site_fee", "recurring_fee", "invoiceable", "conditional_procedure", "unscheduled_visit", "screen_failure", "stipend_travel", "bonus"];
+export const PAYMENT_CATEGORIES: Term["category"][] = ["payment_terms", "invoicing", "holdback", "overhead", "deadline", "cap_or_limit", "other"];
+
 export const BILLING_LABEL: Record<Term["billing"], string> = {
   auto_paid: "Paid without an invoice",
   invoice: "You invoice for it",

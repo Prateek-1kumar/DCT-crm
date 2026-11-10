@@ -1,6 +1,6 @@
 import type { Region } from "@dct/shared";
 import { request } from "./api";
-import type { ActivityPage, Coverage, Party, PartyRow, PageText, Read, Study, StudyRow, Uploaded, Version } from "./types";
+import type { ActivityItem, ActivityPage, Coverage, Party, PartyRow, PageText, Read, Study, StudyRow, Uploaded, Version } from "./types";
 
 /** TanStack Query keys: one place, so a write can invalidate exactly what it changed. */
 export const keys = {
@@ -75,3 +75,20 @@ export const pageImageAt = (documentId: string, page: number, { dpi, region }: {
   `/api/v1/documents/${documentId}/pages/${page}/image${q({ dpi, region: region?.map((n) => n.toFixed(4)).join(",") })}`;
 
 export const pageImage = (documentId: string, page: number, dpi?: number) => `/api/v1/documents/${documentId}/pages/${page}/image${q({ dpi })}`;
+
+/**
+ * Every activity entry, newest first, for an export. `since` (a time in ms) stops once entries are older than it: the trail
+ * arrives newest first, so nothing after that point can be in range.
+ */
+export async function allActivity({ study, since }: { study?: string; since?: number } = {}): Promise<ActivityItem[]> {
+  const out: ActivityItem[] = [];
+  let before: number | undefined;
+  // ponytail: 200 pages of 100 is the ceiling; a server-side export if a trail ever outgrows 20,000 entries
+  for (let page = 0; page < 200; page++) {
+    const got = await api.activity({ study, before, limit: 100 });
+    out.push(...got.items);
+    if (got.next === null || (since !== undefined && got.items.some((i) => Date.parse(i.at) < since))) break;
+    before = got.next;
+  }
+  return since === undefined ? out : out.filter((i) => Date.parse(i.at) >= since);
+}

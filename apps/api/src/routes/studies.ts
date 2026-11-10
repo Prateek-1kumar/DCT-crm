@@ -3,7 +3,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
 import { pdfReader, quotePlace } from "@dct/harness";
 import type { Region } from "@dct/shared";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { z } from "zod";
 import type { Ctx } from "../app.js";
 import type { Tx } from "../db/index.js";
@@ -391,6 +391,18 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
     const side = Math.max(png.readUInt32BE(16), png.readUInt32BE(20));
     if (side > MAX_SIDE) png = await pdfReader.render(doc, page, { dpi: (dpi * MAX_SIDE) / side, region, maxPixels: MAX_PIXELS });
     return reply.type("image/png").header("cache-control", "private, max-age=31536000, immutable").send(png);
+  });
+
+  // The file exactly as it was uploaded, for the person's own records. Unlike the page pictures, bank details in it are not
+  // painted over: nothing here goes to a model, and it is handed only to someone signed in.
+  api.get<{ Params: { id: string } }>("/documents/:id/file", async (req, reply) => {
+    const doc = await requireDocument(req.params.id);
+    const pdf = await readFile(pdfPath(doc.sha256)).catch(() => {
+      throw new HttpError(404, "We no longer have this file. Upload it again to download it.");
+    });
+    // the plain name for old browsers, the real one (accents and all) for the rest
+    const plain = doc.name.replace(/[^\x20-\x7e]|["\\]/g, "_");
+    return reply.type("application/pdf").header("content-disposition", `attachment; filename="${plain}"; filename*=UTF-8''${encodeURIComponent(doc.name)}`).header("cache-control", "private, no-store").send(pdf);
   });
 
   api.get<{ Params: { id: string; page: string } }>("/documents/:id/pages/:page/text", async (req) => {

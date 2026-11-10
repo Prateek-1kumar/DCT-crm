@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { recall, remember } from "@/lib/remembered";
 import { useActingAs } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
 import { useMounted } from "@/lib/use-mounted";
@@ -114,7 +115,12 @@ function Proofreading({ data, totals }: { data: ProofData; totals: Coverage["tot
   // The first item to check is picked here, not written to the URL (Back must leave the screen), and kept so that marking it doesn't make the selection jump on its own.
   // A link that names only a page or an amount (a missing one has no item) is left as it is.
   const pageLink = !url.ref && !!url.doc && !!url.page;
-  const [pinned, setPinned] = useState<string | null>(null);
+  // Where this person last was on this version, so coming back carries on from there rather than from the top.
+  const resumeKey = `dct.resume.proof.${v.id}`;
+  const [pinned, setPinned] = useState<string | null>(() => {
+    const last = recall(resumeKey);
+    return last !== null && lines.some((l) => l.key === last) ? last : null;
+  });
   const firstKey = pinned ?? defaultLine(lines, v)?.key ?? null;
   if (pinned === null && firstKey !== null && !url.ref && !pageLink) setPinned(firstKey);
   const line = url.ref ? lines.find((l) => isLine(l, url.ref)) : pageLink ? undefined : lines.find((l) => l.key === firstKey);
@@ -132,6 +138,10 @@ function Proofreading({ data, totals }: { data: ProofData; totals: Coverage["tot
   const amount = !line && at?.box != null ? page?.amounts[at.box] : undefined;
 
   useEffect(() => rootRef.current?.focus({ preventScroll: true }), []);
+  const lineKey = line?.key;
+  useEffect(() => {
+    if (lineKey) remember(resumeKey, lineKey);
+  }, [resumeKey, lineKey]);
 
   const pick = (l: Line) => {
     setFinished(false);

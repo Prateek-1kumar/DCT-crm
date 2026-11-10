@@ -1,12 +1,12 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { FileText } from "lucide-react";
+import { Download, FileText } from "lucide-react";
 import { useState } from "react";
 import { askForPerson, useActingAs } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
 import type { Study, StudyDocument } from "@/lib/types";
-import { Button, Card, Dialog, ErrorNote, Spinner } from "../ui";
+import { btnCls, Button, Card, Dialog, ErrorNote, Spinner } from "../ui";
 import { fileSize, pageList } from "./format";
 import { FileDrop, sortFiles } from "./FileDrop";
 import { useUpload } from "./useUpload";
@@ -88,7 +88,12 @@ export function Documents({ study }: { study: Study }) {
                 <span className="shrink-0 text-small text-muted">
                   {doc.pageCount} {doc.pageCount === 1 ? "page" : "pages"} · {fileSize(doc.bytes)}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => setRemoving(doc)} aria-label={`Remove ${doc.name}`}>
+                {/* a plain link: the browser saves the file under the name the API gives it */}
+                <a href={`/api/v1/documents/${doc.id}/file`} download={doc.name} aria-label={`Download ${doc.name}`} data-noprint className={btnCls("ghost", "sm")}>
+                  <Download aria-hidden className="size-4" strokeWidth={1.75} />
+                  Download
+                </a>
+                <Button variant="ghost" size="sm" data-noprint onClick={() => setRemoving(doc)} aria-label={`Remove ${doc.name}`}>
                   Remove
                 </Button>
               </div>

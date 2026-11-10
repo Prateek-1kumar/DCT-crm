@@ -91,6 +91,8 @@ const resize = (w: number) => act(() => void ((window.innerWidth = w), window.di
 
 beforeEach(() => {
   nav.set("");
+  // where the last test left off is remembered per version, as it is for a person
+  localStorage.clear();
   setActingAs(null);
   window.innerWidth = 1400;
 });

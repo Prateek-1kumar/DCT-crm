@@ -1,8 +1,9 @@
 "use client";
 
 import type { Term } from "@dct/shared";
-import { Badge, Card, Empty } from "@/components/ui";
-import { attentionFirst, termMatches, termsNeedingDecision, type TabProps } from "./model";
+import { Badge, Card, CopyButton, Empty } from "@/components/ui";
+import { plainAmount } from "@/lib/money";
+import { attentionFirst, proofreaders, termMatches, termsNeedingDecision, type TabProps } from "./model";
 import { DecisionPill, ProofBadge, ProofreadControl, ShowLink } from "./parts";
 import { BILLING_SHORT, capText, CATEGORY_LABEL, termMoney } from "./terms";
 
@@ -13,7 +14,7 @@ const cell = "px-4 py-3 align-top break-words";
  * A table of terms in the given categories. It scrolls inside its own box so a narrow screen never scrolls the page, and
  * the first column stays put. `emptyTitle`/`emptyText` say what "nothing here" means for this tab.
  */
-export function TermTable({ categories, title, emptyTitle, emptyText, version, query, me, onShow, onProofread }: TabProps & { categories: Term["category"][]; title: string; emptyTitle: string; emptyText: string }) {
+export function TermTable({ categories, title, emptyTitle, emptyText, version, query, unreadOnly, me, onShow, onProofread }: TabProps & { categories: Term["category"][]; title: string; emptyTitle: string; emptyText: string }) {
   const rulebook = version.rulebook;
   if (!rulebook) return <Empty title="Nothing to show yet">The rulebook appears here once the contract has been read.</Empty>;
 
@@ -21,17 +22,19 @@ export function TermTable({ categories, title, emptyTitle, emptyText, version, q
   if (!all.length) return <Empty title={emptyTitle}>{emptyText}</Empty>;
 
   const decision = termsNeedingDecision(rulebook);
-  const rows = attentionFirst(all.filter((t) => termMatches(t, query)), decision);
+  const unread = all.filter((t) => !unreadOnly || proofreaders(version, t.id).length === 0);
+  if (!unread.length) return <Empty title="Everything here has been proofread">Untick “Not proofread yet” to see it all again.</Empty>;
+  const rows = attentionFirst(unread.filter((t) => termMatches(t, query)), decision);
   if (!rows.length) return <Empty title={`Nothing matches “${query.trim()}”`}>Try a different word or amount, or clear the search.</Empty>;
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden print:overflow-visible print:shadow-none">
       <div className="flex items-baseline justify-between gap-3 px-5 pt-5 pb-3 sm:px-6">
         <h2 className="text-title font-semibold tracking-tight">{title}</h2>
         <p className="text-small text-muted">{rows.length === 1 ? "1 item" : `${rows.length} items`}</p>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[960px] border-t border-line text-body">
+      <div className="overflow-x-auto print:overflow-visible">
+        <table className="w-full min-w-[960px] border-t border-line text-body print:min-w-0 print:text-[9px]">
           <caption className="sr-only">{title}</caption>
           <thead className="bg-sunken text-small text-muted">
             <tr>
@@ -93,6 +96,12 @@ export function TermTable({ categories, title, emptyTitle, emptyText, version, q
                   </td>
                   <td className={`${cell} whitespace-nowrap`}>
                     <ShowLink name={t.name} onClick={() => onShow({ target: "term", id: t.id })} />
+                    <span className="mt-1.5 block">
+                      {/* tabs between the fields, so a paste into a spreadsheet lands in separate cells */}
+                      <CopyButton label={`Copy this row: ${t.name}`} text={[t.name, plainAmount(termMoney(t)), BILLING_SHORT[t.billing], t.trigger ?? "", (t.cap && capText(t.cap)) || "", t.deadline ?? "", `${t.source.doc}, page ${t.source.page}`].join("\t")}>
+                        Copy row
+                      </CopyButton>
+                    </span>
                   </td>
                 </tr>
               );

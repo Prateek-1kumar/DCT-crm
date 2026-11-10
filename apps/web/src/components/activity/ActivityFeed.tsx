@@ -1,13 +1,15 @@
 "use client";
 
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { BookOpen, CircleCheck, CircleDot, Files, ListChecks, SpellCheck, Users, type LucideIcon } from "lucide-react";
+import { BookOpen, CircleCheck, CircleDot, Download, Files, ListChecks, SpellCheck, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { api, keys } from "@/lib/queries";
+import { downloadCsv } from "@/lib/csv";
+import { allActivity, api, keys } from "@/lib/queries";
 import type { ActivityItem, ActivityKind } from "@/lib/types";
 import { useMounted } from "@/lib/use-mounted";
-import { Button, Empty, ErrorNote } from "../ui";
+import { activityRows } from "../rulebook/export";
+import { Button, Empty, ErrorNote, errorText, inputBase } from "../ui";
 import { relativeTime, studyTitle, when } from "../study/format";
 import { Skeleton } from "../study/Skeleton";
 import { groupByDay } from "./days";
@@ -110,6 +112,52 @@ export function HistoryTab({ studyId }: { studyId: string }) {
     <div className="flex flex-col gap-5">
       <p className="text-body text-muted">Who did what on this contract, newest first. It can&apos;t be edited.</p>
       <ActivityFeed studyId={studyId} />
+    </div>
+  );
+}
+
+// a date field's "2026-11-10" as the start of that day where the person is, not in UTC
+const localDay = (value: string) => new Date(`${value}T00:00:00`).getTime();
+
+/** The activity trail as a spreadsheet, for the dates chosen (both ends included); with no dates, everything. */
+export function ActivityExport() {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
+  const backwards = !!from && !!to && from > to;
+
+  async function run() {
+    setBusy(true);
+    setNote(null);
+    try {
+      const until = to ? localDay(to) + 86_400_000 : Infinity;
+      const items = (await allActivity({ since: from ? localDay(from) : undefined })).filter((i) => Date.parse(i.at) < until);
+      if (items.length === 0) setNote({ text: "Nothing happened between those dates, so there is nothing to export.", problem: false });
+      else downloadCsv(["activity", from && `from ${from}`, to && `to ${to}`].filter(Boolean).join(" "), activityRows(items, true));
+    } catch (e) {
+      setNote({ text: errorText(e), problem: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-6 flex flex-wrap items-end gap-x-4 gap-y-3">
+      <label className="flex flex-col gap-1 text-small font-medium text-ink-2">
+        From
+        <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} className={inputBase} />
+      </label>
+      <label className="flex flex-col gap-1 text-small font-medium text-ink-2">
+        To
+        <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} className={inputBase} />
+      </label>
+      <Button disabled={busy || backwards} onClick={() => void run()}>
+        <Download aria-hidden className="size-4" strokeWidth={1.75} />
+        {busy ? "Preparing…" : "Export activity (CSV)"}
+      </Button>
+      {backwards && <p className="text-small text-danger">“From” is after “To”. Swap the dates to export.</p>}
+      {note && <p role={note.problem ? "alert" : "status"} className={`text-small ${note.problem ? "text-danger" : "text-muted"}`}>{note.text}</p>}
     </div>
   );
 }

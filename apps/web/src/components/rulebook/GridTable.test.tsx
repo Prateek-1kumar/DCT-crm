@@ -43,7 +43,37 @@ describe("GridTable", () => {
     const spiro = screen.getByRole("row", { name: /Spirometry/ });
     const cells = within(spiro).getAllByRole("cell");
     expect(cells[1]!.textContent).toBe("");
-    expect(cells[2]!.textContent).toBe("");
+  });
+
+  it("adds up an item the contract prints no total for, and says the figure is calculated", () => {
+    render(<GridTable grid={grid} />);
+    const cells = within(screen.getByRole("row", { name: /Spirometry/ })).getAllByRole("cell");
+    expect(cells[2]!.textContent).toBe("$98.00 calculated");
+    // a printed item total is shown as printed
+    expect(within(screen.getByRole("row", { name: /Blood draw/ })).getAllByRole("cell")[2]!.textContent).toBe("$25.00");
+    // this grid prints its own subtotal and total, so no calculated visit totals sit beside them
+    expect(screen.queryByRole("row", { name: /Calculated total/ })).toBeNull();
+  });
+
+  it("adds up each visit when the contract prints no subtotal or total, labelled as not printed", () => {
+    render(<GridTable grid={{ ...grid, subtotal: null, overhead: null, additions: [], total: null, grandTotalCents: null }} />);
+    const row = screen.getByRole("row", { name: /Calculated total/ });
+    expect(within(row).getByText("Not printed in the contract")).toBeTruthy();
+    expect(within(row).getAllByRole("cell").map((c) => c.textContent)).toEqual(["$123.00", "", ""]);
+  });
+
+  it("narrows to the items the search matches, and to those with an amount nobody proofread", () => {
+    const { rerender } = render(<GridTable grid={grid} query="spiro" />);
+    expect(screen.queryByRole("row", { name: /Blood draw/ })).toBeNull();
+    expect(screen.getByRole("row", { name: /Spirometry/ })).toBeTruthy();
+    // a search that matches no item (the grid was found by its name) keeps them all
+    rerender(<GridTable grid={grid} query="main budget" />);
+    expect(screen.getByRole("row", { name: /Blood draw/ })).toBeTruthy();
+    rerender(<GridTable grid={grid} unreadOnly proofread={new Set(["0:0"])} />);
+    expect(screen.queryByRole("row", { name: /Blood draw/ })).toBeNull();
+    expect(screen.getByRole("row", { name: /Spirometry/ })).toBeTruthy();
+    rerender(<GridTable grid={grid} unreadOnly proofread={new Set(["0:0", "1:0"])} />);
+    expect(screen.getByText("Every item in this grid has been proofread.")).toBeTruthy();
   });
 
   it("shows the printed lines, overhead with its percent, and the grand total", () => {

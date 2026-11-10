@@ -2,7 +2,7 @@
 
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
-import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from "react";
+import { forwardRef, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
@@ -37,6 +37,25 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
     return <button ref={ref} type={type} className={cx(btnCls(variant, size), className)} {...props} />;
   },
 );
+
+/** A text link that copies `text` for pasting elsewhere and says "Copied" for a moment. `label` says what is copied, for screen readers. */
+export function CopyButton({ text, label, children = "Copy" }: { text: string; label: string; children?: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () =>
+    // refused when the browser blocks the clipboard (an insecure page); the words then stay "Copy", which is true
+    void navigator.clipboard?.writeText(text).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {},
+    );
+  return (
+    <button type="button" aria-label={label} onClick={copy} data-noprint className="text-left text-small font-medium text-accent hover:text-accent-hover hover:underline">
+      <span aria-live="polite">{copied ? "Copied" : children}</span>
+    </button>
+  );
+}
 
 /** neutral · accent (brand) · ok = matches the PDF · info = confirmed by a person · warn = needs you · danger = problem */
 export type Tone = "neutral" | "accent" | "ok" | "warn" | "danger" | "info";

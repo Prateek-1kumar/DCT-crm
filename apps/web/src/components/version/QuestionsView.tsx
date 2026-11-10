@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { recall, remember } from "@/lib/remembered";
 import { ContractPane } from "@/components/decisions/ContractPane";
 import { OptionCards } from "@/components/decisions/OptionCards";
 import { StartReading } from "@/components/study/StartReading";
@@ -365,13 +366,19 @@ function Screen({ version }: { version: Version }) {
   const draft = version.status === "draft";
   const list = walkOrder(version.rulebook?.questions ?? []);
   const open = list.filter((q) => q.state === "open");
-  const [at, setAt] = useState<string>();
+  // The question this person last had open on this version, while it is still unanswered: coming back carries on from it.
+  const resumeKey = `dct.resume.decisions.${version.id}`;
+  const [at, setAt] = useState<string | undefined>(() => {
+    const last = recall(resumeKey);
+    return list.some((q) => q.id === last && q.state === "open") ? last! : undefined;
+  });
   const [notice, setNotice] = useState<string | null>(null);
 
   const found = list.findIndex((q) => q.id === at);
   const settled = draft && open.length === 0 && found < 0;
   const index = found >= 0 ? found : draft ? list.findIndex((q) => q.state === "open") : 0;
   const go = (id: string) => {
+    remember(resumeKey, id);
     setAt(id);
     setNotice(null);
   };

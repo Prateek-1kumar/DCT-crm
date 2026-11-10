@@ -106,6 +106,22 @@ describe("contracts list", () => {
     expect(screen.getByText(/No contract matches/)).toBeTruthy();
   });
 
+  it("sorts by sponsor and filters to one sponsor or payer, and remembers both", async () => {
+    localStorage.clear();
+    const two = [row({ id: "s1", protocol: "ZZ-1", sponsor: "Northwind Pharma", updatedAt: ago(60_000) }), row({ id: "s2", protocol: "AA-2", sponsor: "Acme Bio", payer: null, updatedAt: ago(3_600_000) })];
+    stubApi({ "GET /studies": () => two });
+    renderWithClient(<StudyList />);
+    const names = () => screen.getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("link")[0]!.textContent);
+    await screen.findByText("ZZ-1");
+    expect(names()).toEqual(["ZZ-1", "AA-2"]);
+    fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "sponsor" } });
+    expect(names()).toEqual(["AA-2", "ZZ-1"]);
+    fireEvent.change(screen.getByLabelText("Sponsor or payer"), { target: { value: "Northwind Pharma" } });
+    expect(names()).toEqual(["ZZ-1"]);
+    expect([localStorage.getItem("dct.contracts.sort"), localStorage.getItem("dct.contracts.party")]).toEqual(["sponsor", "Northwind Pharma"]);
+    localStorage.clear();
+  });
+
   it("names a contract not read yet by its first document and offers the next step", async () => {
     const unread = { protocol: null, sponsorId: null, payerId: null, siteId: null, sponsor: null, payer: null, site: null, latestVersion: null };
     stubApi({ "GET /studies": () => [row({ id: "s4", ...unread }), row({ id: "s5", ...unread, firstDocument: null })] });

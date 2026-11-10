@@ -1,4 +1,4 @@
-import type { Evidence, Grid, Rulebook, Term } from "@dct/shared";
+import type { Cell, Evidence, Grid, Rulebook, Term } from "@dct/shared";
 import { formatCents } from "@/lib/money";
 import type { Coverage, CoverageRef, Version } from "@/lib/types";
 import { capText, CATEGORY_LABEL, HOLDBACK_LABEL, OVERHEAD_LABEL, termMoney } from "./terms";
@@ -15,6 +15,8 @@ export interface TabProps {
   coverage?: Coverage;
   /** Free-text filter over names, amounts, quotes and notes. */
   query: string;
+  /** Show only what nobody has proofread yet. */
+  unreadOnly?: boolean;
   /** The person using the app, or null before they chose a name. */
   me: string | null;
   onShow: (ref: ShowRef) => void;
@@ -53,7 +55,7 @@ export function gridMatches(grid: Grid, query: string): boolean {
   const hay = norm(
     [grid.name, grid.arm, grid.doc, ...grid.visits, ...grid.rows.flatMap((r) => [r.name, r.code]), grid.grandTotalCents === null ? null : formatCents(grid.grandTotalCents)].filter(Boolean).join("\n"),
   );
-  return hay.includes(q) || hay.replace(/[$,]/g, "").includes(q.replace(/[$,]/g, ""));
+  return hay.includes(q) || hay.replace(/[$,]/g, "").includes(q.replace(/[$,]/g, "")) || grid.rows.some((r) => gridRowMatches(r, query));
 }
 
 /** Names of the people who proofread an item, once each, in the order they marked it. */
@@ -119,4 +121,30 @@ export function gridProof(grid: Grid, version: Version): Evidence {
   if (grid.acceptedAsPrinted) return "person";
   if (version.problems.some((p) => p.id === grid.id)) return "none";
   return grid.total || grid.subtotal ? "math" : "none";
+}
+
+/** The amounts in a line of cells added up; null when it holds none. Integer cents, so the sum is exact. */
+export function sumCells(cells: Cell[]): number | null {
+  const amounts = cells.filter((c): c is number => typeof c === "number");
+  return amounts.length ? amounts.reduce((a, b) => a + b, 0) : null;
+}
+
+/**
+ * Totals the contract doesn't print, added up by us and always labelled as calculated: each item across its visits, and
+ * each visit down its items. A visit total is offered only when the grid prints neither a subtotal nor a total row, so a
+ * calculated figure never sits beside a printed one that includes overhead.
+ */
+export function calculatedTotals(grid: Grid) {
+  return {
+    rows: grid.rows.map((r) => (r.printedRowTotalCents === null ? sumCells(r.cells) : null)),
+    visits: grid.subtotal || grid.total ? null : grid.visits.map((_, c) => sumCells(grid.rows.map((r) => r.cells[c] ?? null))),
+  };
+}
+
+/** Whether one grid row matches the query: its name, code, unit cost or any amount in it. */
+export function gridRowMatches(row: Grid["rows"][number], query: string): boolean {
+  const q = norm(query.trim());
+  if (!q) return true;
+  const hay = norm([row.name, row.code, row.unitCostCents === null ? null : formatCents(row.unitCostCents), ...row.cells.map((c) => (typeof c === "number" ? formatCents(c) : c))].filter(Boolean).join("\n"));
+  return hay.includes(q) || hay.replace(/[$,]/g, "").includes(q.replace(/[$,]/g, ""));
 }

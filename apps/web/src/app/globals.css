@@ -142,3 +142,17 @@ dialog::backdrop {
     scroll-behavior: auto !important;
   }
 }
+
+/* Paper: only the work area prints. Landscape, because budget grids are wide. */
+@media print {
+  @page {
+    size: landscape;
+    margin: 10mm;
+  }
+  [data-noprint] {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+  }
+}

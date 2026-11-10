@@ -1,16 +1,19 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Download, Plus, Search } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useActingAs } from "@/lib/acting-as";
+import { downloadCsv } from "@/lib/csv";
 import { api, keys } from "@/lib/queries";
+import { useRemembered } from "@/lib/remembered";
 import { inTab, LIST_TABS, matchesQuery, stepInfo, tabCounts, type ListTab } from "@/lib/steps";
 import type { StudyRow } from "@/lib/types";
 import { useMounted } from "@/lib/use-mounted";
-import { Badge, btnCls, cx, Empty, ErrorNote, inputBase, PageTitle, pageCls } from "../ui";
+import { contractRows } from "../rulebook/export";
+import { Badge, btnCls, Button, cx, Empty, ErrorNote, inputBase, PageTitle, pageCls } from "../ui";
 import { relativeTime, studySub, studyTitle } from "./format";
 import { Skeleton } from "./Skeleton";
 import { StepDots } from "./StepDots";
@@ -23,6 +26,16 @@ const EMPTY_TAB: Record<Exclude<ListTab, "all">, string> = {
   live: "No contract is live yet. A contract goes live once its rulebook is approved.",
   failed: "No contract failed to read.",
 };
+
+const SORTS = [
+  { id: "updated", label: "Last updated" },
+  { id: "contract", label: "Contract name" },
+  { id: "sponsor", label: "Sponsor" },
+  { id: "where", label: "Where it is" },
+] as const;
+type Sort = (typeof SORTS)[number]["id"];
+
+const byText = (a: string | null, b: string | null) => (a ?? "\uffff").localeCompare(b ?? "\uffff", "en-US", { sensitivity: "base" });
 
 function Row({ study, me }: { study: StudyRow; me: string | null }) {
   const info = stepInfo(study, me);
@@ -103,19 +116,36 @@ export function StudyList() {
   const me = useActingAs();
   const tab = parse(useSearchParams().get("filter"));
   const [search, setSearch] = useState("");
+  const [sortId, setSort] = useRemembered("dct.contracts.sort", "updated");
+  const [party, setParty] = useRemembered("dct.contracts.party", "");
+  const sort: Sort = SORTS.some((o) => o.id === sortId) ? (sortId as Sort) : "updated";
 
   const mounted = useMounted();
   // the sidebar may have filled the cache before this hydrates: drawing it then would not match the server's HTML
   const all = mounted ? studies.data : undefined;
   const pending = studies.isPending || !mounted;
   const counts = useMemo(() => (all ? tabCounts(all, me) : null), [all, me]);
-  const shown = useMemo(
-    () =>
-      (all ?? [])
-        .filter((s) => inTab(stepInfo(s, me), tab) && matchesQuery(s, search))
-        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
-    [all, me, tab, search],
-  );
+  // every sponsor and payer (the CRO, when one pays) named on a contract, for the filter
+  const parties = useMemo(() => [...new Set((all ?? []).flatMap((s) => [s.sponsor, s.payer]).filter((p): p is string => !!p))].sort(byText), [all]);
+  // a remembered sponsor that no contract names any more filters nothing
+  const partyOn = parties.includes(party) ? party : "";
+  const shown = useMemo(() => {
+    const newest = (a: StudyRow, b: StudyRow) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    const order: Record<Sort, (a: StudyRow, b: StudyRow) => number> = {
+      updated: newest,
+      contract: (a, b) => byText(studyTitle(a.protocol, a.firstDocument), studyTitle(b.protocol, b.firstDocument)),
+      sponsor: (a, b) => byText(a.sponsor, b.sponsor) || newest(a, b),
+      // the order of the steps a contract goes through, earliest first
+      where: (a, b) => stepInfo(a, me).step - stepInfo(b, me).step || newest(a, b),
+    };
+    return (all ?? []).filter((s) => inTab(stepInfo(s, me), tab) && matchesQuery(s, search) && (!partyOn || s.sponsor === partyOn || s.payer === partyOn)).sort(order[sort]);
+  }, [all, me, tab, search, sort, partyOn]);
+
+  const exportList = () =>
+    downloadCsv(
+      "contracts",
+      contractRows(shown.map((study) => ({ study, title: studyTitle(study.protocol, study.firstDocument), where: stepInfo(study, me).status, next: stepInfo(study, me).next.label }))),
+    );
 
   const add = (
     <Link href="/studies/new" className={btnCls("primary")}>
@@ -158,6 +188,35 @@ export function StudyList() {
               <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Protocol, sponsor, site or doctor" className={cx(inputBase, "w-full pl-10")} />
             </label>
           </div>
+          <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-3">
+            <label className="flex items-center gap-2.5 text-small font-medium text-ink-2">
+              Sort by
+              <select value={sort} onChange={(e) => setSort(e.target.value)} className={`${inputBase} pr-8`}>
+                {SORTS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {parties.length > 1 && (
+              <label className="flex items-center gap-2.5 text-small font-medium text-ink-2">
+                Sponsor or payer
+                <select value={partyOn} onChange={(e) => setParty(e.target.value)} className={`${inputBase} max-w-[240px] pr-8`}>
+                  <option value="">All</option>
+                  {parties.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <Button size="sm" variant="ghost" className="ml-auto" disabled={pending || shown.length === 0} onClick={exportList}>
+              <Download aria-hidden className="size-4" strokeWidth={1.75} />
+              Export this list (CSV)
+            </Button>
+          </div>
 
           {studies.isError && mounted ? (
             <ErrorNote error={studies.error} retry={() => void studies.refetch()} />
@@ -185,7 +244,7 @@ export function StudyList() {
               </table>
               {!pending && shown.length === 0 && (
                 <p className="border-t border-line px-5 py-10 text-center text-body text-muted">
-                  {search.trim() ? `No contract matches “${search.trim()}”. Try a protocol number, a sponsor, a site or a doctor.` : tab === "all" ? "No contracts to show." : EMPTY_TAB[tab]}
+                  {search.trim() ? `No contract matches “${search.trim()}”. Try a protocol number, a sponsor, a site or a doctor.` : partyOn ? `No contract here names ${partyOn}. Choose “All” to see every contract.` : tab === "all" ? "No contracts to show." : EMPTY_TAB[tab]}
                 </p>
               )}
             </div>

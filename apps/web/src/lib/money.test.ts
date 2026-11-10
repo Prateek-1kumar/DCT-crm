@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { centsToInput, formatCents, parseDollars } from "./money";
+import { centsToInput, formatCents, parseDollars, plainAmount } from "./money";
 
 describe("formatCents", () => {
   it("formats integer cents as USD", () => {
@@ -28,5 +28,11 @@ describe("parseDollars", () => {
   });
   it("round-trips through the editor format", () => {
     for (const c of [0, 1, 99, 100, 745500, -305]) expect(parseDollars(centsToInput(c))).toBe(c);
+  });
+});
+
+describe("plainAmount", () => {
+  it("strips the dollar sign and commas from one amount, and leaves anything else as written", () => {
+    expect([plainAmount("$1,234.56"), plainAmount("−$0.05"), plainAmount("$85.00 per hour"), plainAmount("Net 45")]).toEqual(["1234.56", "-0.05", "$85.00 per hour", "Net 45"]);
   });
 });

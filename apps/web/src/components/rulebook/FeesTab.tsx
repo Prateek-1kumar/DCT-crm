@@ -1,10 +1,9 @@
 "use client";
 
-import type { Term } from "@dct/shared";
 import type { TabProps } from "./model";
 import { TermTable } from "./TermTable";
+import { FEE_CATEGORIES } from "./terms";
 
-const FEE_CATEGORIES: Term["category"][] = ["site_fee", "recurring_fee", "invoiceable", "conditional_procedure", "unscheduled_visit", "screen_failure", "stipend_travel", "bonus"];
 
 /** "Fees & invoiceables": everything the site is paid outside the visit grid, or has to invoice for. */
 export function FeesTab(props: TabProps) {
