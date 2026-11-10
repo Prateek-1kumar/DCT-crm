@@ -1,12 +1,12 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, FileText, HelpCircle, History, Menu, Search, Settings, X, type LucideIcon } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, FileText, HelpCircle, History, LogOut, Menu, Search, Settings, X, type LucideIcon } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { askForPerson, setActingAs, useActingAs, usePersonPrompt } from "@/lib/acting-as";
+import { askForPerson, setActingAs, useActingAs, usePersonPrompt, useSignedIn } from "@/lib/acting-as";
 import { api, keys } from "@/lib/queries";
 import { useSidebarCollapsed } from "@/lib/sidebar";
 import { LIST_TABS, matchesQuery, tabCounts, type ListTab } from "@/lib/steps";
@@ -41,12 +41,9 @@ function NavLink({ href, label, icon: Icon, active, onNavigate }: { href: string
 /** Bottom of the sidebar: who is working. No login yet, so people give their name. */
 function PersonChip() {
   const me = useActingAs();
-  return (
-    <button
-      type="button"
-      onClick={() => askForPerson()}
-      className="group flex w-full items-center gap-3 rounded-[14px] p-2 text-left transition-colors hover:bg-ink/[0.045]"
-    >
+  const fixed = useSignedIn();
+  const body = (
+    <>
       <span
         aria-hidden
         className={cx(
@@ -58,8 +55,15 @@ function PersonChip() {
       </span>
       <span className="min-w-0 flex-1">
         <span className={cx("block truncate text-body font-medium", me ? "text-ink" : "text-warn")}>{me ?? "Choose your name"}</span>
-        <span className="block text-caption text-faint">{me ? "Working now · switch" : "So your work is signed"}</span>
+        <span className="block text-caption text-faint">{fixed ? "Signed in" : me ? "Working now · switch" : "So your work is signed"}</span>
       </span>
+    </>
+  );
+  // signed in: the name is the login's, so there is nothing to switch
+  if (fixed) return <div className="flex w-full items-center gap-3 p-2 text-left">{body}</div>;
+  return (
+    <button type="button" onClick={() => askForPerson()} className="group flex w-full items-center gap-3 rounded-[14px] p-2 text-left transition-colors hover:bg-ink/[0.045]">
+      {body}
     </button>
   );
 }
@@ -201,6 +205,31 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
+/** Only when signed in (UAT login). Clears what's loaded, so nothing of the last person stays on screen. */
+function SignOutButton({ collapsed }: { collapsed: boolean }) {
+  const signedIn = useSignedIn();
+  const router = useRouter();
+  const queries = useQueryClient();
+  if (!signedIn) return null;
+  const out = async () => {
+    await fetch("/auth", { method: "DELETE" }).catch(() => undefined);
+    queries.clear();
+    router.replace("/login");
+  };
+  return (
+    <button
+      type="button"
+      aria-label="Sign out"
+      title="Sign out"
+      onClick={out}
+      className={cx("group flex h-9 items-center rounded-[10px] text-body text-muted transition-colors hover:bg-ink/[0.045] hover:text-ink", collapsed ? "w-full justify-center" : "w-full gap-2.5 px-2.5")}
+    >
+      <LogOut aria-hidden className="size-[17px] shrink-0" strokeWidth={1.75} />
+      {!collapsed && <span className="truncate">Sign out</span>}
+    </button>
+  );
+}
+
 /** Same corner in both states (the bottom), so the person always knows where to find it. */
 function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const label = collapsed ? "Expand the sidebar" : "Collapse the sidebar";
@@ -247,6 +276,7 @@ function SidebarBody({ onNavigate, onClose, onSearch, onCollapse }: { onNavigate
       <div className="mt-auto flex flex-col gap-1 border-t border-line-strong/70 pt-2">
         <NavLink href="/settings" label="Settings" icon={Settings} active={path === "/settings"} onNavigate={onNavigate} />
         <PersonChip />
+        <SignOutButton collapsed={false} />
         {onCollapse && <CollapseToggle collapsed={false} onToggle={onCollapse} />}
       </div>
     </div>
@@ -277,7 +307,8 @@ function Rail({ onSearch, onExpand }: { onSearch: () => void; onExpand: () => vo
   const me = useActingAs();
   const studies = useQuery({ queryKey: keys.studies, queryFn: api.studies });
   const needs = studies.data ? tabCounts(studies.data, me)["needs-you"] : 0;
-  const who = me ? `${me}, working now. Switch person` : "Choose your name";
+  const fixed = useSignedIn();
+  const who = fixed ? `${me}, signed in` : me ? `${me}, working now. Switch person` : "Choose your name";
   return (
     <div className="flex h-full flex-col items-center gap-4 px-3 py-4">
       <Link href="/" aria-label="Discovery Clinical Trials" title="Discovery Clinical Trials" className="grid size-10 place-items-center">
@@ -299,7 +330,7 @@ function Rail({ onSearch, onExpand }: { onSearch: () => void; onExpand: () => vo
 
       <div className="mt-auto flex w-full flex-col items-center gap-1 border-t border-line-strong/70 pt-2">
         <RailLink href="/settings" label="Settings" icon={Settings} active={path === "/settings"} />
-        <button type="button" aria-label={who} title={who} onClick={() => askForPerson()} className="grid size-10 place-items-center rounded-full hover:bg-ink/[0.045]">
+        <button type="button" aria-label={who} title={who} onClick={() => !fixed && askForPerson()} className="grid size-10 place-items-center rounded-full hover:bg-ink/[0.045]">
           <span
             aria-hidden
             className={cx("grid size-9 place-items-center rounded-full text-small font-semibold", me ? "bg-brand-soft text-accent" : "border border-dashed border-warn text-warn")}
@@ -308,6 +339,7 @@ function Rail({ onSearch, onExpand }: { onSearch: () => void; onExpand: () => vo
           </span>
         </button>
         <div className="w-full">
+          <SignOutButton collapsed />
           <CollapseToggle collapsed onToggle={onExpand} />
         </div>
       </div>

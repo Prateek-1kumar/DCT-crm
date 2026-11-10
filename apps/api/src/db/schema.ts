@@ -184,3 +184,14 @@ export const idempotencyKeys = pgTable(
   },
   (t) => [index("idempotency_keys_created").on(t.createdAt)],
 );
+
+/** UAT sign-in accounts, made with `pnpm --filter @dct/api user:add`. The password is stored hashed (lib/password.ts). */
+export const users = pgTable("users", {
+  id: id(),
+  /** What they type to sign in, lowercase. */
+  name: text("name").notNull().unique(),
+  /** How their work is signed ("by"). */
+  displayName: text("display_name").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: createdAt(),
+});
