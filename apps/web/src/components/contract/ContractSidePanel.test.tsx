@@ -32,14 +32,14 @@ function Host({ target, onClose = () => {}, onOpenFull = () => {} }: { target: S
   return v.data ? <ContractSidePanel version={v.data} target={target} onClose={onClose} onOpenFull={onOpenFull} /> : null;
 }
 
-type Over = { version?: Parameters<typeof sampleVersion>[0]; coverage?: () => unknown; onClose?: () => void; onOpenFull?: () => void };
+type Over = { find?: object; version?: Parameters<typeof sampleVersion>[0]; coverage?: () => unknown; onClose?: () => void; onOpenFull?: () => void };
 
 function setup(target: ShowRef | null, over: Over = {}) {
   const current = sampleVersion(over.version);
   const fetch = mockApi({
     "GET /versions/v1": () => current,
     "GET /versions/v1/coverage": over.coverage ?? coverage,
-    "GET /documents/d1/pages/1/find": () => ({ boxes: [[0.1, 0.5, 0.6, 0.55]] }),
+    "GET /documents/d1/pages/1/find": () => over.find ?? { boxes: [[0.1, 0.5, 0.6, 0.55]] },
     "POST /versions/v1/proofread": () => current,
   });
   // One client for the whole test, so a re-render keeps the cache (the panel opens and closes on the same page).
@@ -117,6 +117,45 @@ describe("ContractSidePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show every amount" }));
     expect(screen.getByRole("button", { name: "Show every amount" }).getAttribute("aria-pressed")).toBe("true");
     expect(tones()).toHaveLength(3); // page 1 has no other amounts
+  });
+
+  describe("a passage that could not be pinned to the exact spot", () => {
+    const NOTE = "We couldn't pin down the exact spot on this scanned page, so the highlighted area is approximate. What you're looking for is inside it.";
+
+    it("says nothing and marks nothing approximate when every box is exact", async () => {
+      setup({ target: "term", id: "t1" });
+      await screen.findByRole("group", { name: "Contract.pdf" });
+      expect(screen.queryByText(NOTE)).toBeNull();
+      expect(boxes().every((b) => !b.getAttribute("aria-label")!.includes("area"))).toBe(true);
+    });
+
+    it("an approximate search result is worded as an area and explained", async () => {
+      setup({ target: "term", id: "t1" }, { find: { boxes: [[0.05, 0.3, 0.95, 0.7]], approx: true } });
+      expect(await screen.findByText(NOTE)).toBeTruthy();
+      expect(screen.getByLabelText("Approximate area · The words quoted in the rulebook")).toBeTruthy();
+    });
+
+    it("saved clause boxes flagged approximate are used when the search finds nothing", async () => {
+      const cov = () => {
+        const c = coverage();
+        Object.assign(c.pages[0]!.clauses[0]!, { approx: true });
+        return c;
+      };
+      setup({ target: "term", id: "t1" }, { find: { boxes: [] }, coverage: cov });
+      expect(await screen.findByText(NOTE)).toBeTruthy();
+      expect(screen.getByLabelText("Approximate area · The words quoted in the rulebook")).toBeTruthy();
+    });
+
+    it("an approximate amount says it is somewhere in the area", async () => {
+      const cov = () => {
+        const c = coverage();
+        Object.assign(c.pages[0]!.amounts[0]!, { approx: true });
+        return c;
+      };
+      setup({ target: "term", id: "t1" }, { coverage: cov });
+      expect(await screen.findByLabelText(/^\$5,000\.00 is somewhere in this area · /)).toBeTruthy();
+      expect(screen.getByText(NOTE)).toBeTruthy();
+    });
   });
 
   it("draws every amount of a busier page only when asked", async () => {

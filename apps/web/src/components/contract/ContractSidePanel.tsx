@@ -11,7 +11,7 @@ import type { ShowRef } from "../rulebook";
 import { ProofBadge } from "../rulebook/parts";
 import { Skeleton } from "../study/Skeleton";
 import { Button, cx, Empty, LoadError } from "../ui";
-import { ContractViewer, ReviewActions } from "../viewer";
+import { APPROX_NOTE, ContractViewer, ReviewActions } from "../viewer";
 import { itemsOf } from "./proofreads";
 import { headOf, usePassage } from "./side/passage";
 
@@ -36,6 +36,7 @@ function Viewer({ data, line }: { data: ProofData; line: CoverageRef }) {
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
       {p.lost && <p className="rounded-field bg-warn-soft px-3 py-1.5 text-small text-warn">We couldn&apos;t find the exact words on this page. The page is shown so you can look.</p>}
+      {p.focusApprox && <p className="px-1 text-small text-muted">{APPROX_NOTE}</p>}
       <ContractViewer
         documentId={p.docId}
         page={p.page}

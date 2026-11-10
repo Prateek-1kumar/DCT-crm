@@ -8,9 +8,10 @@ import { kindLabel, newQuestions } from "./questions";
 
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: { href: string; children: ReactNode }) => <a href={href} {...p}>{children}</a> }));
 // jsdom has no layout, so the real viewer is replaced by a stand-in that shows what it was asked to draw.
-vi.mock("@/components/viewer", () => ({
-  ContractViewer: ({ documentId, page, focus, boxes, startIn, onPageChange }: { documentId: string; page: number; focus: number[] | null; boxes: { tone: string }[]; startIn: string; onPageChange: (p: number) => void }) => (
-    <div data-testid="viewer" data-doc={documentId} data-page={page} data-focus={focus ? focus.join(",") : ""} data-boxes={boxes.length} data-tones={boxes.map((b) => b.tone).join(",")} data-start={startIn}>
+vi.mock("@/components/viewer", async (original) => ({
+  ...(await original<object>()),
+  ContractViewer: ({ documentId, page, focus, boxes, startIn, onPageChange }: { documentId: string; page: number; focus: number[] | null; boxes: { tone: string; label: string; approx?: boolean }[]; startIn: string; onPageChange: (p: number) => void }) => (
+    <div data-testid="viewer" data-doc={documentId} data-page={page} data-focus={focus ? focus.join(",") : ""} data-boxes={boxes.length} data-tones={boxes.map((b) => b.tone).join(",")} data-approx={boxes.map((b) => !!b.approx).join(",")} data-labels={boxes.map((b) => b.label).join("|")} data-start={startIn}>
       <button onClick={() => onPageChange(page + 1)}>Stub next page</button>
     </div>
   ),
@@ -25,7 +26,8 @@ afterEach(() => {
 
 const view = () => renderWithClient(<QuestionsView versionId="v1" />);
 const box = [0.1, 0.4, 0.4, 0.45];
-const find = (boxes: number[][] = [box]) => () => ({ boxes });
+const find = (boxes: number[][] = [box], approx?: true) => () => ({ boxes, ...(approx && { approx }) });
+const APPROX_NOTE = "We couldn't pin down the exact spot on this scanned page, so the highlighted area is approximate. What you're looking for is inside it.";
 const withQuestions = (...questions: ReturnType<typeof question>[]) => version({ rulebook: rulebook({ questions }) });
 const skip = () => fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
 
@@ -162,6 +164,66 @@ describe("QuestionsView", () => {
     await waitFor(() => expect(viewer().getAttribute("data-page")).toBe("4"));
     expect(viewer().getAttribute("data-focus")).toBe("0.1,0.5,0.5,0.55");
     expect(viewer().getAttribute("data-boxes")).toBe("1");
+  });
+
+  describe("how exactly the passage can be marked", () => {
+    const region = [0.1, 0.5, 0.5, 0.55];
+    const quoted = (over: object) => question("a", { source: { doc: "Contract.pdf", page: 2, quote: "net 45 days", ...over } });
+    const viewer = () => screen.getByTestId("viewer");
+
+    it("an exact search result beats a region the AI typed", async () => {
+      mockApi({ "GET /versions/v1": () => withQuestions(quoted({ region })), "GET /documents/d1/pages/2/find": find([box]) });
+      view();
+      await waitFor(() => expect(viewer().getAttribute("data-focus")).toBe(box.join(",")));
+      expect(viewer().getAttribute("data-approx")).toBe("false");
+      expect(viewer().getAttribute("data-labels")).toBe("The words this question is about");
+      expect(screen.queryByText(APPROX_NOTE)).toBeNull();
+    });
+
+    it("draws nothing while the search is running, so the region never shows first and then jumps", async () => {
+      const fetch = mockApi({ "GET /versions/v1": () => withQuestions(quoted({ region })) });
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url.includes("/find") ? new Promise(() => {}) : fetch(url, init)));
+      view();
+      await screen.findByText("Question text a");
+      expect(viewer().getAttribute("data-boxes")).toBe("0");
+      expect(viewer().getAttribute("data-focus")).toBe("");
+    });
+
+    it("a search result flagged approximate is drawn as an approximate area, with the note", async () => {
+      mockApi({ "GET /versions/v1": () => withQuestions(quoted({ region })), "GET /documents/d1/pages/2/find": find([[0.05, 0.3, 0.9, 0.6]], true) });
+      view();
+      await waitFor(() => expect(viewer().getAttribute("data-focus")).toBe("0.05,0.3,0.9,0.6"));
+      expect(viewer().getAttribute("data-approx")).toBe("true");
+      expect(viewer().getAttribute("data-labels")).toBe("Approximate area · The words this question is about");
+      expect(screen.getByText(APPROX_NOTE)).toBeTruthy();
+    });
+
+    it("falls back to the region, as approximate, when the words aren't found; the note replaces the warning", async () => {
+      mockApi({ "GET /versions/v1": () => withQuestions(quoted({ region })), "GET /documents/d1/pages/2/find": find([]) });
+      view();
+      await waitFor(() => expect(viewer().getAttribute("data-focus")).toBe(region.join(",")));
+      expect(viewer().getAttribute("data-approx")).toBe("true");
+      expect(await screen.findByText(APPROX_NOTE)).toBeTruthy();
+      expect(screen.queryByText("We couldn't highlight the exact words on this page.")).toBeNull();
+    });
+
+    it("a question with a region and no quote uses the region as approximate, without searching", async () => {
+      const fetch = mockApi({ "GET /versions/v1": () => withQuestions(quoted({ quote: "", region })) });
+      view();
+      await screen.findByText("Question text a");
+      expect(viewer().getAttribute("data-focus")).toBe(region.join(","));
+      expect(viewer().getAttribute("data-approx")).toBe("true");
+      expect(screen.getByText(APPROX_NOTE)).toBeTruthy();
+      expect(fetch.mock.calls.some(([url]) => String(url).includes("/find"))).toBe(false);
+    });
+
+    it("with no flag from the search, nothing is approximate", async () => {
+      mockApi({ "GET /versions/v1": () => withQuestions(quoted({})), "GET /documents/d1/pages/2/find": find() });
+      view();
+      await waitFor(() => expect(viewer().getAttribute("data-boxes")).toBe("1"));
+      expect(viewer().getAttribute("data-approx")).toBe("false");
+      expect(screen.queryByText(APPROX_NOTE)).toBeNull();
+    });
   });
 
   it("puts the quote, page and file in a strip above the contract and says when the words can't be found", async () => {

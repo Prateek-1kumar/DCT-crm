@@ -62,8 +62,8 @@ export const api = {
   unflag: (versionId: string, by: string, item: string) => request<Version>("DELETE", `/versions/${versionId}/flag${q({ by, item })}`),
 
   pageText: (documentId: string, page: number) => request<PageText>("GET", `/documents/${documentId}/pages/${page}/text`),
-  /** Where `quote` sits on the page, as boxes to highlight; empty when the words aren't there. */
-  find: (documentId: string, page: number, quote: string) => request<{ boxes: Region[] }>("GET", `/documents/${documentId}/pages/${page}/find${q({ q: quote })}`),
+  /** Where `quote` sits on the page, as boxes to highlight; empty when the words aren't there. `approx` (scanned pages only) means the boxes are a larger area that contains the words. */
+  find: (documentId: string, page: number, quote: string) => request<{ boxes: Region[]; approx?: true }>("GET", `/documents/${documentId}/pages/${page}/find${q({ q: quote })}`),
 };
 
 /** The page as a PNG, through the same-origin /api proxy (an <img> src). */

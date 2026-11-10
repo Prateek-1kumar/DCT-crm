@@ -61,7 +61,33 @@ describe("viewerBoxes", () => {
     const d = data();
     expect(viewerBoxes(d, page2(), { ref: null, quote: [], selectedBox: null, showAll: false }).boxes[0]!.label).toBe("$31.00 · captured as Visit budget · read with a doubt: handwritten");
   });
-  it("has nothing for a page we don't have", () => expect(viewerBoxes(data(), undefined, { ref: null, quote: [], selectedBox: null, showAll: true })).toEqual({ boxes: [], focus: null, problems: 0 }));
+  it("has nothing for a page we don't have", () => expect(viewerBoxes(data(), undefined, { ref: null, quote: [], selectedBox: null, showAll: true })).toEqual({ boxes: [], focus: null, focusApprox: false, problems: 0 }));
+  it("without any flag nothing is approximate: no mark carries the field and the focus is exact", () => {
+    const d = data();
+    const out = viewerBoxes(d, d.pages[0]!, { ref: { target: "term", id: "t1" }, quote: [[0.1, 0.5, 0.4, 0.52]], selectedBox: null, showAll: true });
+    expect(out.boxes.every((b) => !("approx" in b))).toBe(true);
+    expect(out.focusApprox).toBe(false);
+  });
+  it("an approximate amount is marked and worded as somewhere in its area; the exact ones beside it are not", () => {
+    const d = data();
+    d.pages[0]!.amounts[0]!.approx = true;
+    const out = viewerBoxes(d, d.pages[0]!, { ref: { target: "term", id: "t1" }, quote: [], selectedBox: null, showAll: true });
+    const [loose, exact] = out.boxes;
+    expect(loose).toMatchObject({ id: "amt:0", tone: "focus", approx: true });
+    expect(loose!.label).toMatch(/^\$5,000\.00 is somewhere in this area · /);
+    expect("approx" in exact!).toBe(false);
+    expect(out.focusApprox).toBe(true);
+  });
+  it("an approximate quote is marked on every box and in its label; a picked exact amount is an exact focus", () => {
+    const d = data();
+    const quote: [number, number, number, number][] = [[0.1, 0.5, 0.9, 0.7]];
+    const out = viewerBoxes(d, d.pages[0]!, { ref: { target: "term", id: "t1" }, quote, quoteApprox: true, selectedBox: null, showAll: false });
+    expect(out.boxes[0]).toMatchObject({ id: "quote:0", approx: true, label: "Approximate area · The words quoted in the rulebook" });
+    expect(out.focusApprox).toBe(true);
+    const picked = viewerBoxes(d, d.pages[0]!, { ref: null, quote: [], selectedBox: 0, showAll: false });
+    expect(picked.focus).toEqual(d.pages[0]!.amounts[0]!.box);
+    expect(picked.focusApprox).toBe(false); // an exact picked amount is exact
+  });
   it("helpers", () => {
     expect(union([])).toBeNull();
     expect(amountIndex("amt:3")).toBe(3);

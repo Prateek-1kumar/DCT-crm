@@ -15,6 +15,8 @@ export default defineConfig({
       OPENAI_PRICE_PER_MTOK: "",
       // the default, whatever test cap a developer's .env sets for real reads
       READ_BUDGET_USD: "3",
+      // no OCR running behind the tests; the one that covers it turns it on for itself
+      LOCATE_SCANS: "off",
       READ_BUDGET_MAX_USD: "20",
       UPLOAD_DIR: path.join(os.tmpdir(), `dct-api-test-${process.pid}`),
     },

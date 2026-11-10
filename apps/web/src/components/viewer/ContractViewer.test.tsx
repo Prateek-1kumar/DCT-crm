@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ContractViewer, type ViewerBox } from "./ContractViewer";
+import { approxLabel, ContractViewer, type ViewerBox } from "./ContractViewer";
 
 // jsdom has no layout: give every element a 1000 × 700 viewport, and a Letter page at 60 dpi (510 × 660) for the first picture.
 const sizes = { w: 1000, h: 700 };
@@ -247,6 +247,35 @@ describe("highlights", () => {
     expect(c.className).not.toContain("border-[3px]");
     expect(f.textContent).not.toBe(c.textContent);
     expect(screen.getByRole("button", { name: /not captured/ }).textContent).toBe("!");
+  });
+
+  it("an approximate box is dashed with a lighter tint, marked ≈, and its label says so in words", () => {
+    const loose: ViewerBox[] = [
+      { id: "a", box: [0.1, 0.1, 0.5, 0.3], tone: "captured", label: approxLabel("$5,000.00 · captured as Startup fee", true, "$5,000.00"), approx: true },
+      { id: "f", box: [0.1, 0.5, 0.9, 0.7], tone: "focus", label: approxLabel("The words quoted in the rulebook", true), approx: true },
+      { id: "x", box: [0.1, 0.8, 0.3, 0.85], tone: "captured", label: "$1.00 · captured" },
+    ];
+    setup({ boxes: loose, onBoxClick: () => {} });
+    const a = screen.getByRole("button", { name: "$5,000.00 is somewhere in this area · captured as Startup fee" });
+    const f = screen.getByRole("button", { name: "Approximate area · The words quoted in the rulebook" });
+    const exact = screen.getByRole("button", { name: "$1.00 · captured" });
+    expect(a.className).toContain("border-dashed");
+    expect(a.className).toContain("border-ok"); // keeps its tone's colour
+    expect(f.className).toContain("border-dashed");
+    expect(f.className).toContain("border-highlight-strong");
+    expect(a.textContent).toBe("≈✓"); // the tone glyph stays, so tones differ without colour
+    expect(a.dataset.approx).toBe("");
+    // the exact one of the same tone is unchanged
+    expect(exact.className).toContain("border-solid");
+    expect(exact.textContent).toBe("✓");
+    expect(exact.dataset.approx).toBeUndefined();
+  });
+
+  it("approxLabel leaves an exact label alone and words an approximate one plainly", () => {
+    expect(approxLabel("$5,000.00 · captured as Startup fee", undefined, "$5,000.00")).toBe("$5,000.00 · captured as Startup fee");
+    expect(approxLabel("The passage", false)).toBe("The passage");
+    expect(approxLabel("$5,000.00 · not captured", true, "$5,000.00")).toBe("$5,000.00 is somewhere in this area · not captured");
+    expect(approxLabel("The passage", true)).toBe("Approximate area · The passage");
   });
 
   it("are plain labelled marks when nothing listens for clicks", () => {

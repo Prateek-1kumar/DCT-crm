@@ -194,7 +194,7 @@ describe("scanDocs", () => {
     await writeFile(join(dir, "scans-old", `${doc.sha256}.scan.json`), JSON.stringify([{ page: 1, version: `transcribe-1 ${reader.model}`, rotation: 0, words: [] }]));
     expect(await untranscribed([doc], store, reader)).toBe(1);
 
-    const [scanned] = await scanDocs([doc], { reader, store, budget: budgetOf(3) });
+    const [scanned] = await scanDocs([doc], { reader, store, budget: budgetOf(3), detect: async () => [] });
     expect(sent).toHaveLength(1);
     expect(scanned!.pages[0]!.kind).toBe("scan");
     expect(await untranscribed([doc], store, reader)).toBe(0);
@@ -511,6 +511,47 @@ describe("scanned tables in what the agent reads", () => {
       expect(checkQuote({ doc: "s.pdf", page: 1, quote }, docs), quote).not.toBeNull();
       expect(quoteBoxes(page, quote), quote).toEqual([]);
     }
+  });
+});
+
+describe("locating scanned pages during a read", () => {
+  const found = [{ text: "Startup", line: 1, box: [0.1, 0.1, 0.2, 0.12] as [number, number, number, number] }, { text: "fee", line: 1, box: [0.22, 0.1, 0.26, 0.12] as [number, number, number, number] }, { text: "$1,234.56", line: 1, box: [0.3, 0.1, 0.4, 0.12] as [number, number, number, number] }];
+
+  it("finds each scanned page's words once, for free, and says so", async () => {
+    const doc = await imagePdf("locate-once.pdf", [[612, 792]]);
+    const { reader } = fakeReader(() => compact());
+    const store = fileScanStore(join(dir, "scans-locate"));
+    const progress: string[] = [];
+    let detected = 0;
+    const detect = async () => (detected++, found);
+
+    const budget = budgetOf(3);
+    const [scanned] = await scanDocs([doc], { reader, store, budget, onProgress: (l) => progress.push(l), detect });
+    expect(detected).toBe(1);
+    expect(budget.spent).toBeCloseTo(0.1);
+    expect(progress.some((l) => /where each line sits/.test(l))).toBe(true);
+    expect(scanned!.pages[0]!.located!.rows["p1.l1"]).toBeDefined();
+    expect(await readdir(join(dir, "scans-locate"))).toContain(`${doc.sha256}.locate.json`);
+
+    // a page already read and located is neither read nor detected again
+    await scanDocs([doc], { reader, store, budget: budgetOf(3), detect });
+    expect(detected).toBe(1);
+  });
+
+  it("locates a page that was transcribed earlier without one, and never lets a failure stop a read", async () => {
+    const doc = await imagePdf("locate-later.pdf", [[612, 792]]);
+    const { reader, sent } = fakeReader(() => compact());
+    const store = fileScanStore(join(dir, "scans-locate-later"));
+    await store.put(doc.sha256, { page: 1, version: scanVersion(reader), rotation: 0, transcription: parseTranscription(compact()) });
+    const progress: string[] = [];
+    const [failed] = await scanDocs([doc], { reader, store, budget: budgetOf(3), onProgress: (l) => progress.push(l), detect: async () => Promise.reject(new Error("no worker")) });
+    expect(sent).toHaveLength(0);
+    expect(failed!.pages[0]!.kind).toBe("scan");
+    expect(failed!.pages[0]!.located).toBeUndefined();
+    expect(progress.some((l) => /couldn't find exactly where its lines sit/.test(l))).toBe(true);
+
+    const [later] = await scanDocs([doc], { reader, store, budget: budgetOf(3), detect: async () => found });
+    expect(later!.pages[0]!.located!.rows["p1.l1"]).toBeDefined();
   });
 });
 

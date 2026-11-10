@@ -1,25 +1,28 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ScanPage, ScanStore } from "../types";
+import type { LocatePage } from "./detect";
 
 /**
  * One file per contract file, named by its hash, and one more for the second reads of its pages. Writes go through a
  * temporary file and a rename, so a crash never leaves half a file.
  */
 export function fileScanStore(dir: string): ScanStore {
-  return { ...pagesIn(dir, "scan"), verify: pagesIn(dir, "verify") };
+  // pages saved before transcriptions were kept hold words only; they count as not read
+  const transcribed = (p: Partial<ScanPage>): p is ScanPage => !!p.transcription;
+  const detected = (p: Partial<LocatePage>): p is LocatePage => Array.isArray(p.words);
+  return { ...pagesIn(dir, "scan", transcribed), verify: pagesIn(dir, "verify", transcribed), locate: pagesIn<LocatePage>(dir, "locate", detected) };
 }
 
-function pagesIn(dir: string, kind: string): ScanStore {
+function pagesIn<T extends { page: number }>(dir: string, kind: string, valid: (p: Partial<T>) => p is T): { get(sha256: string): Promise<T[]>; put(sha256: string, page: T): Promise<void> } {
   const file = (sha256: string) => join(dir, `${sha256}.${kind}.json`);
   // each put reads the file and writes it back, so puts to one file must not overlap
   const queues = new Map<string, Promise<void>>();
 
-  async function get(sha256: string): Promise<ScanPage[]> {
+  async function get(sha256: string): Promise<T[]> {
     try {
-      // pages saved before transcriptions were kept hold words only; they count as not read
-      const saved = JSON.parse(await readFile(file(sha256), "utf8")) as Partial<ScanPage>[];
-      return saved.filter((p): p is ScanPage => !!p.transcription);
+      const saved = JSON.parse(await readFile(file(sha256), "utf8")) as Partial<T>[];
+      return saved.filter(valid);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;

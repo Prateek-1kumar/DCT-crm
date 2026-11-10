@@ -6,7 +6,7 @@ import type { CoverageRef } from "@/lib/types";
 import { decidedBy, docName, findGrid, findTerm, pageAt, spotFor, STATUS, type ProofData } from "../../proof/model";
 import { BILLING_LABEL, capText } from "../../rulebook";
 import { gridProof } from "../../rulebook/model";
-import type { ViewerBox } from "../../viewer";
+import { approxLabel, type ViewerBox } from "../../viewer";
 import { amountsOf, visibleAmounts } from "../highlights";
 import { termCard } from "../../overview/model";
 
@@ -75,12 +75,14 @@ export function usePassage(data: ProofData, line: CoverageRef, moved: number | n
   const page = moved ?? home?.page ?? 1;
   const here = !!home && page === home.page;
   const current = home ? pageAt(data, { doc: home.doc, page }) : undefined;
-  const saved = homePage?.clauses.filter((c) => c.termId === term?.id).flatMap((c) => c.boxes) ?? [];
-  const quoted: Region[] = here ? (search.data?.boxes.length ? search.data.boxes : saved) : [];
+  const clauses = homePage?.clauses.filter((c) => c.termId === term?.id) ?? [];
+  const found = !!search.data?.boxes.length;
+  const quoted: Region[] = here ? (found ? search.data!.boxes : clauses.flatMap((c) => c.boxes)) : [];
+  const quotedApprox = here && quoted.length > 0 && (found ? !!search.data!.approx : clauses.some((c) => c.approx));
   const strong = current && here ? amountsOf(current, line) : [];
 
   const amountName = (ref: CoverageRef | null) => ref && (ref.target === "term" ? findTerm(data, ref.id)?.name : findGrid(data, ref.id)?.name);
-  const boxes: ViewerBox[] = quoted.map((box, i) => ({ id: `quote-${i}`, box, tone: "focus", label: "The words quoted in the rulebook" }));
+  const boxes: ViewerBox[] = quoted.map((box, i) => ({ id: `quote-${i}`, box, tone: "focus", label: approxLabel("The words quoted in the rulebook", quotedApprox), ...(quotedApprox && { approx: true }) }));
   for (const i of current ? visibleAmounts(current, { showAll, selected: null, strong }) : []) {
     const a = current!.amounts[i]!;
     const named = amountName(a.ref);
@@ -88,10 +90,12 @@ export function usePassage(data: ProofData, line: CoverageRef, moved: number | n
       id: `amount-${i}`,
       box: a.box,
       tone: strong.includes(i) ? "focus" : a.doubt ? "doubt" : a.status === "missing" ? "problem" : a.status,
-      label: `${a.text} · ${STATUS[a.status].chip}${named ? ` as ${named}` : ""}${a.doubt ? ` · read with a doubt: ${a.doubt.replace("_", " ")}` : ""}`,
+      label: approxLabel(`${a.text} · ${STATUS[a.status].chip}${named ? ` as ${named}` : ""}${a.doubt ? ` · read with a doubt: ${a.doubt.replace("_", " ")}` : ""}`, a.approx, a.text),
+      ...(a.approx && { approx: true }),
     });
   }
   const focus = union(quoted) ?? (strong[0] !== undefined ? current!.amounts[strong[0]]!.box : null);
+  const focusApprox = boxes.some((b) => b.tone === "focus" && b.approx);
 
   return {
     docId: home?.doc ?? "",
@@ -100,6 +104,8 @@ export function usePassage(data: ProofData, line: CoverageRef, moved: number | n
     docName: home ? docName(data, home.doc) : "",
     home,
     focus: here ? focus : null,
+    /** The passage being zoomed to is an approximate area, so the screen says so. */
+    focusApprox: here && focusApprox,
     boxes,
     /** Still looking for the quote on its page: drawing the viewer now would zoom to the wrong place and then jump. */
     pending: here && search.isLoading,

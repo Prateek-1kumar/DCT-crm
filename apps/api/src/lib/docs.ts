@@ -1,6 +1,7 @@
-import { VERIFY_PROMPT, pdfReader, scanVersion, verifyVersion, withScans, type LoadedDoc, type Reader } from "@dct/harness";
+import { VERIFY_PROMPT, locatePage, pdfReader, scanVersion, unlocated, verifyVersion, withScans, type LoadedDoc, type LocatePage, type Reader, type ScanPage } from "@dct/harness";
 import { inArray } from "drizzle-orm";
 import type { Tx } from "../db/index.js";
+import { config } from "../config.js";
 import { documents, type PageInfo } from "../db/schema.js";
 import { pdfPath, scanStore } from "./storage.js";
 
@@ -14,11 +15,44 @@ export const forgetStored = (sha256: string) => cache.delete(sha256);
 const verified = async (sha256: string, reader?: Reader) =>
   ((await scanStore.verify?.get(sha256)) ?? []).filter((v) => (reader ? v.version === verifyVersion(reader) : v.version.startsWith(`${VERIFY_PROMPT} `)));
 
+const locatesOf = async (sha256: string) => (await scanStore.locate?.get(sha256)) ?? [];
+
+const locating = new Set<string>();
+// a page OCR couldn't be run on isn't tried again until the API restarts; its marks stay approximate
+const gaveUp = new Set<string>();
+
+/**
+ * Starts, without waiting, finding where the words of a contract's scanned pages sit, for pages that have not been
+ * through OCR yet (read before this existed, or whose last attempt was an older version). One page at a time; each page's
+ * result is saved, and the stored copy is dropped so the next load shows it. A failure leaves that page approximate.
+ */
+function locateInBackground(sha256: string, raw: LoadedDoc, saved: ScanPage[], detected: LocatePage[]) {
+  const store = scanStore.locate;
+  if (!config.locateScans || !store || locating.has(sha256)) return;
+  const todo = unlocated(raw, saved, detected).filter((s) => !gaveUp.has(`${sha256}:${s.page}`));
+  if (!todo.length) return;
+  locating.add(sha256);
+  void (async () => {
+    for (const scan of todo) {
+      try {
+        await locatePage(raw, scan, store);
+        forgetStored(sha256);
+      } catch {
+        gaveUp.add(`${sha256}:${scan.page}`);
+      }
+    }
+  })().finally(() => locating.delete(sha256));
+}
+
 function loadBoth(sha256: string) {
   let entry = cache.get(sha256);
   if (entry) cache.delete(sha256);
   else {
-    entry = pdfReader.load(pdfPath(sha256)).then(async (raw) => ({ raw, shown: withScans(raw, await scanStore.get(sha256)) }));
+    entry = pdfReader.load(pdfPath(sha256)).then(async (raw) => {
+      const [saved, detected] = await Promise.all([scanStore.get(sha256), locatesOf(sha256)]);
+      locateInBackground(sha256, raw, saved, detected);
+      return { raw, shown: withScans(raw, saved, [], detected) };
+    });
     entry.catch(() => cache.delete(sha256));
   }
   cache.set(sha256, entry);
@@ -41,7 +75,7 @@ export async function loadDocs(tx: Tx, ids: string[], reader?: Reader): Promise<
       const saved = await scanStore.get(row.sha256);
       const current = reader ? saved.filter((p) => p.version === scanVersion(reader)) : saved;
       // second reads are read fresh each time: a re-run can add one to a page whose transcription is cached
-      return { ...withScans(raw, current, await verified(row.sha256, reader)), name: row.name };
+      return { ...withScans(raw, current, await verified(row.sha256, reader), await locatesOf(row.sha256)), name: row.name };
     }),
   );
 }

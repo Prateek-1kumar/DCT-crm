@@ -6,6 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { Button, cx } from "../ui";
 import {
   DEFAULT_ASPECT,
+  MIN_ZOOM,
   clamp,
   clampZoom,
   centreOf,
@@ -27,21 +28,32 @@ export interface ViewerBox {
   tone: ViewerTone;
   /** Read out by screen readers and shown on hover, e.g. "$5,000.00 · captured as Startup fee". */
   label: string;
+  /** The box is deliberately larger than the spot and only sure to contain it (a scanned page we couldn't pin down); the label must say so, see `approxLabel`. */
+  approx?: boolean;
 }
+
+/** What a screen shows, quietly, beside a passage whose highlighted area is approximate. */
+export const APPROX_NOTE = "We couldn't pin down the exact spot on this scanned page, so the highlighted area is approximate. What you're looking for is inside it.";
+
+/** The hover and screen-reader words for a box: an approximate one says so, in words, so it never reads as exact. `amount` is the printed text of an amount, which is somewhere inside the area. */
+export const approxLabel = (label: string, approx: boolean | undefined, amount?: string) =>
+  !approx ? label : amount !== undefined && label.startsWith(amount) ? `${amount} is somewhere in this area${label.slice(amount.length)}` : `Approximate area · ${label}`;
 
 /**
  * How each tone is drawn. They differ in line style and in a corner glyph as well as colour, so they can be told apart without
  * seeing colour: the focus box is the thickest with a tint, problems solid red, doubts dashed amber, captured thin green,
  * decided by a person dotted, set aside dashed grey.
  */
-const TONE: Record<ViewerTone, { box: string; glyph: string; chip: string }> = {
-  focus: { box: "z-20 border-[3px] border-solid border-highlight-strong bg-highlight", glyph: "◆", chip: "bg-highlight-strong text-ink" },
-  problem: { box: "z-10 border-2 border-solid border-danger bg-danger/15", glyph: "!", chip: "bg-danger text-on-primary" },
-  doubt: { box: "z-10 border-2 border-dashed border-warn bg-warn/15", glyph: "?", chip: "bg-warn text-on-primary" },
-  captured: { box: "border border-solid border-ok bg-ok/10", glyph: "✓", chip: "bg-ok text-on-primary" },
-  decided: { box: "border-2 border-dotted border-info bg-info/10", glyph: "●", chip: "bg-info text-on-primary" },
-  set_aside: { box: "border border-dashed border-ink/60 bg-ink/5", glyph: "–", chip: "bg-ink/60 text-on-primary" },
+const TONE: Record<ViewerTone, { box: string; approx: string; glyph: string; chip: string }> = {
+  focus: { box: "z-20 border-[3px] border-solid border-highlight-strong bg-highlight", approx: "z-20 border-[3px] border-dashed border-highlight-strong bg-highlight/40", glyph: "◆", chip: "bg-highlight-strong text-ink" },
+  problem: { box: "z-10 border-2 border-solid border-danger bg-danger/15", approx: "z-10 border-2 border-dashed border-danger bg-danger/[0.06]", glyph: "!", chip: "bg-danger text-on-primary" },
+  doubt: { box: "z-10 border-2 border-dashed border-warn bg-warn/15", approx: "z-10 border-2 border-dashed border-warn bg-warn/[0.06]", glyph: "?", chip: "bg-warn text-on-primary" },
+  captured: { box: "border border-solid border-ok bg-ok/10", approx: "border-2 border-dashed border-ok bg-ok/[0.04]", glyph: "✓", chip: "bg-ok text-on-primary" },
+  decided: { box: "border-2 border-dotted border-info bg-info/10", approx: "border-2 border-dashed border-info bg-info/[0.04]", glyph: "●", chip: "bg-info text-on-primary" },
+  set_aside: { box: "border border-dashed border-ink/60 bg-ink/5", approx: "border-2 border-dashed border-ink/60 bg-ink/[0.02]", glyph: "–", chip: "bg-ink/60 text-on-primary" },
 };
+/** An approximate box is dashed with a lighter tint, whatever its tone, and its corner marker gains "≈" before the tone's own glyph: the tones must still be told apart without colour. */
+const APPROX_GLYPH = "≈";
 
 const pct = (n: number) => `${n * 100}%`;
 const ANIMATION_MS = 280;
@@ -98,9 +110,10 @@ export function ContractViewer({
 
   // Handlers read the newest values from here, so they needn't be rebuilt (and re-bound) on every zoom step.
   const zoomRef = useRef(1);
-  const view = useRef({ vw: 0, vh: 0, aspect, focus, page, pageCount });
+  const view = useRef({ vw: 0, vh: 0, aspect, focus, page, pageCount, approxFocus: false });
+  const approxFocus = boxes.some((b) => b.tone === "focus" && b.approx);
   useLayoutEffect(() => {
-    view.current = { vw: size.w, vh: size.h, aspect, focus, page, pageCount };
+    view.current = { vw: size.w, vh: size.h, aspect, focus, page, pageCount, approxFocus };
   });
   // Where the page must sit once the next zoom has been drawn: the scroll position can only be set after the page has its new size.
   const pending = useRef<Anchor | null>(null);
@@ -195,8 +208,8 @@ export function ContractViewer({
   const fitWidth = () => go({ zoom: 1, ...centreNow(), fx: 0.5 }, true);
   const fitPage = () => go({ zoom: fitPageZoom(view.current.vw, view.current.vh, view.current.aspect), fx: 0.5, fy: 0.5 }, true);
   const toPassage = (animate = true) => {
-    const { focus: f, vw, vh, aspect: a } = view.current;
-    if (f) go({ zoom: zoomToBox(f, vw, vh, a), ...centreOf(f) }, animate, passageAnchor(vw, vh));
+    const { focus: f, vw, vh, aspect: a, approxFocus: loose } = view.current;
+    if (f) go({ zoom: zoomToBox(f, vw, vh, a, loose ? MIN_ZOOM : undefined), ...centreOf(f) }, animate, passageAnchor(vw, vh));
   };
 
   // Bring the passage into view when it (or the page) changes: once the page's picture has told us its shape and we know the viewport.
@@ -412,21 +425,21 @@ export function ContractViewer({
                 />
                 {ordered.map((b) => {
                   const t = TONE[b.tone];
-                                  const cls = cx("absolute min-h-1.5 min-w-1.5 rounded-[3px] transition-shadow", t.box, onBoxClick && "cursor-pointer hover:ring-2 hover:ring-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary");
+                                  const cls = cx("absolute min-h-1.5 min-w-1.5 rounded-[3px] transition-shadow", b.approx ? t.approx : t.box, onBoxClick && "cursor-pointer hover:ring-2 hover:ring-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary");
                   const style = { left: pct(b.box[0]), top: pct(b.box[1]), width: pct(b.box[2] - b.box[0]), height: pct(b.box[3] - b.box[1]) };
                   // A small marker of constant screen size, just outside the top-right corner so it never covers the text; inside only where the page edge would cut it off.
                   const atEdge = b.box[2] > 0.985 || b.box[1] < 0.015;
                   const chip = (
-                    <span aria-hidden className={cx("pointer-events-none absolute grid size-3.5 place-items-center rounded-full text-[9px] leading-none font-bold shadow-button ring-1 ring-surface", atEdge ? "top-px right-px" : "bottom-full left-full mb-[3px] ml-[3px]", t.chip)}>
-                      {t.glyph}
+                    <span aria-hidden className={cx("pointer-events-none absolute grid h-3.5 place-items-center rounded-full text-[9px] leading-none font-bold shadow-button ring-1 ring-surface", b.approx ? "px-1 whitespace-nowrap" : "w-3.5", atEdge ? "top-px right-px" : "bottom-full left-full mb-[3px] ml-[3px]", t.chip)}>
+                      {b.approx ? APPROX_GLYPH + t.glyph : t.glyph}
                     </span>
                   );
                   return onBoxClick ? (
-                    <button key={b.id} type="button" data-box={b.id} data-tone={b.tone} title={b.label} aria-label={b.label} onClick={() => onBoxClick(b.id)} style={style} className={cls}>
+                    <button key={b.id} type="button" data-box={b.id} data-tone={b.tone} data-approx={b.approx ? "" : undefined} title={b.label} aria-label={b.label} onClick={() => onBoxClick(b.id)} style={style} className={cls}>
                       {chip}
                     </button>
                   ) : (
-                    <span key={b.id} role="img" data-box={b.id} data-tone={b.tone} title={b.label} aria-label={b.label} style={style} className={cls}>
+                    <span key={b.id} role="img" data-box={b.id} data-tone={b.tone} data-approx={b.approx ? "" : undefined} title={b.label} aria-label={b.label} style={style} className={cls}>
                       {chip}
                     </span>
                   );

@@ -265,7 +265,7 @@ describe("coverage on a scanned page", () => {
 
   it("a quote's boxes on a scan page span the full width of their lines", () => {
     const rb = rulebook({ terms: [term("fee", { amountCents: 120000, source: { doc: "scan.pdf", page: 1, quote: "Startup fee" } })] });
-    expect(coverage(rb, [scan]).pages[0]!.clauses).toEqual([{ termId: "fee", boxes: [[0, expect.closeTo(0, 3), 1, expect.closeTo(0.008, 3)]] }]);
+    expect(coverage(rb, [scan]).pages[0]!.clauses).toEqual([{ termId: "fee", boxes: [[0, expect.closeTo(0, 3), 1, expect.closeTo(0.008, 3)]], approx: true }]);
     expect(quoteBoxes(scan.pages[0]!, "and S9.99")).toEqual([[0, expect.any(Number), 1, expect.any(Number)]]);
     expect(quoteBoxes({ ...scan.pages[0]!, kind: "text" }, "and S9.99")[0]![0]).toBeGreaterThan(0);
   });
@@ -433,6 +433,8 @@ describe("coverage on a scanned page, by cell", () => {
     expect([band[0], band[2]]).toEqual([0, 1]);
     expect(band[1]).toBeLessThan(row.y0);
     expect(band[3]).toBeGreaterThan(row.y1);
-    expect(out.clauses).toEqual([{ termId: "ecg", boxes: [band] }, { termId: "startup", boxes: quoteBoxes(page, "Startup fee") }]);
+    // nothing here was located, so every box on the scan is approximate
+    expect(out.clauses).toEqual([{ termId: "ecg", boxes: [band], approx: true }, { termId: "startup", boxes: quoteBoxes(page, "Startup fee"), approx: true }]);
+    expect(out.amounts.every((a) => a.approx)).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, max, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
-import { pdfReader, quoteBoxes } from "@dct/harness";
+import { pdfReader, quotePlace } from "@dct/harness";
 import type { Region } from "@dct/shared";
 import { rm } from "node:fs/promises";
 import { z } from "zod";
@@ -402,6 +402,8 @@ export async function studiesRoutes(api: FastifyInstance, { db }: Ctx) {
   api.get<{ Params: { id: string; page: string } }>("/documents/:id/pages/:page/find", async (req) => {
     const { q } = parse(FindQuery, req.query);
     const { doc, page } = await pageOf(req.params.id, req.params.page);
-    return { boxes: quoteBoxes(doc.pages[page - 1]!, q) };
+    // `approx` on a scanned page whose words weren't all found: the boxes then hold the quote rather than sit on it
+    const { boxes, approx } = quotePlace(doc.pages[page - 1]!, q);
+    return { boxes, ...(approx && { approx }) };
   });
 }

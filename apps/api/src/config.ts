@@ -45,6 +45,7 @@ const Env = z.object({
   HARNESS_MODEL: z.string().default("claude-sonnet-5-5"),
   OPENAI_MODEL: z.string().optional(),
   OPENAI_PRICE_PER_MTOK: z.string().optional(),
+  LOCATE_SCANS: z.enum(["on", "off"], { error: "must be on or off" }).default("on"),
   READ_BUDGET_MAX_USD: z.coerce.number({ error: "must be a positive number of US dollars" }).positive({ error: "must be a positive number of US dollars" }).default(20),
   READ_BUDGET_USD: z.coerce.number({ error: "must be a positive number of US dollars" }).positive({ error: "must be a positive number of US dollars" }).default(3),
 });
@@ -90,6 +91,8 @@ export function parseConfig(env: NodeJS.ProcessEnv) {
     shutdownTimeoutMs: e.SHUTDOWN_TIMEOUT_MS,
     maxUploadBytes: 50 * 1024 * 1024,
     ai: { anthropicKey: e.ANTHROPIC_API_KEY, openaiKey: e.OPENAI_API_KEY, claudeModel: e.HARNESS_MODEL, openaiModel: e.OPENAI_MODEL, openaiPrice: e.OPENAI_PRICE_PER_MTOK },
+    /** Whether stored scans are found by OCR in the background so their highlights sit on the words; free and local, off only in tests. */
+    locateScans: e.LOCATE_SCANS === "on",
     readBudgetUsd: e.READ_BUDGET_USD,
     /** What a read's budget can grow to when it has scanned pages to pay for. */
     readBudgetMaxUsd: e.READ_BUDGET_MAX_USD,

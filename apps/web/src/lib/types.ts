@@ -207,12 +207,16 @@ export interface CoverageAmount {
   doubt: Doubt | null;
   /** The printed line it sits on, for context. */
   line: string;
+  /** Present on a scanned page where the exact spot couldn't be pinned down: the box is a larger area that contains it. Absent when exact. */
+  approx?: true;
 }
 
 /** A clause the rulebook took a term from: where its quoted words sit on the page. */
 export interface CoverageClause {
   termId: string;
   boxes: Region[];
+  /** As on an amount: the boxes are a larger area that contains the words, not their exact spot. */
+  approx?: true;
 }
 
 export interface CoveragePage {

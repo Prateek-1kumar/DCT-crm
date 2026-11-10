@@ -34,6 +34,17 @@ describe("zoom", () => {
     expect(zoomToBox([0.5, 0.5, 0.52, 0.5005], VW, VH, LETTER)).toBe(3);
   });
 
+  it("an approximate box can be far larger than a passage: with a lower floor the whole box still fits in view", () => {
+    const area: [number, number, number, number] = [0.05, 0.2, 0.95, 0.9];
+    expect(zoomToBox(area, VW, VH, LETTER)).toBe(1); // the default floor would leave it hanging off the screen
+    const z = zoomToBox(area, VW, VH, LETTER, MIN_ZOOM);
+    expect(z).toBeLessThan(1);
+    const l = layoutOf(VW, VH, z, LETTER);
+    expect(0.7 * l.pageH).toBeLessThanOrEqual(VH * 0.85 + 1);
+    expect(0.9 * l.pageW).toBeLessThanOrEqual(VW * 0.85 + 1);
+    expect(zoomToBox([0.5, 0.5, 0.52, 0.5005], VW, VH, LETTER, MIN_ZOOM)).toBe(3); // a small box is unaffected
+  });
+
   it("fits the page height without going past fit-width", () => {
     const z = fitPageZoom(VW, VH, LETTER);
     expect(layoutOf(VW, VH, z, LETTER).pageH).toBeLessThanOrEqual(VH - 2 * GUTTER + 0.001);

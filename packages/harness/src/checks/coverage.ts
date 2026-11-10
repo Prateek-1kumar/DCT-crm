@@ -2,6 +2,7 @@ import { ADDED_TO_GRID, SET_ASIDE, parseCents, valueAt, type Region, type Rulebo
 import { groupLines, rawLine } from "../pdf/lines";
 import { amountsOf, cellsOf, type ScanCell } from "../scan/cells";
 import { alignTables, diffReads, type Verdict } from "../scan/diff";
+import { amountPlace, cellPlace, quoteSpots, stripe } from "../scan/place";
 import { bandsOf } from "../scan/words";
 import type { Doubt, LoadedDoc, Page, PageKind, Word } from "../types";
 import { amountsAt, amountsIn, looseAmounts, looseCents, looseContains, looseFind, looseKey } from "./text";
@@ -24,6 +25,8 @@ export interface CoverageAmount {
   secondRead?: string;
   /** On such an amount: the id of the first read's cell it sits in when that read printed nothing there. */
   firstReadBlank?: string;
+  /** Set on a scanned page's amount whose own words weren't found where the box is: the box is a larger area that holds them, not their place. Never set on a page with a text layer. */
+  approx?: true;
 }
 
 /** How a person's "set aside" names an amount only the second read found, apart from the first read's cell of the same id. */
@@ -32,6 +35,8 @@ export const secondReadCell = (id: string) => `${id} (second read)`;
 export interface CoverageClause {
   termId: string;
   boxes: Region[];
+  /** Set on a scanned page's clause whose own words weren't all found: its boxes are larger areas that hold them. Never set on a page with a text layer. */
+  approx?: true;
 }
 
 export interface CoveragePage {
@@ -66,8 +71,19 @@ export function findQuote(words: Word[], quote: string): Region[] {
 /** Where a scanned word sits across the page is made up (§5.1), so a scan's boxes are whole-width bands of the lines they are on. */
 const lineBand = (page: Page, box: Region): Region => (page.kind === "scan" ? [0, box[1], 1, box[3]] : box);
 
-/** findQuote for a page: on a scan, the full-width bands of the quote's lines. */
-export const quoteBoxes = (page: Page, quote: string): Region[] => findQuote(page.words, quote).map((box) => lineBand(page, box));
+/**
+ * findQuote for a page. On a located scan, a tight box per printed line where the quote's words were found and a larger area
+ * (`approx`) around any line where they weren't; on a scan with no located words, the full-width bands of the quote's lines.
+ */
+export function quotePlace(page: Page, quote: string): { boxes: Region[]; approx?: true } {
+  if (page.kind !== "scan") return { boxes: findQuote(page.words, quote) };
+  const spots = quoteSpots(page, quote);
+  if (spots) return spots;
+  const boxes = findQuote(page.words, quote).map((box) => lineBand(page, box));
+  return { boxes, ...(boxes.length > 0 && { approx: true as const }) };
+}
+
+export const quoteBoxes = (page: Page, quote: string): Region[] => quotePlace(page, quote).boxes;
 
 interface Candidate {
   ref: CoverageRef;
@@ -225,15 +241,8 @@ function excusedColumns(pages: Page[], index: number): Map<string, Excused> {
   return excused;
 }
 
-const rowOf = (id: string) => id.replace(/\.c\d+$/, "").replace(/\.h\d+$/, ".h");
-
-/** The padded, full-width band of the row a scanned cell is on, where its words are shown. */
-function cellBand(page: Page, id: string): Region {
-  const band = page.bands?.[rowOf(id)];
-  if (!band) return [0, 0, 1, 1];
-  const pad = (band[1] - band[0]) / 2;
-  return [0, Math.max(0, band[0] - pad), 1, Math.min(1, band[1] + pad)];
-}
+/** Which copy of its text the amount at `at` is among a cell's printed ones, for an amount a cell prints twice. */
+const copies = (printed: { text: string }[], at: number) => printed.slice(0, at).filter((p) => p.text === printed[at]!.text).length;
 
 function printedCells(pages: Page[], index: number) {
   const cells = pages[index]!.cells ?? [];
@@ -256,14 +265,15 @@ function scannedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: n
     // a citation names one amount: a second one in the same cell or line ("$500.00 per visit, max $6,000.00") needs its
     // own, except a struck value the cited one replaces
     const struck = new Set((cell.struck ?? []).flatMap((s) => [...tokens(s), ...numbers(s)].map((t) => t.cents)));
-    return printed.flatMap(({ text, cents }): CoverageAmount[] => {
+    return printed.flatMap(({ text, cents }, at): CoverageAmount[] => {
       if (cents === 0) return [];
       const match = cited.get(cell.id)?.find((c) => printed.length === 1 || struck.has(cents) || (c.cents !== null && Math.abs(c.cents) === cents));
       const accounted = match
         ? undefined
         : (wholePageAside(rulebook, doc, page.page) ?? rulebook.accounted.find((a) => a.doc === doc && (a.cell === cell.id || (a.page === page.page && a.amountCents !== undefined && Math.abs(a.amountCents) === cents))));
       const status: AmountStatus = match ? (match.person ? "decided" : "captured") : accounted ? "set_aside" : "missing";
-      return [{ box: cellBand(page, cell.id), text, cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line, doubt: cell.doubts[0] ?? null }];
+      const { box, approx } = amountPlace(page, cell, text, copies(printed, at));
+      return [{ box, ...(approx && { approx }), text, cents, status, ref: match?.ref ?? null, reason: accounted?.reason ?? null, line, doubt: cell.doubts[0] ?? null }];
     });
   });
 }
@@ -293,7 +303,7 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
   const back = diffReads(page.page, page.second, page.transcription);
   const paired = new Set(alignTables(page.second.tables, page.transcription.tables).keys());
   const bands = Object.fromEntries([...bandsOf(page.second)].map(([key, band]) => [`p${page.page}.${key}`, band]));
-  const second: Page = { ...page, cells: cellsOf(page.page, page.second), bands };
+  const second: Page = { ...page, cells: cellsOf(page.page, page.second), bands, located: page.locatedSecond };
   const claimed = new Map<string, string>();
   // an amount the second read couldn't line up is accounted for by a first-read copy on the same words that no second-read
   // row lined up with; a copy that did line up is already spoken for by its own pair, so it never hides an extra one
@@ -321,22 +331,23 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
     twins.set(twin(line, cents), (twins.get(twin(line, cents)) ?? 0) - 1);
     if (spare(line)) pool.set(cents, (pool.get(cents) ?? 0) - 1);
   };
-  const make = (cell: ScanCell, line: string, text: string, cents: number, verdict?: Verdict): CoverageAmount => {
+  const make = (cell: ScanCell, line: string, text: string, cents: number, copy: number, verdict?: Verdict): CoverageAmount => {
     const accounted = wholePageAside(rulebook, doc, page.page) ?? rulebook.accounted.find((a) => a.doc === doc && [SET_ASIDE, ADDED_TO_GRID].includes(a.reason) && a.page === page.page && a.cell === secondReadCell(cell.id));
     const row = cell.id.replace(/\.c\d+$/, "");
     const added = accounted ? undefined : decidedBy(rulebook, doc, page.page, cents, line, (t) => (claimed.get(t.id) ?? row) === row);
     if (added) claimed.set(added.id, row);
     const status: AmountStatus = added ? "decided" : accounted ? "set_aside" : "missing";
     const reason = accounted?.reason ?? (added ? null : `a second read of p.${page.page} found an amount the first read didn't`);
-    return { box: cellBand(second, cell.id), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id, ...(verdict?.blankAt && { firstReadBlank: verdict.blankAt }) };
+    const { box, approx } = amountPlace(second, cell, text, copy);
+    return { box, ...(approx && { approx }), text, cents, status, ref: added ? { target: "term", id: added.id } : null, reason, line, doubt: cell.doubts[0] ?? null, secondRead: cell.id, ...(verdict?.blankAt && { firstReadBlank: verdict.blankAt }) };
   };
 
-  const loose: { cell: ScanCell; line: string; text: string; cents: number }[] = [];
+  const loose: { cell: ScanCell; line: string; text: string; cents: number; copy: number }[] = [];
   const found = secondCells.flatMap(({ cell, line, printed }) =>
-    printed.flatMap(({ text, cents }): CoverageAmount[] => {
+    printed.flatMap(({ text, cents }, at): CoverageAmount[] => {
       if (!cents) return [];
       if (cell.table !== null && !paired.has(cell.table - 1)) {
-        loose.push({ cell, line, text, cents });
+        loose.push({ cell, line, text, cents, copy: copies(printed, at) });
         return [];
       }
       const verdict = cell.table === null ? (back.get(`${cell.id}#${cents}`) ?? back.get(`${cell.id}#${-cents}`)) : back.get(cell.id);
@@ -345,7 +356,7 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
         spend(line, cents);
         return [];
       }
-      return [make(cell, line, text, cents, verdict)];
+      return [make(cell, line, text, cents, copies(printed, at), verdict)];
     }),
   );
   // a table that didn't pair has no cell to compare with, so what is new is only what the first read prints fewer times on
@@ -360,7 +371,7 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
     pool.set(cents, pool.get(cents)! - 1);
     return false;
   });
-  return [...found, ...surplus.map(({ cell, line, text, cents }) => make(cell, line, text, cents))];
+  return [...found, ...surplus.map(({ cell, line, text, cents, copy }) => make(cell, line, text, cents, copy))];
 }
 
 /**
@@ -416,8 +427,9 @@ export function coverage(rulebook: Rulebook, docs: LoadedDoc[]): Coverage {
 
       for (const t of rulebook.terms) {
         if (t.source.doc !== doc.name || t.source.page !== page.page) continue;
-        const boxes = page.cells && t.source.cell ? [cellBand(page, t.source.cell)] : quoteBoxes(page, t.source.quote);
-        if (boxes.length) out.clauses.push({ termId: t.id, boxes });
+        const cell = t.source.cell ? page.cells?.find((c) => c.id === t.source.cell) : undefined;
+        const where = page.cells && t.source.cell ? (({ box, approx }) => ({ boxes: [box], approx }))(cell ? cellPlace(page, cell) : stripe(page, t.source.cell)) : quotePlace(page, t.source.quote);
+        if (where.boxes.length) out.clauses.push({ termId: t.id, boxes: where.boxes, ...(where.approx && { approx: where.approx }) });
       }
     }
   }

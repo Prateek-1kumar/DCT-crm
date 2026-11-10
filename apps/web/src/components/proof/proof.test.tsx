@@ -61,13 +61,17 @@ const at = "2026-11-03T10:00:00Z";
 const mark = (item: string, by: string) => ({ item, by, at });
 type Marks = ReturnType<typeof mark>[];
 
-function setup(opts: { proofreads?: Marks; flags?: { item: string; by: string; note: string; at: string }[]; edit?: (v: ReturnType<typeof sampleVersion>) => void } = {}) {
+function setup(opts: { proofreads?: Marks; flags?: { item: string; by: string; note: string; at: string }[]; edit?: (v: ReturnType<typeof sampleVersion>) => void; coverage?: (c: ReturnType<typeof coverageData>) => void; find?: object } = {}) {
   let current = sampleVersion({ proofreads: opts.proofreads ?? [], flags: opts.flags ?? [] });
   opts.edit?.(current);
   const fetch = mockApi({
     "GET /versions/v1": () => current,
-    "GET /versions/v1/coverage": () => coverageData(),
-    "GET /documents/d1/pages/1/find": () => find,
+    "GET /versions/v1/coverage": () => {
+      const c = coverageData();
+      opts.coverage?.(c);
+      return c;
+    },
+    "GET /documents/d1/pages/1/find": () => opts.find ?? find,
     "POST /versions/v1/proofread": (body) => {
       const { by, items } = body as { by: string; items: string[] };
       current = { ...current, proofreads: [...current.proofreads, ...items.map((i) => mark(i, by))] };
@@ -197,6 +201,39 @@ describe("opening on an item", () => {
     expect(v.dataset.start).toBe("passage");
     expect(screen.getByRole("button", { name: "The words quoted in the rulebook" }).dataset.tone).toBe("focus");
     expect(screen.getByRole("button", { name: /^\$99\.00/ }).dataset.tone).toBe("problem");
+  });
+
+  describe("a mark that could not be pinned to the exact spot", () => {
+    const NOTE = "We couldn't pin down the exact spot on this scanned page, so the highlighted area is approximate. What you're looking for is inside it.";
+
+    it("says nothing when every box is exact", async () => {
+      nav.set("ref=term:t1");
+      setup();
+      await viewer();
+      expect(screen.queryByText(NOTE)).toBeNull();
+      expect(screen.getByRole("button", { name: "The words quoted in the rulebook" })).toBeTruthy();
+    });
+
+    it("an approximate search result is labelled as an area and explained", async () => {
+      nav.set("ref=term:t1");
+      setup({ find: { boxes: [[0.05, 0.3, 0.95, 0.7]], approx: true } });
+      expect(await screen.findByText(NOTE)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Approximate area · The words quoted in the rulebook" })).toBeTruthy();
+    });
+
+    it("an approximate saved clause is used when the search finds nothing, and explained", async () => {
+      nav.set("ref=term:t1");
+      setup({ find: { boxes: [] }, coverage: (c) => Object.assign(c.pages[0]!.clauses[0]!, { approx: true }) });
+      expect(await screen.findByText(NOTE)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Approximate area · The words quoted in the rulebook" })).toBeTruthy();
+    });
+
+    it("an approximate amount says it is somewhere in the area", async () => {
+      nav.set("ref=term:t1");
+      setup({ coverage: (c) => Object.assign(c.pages[0]!.amounts[0]!, { approx: true }) });
+      expect(await screen.findByText(NOTE)).toBeTruthy(); // the line's own amount is drawn as part of the focus
+      expect(screen.getByRole("button", { name: /^\$5,000\.00 is somewhere in this area · / })).toBeTruthy();
+    });
   });
 
   it("a grid cell link focuses that cell's amount; Details are closed until asked for", async () => {

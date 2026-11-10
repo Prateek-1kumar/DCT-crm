@@ -1,5 +1,6 @@
 import type { Question, Region, Rulebook } from "@dct/shared";
 import type { ScanCell } from "./scan/cells";
+import type { LocateStore } from "./scan/detect";
 import type { Transcription } from "./scan/transcribe";
 
 /** A word on a page, positioned as fractions 0–1 of the page, origin top-left. */
@@ -44,6 +45,23 @@ export interface Page {
   second?: Transcription;
   /** Top and bottom of each scanned line and row where its words are shown, by its id ("p7.l2", "p7.t1.r5"); for display only. */
   bands?: Record<string, [number, number]>;
+  /** Where the scan's lines, rows and words really sit (§5.1); absent until the page has been through the locator, and then every mark on it is approximate. */
+  located?: Located;
+  /** The same for the page's second read, from the same OCR words. */
+  locatedSecond?: Located;
+}
+
+/**
+ * Real positions on a scanned page, as fractions of the page in the turned frame. They sit beside the made-up word
+ * positions and change nothing that reading, masking or the checks depend on.
+ */
+export interface Located {
+  /** The real box of each line or row found, its true vertical extent across the full page width, by id ("p7.l2", "p7.t1.r5", "p7.t1.h"). */
+  rows: Record<string, Region>;
+  /** For each line or row not found: the band between the nearest found ones above and below it, which holds it if the page is read in order. */
+  bands: Record<string, Region>;
+  /** The real box of each whitespace-separated word of a cell or line, by its id; null where the word wasn't found for certain. */
+  words: Record<string, (Region | null)[]>;
 }
 
 /** What the vision model transcribed from one page: kept per file, so each scan is paid for once. The words are derived on load, so a fix to `toWords` reaches pages already saved. */
@@ -61,6 +79,8 @@ export interface ScanStore {
   put(sha256: string, page: ScanPage): Promise<void>;
   /** Blind second reads of pages, kept apart so one never stands in for a page's transcription. */
   verify?: ScanStore;
+  /** Where OCR found the words of each scanned page, so the page is detected once; without it every mark on a scan is approximate. */
+  locate?: LocateStore;
 }
 
 export interface LoadedDoc {

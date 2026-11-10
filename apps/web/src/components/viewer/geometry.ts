@@ -79,15 +79,18 @@ export const centreOf = (b: Region) => ({ fx: (b[0] + b[2]) / 2, fy: (b[1] + b[3
  * The zoom that makes the focus box's height (a line of text) about 16 px, limited so the whole box fits within 85% of the
  * viewport, within 1–3. A single table cell then lands near 1.5–2x with its row label and column headers still on screen,
  * and a paragraph-sized box is limited by fitting in the viewport.
+ *
+ * An approximate box can be far larger than a passage; the 1x floor would then leave part of it off screen, so `floor` lets
+ * the caller allow zooming out (to MIN_ZOOM) until the whole box fits.
  */
-export function zoomToBox(box: Region, vw: number, vh: number, aspect: number): number {
+export function zoomToBox(box: Region, vw: number, vh: number, aspect: number, floor = PASSAGE_MIN_ZOOM): number {
   const bw = Math.max(box[2] - box[0], 0.005);
   const bh = Math.max(box[3] - box[1], 0.002);
   const base = baseWidth(vw);
   const byLine = PASSAGE_LINE_PX / (bh * base * aspect);
   const fitW = (PASSAGE_FIT_SHARE * vw) / (bw * base);
   const fitH = (PASSAGE_FIT_SHARE * vh) / (bh * base * aspect);
-  return clamp(Math.min(byLine, fitW, fitH), PASSAGE_MIN_ZOOM, PASSAGE_MAX_ZOOM);
+  return clamp(Math.min(byLine, fitW, fitH), floor, PASSAGE_MAX_ZOOM);
 }
 
 /** Zoom at which the whole page height is visible (never above fit-width). */

@@ -9,7 +9,7 @@ import { useMounted } from "@/lib/use-mounted";
 import type { Coverage, Version } from "@/lib/types";
 import { Skeleton } from "../study/Skeleton";
 import { btnCls, Button, cx, Empty, LoadError, Sheet } from "../ui";
-import { ContractViewer, useReviewActions } from "../viewer";
+import { APPROX_NOTE, ContractViewer, useReviewActions } from "../viewer";
 import { markState } from "../viewer/reviewState";
 import { AmountStrip, ClaimStrip, NoClaim } from "./ClaimStrip";
 import { claimOf } from "./claim";
@@ -127,7 +127,7 @@ function Proofreading({ data, totals }: { data: ProofData; totals: Coverage["tot
   const pageCount = v.documents.find((d) => d.id === at?.doc)?.pageCount ?? 0;
 
   const quote = useQuoteBoxes(data, ref, at);
-  const { boxes, focus, problems } = viewerBoxes(data, page, { ref, quote, selectedBox: at?.box ?? null, showAll });
+  const { boxes, focus, focusApprox, problems } = viewerBoxes(data, page, { ref, quote: quote.boxes, quoteApprox: quote.approx, selectedBox: at?.box ?? null, showAll });
   const claim = line ? claimOf(data, line, url.ref) : null;
   const amount = !line && at?.box != null ? page?.amounts[at.box] : undefined;
 
@@ -303,6 +303,7 @@ function Proofreading({ data, totals }: { data: ProofData; totals: Coverage["tot
               ) : (
                 <NoClaim>{url.ref ? "This item is no longer in the rulebook. Pick another from the list." : "Pick an item from the list to see what the rulebook claims about it."}</NoClaim>
               )}
+              {focusApprox && <p className="text-small text-muted">{APPROX_NOTE}</p>}
               <div data-proof-viewer className="min-h-0 flex-1">
                 {at && pageCount > 0 ? (
                   <ContractViewer
