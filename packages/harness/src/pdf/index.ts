@@ -5,6 +5,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import type { Region } from "@dct/shared";
 import type { LoadedDoc, Page, PdfReader } from "../types";
 import { classify } from "./kind";
+import { limit } from "./limit";
 import { withPdf } from "./open";
 import { buildPage } from "./page";
 import { extractWords } from "./text";
@@ -13,6 +14,11 @@ const DEFAULT_DPI = 150;
 const MAX_DPI = 300;
 // Keeps a page image well inside what a model accepts and what is affordable to send.
 const DEFAULT_MAX_PIXELS = 2.5e6;
+// Each render holds the file, its parsed pages and a page-sized bitmap in native memory (about 70 MB at 300 dpi) that the
+// allocator keeps after the render ends. The proofread screen asks for many images at once; unbounded, that grew the
+// API to 1.4 GB on a 2 GB server. Three at a time costs little speed (the CPU is the limit) and keeps the peak near 250 MB.
+const MAX_RENDERS = 3;
+const oneAtATime = limit(MAX_RENDERS);
 
 async function readPage(pdf: PDFDocumentProxy, number: number): Promise<Page> {
   const page = await pdf.getPage(number);
@@ -47,7 +53,7 @@ export const pdfReader: PdfReader = {
     checkRegion(region);
     const [rx0, ry0, rx1, ry1] = region;
 
-    return withPdf(doc.path, async (pdf) => {
+    return oneAtATime(() => withPdf(doc.path, async (pdf) => {
       const page = await pdf.getPage(pageNumber);
       try {
         // drawn the way the page reads, so words, masks and highlights (all kept upright) line up with the image
@@ -70,6 +76,6 @@ export const pdfReader: PdfReader = {
       } finally {
         page.cleanup();
       }
-    });
+    }));
   },
 };
