@@ -73,7 +73,8 @@ export function ItemRail({ lines, visible, filter, version, selected, onSelect }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div ref={rail} className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      {/* relative: the rows' screen-reader-only text is absolutely placed; without a positioned scroller it escapes the list and makes the whole page scroll into blank space */}
+      <div ref={rail} className="relative min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {lines.length === 0 ? (
           <Empty title="No items yet">The rulebook has nothing to proofread.</Empty>
         ) : visible.length === 0 ? (

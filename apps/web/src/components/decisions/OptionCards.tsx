@@ -17,7 +17,8 @@ export function OptionCards({ question, choice, locked, onChoose }: { question: 
           <label
             key={i}
             className={cx(
-              "flex items-start gap-4 rounded-tile border-2 p-4 transition-colors has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-brand/25",
+              // relative: the hidden radio stays inside its card, so it can't stretch the page or pull focus off-screen
+              "relative flex items-start gap-4 rounded-tile border-2 p-4 transition-colors has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-brand/25",
               locked ? "cursor-default" : "cursor-pointer",
               picked ? "border-brand bg-brand-soft" : locked ? "border-line bg-surface opacity-70" : "border-line-strong bg-surface hover:bg-sunken",
             )}

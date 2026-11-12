@@ -53,11 +53,11 @@ describe("VersionShell", () => {
     expect(screen.queryByText(/to answer/)).toBeNull();
   });
 
-  it("says a version is still being read, links to the study and hides the pages", async () => {
+  it("says a version is still being read, links to the contract and hides the pages", async () => {
     mockApi({ "GET /versions/v1": () => version({ status: "reading", rulebook: null }), "GET /studies/s1": () => study });
     shell();
     expect(await screen.findByText("We're still reading this contract")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Go to the study" }).getAttribute("href")).toBe("/studies/s1");
+    expect(screen.getByRole("link", { name: "Go to the contract" }).getAttribute("href")).toBe("/studies/s1");
     expect(screen.queryByText("page body")).toBeNull();
     expect(screen.queryByRole("link", { name: "Proofread" })).toBeNull();
   });
@@ -69,7 +69,7 @@ describe("VersionShell", () => {
       "GET /reads/r1": () => ({ error: "The scan was too faint to read." }),
     });
     shell();
-    expect(await screen.findByText("Version 3 · Failed")).toBeTruthy();
+    expect(await screen.findByText("Version 3 · Couldn't read")).toBeTruthy();
     expect(await screen.findByText("The scan was too faint to read.")).toBeTruthy();
   });
 });

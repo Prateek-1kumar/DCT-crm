@@ -15,9 +15,9 @@ import { useVersion } from "./useVersion";
 const STATUS: Record<VersionStatus, { label: string; tone: Tone }> = {
   reading: { label: "Reading", tone: "accent" },
   draft: { label: "Draft", tone: "warn" },
-  failed: { label: "Failed", tone: "danger" },
+  failed: { label: "Couldn't read", tone: "danger" },
   approved: { label: "Live", tone: "ok" },
-  superseded: { label: "Superseded", tone: "neutral" },
+  superseded: { label: "Replaced", tone: "neutral" },
 };
 
 const tabCls = (active: boolean) =>
@@ -64,10 +64,10 @@ function Stopped({ version, studyHref }: { version: Version; studyHref: string }
     <Card className="mt-8 flex flex-col items-start gap-3 p-8">
       <h2 className="text-title font-semibold tracking-tight">{failed ? "We couldn't finish reading this contract" : "We're still reading this contract"}</h2>
       <p className="text-body text-muted">
-        {failed ? (reason.data?.error ?? "The reading stopped before it was done. Start a new one from the study page.") : "This page fills in when the reading is done. You can leave and come back."}
+        {failed ? (reason.data?.error ?? "The reading stopped before it was done. Start a new one from the contract page.") : "This page fills in when the reading is done. You can leave and come back."}
       </p>
       <Link href={studyHref} className={btnCls("primary")}>
-        Go to the study
+        Go to the contract
       </Link>
     </Card>
   );

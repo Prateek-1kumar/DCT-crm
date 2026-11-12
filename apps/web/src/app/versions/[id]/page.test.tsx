@@ -130,7 +130,7 @@ describe("Dashboard sections", () => {
     expect(within(rules).getByText("Within 30 days of the visit")).toBeTruthy();
     expect(within(rules).getByText("$300.00 per patient")).toBeTruthy();
     expect(within(rules).getByText("Amendment 2.pdf")).toBeTruthy();
-    expect(within(rules).getByText("From March 1, 2025")).toBeTruthy();
+    expect(within(rules).getByText("From Mar 1, 2025")).toBeTruthy();
     expect(within(rules).getByRole("link", { name: "See where this came from: Net 45 days from a valid invoice" }).getAttribute("href")).toBe("/versions/v1/proof?tab=rulebook&ref=term:pay");
   });
 
@@ -199,7 +199,7 @@ describe("Dashboard banner", () => {
 
   it("says when a live version went live and who approved it", () => {
     render(<Dashboard version={version({ status: "approved", approvedAt: "2026-03-14T12:00:00Z", approvedBy: "Jordan Lee" })} />);
-    expect(screen.getByText("Live since March 14, 2026, approved by Jordan Lee")).toBeTruthy();
+    expect(screen.getByText("Live since Mar 14, 2026, approved by Jordan Lee")).toBeTruthy();
     expect(screen.queryByText(/not live yet/)).toBeNull();
   });
 });

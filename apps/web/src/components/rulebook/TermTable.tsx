@@ -33,7 +33,8 @@ export function TermTable({ categories, title, emptyTitle, emptyText, version, q
         <h2 className="text-title font-semibold tracking-tight">{title}</h2>
         <p className="text-small text-muted">{rows.length === 1 ? "1 item" : `${rows.length} items`}</p>
       </div>
-      <div className="overflow-x-auto print:overflow-visible">
+      {/* relative: keeps the screen-reader-only header text inside this scroll box, so it can't stretch the page */}
+      <div className="relative overflow-x-auto print:overflow-visible">
         <table className="w-full min-w-[960px] border-t border-line text-body print:min-w-0 print:text-[9px]">
           <caption className="sr-only">{title}</caption>
           <thead className="bg-sunken text-small text-muted">

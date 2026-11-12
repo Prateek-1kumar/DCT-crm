@@ -163,7 +163,7 @@ export function armCards(grids: Grid[], version: Version): CardModel[] {
 
 const formatDate = (s: string) => {
   const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
 };
 
 /** When each amendment applies: its start date, and whether it reaches back over work already done. */

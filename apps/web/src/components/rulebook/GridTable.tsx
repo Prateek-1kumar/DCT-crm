@@ -64,7 +64,8 @@ export function GridTable({ grid, selected, onCellClick, proofread, doubtful, qu
 
   return (
     // Its own scroll box in both directions: a wide grid never widens the page, and the item column and the visit headers stay in view.
-    <div className="max-h-[70vh] max-w-full overflow-auto print:max-h-none print:overflow-visible">
+    // relative: keeps the cells' screen-reader-only text inside this box, so it can't stretch the page.
+    <div className="relative max-h-[70vh] max-w-full overflow-auto print:max-h-none print:overflow-visible">
       <table className="w-max min-w-full text-body print:w-full print:text-[8px] print:[&_td]:px-0.5 print:[&_th]:px-1">
         <caption className="sr-only">{grid.name}</caption>
         <thead className="sticky top-0 z-20 bg-sunken text-small text-muted print:static">

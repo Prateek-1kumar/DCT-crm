@@ -116,7 +116,7 @@ describe("arm and amendment cards", () => {
       ] },
     });
     const cards = amendmentCards(version({ rulebook: rb }));
-    expect(cards.map((c) => c.detail)).toEqual(["Applies from March 1, 2026 · also applies to work already done", "Start date not stated"]);
+    expect(cards.map((c) => c.detail)).toEqual(["Applies from Mar 1, 2026 · also applies to work already done", "Start date not stated"]);
   });
 });
 
