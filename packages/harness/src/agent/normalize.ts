@@ -35,7 +35,18 @@ const notAnObject: Parsed<never> = { ok: false, issues: ["this item must be an o
 
 export function normalizeStudy(raw: unknown): Parsed<Study> {
   if (!isObject(raw)) return notAnObject;
-  const documents = list(raw.documents, (d) => (isObject(d) ? { hasMoney: true, supersedes: [], effectiveFrom: null, retroactive: false, notes: null, ...d } : d), undefined);
+  // the shapes a first call most often gets wrong mean only one thing, so they are taken rather than sent back for another turn:
+  // documents keyed by file name, the file under "name", and supersedes as null or one string
+  const given = isObject(raw.documents) ? Object.entries(raw.documents).map(([doc, d]) => (isObject(d) ? { doc, ...d } : d)) : raw.documents;
+  const documents = list(
+    given,
+    (d) => {
+      if (!isObject(d)) return d;
+      const supersedes = d.supersedes == null ? [] : typeof d.supersedes === "string" ? [d.supersedes] : d.supersedes;
+      return { hasMoney: true, effectiveFrom: null, retroactive: false, notes: null, ...d, doc: d.doc ?? d.name, supersedes };
+    },
+    undefined,
+  );
   return parse(Study, { payer: null, siteNumber: null, pi: null, effectiveDate: null, ...raw, documents }, []);
 }
 
@@ -70,8 +81,10 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
     (r, i) => {
       if (!isObject(r)) return r;
       const where = `row '${typeof r.name === "string" ? r.name : i + 1}'`;
+      // a unit cost column printing a word ("Invoice") has no unit cost; the row's cells carry the word
+      const unitCost = typeof r.unitCost === "string" && !/\d/.test(r.unitCost) ? null : r.unitCost;
       return {
-        code: null, ...r, unitCostCents: amount(r.unitCost, `rows.${i}.unitCostCents`, `${where} unitCost`),
+        code: null, ...r, unitCostCents: amount(unitCost, `rows.${i}.unitCostCents`, `${where} unitCost`),
         printedRowTotalCents: amount(r.printedRowTotal, `rows.${i}.printedRowTotalCents`, `${where} printedRowTotal`), cells: cells(r.cells, `rows.${i}.cells`, where),
       };
     },

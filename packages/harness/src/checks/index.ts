@@ -1,5 +1,6 @@
 import type { Rulebook } from "@dct/shared";
 import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
+import { PER_UNIT_FIX, lineTotalAsAmount } from "./amount";
 import { checkCitations } from "./cells";
 import { NOT_PRINTED, checkGrid } from "./grid";
 import { checkQuote } from "./quote";
@@ -46,6 +47,7 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   }
 
   problems.push(...checkCitations(rulebook, docs).problems);
+  problems.push(...lineTotalAsAmount(rulebook));
 
   const stray = unaccounted(rulebook, docs);
   for (const u of stray) {
@@ -68,6 +70,7 @@ export function forPerson(p: Pick<Problem, "doc" | "page" | "message"> & { check
   if (p.check === "cell") return `A scanned amount on ${where} doesn't match what the page prints yet; start the read again or answer its question.`;
   if (p.check === "unaccounted" && p.message.endsWith(ACCOUNT_IT)) return `${p.message.slice(0, -ACCOUNT_IT.length)}: start the read again, or answer its question.`;
   if (p.check === "quote" && p.message === SCAN_PAGE_REASON) return `An amount read from the scanned ${where} hasn't been checked against the page yet; answer its question.`;
+  if (p.check === "amount" && p.message.endsWith(PER_UNIT_FIX)) return `${p.message.slice(0, -PER_UNIT_FIX.length)} Start the read again.`;
   if (p.check === "grid" && p.message === NOT_PRINTED) return `Some figures of a budget on ${where} aren't proven by a printed total or a second reading yet; start the read again.`;
   return p.message;
 }

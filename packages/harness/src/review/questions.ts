@@ -83,6 +83,20 @@ function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { o
 // The reviewer lists findings by money at stake; beyond these, a finding is shown but doesn't hold up approval.
 const MAX_BLOCKING = 6;
 
+// A holdback or overhead rule scales other payments, so it carries money without printing a dollar amount of its own.
+const SCALES_OTHER_PAYMENTS: ReadonlySet<string> = new Set(["holdback", "overhead"]);
+
+/**
+ * Whether a finding may hold up approval. Approving with it open must risk a wrong amount on an invoice: a question
+ * about timing alone doesn't, and neither does an "add it or leave it" line that carries no money, which the benchmark
+ * showed is where the second reader's noise lands. Those are still shown, as worth a look.
+ */
+function holdsUpApproval(f: Finding): boolean {
+  if (f.affects === "when_paid") return false;
+  if (f.type !== "missed_rule" || !f.newTerm) return true;
+  return parseCents(f.newTerm.amount ?? "") !== null || SCALES_OTHER_PAYMENTS.has(f.newTerm.category);
+}
+
 const RECORD_ONLY = "Your answer is kept on record, but it doesn't change the rulebook's figures by itself: check them against what you pick.";
 
 /**
@@ -121,7 +135,7 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
         options,
         suggestion: f.suggestion && options[option] ? { option, reason: f.suggestion.reason } : null,
         state: "open",
-        blocking: blocking++ < MAX_BLOCKING,
+        blocking: holdsUpApproval(f) && blocking++ < MAX_BLOCKING,
         readings: [],
         resolution: null,
       },

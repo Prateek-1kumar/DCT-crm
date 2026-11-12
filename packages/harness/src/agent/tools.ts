@@ -4,6 +4,74 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 const array = (items: unknown) => ({ type: "array", items });
 const string = { type: "string" };
 const integer = { type: "integer" };
+const boolean = { type: "boolean" };
+const orNull = { type: ["string", "null"] };
+// Amounts go in as printed ("$1,234.56") or as a number; the harness turns them into cents.
+const amount = { type: ["string", "number", "null"] };
+const oneOf = (...values: string[]) => ({ type: "string", enum: values });
+
+// The shapes are spelled out because a bare object cost a rejected call or two per read; they guide the model and
+// normalize.ts stays the judge of what is saved.
+const STUDY = object(
+  {
+    protocol: string, sponsor: string, payer: orNull, siteEntity: string, siteNumber: orNull, pi: orNull, effectiveDate: orNull,
+    documents: array(
+      object(
+        {
+          doc: { type: "string", description: "The file's name exactly as in the inventory." },
+          role: oneOf("cta", "work_order", "master_agreement", "amendment", "budget", "protocol", "other"),
+          hasMoney: boolean,
+          supersedes: { type: "array", items: string, description: "What it replaces, e.g. [\"Exhibit A of the CTA\"]; [] when nothing." },
+          effectiveFrom: orNull,
+          retroactive: boolean,
+          notes: orNull,
+        },
+        ["doc", "role", "hasMoney", "supersedes", "effectiveFrom", "retroactive"],
+      ),
+    ),
+  },
+  ["protocol", "sponsor", "siteEntity", "documents"],
+);
+
+const TERM = object(
+  {
+    id: { type: "string", description: "Letters, digits and dashes; no colon." },
+    category: oneOf("payment_terms", "invoicing", "holdback", "overhead", "site_fee", "recurring_fee", "invoiceable", "conditional_procedure", "screen_failure", "unscheduled_visit", "stipend_travel", "bonus", "cap_or_limit", "deadline", "other"),
+    name: string,
+    amount: { ...amount, description: "What is paid for ONE of the unit, as printed; never a line total. null when the term has no amount of its own." },
+    unit: orNull,
+    billing: oneOf("auto_paid", "invoice", "unknown"),
+    trigger: orNull,
+    cap: {
+      type: ["object", "null"],
+      properties: { kind: oneOf("count", "amount", "ratio", "hours", "none"), value: { ...amount, description: "A count, hours or a ratio's left side as a number; a dollar amount as printed for kind amount." }, period: orNull, text: string },
+      required: ["kind"],
+    },
+    formula: orNull, conditions: orNull,
+    holdbackApplies: oneOf("yes", "no", "unclear", "n/a"),
+    overheadApplies: oneOf("included", "added", "no", "unclear", "n/a"),
+    deadline: orNull, notes: orNull,
+    source: object({ doc: string, page: integer, quote: string, cell: string, capCell: string }, ["doc", "page", "quote"]),
+  },
+  ["id", "category", "name", "billing", "source"],
+);
+
+const cellValues = { type: "array", description: "One per visit: an amount, the printed words, or null for blank; on a SCAN page each amount is {value, cell}." };
+const gridAmount = { description: "An amount as printed, or null; on a SCAN page {value, cell}." };
+const GRID = object(
+  {
+    id: string, name: string, arm: orNull, doc: string, pages: array(integer), visits: array(string),
+    overheadPct: { type: ["string", "number", "null"] },
+    rows: array(object({ name: string, code: orNull, unitCost: { description: "An amount, or null when the row prints none (never words such as \"Invoice\"); on a SCAN page {value, cell}." }, cells: cellValues, printedRowTotal: gridAmount }, ["name", "cells"])),
+    subtotal: cellValues, overhead: cellValues,
+    additions: array(object({ name: string, cells: cellValues }, ["name", "cells"])),
+    total: cellValues, grandTotal: gridAmount,
+  },
+  ["id", "name", "doc", "pages", "visits", "rows"],
+);
+
+const RELATION = object({ doc: string, kind: oneOf("sum", "product", "same"), result: string, operands: array(string), rate: string }, ["doc", "kind", "result", "operands"]);
+const ACCOUNTED = object({ doc: string, page: integer, pages: array(integer), amount, cell: string, reason: string }, ["doc", "reason"]);
 
 export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   {
@@ -23,30 +91,30 @@ export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   },
   {
     name: "put_study",
-    description: "Set the study details and every document's role and what it supersedes. Replaces the earlier study.",
-    input_schema: object({ study: { type: "object" } }, ["study"]),
+    description: "Set the study details and every document's role and what it supersedes. documents is a list with one entry per file, each naming its file in doc; supersedes is a list. Replaces the earlier study.",
+    input_schema: object({ study: STUDY }, ["study"]),
   },
   {
     name: "put_terms",
     description: "Add or replace rulebook terms (by id). Each term's source.quote is checked against its page; the result lists the quotes that were not found. On a SCAN page the amount must be the one printed in the cell or line source.cell names, on the row or line the quote is from (and a cap amount the one source.capCell names). Invalid terms are rejected with the reason.",
-    input_schema: object({ terms: array({ type: "object" }) }, ["terms"]),
+    input_schema: object({ terms: array(TERM) }, ["terms"]),
   },
   {
     name: "put_grid",
     description: "Add or replace one budget grid (by id). On a SCAN page every amount is {value, cell} and the grid is refused if a cell doesn't print its value, or one row's or one visit's amounts come from different printed rows or columns. Its arithmetic is checked at once against the contract's own printed subtotals, overhead and totals; problems are returned, or PROVEN when everything holds.",
-    input_schema: object({ grid: { type: "object" } }, ["grid"]),
+    input_schema: object({ grid: GRID }, ["grid"]),
   },
   {
     name: "put_relations",
     description:
       "Arithmetic a SCAN page prints between its cells, which proves those cells when it holds. Each: {doc, kind, result, operands, rate}, every one a cell or line id as read_pages shows it, never a typed number. kind sum: result = the operands added up, plus rate (a cell printing a percent) on top when given (a fee plus 30% overhead = the fee with overhead). kind product: result = the one operand times rate (a cell printing a count such as 8.00, or a percent): unit cost × quantity = total, subtotal × 30% = overhead. For sum and product, the result and its operands are table cells in one printed row (or one printed column), the result after them; the rate may be any cell or line on the result's page. kind same: the one value a term or grid cites, printed again on a different page. Code evaluates each on the cells as read, to the cent: one that doesn't hold is refused with the reason and proves nothing, and the reply says which cells each one proves.",
-    input_schema: object({ relations: array({ type: "object" }) }, ["relations"]),
+    input_schema: object({ relations: array(RELATION) }, ["relations"]),
   },
   {
     name: "put_accounted",
     description:
-      "Explain dollar amounts on pages that are deliberately NOT rulebook values: {doc, page, amount, reason} for one amount, or {doc, pages: [..], reason} for whole pages (a budget superseded by an amendment, a sample invoice, insurance limits). Never use this to hide a billable amount.",
-    input_schema: object({ items: array({ type: "object" }) }, ["items"]),
+      "Explain dollar amounts on pages that are deliberately NOT rulebook values: {doc, page, amount, reason} for one amount (on a SCAN page {doc, page, cell, reason} names the one cell), or {doc, pages: [..], reason} for whole pages (a budget superseded by an amendment, a sample invoice, insurance limits). Never use this to hide a billable amount.",
+    input_schema: object({ items: array(ACCOUNTED) }, ["items"]),
   },
   {
     name: "put_questions",

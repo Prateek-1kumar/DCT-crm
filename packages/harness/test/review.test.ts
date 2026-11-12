@@ -158,9 +158,29 @@ describe("finding to question", () => {
   });
 
   it("drops findings that change no money, and lets only the first six hold up approval", async () => {
-    const qs = await run([finding({ affects: "none" }), ...Array.from({ length: 8 }, () => finding({ affects: "when_paid" }))]);
+    const qs = await run([finding({ affects: "none" }), ...Array.from({ length: 8 }, () => finding({ affects: "how_billed" }))]);
     expect(qs).toHaveLength(8);
     expect(qs.map((q) => q.blocking)).toEqual([true, true, true, true, true, true, false, false]);
+  });
+
+  it("holds up approval only for findings that can change an amount billed", async () => {
+    const line: NonNullable<Finding["newTerm"]> = { category: "other", name: "Supplies", amount: null, unit: null, billing: "unknown", trigger: null, formula: null, conditions: null, deadline: null, notes: null };
+    const missed = (newTerm: Partial<typeof line>, over: Partial<Finding> = {}) => finding({ type: "missed_rule", newTerm: { ...line, ...newTerm }, ...over });
+    const qs = await run([
+      finding({ affects: "when_paid" }),
+      missed({}),
+      missed({ category: "deadline", deadline: "45 days" }),
+      missed({ category: "site_fee", amount: "$1,250.00", billing: "invoice" }),
+      missed({ category: "site_fee", amount: "$1,250.00" }, { affects: "when_paid" }),
+      missed({ category: "holdback", formula: "10% of each payment until close-out" }),
+      finding({ type: "contradiction" }),
+    ]);
+    expect(qs.map((q) => q.blocking)).toEqual([false, false, false, true, false, true, true]);
+  });
+
+  it("does not let findings that don't hold up approval use up the six that do", async () => {
+    const qs = await run([...Array.from({ length: 3 }, () => finding({ affects: "when_paid" })), ...Array.from({ length: 7 }, () => finding())]);
+    expect(qs.map((q) => q.blocking)).toEqual([false, false, false, true, true, true, true, true, true, false]);
   });
 
   it("clears an about that is not in the rulebook, and a quote that is not on the page", async () => {

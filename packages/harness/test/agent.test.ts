@@ -5,7 +5,7 @@ import { Rulebook } from "@dct/shared";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { afterAll, describe, expect, it } from "vitest";
 import { compile, type CompileOptions } from "../src/agent";
-import { normalizeAccounted } from "../src/agent/normalize";
+import { normalizeAccounted, normalizeGrid, normalizeStudy } from "../src/agent/normalize";
 import { createSession } from "../src/agent/session";
 import { withScans } from "../src/scan";
 import type { ModelClient, ModelMessage, ModelParams } from "../src/agent/client";
@@ -450,5 +450,26 @@ describe("scanned values cite cells", () => {
     expect(resultsAfter(calls[2]!.messages)[0]!.content).toContain("3 cells add up with the printed totals, but on a SCAN page a total alone doesn't prove a cell");
     expect(result.rulebook.grids[0]!.cellIds).toEqual({ "rows.0.cells.0": "p1.t1.r1.c1", "rows.0.cells.1": "p1.t1.r1.c2", "rows.0.cells.2": "p2.t1.r1.c1", "rows.0.printedRowTotalCents": "p2.t1.r1.c2" });
     expect(result.rulebook.grids[0]!.rows[0]!.cells).toEqual([10000, 25000, 30000]);
+  });
+});
+
+describe("shapes a first call often gets wrong are taken, not sent back", () => {
+  const base = { protocol: "P-1", sponsor: "Acme", siteEntity: "Site LLC" };
+  const documents = (given: unknown) => {
+    const out = normalizeStudy({ ...base, documents: given });
+    return out.ok ? out.value.documents.map((d) => [d.doc, d.supersedes]) : out.issues;
+  };
+
+  it("documents keyed by file name, the file under name, and supersedes as null or one string", () => {
+    expect(documents({ "A.pdf": { role: "cta", supersedes: null }, "B.pdf": { role: "amendment", supersedes: "Exhibit A" } })).toEqual([["A.pdf", []], ["B.pdf", ["Exhibit A"]]]);
+    expect(documents([{ name: "A.pdf", role: "cta", supersedes: ["Exhibit A"] }])).toEqual([["A.pdf", ["Exhibit A"]]]);
+    expect(documents([{ role: "cta" }])).toEqual(["documents.0.doc: Invalid input: expected string, received undefined"]);
+  });
+
+  it("a unit cost printed as a word is no unit cost; a garbled amount is still refused", () => {
+    const grid = (unitCost: string) => normalizeGrid({ id: "g1", name: "Budget", doc: "A.pdf", pages: [1], visits: ["V1"], rows: [{ name: "Test", unitCost, cells: ["Invoice"] }] });
+    const word = grid("Invoice");
+    expect(word.ok && word.value.rows[0]).toMatchObject({ unitCostCents: null, cells: ["Invoice"] });
+    expect(grid("$1,2x0")).toMatchObject({ ok: false });
   });
 });

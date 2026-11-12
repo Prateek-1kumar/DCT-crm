@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Rulebook } from "@dct/shared";
 import { SCAN_PAGE_REASON, checks, forPerson } from "../src/checks";
+import { lineTotalAsAmount } from "../src/checks/amount";
 import { checkCitations } from "../src/checks/cells";
 import { cellKey, checkRelations, withRelationProof } from "../src/checks/relations";
 import { withScans } from "../src/scan";
@@ -316,6 +317,48 @@ describe("runChecks", () => {
     const r = checks.runChecks(rulebook({ grids: [partly] }), [doc("A.pdf", page(1, "text", ""))]);
     expect(r.problems).toHaveLength(1);
     expect(r.problems[0]).toMatchObject({ check: "grid", id: "g1" });
+  });
+});
+
+describe("a line total stored as a per-unit amount", () => {
+  const screenFail = (over: Partial<Term>) =>
+    term({ id: "sf", category: "screen_failure", name: "Screen failure", unit: "per screen failure", cap: { kind: "count", value: 12, period: null, text: "max 12" }, ...over });
+  const found = (terms: Term[], grids: Grid[] = []) => lineTotalAsAmount(rulebook({ terms, grids }));
+
+  it("refuses an amount that is the cap count times the per-unit figure in the term's own words", () => {
+    const [p] = found([screenFail({ amountCents: 1800000, formula: "100% of Visit 1 ($1,000.00) + 50% of Visit 2 ($1,000.00) = $1,500.00 per screen failure; max 12 = $18,000.00" })]);
+    expect(p).toMatchObject({ check: "amount", id: "sf" });
+    expect(p!.message).toBe(
+      "'Screen failure' has $18,000.00 as its amount per screen failure, but its own wording gives $1,500.00 for each, up to 12, and 12 × $1,500.00 is $18,000.00: that is the most the line can pay in total, not the payment for one. Make the amount the payment for one, and keep the total as the cap.",
+    );
+    expect(forPerson(p!)).toMatch(/not the payment for one\. Start the read again\.$/);
+  });
+
+  it("refuses a screen failure or extra visit that pays more than a patient's whole budget", () => {
+    const visit = term({ id: "uv", category: "unscheduled_visit", name: "Unscheduled visit", unit: "per visit", amountCents: 500000 });
+    expect(found([screenFail({ amountCents: 1800000 }), visit], [cbt()]).map((p) => p.id)).toEqual(["sf", "uv"]);
+    expect(found([screenFail({ amountCents: 1800000 })], [cbt({ grandTotalCents: null })])[0]!.message).toContain("a patient's whole budget comes to $4,202.75");
+    // a total row holding a word can't say what a patient's budget comes to
+    expect(found([screenFail({ amountCents: 1800000 })], [cbt({ grandTotalCents: null, total: [245710, "Invoice"] })])).toEqual([]);
+  });
+
+  it("passes the right shapes", () => {
+    const ok = [
+      screenFail({ amountCents: 150000, formula: "100% of Visit 1 ($1,000.00) + 50% of Visit 2 ($1,000.00)", cap: { kind: "count", value: 12, period: null, text: "max 12, $18,000.00 in total" } }),
+      term({ id: "startup", amountCents: 5000000, unit: "one time", cap: { kind: "count", value: 2, period: null, text: "two instalments of $25,000.00" } }),
+      term({ id: "ads", category: "invoiceable", amountCents: 1000000, unit: "total budget", cap: { kind: "amount", value: 1000000, period: null, text: "not to exceed $10,000.00" } }),
+      term({ id: "hotel", category: "stipend_travel", amountCents: 12000, unit: "per night", cap: { kind: "amount", value: 12000, period: null, text: "up to $120.00 per night, meals $60.00" } }),
+      term({ id: "lab", category: "recurring_fee", amountCents: 12500, unit: "per quarter", cap: { kind: "count", value: 32, period: null, text: "32 x $125.00 = $4,000.00" } }),
+      term({ id: "storage", category: "recurring_fee", amountCents: 900000, unit: "per year" }),
+      screenFail({ id: "decided", amountCents: 1800000, evidence: "person", formula: "$1,500.00 each" }),
+    ];
+    expect(found(ok, [cbt()])).toEqual([]);
+  });
+
+  it("goes back to the agent with the other problems", () => {
+    const docs = [doc("A.pdf", page(1, "text", "Screen failure $1,500.00 each, max 12 = $18,000.00"))];
+    const sf = screenFail({ amountCents: 1800000, formula: "$1,500.00 each", source: { doc: "A.pdf", page: 1, quote: "Screen failure $1,500.00 each" } });
+    expect(checks.runChecks(rulebook({ terms: [sf] }), docs).problems.map((p) => p.check)).toEqual(["amount"]);
   });
 });
 
