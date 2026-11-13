@@ -89,6 +89,7 @@ async function main() {
     writeFile(join(outDir, "rulebook.json"), JSON.stringify(result.rulebook, null, 2)),
     writeFile(join(outDir, "log.json"), JSON.stringify(result.log, null, 2)),
     ...(result.compiled ? [writeFile(join(outDir, "trace.json"), JSON.stringify(result.compiled.trace, null, 2))] : []),
+    ...(result.checklist ? [writeFile(join(outDir, "checklist.json"), JSON.stringify(result.checklist, null, 2))] : []),
     writeFile(join(outDir, "summary.json"), JSON.stringify(summary, null, 2)),
   ]);
   console.log(`\n${JSON.stringify(summary, null, 2)}\nWritten to ${outDir}`);

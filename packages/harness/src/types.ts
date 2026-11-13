@@ -97,7 +97,7 @@ export interface PdfReader {
 }
 
 export interface Problem {
-  check: "grid" | "quote" | "cell" | "relation" | "unaccounted" | "amount" | "schema";
+  check: "grid" | "quote" | "cell" | "relation" | "unaccounted" | "amount" | "fee_table" | "schema";
   id?: string;
   doc?: string;
   page?: number;

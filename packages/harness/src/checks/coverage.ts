@@ -85,8 +85,12 @@ export function quotePlace(page: Page, quote: string): { boxes: Region[]; approx
 
 export const quoteBoxes = (page: Page, quote: string): Region[] => quotePlace(page, quote).boxes;
 
+// A fee table's line total is shown as captured by the first term paid out of it: the proof screen links amounts to terms and grids only.
+const feeLineRef = (line: { termIds: string[] }): CoverageRef | null => (line.termIds[0] === undefined ? null : { target: "term", id: line.termIds[0] });
+
 interface Candidate {
-  ref: CoverageRef;
+  /** null for a fee table's total, which no one term or grid holds. */
+  ref: CoverageRef | null;
   person: boolean;
   doc: string;
   pages: number[];
@@ -117,6 +121,10 @@ function candidates(rulebook: Rulebook): Map<number, Candidate[]> {
     [g.subtotal, g.overhead, g.total, ...g.additions.map((a) => a.cells)].forEach((line) => line?.forEach((c, col) => add(c, at(-1, col))));
     add(g.grandTotalCents, at(-1, -1));
   }
+  for (const ft of rulebook.feeTables ?? []) {
+    ft.lines.forEach((l) => add(l.totalCents, { ref: feeLineRef(l), person: false, doc: ft.doc, pages: ft.pages }));
+    add(ft.totalCents, { ref: null, person: false, doc: ft.doc, pages: ft.pages });
+  }
   return byCents;
 }
 
@@ -132,7 +140,7 @@ function amountsOn(line: Word[]): { text: string; cents: number; printed: Word[]
 }
 
 interface Cited {
-  ref: CoverageRef;
+  ref: CoverageRef | null;
   person: boolean;
   cents: number | null;
 }
@@ -160,6 +168,10 @@ function citations(rulebook: Rulebook): Map<string, Cited[]> {
       const cents = valueAt(g, path);
       add(id, { ref: { target: "grid", id: g.id, ...placeOf(path) }, person: false, cents: typeof cents === "number" ? cents : null });
     }
+  }
+  for (const ft of rulebook.feeTables ?? []) {
+    ft.lines.forEach((l) => add(l.cell, { ref: feeLineRef(l), person: false, cents: l.totalCents }));
+    add(ft.totalCell, { ref: null, person: false, cents: ft.totalCents });
   }
   return byCell;
 }
@@ -381,7 +393,8 @@ function missedAmounts(rulebook: Rulebook, doc: string, pages: Page[], index: nu
 function wholePageAside(rulebook: Rulebook, doc: string, page: number) {
   const valued =
     rulebook.terms.some((t) => t.source.doc === doc && t.source.page === page && (t.amountCents !== null || t.cap?.kind === "amount")) ||
-    rulebook.grids.some((g) => g.doc === doc && g.pages.includes(page));
+    rulebook.grids.some((g) => g.doc === doc && g.pages.includes(page)) ||
+    (rulebook.feeTables ?? []).some((ft) => ft.doc === doc && ft.pages.includes(page));
   return valued ? undefined : rulebook.accounted.find((a) => a.doc === doc && a.pages?.includes(page));
 }
 

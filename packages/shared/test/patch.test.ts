@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPatches, cellProofPatches, citationPatches, correctedCells, isLockedField, type Patch, type Rulebook, type Term } from "../src/index.js";
+import { applyPatches, cellProofPatches, citationPatches, correctedCells, isLockedField, Rulebook, type Patch, type Term } from "../src/index.js";
 
 const term: Term = {
   id: "t1", category: "site_fee", name: "Startup fee", amountCents: 100000, unit: null, billing: "auto_paid", trigger: null, cap: null,
@@ -152,5 +152,19 @@ describe("a scanned value's citation", () => {
 
   it("of a grid value must be an id", () => {
     expect(() => applyPatches(rulebook, [gridPatch({ "cellIds.rows.0.cells.1": 5 })])).toThrow(/would leave the rulebook invalid: grids\.0\.cellIds/);
+  });
+});
+
+describe("fee tables", () => {
+  const feeTables = [{ id: "ft", name: "Site costs", doc: "A.pdf", pages: [1], totalCents: 180000, lines: [{ name: "Re-consent", totalCents: 180000, quantity: 12, termIds: ["t1"] }] }];
+
+  it("a rulebook saved before fee tables existed still parses, and one with them keeps them", () => {
+    expect(Rulebook.parse(rulebook)).toEqual(rulebook);
+    expect("feeTables" in Rulebook.parse(rulebook)).toBe(false);
+    expect(Rulebook.parse({ ...rulebook, feeTables }).feeTables).toEqual(feeTables);
+  });
+
+  it("survive an answer's patch", () => {
+    expect(applyPatches({ ...rulebook, feeTables }, [termPatch("t1", { notes: "seen" })]).feeTables).toEqual(feeTables);
   });
 });

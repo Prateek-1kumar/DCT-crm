@@ -2,6 +2,7 @@ import type { Rulebook } from "@dct/shared";
 import type { CheckReport, Checks, LoadedDoc, Page, Problem } from "../types";
 import { PER_UNIT_FIX, lineTotalAsAmount } from "./amount";
 import { checkCitations } from "./cells";
+import { FEE_TABLE_FIX, checkFeeTable } from "./feeTable";
 import { NOT_PRINTED, checkGrid } from "./grid";
 import { checkQuote } from "./quote";
 import { checkRelations, lessRelationProven, withRelationProof } from "./relations";
@@ -47,7 +48,14 @@ function runChecks(rulebook: Rulebook, docs: LoadedDoc[]): CheckReport {
   }
 
   problems.push(...checkCitations(rulebook, docs).problems);
-  problems.push(...lineTotalAsAmount(rulebook));
+  // the fee table's arithmetic outranks the amount guard's heuristic: a term it refutes is reported once, by the table
+  const refuted = new Set<string>();
+  for (const ft of rulebook.feeTables ?? []) {
+    const result = checkFeeTable(ft, rulebook.terms);
+    result.refuted.forEach((id) => refuted.add(id));
+    result.problems.forEach((message) => problems.push({ check: "fee_table", id: ft.id, doc: ft.doc, page: ft.pages[0], message: `fee table '${ft.name}': ${message}` }));
+  }
+  problems.push(...lineTotalAsAmount(rulebook).filter((p) => !refuted.has(p.id!)));
 
   const stray = unaccounted(rulebook, docs);
   for (const u of stray) {
@@ -71,6 +79,7 @@ export function forPerson(p: Pick<Problem, "doc" | "page" | "message"> & { check
   if (p.check === "unaccounted" && p.message.endsWith(ACCOUNT_IT)) return `${p.message.slice(0, -ACCOUNT_IT.length)}: start the read again, or answer its question.`;
   if (p.check === "quote" && p.message === SCAN_PAGE_REASON) return `An amount read from the scanned ${where} hasn't been checked against the page yet; answer its question.`;
   if (p.check === "amount" && p.message.endsWith(PER_UNIT_FIX)) return `${p.message.slice(0, -PER_UNIT_FIX.length)} Start the read again.`;
+  if (p.check === "fee_table" && p.message.endsWith(FEE_TABLE_FIX)) return `In the ${p.message.slice(0, -FEE_TABLE_FIX.length)} Start the read again.`;
   if (p.check === "grid" && p.message === NOT_PRINTED) return `Some figures of a budget on ${where} aren't proven by a printed total or a second reading yet; start the read again.`;
   return p.message;
 }

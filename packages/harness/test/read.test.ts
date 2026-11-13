@@ -66,8 +66,9 @@ it("reviews a saved rulebook, settles the reader's elsewhere question by a verif
   };
   const openai = fake("gpt", {
     review: {
+      checklist: [],
       findings: [{
-        type: "judgment", affects: "how_much", about: { target: "term", id: "sf" }, question: "Is a screen failure after Visit 1 paid in full?", context: "", doc: "CTA.pdf", page: 1,
+        topic: null, type: "judgment", affects: "how_much", about: { target: "term", id: "sf" }, question: "Is a screen failure after Visit 1 paid in full?", context: "", doc: "CTA.pdf", page: 1,
         quote: "", region: null, suggestion: null, newTerm: null, options: [{ label: "Yes", changes: [] }, { label: "No", changes: [] }],
       }],
     },
@@ -97,7 +98,7 @@ it("reads transcribed pages, proving an amount by a blind second read from the v
   const images: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "image" as const })) };
   const scan = withScans(images, [{ page: 1, version: "v", rotation: 0, transcription: parseTranscription(PAGE) }]);
   const claude = fake("claude", {}, 1);
-  const openai = fake("gpt", { verify_page: PAGE, review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { verify_page: PAGE, review: { checklist: [], findings: [] } }, 0.4);
   const result = await read([scan], { anthropic: {} as ModelClient, claude, openai, maxUsd: 3, rulebook: citing("CTA.pdf") });
   expect(result.rulebook.terms[0]).toMatchObject({ amountCents: 50000, evidence: "two_reads" });
   expect(result.report.problems).toEqual([]);
@@ -113,7 +114,7 @@ it("transcribes scanned pages first, paid from the same budget, and saves them",
   const scanned = await pdfReader.load(join(dir, "Scan.pdf"));
   expect(scanned.pages[0]!.kind).toBe("image");
 
-  const openai = fake("gpt", { transcribe_page: PAGE, verify_page: PAGE, review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { transcribe_page: PAGE, verify_page: PAGE, review: { checklist: [], findings: [] } }, 0.4);
   const saved: ScanPage[] = [];
   const scans: ScanStore = { get: async () => saved, put: async (_, page) => void saved.push(page) };
   const progress: string[] = [];
@@ -130,7 +131,7 @@ it("reports what was spent when a read breaks part way, with a plain message", a
     id: "q1", kind: "elsewhere" as const, origin: "compile" as const, about: null, question: "Is it pro-rated?", context: "",
     source: { doc: "CTA.pdf", page: 1, quote: "" }, options: sfOptions, suggestion: null, state: "open" as const, blocking: true, readings: [], resolution: null,
   };
-  const openai = fake("gpt", { review: { findings: [] } }, 0.4);
+  const openai = fake("gpt", { review: { checklist: [], findings: [] } }, 0.4);
   const broken = fake("claude", { find_answers: {} }, 0.1);
   const failure = await read(docs, { anthropic: {} as ModelClient, claude: broken, openai, maxUsd: 3, rulebook: { ...rulebook, questions: [elsewhere] } }).catch((e: unknown) => e);
   expect(failure).toBeInstanceOf(ReadFailed);
@@ -154,16 +155,16 @@ it("a read whose reviewer couldn't run can't be approved: it carries a blocking 
   expect(NOT_REVIEWED).toBe("This read wasn't checked for judgment calls. Start the read again; the pages already read are kept.");
   expect(result.rulebook.questions[0]!.context).not.toContain("fell over");
 
-  const skipped = await read(docs, { anthropic: {} as ModelClient, claude: fake("claude", {}, 0.1), openai: fake("gpt", { review: { findings: [] } }, 0.4), maxUsd: 0.000001, rulebook });
+  const skipped = await read(docs, { anthropic: {} as ModelClient, claude: fake("claude", {}, 0.1), openai: fake("gpt", { review: { checklist: [], findings: [] } }, 0.4), maxUsd: 0.000001, rulebook });
   expect(skipped.rulebook.questions.map((q) => [q.id, q.blocking])).toEqual([["review:not-run", true]]);
 
-  const reviewed = await read(docs, { anthropic: {} as ModelClient, claude: fake("claude", {}, 0.1), openai: fake("gpt", { review: { findings: [] } }, 0.4), maxUsd: 3, rulebook: skipped.rulebook });
+  const reviewed = await read(docs, { anthropic: {} as ModelClient, claude: fake("claude", {}, 0.1), openai: fake("gpt", { review: { checklist: [], findings: [] } }, 0.4), maxUsd: 3, rulebook: skipped.rulebook });
   expect(reviewed.rulebook.questions).toEqual([]);
 });
 
 it("the review leaves the second reads' allowance in place", async () => {
   const scan: LoadedDoc = { ...docs[0]!, pages: docs[0]!.pages.map((p) => ({ ...p, kind: "scan" as const })) };
-  const openai = fake("gpt", { review: { findings: [] }, read_values: { answers: [{ item: 0, answer: "$500.00" }] } }, 0);
+  const openai = fake("gpt", { review: { checklist: [], findings: [] }, read_values: { answers: [{ item: 0, answer: "$500.00" }] } }, 0);
   // the review's estimate is about $0.03 at $1 a million tokens: it fits in $0.10, but not beside one page's $0.08
   const result = await read([scan], { anthropic: {} as ModelClient, claude: fake("claude", {}, 0), openai, maxUsd: 0.1, rulebook });
   expect(result.reviewError).toMatch(/skipped/);
@@ -194,7 +195,7 @@ async function twoReadsOf22Pages() {
       if (req.name === "review") reviews++;
       if (req.name === "verify_page") verifies++;
       const page = { rotation: 0, text: "T 0.1-0.9 | Budget\nH | Procedure | Fee\nR 0.2-0.21 | Exam | $100.00" };
-      const value = req.name === "review" ? { findings: [] } : page;
+      const value = req.name === "review" ? { checklist: [], findings: [] } : page;
       return { value: value as T, model: "gpt", usd: { review: 1, verify_page: VERIFY_PAGE_USD }[req.name] ?? 0.15 };
     },
   };

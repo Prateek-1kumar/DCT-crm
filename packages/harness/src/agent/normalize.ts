@@ -1,4 +1,4 @@
-import { Accounted, Grid, KEPT_REASONS, isLockedField, isLockedPatch, Question, Relation, Study, Term, parseCents, parsePercent } from "@dct/shared";
+import { Accounted, FeeTable, Grid, KEPT_REASONS, isLockedField, isLockedPatch, Question, Relation, Study, Term, parseCents, parsePercent } from "@dct/shared";
 import type { z } from "zod";
 
 type Raw = Record<string, unknown>;
@@ -99,6 +99,30 @@ export function normalizeGrid(raw: unknown): Parsed<Grid> {
   };
   noColon(raw.id, "grid", issues);
   return parse(Grid, grid, issues);
+}
+
+export function normalizeFeeTable(raw: unknown): Parsed<FeeTable> {
+  if (!isObject(raw)) return notAnObject;
+  const issues: string[] = [];
+  const cited = (v: unknown) => (isObject(v) && "value" in v ? { value: v.value, cell: typeof v.cell === "string" ? v.cell : undefined } : { value: v, cell: undefined });
+  const lines = list(
+    raw.lines,
+    (l, i) => {
+      if (!isObject(l)) return l;
+      const where = `line '${typeof l.name === "string" ? l.name : i + 1}'`;
+      const total = cited(l.total);
+      const totalCents = cents(total.value, `${where} total`, issues);
+      // a line with no printed total proves nothing and would break the sum: it doesn't belong in the table
+      if (total.value == null || total.value === "") issues.push(`${where}: give the line's printed total, or leave the line out`);
+      const quantity = l.quantity == null || l.quantity === "" ? null : Number(String(l.quantity).replace(/,/g, ""));
+      if (Number.isNaN(quantity)) issues.push(`${where} quantity: "${String(l.quantity)}" is not a number`);
+      return { name: l.name, totalCents, quantity, termIds: typeof l.termIds === "string" ? [l.termIds] : (l.termIds ?? []), ...(total.cell && { cell: total.cell }) };
+    },
+    undefined,
+  );
+  const total = cited(raw.total);
+  noColon(raw.id, "fee table", issues);
+  return parse(FeeTable, { id: raw.id, name: raw.name, doc: raw.doc, pages: raw.pages, totalCents: cents(total.value, "total", issues), ...(total.cell && { totalCell: total.cell }), lines }, issues);
 }
 
 export function normalizeAccounted(raw: unknown): Parsed<Accounted> {

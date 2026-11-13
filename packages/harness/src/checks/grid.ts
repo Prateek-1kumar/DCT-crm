@@ -8,7 +8,7 @@ type Cell = Grid["rows"][number]["cells"][number];
 const num = (c: Cell | undefined): number | null => (typeof c === "number" ? c : null);
 const sum = (cells: Cell[]) => cells.reduce<number>((s, c) => s + (num(c) ?? 0), 0);
 
-const ROUNDING_TOLERANCE_CENTS = 50;
+export const ROUNDING_TOLERANCE_CENTS = 50;
 
 function numericCells(grid: Grid) {
   return grid.rows.flatMap((r, row) => r.cells.flatMap((c, col) => (num(c) === null ? [] : [{ row, col }])));
@@ -28,7 +28,7 @@ function shapeProblems(grid: Grid): string[] {
 }
 
 // Amount-on-page only: it is not checked to sit in this cell's position. Upgrade path: match the word box in the grid's region.
-export function printedAmounts(grid: Grid, docs: LoadedDoc[]): Set<number> {
+export function printedAmounts(grid: Pick<Grid, "doc" | "pages">, docs: LoadedDoc[]): Set<number> {
   const doc = docs.find((d) => d.name === grid.doc);
   const pages = doc?.pages.filter((p) => p.kind === "text" && grid.pages.includes(p.page)) ?? [];
   return new Set(pages.flatMap((p) => amountsIn(p.layout)));

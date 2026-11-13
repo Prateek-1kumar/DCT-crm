@@ -1,4 +1,4 @@
-import { pageOfCell, type Rulebook } from "@dct/shared";
+import { pageOfCell, type FeeTable, type Rulebook } from "@dct/shared";
 import { amountsOf, centsOf, type ScanCell } from "../scan/cells";
 import type { Doubt, LoadedDoc, Problem } from "../types";
 import { printedAmounts } from "./grid";
@@ -215,11 +215,26 @@ export function citeGrid(g: Grid, docs: LoadedDoc[], marked: Marked[] = []): str
   return [...shapeIssues(doc, cited, g.visits), ...values];
 }
 
+/**
+ * Why a fee table's totals on a scanned page don't match the cells they cite; totals on its text pages need none.
+ * ponytail: a handwritten or struck total is not sent to a person as a marked term or grid amount is, since nothing is paid
+ * from a fee table; add it to `marked` if a marked total ever needs a look.
+ */
+export function citeFeeTable(ft: FeeTable, docs: LoadedDoc[]): string[] {
+  const doc = docs.find((d) => d.name === ft.doc);
+  if (!doc || !ft.pages.some((n) => cellsOn(doc, n))) return [];
+  const onText = printedAmounts(ft, docs);
+  const cite = (what: string, cents: number, id: string | undefined): Cite => ({ what, how: "write it as {value, cell}", cents, id, optional: onText.has(Math.abs(cents)), pages: ft.pages, pagesText: `the table's pages (${ft.pages.join(", ")})`, mark: () => {} });
+  const cites = [...ft.lines.map((l) => cite(`the total of line '${l.name}'`, l.totalCents, l.cell)), ...(ft.totalCents === null ? [] : [cite("the table total", ft.totalCents, ft.totalCell)])];
+  return cites.flatMap((c) => checkOne(doc, c) ?? []);
+}
+
 export function checkCitations(rulebook: Rulebook, docs: LoadedDoc[]): { problems: Problem[]; marked: Marked[] } {
   const marked: Marked[] = [];
   const problems: Problem[] = [
     ...rulebook.terms.flatMap((t) => citeTerm(t, docs, marked).map((message): Problem => ({ check: "cell", id: t.id, doc: t.source.doc, page: t.source.page, message }))),
     ...rulebook.grids.flatMap((g) => citeGrid(g, docs, marked).map((message): Problem => ({ check: "cell", id: g.id, doc: g.doc, page: g.pages[0], message }))),
+    ...(rulebook.feeTables ?? []).flatMap((ft) => citeFeeTable(ft, docs).map((message): Problem => ({ check: "cell", id: ft.id, doc: ft.doc, page: ft.pages[0], message }))),
   ];
   return { problems, marked };
 }

@@ -60,6 +60,8 @@ export const Term = z.object({
   overheadApplies: OverheadApplies,
   deadline: nullableText,
   source: Source,
+  /** The contract's words that say how this item is paid; a billing other than "unknown" that has none is not kept (the accountant is asked). */
+  billingBasis: z.object({ doc: text.optional(), page: z.number().int().positive(), quote: z.string() }).nullable().optional(),
   evidence: Evidence,
   houseRuleIds: z.array(z.string()),
   notes: nullableText,
@@ -199,6 +201,36 @@ export const Relation = z.object({
 });
 export type Relation = z.infer<typeof Relation>;
 
+/**
+ * A site-fee table as the contract prints it: each line's printed total and quantity, and the table's printed total. Like a
+ * grid's subtotal and total rows it holds no payable amount of its own: it is what proves the fee terms. A line total is the
+ * most its terms can pay in all, never what one of them pays.
+ */
+export const FeeTable = z.object({
+  id: text,
+  name: text,
+  doc: text,
+  pages: z.array(z.number().int().positive()).min(1),
+  /** The printed total of the whole table ("TOTAL NOT TO EXCEED"); null when none is printed. */
+  totalCents: cents.nullable(),
+  /** On a scanned page, the cell or line the table total is printed in. */
+  totalCell: z.string().optional(),
+  lines: z.array(
+    z.object({
+      name: text,
+      /** The printed line total, or the printed total of a section covering several terms. */
+      totalCents: cents,
+      /** The printed quantity or stated maximum count; null when the line prints none. */
+      quantity: z.number().nullable(),
+      /** The terms paid out of this line. */
+      termIds: z.array(text),
+      /** On a scanned page, the cell or line the line total is printed in. */
+      cell: z.string().optional(),
+    }),
+  ),
+});
+export type FeeTable = z.infer<typeof FeeTable>;
+
 export const Rulebook = z.object({
   study: Study,
   terms: z.array(Term),
@@ -207,5 +239,7 @@ export const Rulebook = z.object({
   questions: z.array(Question),
   /** What proves scanned terms' "math" evidence and some grid cells: a copy of the rulebook without them loses that proof. */
   relations: z.array(Relation).optional(),
+  /** Optional, as `relations` is, so a rulebook saved before fee tables existed still parses and every copy keeps them. */
+  feeTables: z.array(FeeTable).optional(),
 });
 export type Rulebook = z.infer<typeof Rulebook>;

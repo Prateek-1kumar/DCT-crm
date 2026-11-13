@@ -2,9 +2,10 @@ import type { Question, Rulebook } from "@dct/shared";
 import { compile, type CompileResult } from "./agent";
 import type { ModelClient } from "./agent/client";
 import { checks } from "./checks";
+import { unsupportedBilling } from "./checks/billing";
 import type { Budget, Reader } from "./models";
 import { resolve } from "./resolve";
-import { review, reviewUsd } from "./review";
+import { review, reviewUsd, type ReviewResult } from "./review";
 import { SCAN_PAGE_USD, scanDocs } from "./scan";
 import type { CheckReport, LoadedDoc, ScanStore } from "./types";
 
@@ -26,6 +27,8 @@ export interface ReadResult {
   usd: number;
   compiled?: CompileResult;
   reviewError?: string;
+  /** The second reader's verdict on each fixed topic, for scoring which topics a read examined. */
+  checklist?: ReviewResult["checklist"];
   log: string[];
 }
 
@@ -114,7 +117,10 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
     compiled = await compile(docs, { client: opts.anthropic, model: opts.claude.model, maxUsd, onProgress: say });
     budget.spent += compiled.usd;
     if (!COMPILED.has(compiled.stopReason)) return { rulebook: compiled.rulebook, report: compiled.report, usd: budget.spent, compiled, log };
-    rulebook = compiled.rulebook;
+    // only a rulebook compiled now: one saved earlier was written before a billing had to name its words
+    const grounded = unsupportedBilling(compiled.rulebook, docs);
+    if (grounded.reset.length) say(`How ${grounded.reset.length === 1 ? "1 fee is" : `${grounded.reset.length} fees are`} paid isn't backed by words on the page, so it will be asked`);
+    rulebook = grounded.rulebook;
   }
   rulebook = withRequired(rulebook, checks.runChecks(rulebook, docs));
 
@@ -133,5 +139,5 @@ async function stages(unscanned: LoadedDoc[], opts: ReadOptions, budget: Budget)
   // a rulebook carried over from an earlier read may hold the item already; this review decides whether it still applies
   const questions = rulebook.questions.filter((q) => q.id !== NOT_REVIEWED_ID);
   rulebook = { ...rulebook, questions: reviewed.error ? [...questions, notReviewed(docs)] : questions };
-  return { rulebook, report, usd: budget.spent, compiled, ...(reviewed.error && { reviewError: reviewed.error }), log };
+  return { rulebook, report, usd: budget.spent, compiled, ...(reviewed.error && { reviewError: reviewed.error }), ...(reviewed.checklist && { checklist: reviewed.checklist }), log };
 }

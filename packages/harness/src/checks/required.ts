@@ -4,7 +4,7 @@ type Term = Rulebook["terms"][number];
 type Field = "billing" | "holdbackApplies" | "overheadApplies";
 
 // Contract rules (refunds, subject injury, termination) are not payments the site bills, so they never ask how they're paid.
-const PAYABLE = new Set<TermCategory>(["site_fee", "recurring_fee", "invoiceable", "conditional_procedure", "screen_failure", "unscheduled_visit", "stipend_travel", "bonus"]);
+export const PAYABLE = new Set<TermCategory>(["site_fee", "recurring_fee", "invoiceable", "conditional_procedure", "screen_failure", "unscheduled_visit", "stipend_travel", "bonus"]);
 
 const setAll = (terms: Term[], field: Field, value: string) => terms.map((t) => ({ target: "term" as const, id: t.id, set: { [field]: value } }));
 

@@ -86,7 +86,7 @@ const reader = (model: string, answers: Record<string, unknown>): Reader => ({
 const fakes = (script: Parameters<typeof scripted>[0] = goodScript()): Models => ({
   anthropic: scripted(script),
   claude: reader("claude-sonnet-5-5", {}),
-  openai: reader("fake-openai", { review: { findings: [] }, transcribe_page: { rotation: 0, text: `L 0.100-0.120 | ${CLAUSE}` } }),
+  openai: reader("fake-openai", { review: { checklist: [], findings: [] }, transcribe_page: { rotation: 0, text: `L 0.100-0.120 | ${CLAUSE}` } }),
 });
 
 let dir: string;

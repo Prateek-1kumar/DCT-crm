@@ -80,7 +80,7 @@ function choices(f: Finding, n: number, source: Source, rulebook: Rulebook): { o
   return { options, option: kept.indexOf(f.suggestion?.option ?? -1) };
 }
 
-// The reviewer lists findings by money at stake; beyond these, a finding is shown but doesn't hold up approval.
+// Beyond these, a finding is shown but doesn't hold up approval.
 const MAX_BLOCKING = 6;
 
 // A holdback or overhead rule scales other payments, so it carries money without printing a dollar amount of its own.
@@ -105,8 +105,7 @@ const RECORD_ONLY = "Your answer is kept on record, but it doesn't change the ru
  * two choices is not raised, and `log` says so: an accountant can't answer a question that offers nothing to pick.
  */
 export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: LoadedDoc[], log: string[] = []): Question[] {
-  let blocking = 0;
-  return findings.flatMap((f, n): Question[] => {
+  const raised = findings.flatMap((f, n): { f: Finding; q: Question }[] => {
     if (f.affects === "none" || !docs.find((d) => d.name === f.doc)?.pages.some((p) => p.page === f.page)) return [];
     const region = validRegion(f.region);
     const source: Source = { doc: f.doc, page: f.page, quote: f.quote, ...(region && { region }) };
@@ -122,23 +121,28 @@ export function toQuestions(findings: Finding[], rulebook: Rulebook, docs: Loade
       log.push(`The second reader's question "${f.question}" came with fewer than two answer choices, so it was not raised`);
       return [];
     }
-    return [
-      {
-        id: `review:${n}`,
-        // A model's judgment call is never settled by a model citing the clause it found unclear.
-        kind: "decision",
-        origin: "reviewer",
-        about: exists(f.about, rulebook) ? { target: f.about.target as "term" | "grid" | "study", id: f.about.id! } : null,
-        question: f.question,
-        context,
-        source,
-        options,
-        suggestion: f.suggestion && options[option] ? { option, reason: f.suggestion.reason } : null,
-        state: "open",
-        blocking: holdsUpApproval(f) && blocking++ < MAX_BLOCKING,
-        readings: [],
-        resolution: null,
-      },
-    ];
+    const q: Question = {
+      id: `review:${n}`,
+      // A model's judgment call is never settled by a model citing the clause it found unclear.
+      kind: "decision",
+      origin: "reviewer",
+      about: exists(f.about, rulebook) ? { target: f.about.target as "term" | "grid" | "study", id: f.about.id! } : null,
+      question: f.question,
+      context,
+      source,
+      options,
+      suggestion: f.suggestion && options[option] ? { option, reason: f.suggestion.reason } : null,
+      state: "open",
+      blocking: false,
+      readings: [],
+      resolution: null,
+    };
+    return [{ f, q }];
   });
+  // Checklist topics are the decisions an expert expects, so they take the slots before anything the model added freely.
+  let left = MAX_BLOCKING;
+  for (const fromChecklist of [true, false]) {
+    for (const { f, q } of raised) if ((f.topic !== null) === fromChecklist && holdsUpApproval(f) && left-- > 0) q.blocking = true;
+  }
+  return raised.map((r) => r.q);
 }

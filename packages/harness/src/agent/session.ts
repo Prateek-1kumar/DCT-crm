@@ -1,12 +1,13 @@
-import { Region, type Accounted, type Grid, type Question, type Relation, type Rulebook, type Study, type Term } from "@dct/shared";
+import { Region, type Accounted, type FeeTable, type Grid, type Question, type Relation, type Rulebook, type Study, type Term } from "@dct/shared";
 import { z } from "zod";
 import { checks } from "../checks";
-import { citeGrid, citeTerm } from "../checks/cells";
+import { citeFeeTable, citeGrid, citeTerm } from "../checks/cells";
+import { checkFeeTable } from "../checks/feeTable";
 import { checkRelations, evaluateRelation, lessRelationProven, provenText, withRelationProof } from "../checks/relations";
 import { pdfReader } from "../pdf";
 import type { LoadedDoc } from "../types";
 import { SCAN_NOTE } from "./prompt";
-import { normalizeAccounted, normalizeGrid, normalizeQuestion, normalizeRelation, normalizeStudy, normalizeTerm, type Parsed } from "./normalize";
+import { normalizeAccounted, normalizeFeeTable, normalizeGrid, normalizeQuestion, normalizeRelation, normalizeStudy, normalizeTerm, type Parsed } from "./normalize";
 
 export interface ImageBlock {
   type: "image";
@@ -38,6 +39,7 @@ const SearchArgs = z.object({ pattern: z.string().min(1) });
 const StudyArgs = z.object({ study: z.unknown() });
 const TermsArgs = z.object({ terms: z.array(z.unknown()) });
 const GridArgs = z.object({ grid: z.unknown() });
+const FeeTableArgs = z.object({ feeTable: z.unknown() });
 const RelationsArgs = z.object({ relations: z.array(z.unknown()) });
 const AccountedArgs = z.object({ items: z.array(z.unknown()) });
 const QuestionsArgs = z.object({ questions: z.array(z.unknown()) });
@@ -68,6 +70,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
   const grids = new Map<string, Grid>();
   const accounted = new Map<string, Accounted>();
   const questions = new Map<string, Question>();
+  const feeTables = new Map<string, FeeTable>();
   const relations = new Map<string, Relation>();
   const state: { finishes: number; ending: Ending | null } = { finishes: 0, ending: null };
 
@@ -78,6 +81,7 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
     accounted: [...accounted.values()],
     questions: [...questions.values()],
     ...(relations.size ? { relations: [...relations.values()] } : {}),
+    ...(feeTables.size ? { feeTables: [...feeTables.values()] } : {}),
   });
 
   const findDoc = (name: string) => docs.find((d) => d.name === name);
@@ -208,6 +212,23 @@ export function createSession(docs: LoadedDoc[], maxFinishes: number) {
       ];
       if (!problems.length && !open) return text(lines.join("\n"), `${where}: all printed totals add up`);
       return text(lines.join("\n"), problems.length ? `${where}: ${plural(problems.length, "problem")} with the totals` : `${where}: totals add up, but ${plural(unproven.length, "cell")} have no printed total backing them`);
+    },
+
+    put_fee_table(input) {
+      const args = FeeTableArgs.safeParse(input);
+      if (!args.success) return rejected("put_fee_table", argIssues(args.error));
+      const result = normalizeFeeTable(args.data.feeTable);
+      if (!result.ok) return rejected("put_fee_table", result.issues);
+      const table = result.value;
+      const uncited = citeFeeTable(table, docs);
+      if (uncited.length) return rejected("put_fee_table", uncited);
+      feeTables.set(table.id, table);
+      const where = `Fee table '${table.name}' on p.${table.pages[0]}`;
+      const { problems, proven } = checkFeeTable(table, [...terms.values()]);
+      if (problems.length) return text(["Arithmetic problems:", ...problems.slice(0, 40)].join("\n"), `${where}: ${plural(problems.length, "problem")} with the totals`);
+      const held = [...(table.totalCents !== null ? ["the lines add up to the printed total"] : []), ...(proven.length ? [`quantity × amount is the line total for ${proven.map((id) => `term ${id}`).join(", ")}`] : [])];
+      if (!held.length) return text("Saved, but nothing printed proves it: no table total and no line with a quantity and one term with an amount.", `${where}: saved, nothing to add up`);
+      return text(`PROVEN: ${held.join("; ")}.`, `${where}: the printed totals add up`);
     },
 
     put_relations(input) {

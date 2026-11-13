@@ -7,7 +7,7 @@ import type { Rulebook } from "@dct/shared";
 import type { Ask, Budget, Part, Reader } from "../src/models/reader";
 import { pdfReader } from "../src/pdf";
 import { review } from "../src/review";
-import type { Finding } from "../src/review/schema";
+import { TOPIC_IDS, type ChecklistEntry, type Finding, type TopicId } from "../src/review/schema";
 import type { LoadedDoc, Page, PageKind } from "../src/types";
 
 type Term = Rulebook["terms"][number];
@@ -38,18 +38,22 @@ const YES = { label: "Yes, in full", changes: [] };
 const NO = { label: "No, pro-rate it", changes: [] };
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
-  type: "judgment", affects: "how_much", about: { target: "term", id: "t1" }, question: "Is a screen failure paid in full?", context: "The contract says nothing about pro-rating.",
+  topic: null, type: "judgment", affects: "how_much", about: { target: "term", id: "t1" }, question: "Is a screen failure paid in full?", context: "The contract says nothing about pro-rating.",
   doc: "CTA.pdf", page: 1, quote: "Screen failure", region: null, options: [YES, NO], suggestion: null, newTerm: null, ...over,
 });
 
-const fake = (findings: Finding[], usd = 0.05) => {
+const entry = (topic: TopicId, over: Partial<ChecklistEntry> = {}): ChecklistEntry => ({ topic, verdict: "not_in_contract", doc: null, page: null, quote: null, ...over });
+/** Every topic reported as not in the contract, except those given. */
+const checklist = (...given: ChecklistEntry[]) => TOPIC_IDS.map((t) => given.find((e) => e.topic === t) ?? entry(t));
+
+const fake = (findings: Finding[], usd = 0.05, list = checklist()) => {
   const calls: Ask<unknown>[] = [];
   const reader: Reader = {
     model: "fake",
     price: { input: 1, output: 1, cacheWrite: 0, cacheRead: 0 },
     async ask<T>(req: Ask<T>) {
       calls.push(req);
-      return { value: { findings } as T, model: "fake", usd };
+      return { value: { checklist: list, findings } as T, model: "fake", usd };
     },
   };
   return { reader, calls };
@@ -256,6 +260,7 @@ describe("finding to question", () => {
     expect(result.log).toEqual([
       expect.stringContaining('"Is a screen failure paid in full?" came with fewer than two answer choices'),
       expect.stringContaining("fewer than two answer choices"),
+      expect.stringContaining("Second reader's checklist. not in this contract:"),
     ]);
   });
 
@@ -312,5 +317,75 @@ describe("finding to question", () => {
     ]);
     expect((ok!.options[0]!.patches[0]!.set as { amountCents: number }).amountCents).toBe(125000);
     expect(bad!.options).toEqual([{ label: "No, leave it as it is", patches: [] }, { label: YES.label, patches: [] }]);
+  });
+});
+
+describe("review checklist", () => {
+  const reviewed = (findings: Finding[], list: ChecklistEntry[], rb = rulebook()) => review(rb, docs, { ...fake(findings, 0.05, list), budget: budget() });
+  const of = (result: Awaited<ReturnType<typeof reviewed>>, topic: TopicId) => result.checklist!.find((t) => t.topic === topic)!;
+
+  it("passes a full checklist, and records each topic's verdict and questions", async () => {
+    const result = await reviewed(
+      [finding({ topic: "partial_payment" })],
+      checklist(entry("partial_payment", { verdict: "open", doc: "CTA.pdf", page: 1, quote: "Screen failure" }), entry("flat_or_cap", { verdict: "contract_settles", doc: "CTA.pdf", page: 1, quote: "$5,995.00" })),
+    );
+    expect(result.checklist!.map((t) => t.topic)).toEqual(TOPIC_IDS);
+    expect(result.checklist!.every((t) => t.problem === null)).toBe(true);
+    expect(of(result, "partial_payment")).toMatchObject({ verdict: "open", questions: ["review:0"] });
+    expect(of(result, "flat_or_cap").verdict).toBe("contract_settles");
+    expect(result.questions.map((q) => q.id)).toEqual(["review:0"]);
+    expect(result.log).toEqual([expect.stringMatching(/^Second reader's checklist\. needs a decision: .*\. settled by the contract: .*\. not in this contract: /)]);
+  });
+
+  it("says so when a topic is not reported, and uses the first report of one reported twice", async () => {
+    const list = [...checklist().filter((e) => e.topic !== "ratio_rounding"), entry("flat_or_cap", { verdict: "open" })];
+    const result = await reviewed([], list);
+    expect(of(result, "ratio_rounding")).toMatchObject({ verdict: "not_reported", problem: expect.stringContaining("did not report") });
+    expect(of(result, "flat_or_cap").verdict).toBe("not_in_contract");
+    expect(result.questions).toEqual([]);
+    expect(result.log.join("\n")).toMatch(/did not report on this[\s\S]*reported more than once[\s\S]*not reported: /);
+  });
+
+  it("raises a general question for an open topic that has no finding", async () => {
+    const result = await reviewed([finding()], checklist(entry("counted_twice", { verdict: "open", doc: "CTA.pdf", page: 1, quote: "Screen failure" })));
+    expect(result.questions.map((q) => q.id)).toEqual(["review:0", "review:topic:counted_twice"]);
+    expect(result.questions[1]).toMatchObject({ blocking: true, origin: "reviewer", source: { doc: "CTA.pdf", page: 1, quote: "Screen failure" } });
+    expect(result.questions[1]!.options).toHaveLength(2);
+    expect(of(result, "counted_twice")).toMatchObject({ questions: ["review:topic:counted_twice"], problem: expect.stringContaining("general question") });
+  });
+
+  it("raises a general question when the open topic's only finding was dropped, or 'already asked' has nothing open behind it", async () => {
+    const result = await reviewed(
+      [finding({ topic: "counted_twice", options: [] })],
+      checklist(entry("counted_twice", { verdict: "open", doc: "Nope.pdf", page: 4, quote: "x" }), entry("amendment_timing", { verdict: "already_asked" })),
+    );
+    expect(result.questions.map((q) => q.id)).toEqual(["review:topic:counted_twice", "review:topic:amendment_timing"]);
+    expect(result.questions[0]!.source).toEqual({ doc: "CTA.pdf", page: 1, quote: "" });
+  });
+
+  it("does not confirm 'settled by the contract' when the quote is not on the page", async () => {
+    const result = await reviewed([], checklist(
+      entry("flat_or_cap", { verdict: "contract_settles", doc: "CTA.pdf", page: 1, quote: "a flat one-time fee" }),
+      entry("ratio_rounding", { verdict: "contract_settles" }),
+    ));
+    expect(of(result, "flat_or_cap").problem).toContain("could not be found");
+    expect(of(result, "ratio_rounding").problem).toContain("could not be found");
+    expect(result.questions).toEqual([]);
+    expect(result.log.filter((l) => l.includes("not confirmed"))).toHaveLength(2);
+  });
+
+  it("gives checklist findings the approval slots before free-form ones", async () => {
+    const free = Array.from({ length: 5 }, () => finding());
+    const listed = [finding({ topic: "partial_payment" }), finding({ topic: "flat_or_cap", affects: "when_paid" }), finding({ topic: "words_vs_tables" })];
+    const qs = (await reviewed([...free, ...listed], checklist(...(["partial_payment", "flat_or_cap", "words_vs_tables"] as const).map((t) => entry(t, { verdict: "open" }))))).questions;
+    expect(qs.map((q) => q.blocking)).toEqual([true, true, true, true, false, true, false, true]);
+  });
+
+  it("sends every part of the rulebook except its questions", async () => {
+    const { reader, calls } = fake([]);
+    await review({ ...rulebook(), feeTables: [{ id: "f1" }] } as unknown as Rulebook, docs, { reader, budget: budget() });
+    const sent = (calls[0]!.parts[0] as { text: string }).text;
+    expect(sent).toContain('"feeTables":[{"id":"f1"}]');
+    expect(sent).not.toContain('"questions"');
   });
 });

@@ -41,6 +41,11 @@ const TERM = object(
     amount: { ...amount, description: "What is paid for ONE of the unit, as printed; never a line total. null when the term has no amount of its own." },
     unit: orNull,
     billing: oneOf("auto_paid", "invoice", "unknown"),
+    billingBasis: {
+      type: ["object", "null"],
+      description: 'The contract\'s own words that say how THIS item is paid, required for billing "invoice" or "auto_paid" on a fee: {page, quote, doc (only when it is in another document)}. Without words that are on that page the billing is set to "unknown" and the accountant is asked.',
+      properties: { doc: string, page: integer, quote: string },
+    },
     trigger: orNull,
     cap: {
       type: ["object", "null"],
@@ -68,6 +73,25 @@ const GRID = object(
     total: cellValues, grandTotal: gridAmount,
   },
   ["id", "name", "doc", "pages", "visits", "rows"],
+);
+
+const FEE_TABLE = object(
+  {
+    id: string, name: string, doc: string, pages: array(integer),
+    total: { description: "The printed total of the whole table (a total not to exceed), as printed, or null when none is printed; on a SCAN page {value, cell}." },
+    lines: array(
+      object(
+        {
+          name: string,
+          total: { description: "The printed line total, or the printed total of a section, as printed; on a SCAN page {value, cell}." },
+          quantity: { type: ["number", "string", "null"], description: "The printed quantity or stated maximum count; null when the line prints none." },
+          termIds: { type: "array", items: string, description: "The ids of the terms paid out of this line: one for a plain line, several for a section total, [] when no term is paid from it." },
+        },
+        ["name", "total", "termIds"],
+      ),
+    ),
+  },
+  ["id", "name", "doc", "pages", "lines"],
 );
 
 const RELATION = object({ doc: string, kind: oneOf("sum", "product", "same"), result: string, operands: array(string), rate: string }, ["doc", "kind", "result", "operands"]);
@@ -103,6 +127,11 @@ export const TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
     name: "put_grid",
     description: "Add or replace one budget grid (by id). On a SCAN page every amount is {value, cell} and the grid is refused if a cell doesn't print its value, or one row's or one visit's amounts come from different printed rows or columns. Its arithmetic is checked at once against the contract's own printed subtotals, overhead and totals; problems are returned, or PROVEN when everything holds.",
     input_schema: object({ grid: GRID }, ["grid"]),
+  },
+  {
+    name: "put_fee_table",
+    description: "Add or replace one fee table (by id): the line totals, quantities and table total a table of site fees prints. They are never payable amounts; they prove the fee terms. Its arithmetic is checked at once: the lines add up to the printed table total, and a line's quantity × its one term's amount is the printed line total; problems are returned, or PROVEN when everything holds. Write the terms first. On a SCAN page every total is {value, cell} and the table is refused if a cell doesn't print its value.",
+    input_schema: object({ feeTable: FEE_TABLE }, ["feeTable"]),
   },
   {
     name: "put_relations",
