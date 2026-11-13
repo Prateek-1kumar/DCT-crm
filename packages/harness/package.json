@@ -15,6 +15,7 @@
     "vision-bench": "tsx --env-file-if-exists=../../.env scripts/vision-bench.ts",
     "read": "tsx --env-file-if-exists=../../.env src/cli.ts",
     "scan-replay": "tsx scripts/scan-replay.ts",
+    "score": "tsx scripts/score.ts",
     "locate-trial": "tsx scripts/locate-trial.ts",
     "locate-bench": "tsx scripts/locate-bench.ts"
   },
